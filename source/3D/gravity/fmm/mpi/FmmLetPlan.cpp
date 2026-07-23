@@ -86,11 +86,23 @@ std::vector<T> readVector(FmmByteView buffer)
     return result;
 }
 
+template<typename T>
+const T* packetArray(FmmByteView buffer, std::size_t offset,
+                     std::size_t count)
+{
+    if(count > FmmPacketIO::remaining(buffer, offset) / sizeof(T))
+        throw UniversalError("FmmLetPlan: malformed packet array");
+    const char* data = buffer.data + offset;
+    if(reinterpret_cast<std::uintptr_t>(data) % alignof(T) != 0)
+        throw UniversalError("FmmLetPlan: misaligned packet array");
+    return reinterpret_cast<const T*>(data);
+}
+
 struct RemoteMultipolePayload
 {
     int sourceRank = -1;
     std::uint64_t spatialKey = 0;
-    std::size_t coefficientOffset = 0;
+    const double* coefficients = nullptr;
     bool active = false;
 };
 
@@ -98,7 +110,7 @@ struct RemoteParticlePayload
 {
     int sourceRank = -1;
     std::uint64_t spatialKey = 0;
-    std::size_t particleOffset = 0;
+    const FmmWireParticle* particles = nullptr;
     std::size_t particleCount = 0;
 };
 
@@ -280,11 +292,12 @@ void FmmLetPlan::build(const FmmTree& localTree,
     remoteLatticeRoots_.resize(rootDescriptors.size());
     m2lInteractions_.clear();
     m2lSources_.clear();
-    m2lSourceIndices_.clear();
     m2lOperatorGeometries_.clear();
-    m2lOperatorGeometryIndices_.clear();
     m2lOperatorGeometryUseCounts_.clear();
     p2pInteractions_.clear();
+    p2pSources_.clear();
+    activeM2LInteractionIndices_.clear();
+    activeP2PInteractionIndices_.clear();
     pendingScratch_.clear();
     workScratch_.clear();
     blockedScratch_.clear();
@@ -317,6 +330,8 @@ void FmmLetPlan::build(const FmmTree& localTree,
 
     const Clock::time_point descriptorStart = Clock::now();
     std::vector<PendingPair>& pending = pendingScratch_;
+    std::vector<PendingInteraction> pendingM2LInteractions;
+    std::vector<PendingInteraction> pendingP2PInteractions;
     for(int sourceRank : processPlan.letSourceRanks)
     {
         if(sourceRank < 0 ||
@@ -388,16 +403,14 @@ void FmmLetPlan::build(const FmmTree& localTree,
 
             if(admissible(target, source, thetaCritical))
             {
-                m2lInteractions_.push_back(FmmLetM2LInteraction{
-                    static_cast<std::uint32_t>(pair.targetNode),
-                    pair.sourceRank, pair.sourceKey});
+                pendingM2LInteractions.push_back(PendingInteraction{
+                    pair.targetNode, pair.sourceRank, pair.sourceKey});
                 continue;
             }
             if(target.isLeaf() && source.isLeaf != 0)
             {
-                p2pInteractions_.push_back(FmmLetP2PInteraction{
-                    static_cast<std::uint32_t>(pair.targetNode),
-                    pair.sourceRank, pair.sourceKey});
+                pendingP2PInteractions.push_back(PendingInteraction{
+                    pair.targetNode, pair.sourceRank, pair.sourceKey});
                 continue;
             }
 
@@ -591,20 +604,20 @@ void FmmLetPlan::build(const FmmTree& localTree,
     stats.letDescriptorTraversalSeconds += elapsed(descriptorStart);
     const Clock::time_point finalizeStart = Clock::now();
 
-    std::sort(m2lInteractions_.begin(), m2lInteractions_.end(),
-        [](const FmmLetM2LInteraction& a, const FmmLetM2LInteraction& b)
+    std::sort(pendingM2LInteractions.begin(), pendingM2LInteractions.end(),
+        [](const PendingInteraction& a, const PendingInteraction& b)
         {
             return std::tie(a.targetNode, a.sourceRank, a.sourceKey) <
                    std::tie(b.targetNode, b.sourceRank, b.sourceKey);
         });
     const auto duplicateM2L = std::adjacent_find(
-        m2lInteractions_.begin(), m2lInteractions_.end(),
-        [](const FmmLetM2LInteraction& a, const FmmLetM2LInteraction& b)
+        pendingM2LInteractions.begin(), pendingM2LInteractions.end(),
+        [](const PendingInteraction& a, const PendingInteraction& b)
         {
             return a.targetNode == b.targetNode && a.sourceRank == b.sourceRank &&
                    a.sourceKey == b.sourceKey;
         });
-    if(duplicateM2L != m2lInteractions_.end())
+    if(duplicateM2L != pendingM2LInteractions.end())
         throw UniversalError("FmmLetPlan::build: duplicate LET M2L interaction");
 
     // Resolve each unique remote M2L source once while the topology is built.
@@ -612,7 +625,7 @@ void FmmLetPlan::build(const FmmTree& localTree,
     // use a compact direct source index instead of repeating descriptor hash
     // lookups and lattice-key reconstruction for every interaction.
     std::map<std::pair<int, std::uint64_t>, std::uint32_t> sourceIndexByKey;
-    for(const FmmLetM2LInteraction& interaction : m2lInteractions_)
+    for(const PendingInteraction& interaction : pendingM2LInteractions)
         sourceIndexByKey.emplace(
             std::make_pair(interaction.sourceRank, interaction.sourceKey), 0u);
     if(sourceIndexByKey.size() > static_cast<std::size_t>(
@@ -655,30 +668,28 @@ void FmmLetPlan::build(const FmmTree& localTree,
         m2lSources_.push_back(resolved);
     }
 
-    m2lSourceIndices_.reserve(m2lInteractions_.size());
-    for(const FmmLetM2LInteraction& interaction : m2lInteractions_)
+    m2lInteractions_.reserve(pendingM2LInteractions.size());
+    for(const PendingInteraction& interaction : pendingM2LInteractions)
     {
         const auto found = sourceIndexByKey.find(
             std::make_pair(interaction.sourceRank, interaction.sourceKey));
         if(found == sourceIndexByKey.end())
             throw UniversalError(
                 "FmmLetPlan::build: unresolved LET M2L source index");
-        m2lSourceIndices_.push_back(found->second);
+        m2lInteractions_.push_back(FmmLetM2LInteraction{
+            static_cast<std::uint32_t>(interaction.targetNode),
+            found->second, 0u});
     }
-    if(m2lSourceIndices_.size() != m2lInteractions_.size())
-        throw UniversalError(
-            "FmmLetPlan::build: incomplete LET M2L source index table");
 
     typedef std::tuple<std::uint64_t, std::uint64_t, std::uint64_t,
                        std::uint64_t, std::uint64_t> GeometryKey;
     std::map<GeometryKey, std::uint32_t> geometryIndexByKey;
-    m2lOperatorGeometryIndices_.reserve(m2lInteractions_.size());
     for(std::size_t interactionIndex = 0;
         interactionIndex < m2lInteractions_.size(); ++interactionIndex)
     {
         const FmmLetM2LInteraction& interaction =
             m2lInteractions_[interactionIndex];
-        const std::uint32_t sourceIndex = m2lSourceIndices_[interactionIndex];
+        const std::uint32_t sourceIndex = interaction.sourceIndex;
         const FmmM2LOperatorCache::PreparedGeometry geometry =
             FmmM2LOperatorCache::prepare(
                 m2lSources_[sourceIndex].node,
@@ -704,17 +715,14 @@ void FmmLetPlan::build(const FmmTree& localTree,
             m2lOperatorGeometries_.push_back(geometry);
             m2lOperatorGeometryUseCounts_.push_back(0);
         }
-        m2lOperatorGeometryIndices_.push_back(inserted.first->second);
+        m2lInteractions_[interactionIndex].geometryIndex =
+            inserted.first->second;
         if(m2lOperatorGeometryUseCounts_[inserted.first->second] ==
            std::numeric_limits<std::uint64_t>::max())
             throw UniversalError(
                 "FmmLetPlan::build: M2L geometry use count overflow");
         ++m2lOperatorGeometryUseCounts_[inserted.first->second];
     }
-    if(m2lOperatorGeometryIndices_.size() != m2lInteractions_.size())
-        throw UniversalError(
-            "FmmLetPlan::build: incomplete prepared M2L geometry table");
-
     // The persistent operator cache is intentionally byte bounded.  When the
     // complete LET operator set does not fit, resolvePreparedBatch() falls back
     // to scratch storage.  Keep all interactions that use the same scale-free
@@ -756,44 +764,71 @@ void FmmLetPlan::build(const FmmTree& localTree,
             "FmmLetPlan::build: grouped M2L interaction count mismatch");
 
     std::vector<FmmLetM2LInteraction> orderedInteractions(orderedCount);
-    std::vector<std::uint32_t> orderedSourceIndices(orderedCount);
-    std::vector<std::uint32_t> orderedGeometryIndices(orderedCount);
     for(std::size_t interactionIndex = 0;
         interactionIndex < m2lInteractions_.size(); ++interactionIndex)
     {
         const std::uint32_t geometryIndex =
-            m2lOperatorGeometryIndices_[interactionIndex];
+            m2lInteractions_[interactionIndex].geometryIndex;
         const std::size_t destination = nextSlot[geometryIndex]++;
         orderedInteractions[destination] = m2lInteractions_[interactionIndex];
-        orderedSourceIndices[destination] = m2lSourceIndices_[interactionIndex];
-        orderedGeometryIndices[destination] = geometryIndex;
     }
     m2lInteractions_.swap(orderedInteractions);
-    m2lSourceIndices_.swap(orderedSourceIndices);
-    m2lOperatorGeometryIndices_.swap(orderedGeometryIndices);
 
-    std::sort(p2pInteractions_.begin(), p2pInteractions_.end(),
-        [](const FmmLetP2PInteraction& a, const FmmLetP2PInteraction& b)
+    std::sort(pendingP2PInteractions.begin(), pendingP2PInteractions.end(),
+        [](const PendingInteraction& a, const PendingInteraction& b)
         {
             return std::tie(a.targetNode, a.sourceRank, a.sourceKey) <
                    std::tie(b.targetNode, b.sourceRank, b.sourceKey);
         });
     const auto duplicateP2P = std::adjacent_find(
-        p2pInteractions_.begin(), p2pInteractions_.end(),
-        [](const FmmLetP2PInteraction& a, const FmmLetP2PInteraction& b)
+        pendingP2PInteractions.begin(), pendingP2PInteractions.end(),
+        [](const PendingInteraction& a, const PendingInteraction& b)
         {
             return a.targetNode == b.targetNode && a.sourceRank == b.sourceRank &&
                    a.sourceKey == b.sourceKey;
         });
-    if(duplicateP2P != p2pInteractions_.end())
+    if(duplicateP2P != pendingP2PInteractions.end())
         throw UniversalError("FmmLetPlan::build: duplicate LET P2P interaction");
 
+    std::map<std::pair<int, std::uint64_t>, std::uint32_t> p2pSourceIndexByKey;
+    for(const PendingInteraction& interaction : pendingP2PInteractions)
+        p2pSourceIndexByKey.emplace(
+            std::make_pair(interaction.sourceRank, interaction.sourceKey), 0u);
+    if(p2pSourceIndexByKey.size() > static_cast<std::size_t>(
+           std::numeric_limits<std::uint32_t>::max()))
+        throw UniversalError("FmmLetPlan::build: too many unique LET P2P sources");
+    p2pSources_.reserve(p2pSourceIndexByKey.size());
+    std::uint32_t nextP2PSourceIndex = 0;
+    for(auto& sourceEntry : p2pSourceIndexByKey)
+    {
+        sourceEntry.second = nextP2PSourceIndex++;
+        p2pSources_.push_back(RemoteSource{
+            sourceEntry.first.first, sourceEntry.first.second});
+    }
+    p2pInteractions_.reserve(pendingP2PInteractions.size());
+    for(const PendingInteraction& interaction : pendingP2PInteractions)
+    {
+        const auto found = p2pSourceIndexByKey.find(
+            std::make_pair(interaction.sourceRank, interaction.sourceKey));
+        if(found == p2pSourceIndexByKey.end())
+            throw UniversalError("FmmLetPlan::build: unresolved LET P2P source index");
+        p2pInteractions_.push_back(FmmLetP2PInteraction{
+            static_cast<std::uint32_t>(interaction.targetNode), found->second});
+    }
+    std::sort(p2pInteractions_.begin(), p2pInteractions_.end(),
+        [](const FmmLetP2PInteraction& first,
+           const FmmLetP2PInteraction& second)
+        {
+            return std::tie(first.sourceIndex, first.targetNode) <
+                   std::tie(second.sourceIndex, second.targetNode);
+        });
+
     std::set<std::tuple<std::size_t, int, std::uint64_t>> terminalKeys;
-    for(const FmmLetM2LInteraction& interaction : m2lInteractions_)
+    for(const PendingInteraction& interaction : pendingM2LInteractions)
         terminalKeys.insert(std::make_tuple(interaction.targetNode,
                                             interaction.sourceRank,
                                             interaction.sourceKey));
-    for(const FmmLetP2PInteraction& interaction : p2pInteractions_)
+    for(const PendingInteraction& interaction : pendingP2PInteractions)
     {
         if(!terminalKeys.insert(std::make_tuple(interaction.targetNode,
                                                 interaction.sourceRank,
@@ -806,13 +841,19 @@ void FmmLetPlan::build(const FmmTree& localTree,
 
     std::unordered_map<int, std::set<std::pair<std::uint64_t, int>>> subscriptionSets;
     for(const FmmLetM2LInteraction& interaction : m2lInteractions_)
-        subscriptionSets[interaction.sourceRank].insert(
-            std::make_pair(interaction.sourceKey,
+    {
+        const M2LSource& source = m2lSources_[interaction.sourceIndex];
+        subscriptionSets[source.sourceRank].insert(
+            std::make_pair(source.spatialKey,
                            static_cast<int>(FmmSubscriptionKind::Multipole)));
+    }
     for(const FmmLetP2PInteraction& interaction : p2pInteractions_)
-        subscriptionSets[interaction.sourceRank].insert(
-            std::make_pair(interaction.sourceKey,
+    {
+        const RemoteSource& source = p2pSources_[interaction.sourceIndex];
+        subscriptionSets[source.sourceRank].insert(
+            std::make_pair(source.spatialKey,
                            static_cast<int>(FmmSubscriptionKind::Particles)));
+    }
 
     std::unordered_map<int, std::vector<char>> subscriptionBuffers;
     for(const auto& entry : subscriptionSets)
@@ -909,11 +950,10 @@ void FmmLetPlan::build(const FmmTree& localTree,
             entry.second.rehash(0);
         m2lInteractions_.shrink_to_fit();
         m2lSources_.shrink_to_fit();
-        m2lSourceIndices_.shrink_to_fit();
         m2lOperatorGeometries_.shrink_to_fit();
-        m2lOperatorGeometryIndices_.shrink_to_fit();
         m2lOperatorGeometryUseCounts_.shrink_to_fit();
         p2pInteractions_.shrink_to_fit();
+        p2pSources_.shrink_to_fit();
         pendingScratch_.shrink_to_fit();
         workScratch_.shrink_to_fit();
         blockedScratch_.shrink_to_fit();
@@ -964,15 +1004,17 @@ std::size_t FmmLetPlan::bytesOwned() const
     result = saturatingAdd(result, saturatingMultiply(
         m2lSources_.capacity(), sizeof(M2LSource)));
     result = saturatingAdd(result, saturatingMultiply(
-        m2lSourceIndices_.capacity(), sizeof(std::uint32_t)));
-    result = saturatingAdd(result, saturatingMultiply(
         m2lOperatorGeometries_.capacity(), sizeof(FmmM2LOperatorCache::PreparedGeometry)));
-    result = saturatingAdd(result, saturatingMultiply(
-        m2lOperatorGeometryIndices_.capacity(), sizeof(std::uint32_t)));
     result = saturatingAdd(result, saturatingMultiply(
         m2lOperatorGeometryUseCounts_.capacity(), sizeof(std::uint64_t)));
     result = saturatingAdd(result, saturatingMultiply(
         p2pInteractions_.capacity(), sizeof(FmmLetP2PInteraction)));
+    result = saturatingAdd(result, saturatingMultiply(
+        p2pSources_.capacity(), sizeof(RemoteSource)));
+    result = saturatingAdd(result, saturatingMultiply(
+        activeM2LInteractionIndices_.capacity(), sizeof(std::uint32_t)));
+    result = saturatingAdd(result, saturatingMultiply(
+        activeP2PInteractionIndices_.capacity(), sizeof(std::uint32_t)));
     result = saturatingAdd(result, saturatingMultiply(
         pendingScratch_.capacity(), sizeof(PendingPair)));
     result = saturatingAdd(result, saturatingMultiply(
@@ -1030,6 +1072,35 @@ void FmmLetPlan::beginExecute(
         throw UniversalError("FmmLetPlan::beginExecute: inconsistent expansion storage");
     if(maxRemoteBytes < 2)
         throw UniversalError("FmmLetPlan::beginExecute: remote memory budget is too small");
+    if(m2lInteractions_.size() > std::numeric_limits<std::uint32_t>::max() ||
+       p2pInteractions_.size() > std::numeric_limits<std::uint32_t>::max())
+        throw UniversalError("FmmLetPlan::beginExecute: interaction plan is too large");
+    activeM2LInteractionIndices_.clear();
+    activeP2PInteractionIndices_.clear();
+    for(std::size_t i = 0; i < m2lInteractions_.size(); ++i)
+    {
+        const FmmLetM2LInteraction& interaction = m2lInteractions_[i];
+        if(interaction.targetNode >= localTree.nodes().size())
+            throw UniversalError("FmmLetPlan::beginExecute: invalid M2L target");
+        if(localTree.nodes()[interaction.targetNode].particleCount() == 0)
+        {
+            ++stats.letInactiveM2LCount;
+            continue;
+        }
+        activeM2LInteractionIndices_.push_back(static_cast<std::uint32_t>(i));
+    }
+    for(std::size_t i = 0; i < p2pInteractions_.size(); ++i)
+    {
+        const FmmLetP2PInteraction& interaction = p2pInteractions_[i];
+        if(interaction.targetNode >= localTree.nodes().size())
+            throw UniversalError("FmmLetPlan::beginExecute: invalid P2P target");
+        if(localTree.nodes()[interaction.targetNode].particleCount() == 0)
+        {
+            ++stats.letInactiveP2PBlockCount;
+            continue;
+        }
+        activeP2PInteractionIndices_.push_back(static_cast<std::uint32_t>(i));
+    }
     pendingProgressCallCount_ = 0;
     pendingProgressIncompleteCount_ = 0;
     pendingCompletionProgressCall_ = 0;
@@ -1050,18 +1121,25 @@ void FmmLetPlan::beginExecute(
             std::size_t payload = 0;
             if(subscription.kind == static_cast<int>(FmmSubscriptionKind::Multipole))
             {
+                if(node.particleCount() == 0)
+                {
+                    ++stats.letOmittedMultipolePayloadCount;
+                    continue;
+                }
                 if(node.particleCount() != 0 && layout.coefficientCount() >
                    std::numeric_limits<std::size_t>::max() / sizeof(double))
                     throw UniversalError("FmmLetPlan::execute: multipole payload overflow");
-                // Preserve one record per retained subscription, but do not
-                // transmit coefficient arrays for an empty source subtree.
-                payload = node.particleCount() == 0 ? 0 :
-                    layout.coefficientCount() * sizeof(double);
+                payload = layout.coefficientCount() * sizeof(double);
             }
             else if(subscription.kind == static_cast<int>(FmmSubscriptionKind::Particles))
             {
                 if(!node.isLeaf())
                     throw UniversalError("FmmLetPlan::execute: particle subscription targets non-leaf");
+                if(node.particleCount() == 0)
+                {
+                    ++stats.letOmittedParticlePayloadCount;
+                    continue;
+                }
                 if(node.particleCount() >
                    std::numeric_limits<std::size_t>::max() / sizeof(FmmWireParticle))
                     throw UniversalError("FmmLetPlan::execute: particle payload overflow");
@@ -1100,6 +1178,8 @@ void FmmLetPlan::beginExecute(
             const std::size_t nodeIndex = localNodeByKey_.find(
                 subscription.spatialKey)->second;
             const FmmNode& node = localTree.nodes()[nodeIndex];
+            if(node.particleCount() == 0)
+                continue;
             FmmPayloadRecordHeader header;
             header.stamp = fmmPacketStamp(FmmPacketKind::LetPayload,
                                           topologyEpoch_);
@@ -1107,20 +1187,12 @@ void FmmLetPlan::beginExecute(
             header.kind = subscription.kind;
             if(subscription.kind == static_cast<int>(FmmSubscriptionKind::Multipole))
             {
-                const bool active = node.particleCount() != 0;
-                header.count = active ?
-                    static_cast<std::uint64_t>(layout.coefficientCount()) : 0;
+                header.count = static_cast<std::uint64_t>(
+                    layout.coefficientCount());
                 FmmPacketIO::appendPod(buffer, header);
-                if(active)
-                {
-                    FmmPacketIO::appendDoubles(buffer,
-                        localMultipoles.data() + node.multipoleOffset,
-                        layout.coefficientCount());
-                }
-                else
-                {
-                    ++stats.letZeroMultipolePayloadCount;
-                }
+                FmmPacketIO::appendDoubles(buffer,
+                    localMultipoles.data() + node.multipoleOffset,
+                    layout.coefficientCount());
             }
             else
             {
@@ -1275,7 +1347,10 @@ void FmmLetPlan::finishExecute(
         throw UniversalError(
             "FmmLetPlan::execute: duplicate retained payload subscription");
     std::vector<PayloadKey> seenPayloadKeys;
-    seenPayloadKeys.reserve(expectedRecordCount);
+    const std::size_t receivedRecordUpperBound =
+        received.totalBytes() / sizeof(FmmPayloadRecordHeader);
+    seenPayloadKeys.reserve(std::min(expectedRecordCount,
+                                     receivedRecordUpperBound));
     const std::size_t keyTableCount = saturatingAdd(
         expectedPayloadKeys.capacity(), seenPayloadKeys.capacity());
     std::size_t keyTableBytes = saturatingMultiply(
@@ -1377,11 +1452,12 @@ void FmmLetPlan::finishExecute(
         }
     }
     std::sort(seenPayloadKeys.begin(), seenPayloadKeys.end());
-    if(seenPayloadKeys != expectedPayloadKeys ||
-       actualMultipoleRecords != expectedMultipoleRecords ||
-       actualParticleRecords != expectedParticleRecords)
+    if(std::adjacent_find(seenPayloadKeys.begin(), seenPayloadKeys.end()) !=
+           seenPayloadKeys.end() ||
+       actualMultipoleRecords > expectedMultipoleRecords ||
+       actualParticleRecords > expectedParticleRecords)
         throw UniversalError(
-            "FmmLetPlan::execute: missing or duplicate subscribed LET payload");
+            "FmmLetPlan::execute: duplicate or excessive subscribed LET payload");
     std::vector<PayloadKey>().swap(expectedPayloadKeys);
     std::vector<PayloadKey>().swap(seenPayloadKeys);
     stats.letValidationSeconds += elapsed(validationStart);
@@ -1393,10 +1469,8 @@ void FmmLetPlan::finishExecute(
         const std::size_t bytes = saturatingMultiply(count, elementSize);
         decodedRequestedBytes = saturatingAdd(decodedRequestedBytes, bytes);
     };
-    addRequestedBytes(expectedMultipoleRecords, sizeof(RemoteMultipolePayload));
-    addRequestedBytes(expectedParticleRecords, sizeof(RemoteParticlePayload));
-    addRequestedBytes(totalCoefficientCount, sizeof(double));
-    addRequestedBytes(totalParticleCount, sizeof(FmmWireParticle));
+    addRequestedBytes(actualMultipoleRecords, sizeof(RemoteMultipolePayload));
+    addRequestedBytes(actualParticleRecords, sizeof(RemoteParticlePayload));
     addRequestedBytes(m2lSources_.size(), sizeof(FmmNode));
     addRequestedBytes(m2lSources_.size(), sizeof(unsigned char));
     if(decodedRequestedBytes == std::numeric_limits<std::size_t>::max() ||
@@ -1406,12 +1480,10 @@ void FmmLetPlan::finishExecute(
 
     std::vector<RemoteMultipolePayload> remoteMultipoles;
     std::vector<RemoteParticlePayload> remoteParticles;
-    std::vector<double> remoteCoefficients(totalCoefficientCount);
-    std::vector<FmmWireParticle> remoteParticleStorage(totalParticleCount);
     std::vector<FmmNode> resolvedM2LSources;
     std::vector<unsigned char> resolvedM2LSourceActive;
-    remoteMultipoles.reserve(expectedMultipoleRecords);
-    remoteParticles.reserve(expectedParticleRecords);
+    remoteMultipoles.reserve(actualMultipoleRecords);
+    remoteParticles.reserve(actualParticleRecords);
     resolvedM2LSources.reserve(m2lSources_.size());
     resolvedM2LSourceActive.reserve(m2lSources_.size());
 
@@ -1420,10 +1492,6 @@ void FmmLetPlan::finishExecute(
         remoteMultipoles.capacity(), sizeof(RemoteMultipolePayload)));
     decodedBytes = saturatingAdd(decodedBytes, saturatingMultiply(
         remoteParticles.capacity(), sizeof(RemoteParticlePayload)));
-    decodedBytes = saturatingAdd(decodedBytes, saturatingMultiply(
-        remoteCoefficients.capacity(), sizeof(double)));
-    decodedBytes = saturatingAdd(decodedBytes, saturatingMultiply(
-        remoteParticleStorage.capacity(), sizeof(FmmWireParticle)));
     decodedBytes = saturatingAdd(decodedBytes, saturatingMultiply(
         resolvedM2LSources.capacity(), sizeof(FmmNode)));
     decodedBytes = saturatingAdd(decodedBytes, saturatingMultiply(
@@ -1449,42 +1517,43 @@ void FmmLetPlan::finishExecute(
             if(header.kind == static_cast<int>(FmmSubscriptionKind::Multipole))
             {
                 const bool active = header.count != 0;
-                remoteMultipoles.push_back(RemoteMultipolePayload{
-                    message.source, header.spatialKey, coefficientCursor,
-                    active});
+                const double* coefficients = nullptr;
                 if(active)
                 {
                     const std::size_t count =
                         static_cast<std::size_t>(header.count);
-                    FmmPacketIO::readDoubles(view, offset,
-                        remoteCoefficients.data() + coefficientCursor, count);
+                    coefficients = packetArray<double>(view, offset, count);
+                    offset += count * sizeof(double);
                     coefficientCursor += count;
                 }
+                remoteMultipoles.push_back(RemoteMultipolePayload{
+                    message.source, header.spatialKey, coefficients, active});
             }
             else
             {
                 const std::size_t count = static_cast<std::size_t>(header.count);
+                const FmmWireParticle* particles =
+                    packetArray<FmmWireParticle>(view, offset, count);
                 remoteParticles.push_back(RemoteParticlePayload{
-                    message.source, header.spatialKey, particleCursor, count});
+                    message.source, header.spatialKey, particles, count});
                 for(std::size_t i = 0; i < count; ++i)
                 {
-                    FmmWireParticle& particle =
-                        remoteParticleStorage[particleCursor + i];
-                    particle = FmmPacketIO::readPod<FmmWireParticle>(view, offset);
+                    const FmmWireParticle& particle = particles[i];
                     if(particle.ownerRank != message.source ||
                        !finiteVector(particle.positionVector()) ||
                        !std::isfinite(particle.mass))
                         throw UniversalError(
                             "FmmLetPlan::execute: malformed remote particle");
                 }
+                offset += count * sizeof(FmmWireParticle);
                 particleCursor += count;
             }
         }
     }
     if(coefficientCursor != totalCoefficientCount ||
        particleCursor != totalParticleCount ||
-       remoteMultipoles.size() != expectedMultipoleRecords ||
-       remoteParticles.size() != expectedParticleRecords)
+       remoteMultipoles.size() > expectedMultipoleRecords ||
+       remoteParticles.size() > expectedParticleRecords)
         throw UniversalError(
             "FmmLetPlan::execute: decoded LET payload size mismatch");
 
@@ -1494,7 +1563,6 @@ void FmmLetPlan::finishExecute(
         payloadLess<RemoteParticlePayload>);
     stats.peakRemoteBytes = std::max(stats.peakRemoteBytes,
         wireWorkspaceBytes + decodedBytes);
-    received.releaseStorage();
     stats.letDecodeSeconds += elapsed(decodeStart);
     // Report only exchange work exposed on the critical path: preparation,
     // residual wait, and decode. Transfer time hidden by local traversal is
@@ -1507,37 +1575,50 @@ void FmmLetPlan::finishExecute(
     std::vector<double> uncachedOperator;
     uncachedOperator.reserve(layout.m2lTerms().size());
     const Clock::time_point m2lStart = Clock::now();
-    if(remoteMultipoles.size() != m2lSources_.size() ||
-       m2lSourceIndices_.size() != m2lInteractions_.size() ||
-       m2lOperatorGeometryIndices_.size() != m2lInteractions_.size())
+    if(activeM2LInteractionIndices_.size() > m2lInteractions_.size())
         throw UniversalError(
             "FmmLetPlan::execute: resolved LET M2L source table mismatch");
+    std::vector<const double*> remoteMultipoleCoefficients(
+        m2lSources_.size(), nullptr);
+    for(const RemoteMultipolePayload& payload : remoteMultipoles)
+    {
+        const auto found = std::lower_bound(
+            m2lSources_.begin(), m2lSources_.end(),
+            std::make_pair(payload.sourceRank, payload.spatialKey),
+            [](const M2LSource& source,
+               const std::pair<int, std::uint64_t>& key)
+            {
+                return std::make_pair(source.sourceRank, source.spatialKey) < key;
+            });
+        if(found == m2lSources_.end() ||
+           found->sourceRank != payload.sourceRank ||
+           found->spatialKey != payload.spatialKey)
+            throw UniversalError(
+                "FmmLetPlan::execute: multipole payload references unknown source");
+        const std::size_t sourceIndex =
+            static_cast<std::size_t>(found - m2lSources_.begin());
+        if(remoteMultipoleCoefficients[sourceIndex] != nullptr)
+            throw UniversalError(
+                "FmmLetPlan::execute: duplicate multipole source payload");
+        remoteMultipoleCoefficients[sourceIndex] = payload.coefficients;
+    }
     for(std::size_t i = 0; i < m2lSources_.size(); ++i)
     {
-        if(remoteMultipoles[i].sourceRank != m2lSources_[i].sourceRank ||
-           remoteMultipoles[i].spatialKey != m2lSources_[i].spatialKey)
-            throw UniversalError(
-                "FmmLetPlan::execute: resolved LET M2L source order mismatch");
         FmmNode source = m2lSources_[i].node;
-        if(remoteMultipoles[i].active)
-            source.multipoleOffset = remoteMultipoles[i].coefficientOffset;
         resolvedM2LSources.push_back(source);
         resolvedM2LSourceActive.push_back(
-            remoteMultipoles[i].active ? 1u : 0u);
+            remoteMultipoleCoefficients[i] != nullptr ? 1u : 0u);
     }
-    std::vector<RemoteMultipolePayload>().swap(remoteMultipoles);
 
     std::vector<std::uint64_t> activeGeometryUseCounts(
         m2lOperatorGeometries_.size(), 0);
     std::size_t activeM2LCount = 0;
-    for(std::size_t interactionIndex = 0;
-        interactionIndex < m2lInteractions_.size(); ++interactionIndex)
+    for(std::uint32_t interactionIndex : activeM2LInteractionIndices_)
     {
         const FmmLetM2LInteraction& interaction =
             m2lInteractions_[interactionIndex];
-        const std::uint32_t sourceIndex = m2lSourceIndices_[interactionIndex];
-        const std::uint32_t geometryIndex =
-            m2lOperatorGeometryIndices_[interactionIndex];
+        const std::uint32_t sourceIndex = interaction.sourceIndex;
+        const std::uint32_t geometryIndex = interaction.geometryIndex;
         if(static_cast<std::size_t>(sourceIndex) >=
                resolvedM2LSourceActive.size() ||
            static_cast<std::size_t>(geometryIndex) >=
@@ -1546,7 +1627,7 @@ void FmmLetPlan::finishExecute(
             throw UniversalError(
                 "FmmLetPlan::execute: invalid retained M2L interaction");
         if(resolvedM2LSourceActive[sourceIndex] == 0 ||
-           localTree.nodes()[interaction.targetNode].particleCount() == 0)
+           remoteMultipoleCoefficients[sourceIndex] == nullptr)
         {
             ++stats.letInactiveM2LCount;
             continue;
@@ -1573,20 +1654,18 @@ void FmmLetPlan::finishExecute(
     std::uint64_t groupedKeyZ = 0;
     std::uint64_t groupedKeyKind = 0;
     bool haveGroupedOperator = false;
-    for(std::size_t interactionIndex = 0;
-        interactionIndex < m2lInteractions_.size(); ++interactionIndex)
+    for(std::uint32_t interactionIndex : activeM2LInteractionIndices_)
     {
         const FmmLetM2LInteraction& interaction =
             m2lInteractions_[interactionIndex];
-        const std::uint32_t sourceIndex = m2lSourceIndices_[interactionIndex];
+        const std::uint32_t sourceIndex = interaction.sourceIndex;
         if(static_cast<std::size_t>(sourceIndex) >= resolvedM2LSources.size())
             throw UniversalError(
                 "FmmLetPlan::execute: invalid resolved LET M2L source index");
         if(resolvedM2LSourceActive[sourceIndex] == 0 ||
-           localTree.nodes()[interaction.targetNode].particleCount() == 0)
+           remoteMultipoleCoefficients[sourceIndex] == nullptr)
             continue;
-        const std::uint32_t geometryIndex =
-            m2lOperatorGeometryIndices_[interactionIndex];
+        const std::uint32_t geometryIndex = interaction.geometryIndex;
         if(static_cast<std::size_t>(geometryIndex) >=
            m2lOperatorGeometries_.size())
             throw UniversalError(
@@ -1627,9 +1706,9 @@ void FmmLetPlan::finishExecute(
             throw UniversalError(
                 "FmmLetPlan::execute: missing grouped M2L operator");
 
-        FmmKernels::translateM2L(source, target, layout,
-                                 remoteCoefficients, localLocals,
-                                 *coefficients, inverseScale);
+        FmmKernels::translateM2LRaw(
+            source, target, layout, remoteMultipoleCoefficients[sourceIndex],
+            localLocals, *coefficients, inverseScale);
         ++stats.m2lCount;
         ++stats.letM2LCount;
     }
@@ -1642,19 +1721,35 @@ void FmmLetPlan::finishExecute(
     stats.letOperatorIntegerKeyHits = operatorCache.integerKeyHits();
     stats.letOperatorIntegerKeyMisses = operatorCache.integerKeyMisses();
     stats.letM2LSeconds += elapsed(m2lStart);
+    std::vector<RemoteMultipolePayload>().swap(remoteMultipoles);
 
     const Clock::time_point p2pStart = Clock::now();
-    for(const FmmLetP2PInteraction& interaction : p2pInteractions_)
+    std::uint32_t currentP2PSourceIndex =
+        std::numeric_limits<std::uint32_t>::max();
+    const RemoteParticlePayload* currentParticlePayload = nullptr;
+    for(std::uint32_t interactionIndex : activeP2PInteractionIndices_)
     {
-        const RemoteParticlePayload* particlePayload = findPayload(
-            remoteParticles, interaction.sourceRank, interaction.sourceKey);
+        const FmmLetP2PInteraction& interaction =
+            p2pInteractions_[interactionIndex];
+        if(interaction.sourceIndex >= p2pSources_.size())
+            throw UniversalError("FmmLetPlan::execute: invalid P2P source index");
+        if(interaction.sourceIndex != currentP2PSourceIndex)
+        {
+            const RemoteSource& source = p2pSources_[interaction.sourceIndex];
+            currentParticlePayload = findPayload(
+                remoteParticles, source.sourceRank, source.spatialKey);
+            currentP2PSourceIndex = interaction.sourceIndex;
+        }
+        const RemoteParticlePayload* particlePayload = currentParticlePayload;
         if(particlePayload == nullptr)
-            throw UniversalError("FmmLetPlan::execute: missing remote P2P payload");
+        {
+            ++stats.letInactiveP2PBlockCount;
+            continue;
+        }
         const FmmNode& targetNode = localTree.nodes()[interaction.targetNode];
         if(!targetNode.isLeaf())
             throw UniversalError("FmmLetPlan::execute: P2P target is not a leaf");
-        if(targetNode.particleCount() == 0 ||
-           particlePayload->particleCount == 0)
+        if(particlePayload->particleCount == 0)
         {
             ++stats.letInactiveP2PBlockCount;
             continue;
@@ -1663,13 +1758,11 @@ void FmmLetPlan::finishExecute(
             ti < targetNode.particleEnd; ++ti)
         {
             const std::size_t target = localTree.particleOrder()[ti];
-            const std::size_t particleEnd = particlePayload->particleOffset +
-                particlePayload->particleCount;
-            for(std::size_t sourceIndex = particlePayload->particleOffset;
-                sourceIndex < particleEnd; ++sourceIndex)
+            for(std::size_t sourceIndex = 0;
+                sourceIndex < particlePayload->particleCount; ++sourceIndex)
             {
                 const FmmWireParticle& source =
-                    remoteParticleStorage[sourceIndex];
+                    particlePayload->particles[sourceIndex];
                 if(source.ownerRank == rank_ &&
                    source.ownerLocalIndex == static_cast<std::uint64_t>(target))
                     continue;

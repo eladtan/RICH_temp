@@ -211,6 +211,21 @@ void FmmKernels::translateM2L(const FmmNode& source,
                               const std::vector<double>& translationOperator,
                               double inverseDistanceScale)
 {
+    translateM2LRaw(source, target, layout,
+                    multipoles.data() + source.multipoleOffset,
+                    locals, translationOperator, inverseDistanceScale);
+}
+
+void FmmKernels::translateM2LRaw(
+    const FmmNode& source,
+    const FmmNode& target,
+    const FmmTaylorExpansion& layout,
+    const double* sourceCoefficients,
+    std::vector<double>& locals,
+    const std::vector<double>& translationOperator,
+    double inverseDistanceScale)
+{
+    (void) source;
     const std::vector<std::size_t>& offsets = layout.m2lOffsets();
     const std::vector<FmmM2LTerm>& terms = layout.m2lTerms();
     if(translationOperator.size() != terms.size())
@@ -225,8 +240,6 @@ void FmmKernels::translateM2L(const FmmNode& source,
             inversePowers[static_cast<std::size_t>(degree - 1)] *
             inverseDistanceScale;
 
-    const double* sourceCoefficients =
-        multipoles.data() + source.multipoleOffset;
     for(std::size_t ai = 0; ai < layout.coefficientCount(); ++ai)
     {
         double translated = 0.0;

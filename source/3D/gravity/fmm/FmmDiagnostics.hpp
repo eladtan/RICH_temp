@@ -37,6 +37,10 @@ struct FmmSolveStats
     std::uint64_t letM2LCount = 0;
     std::uint64_t letP2PBlockCount = 0;
     std::uint64_t letP2PPairCount = 0;
+    std::uint64_t localPlannedM2LCount = 0;
+    std::uint64_t localPlannedP2PBlockCount = 0;
+    std::uint64_t letPlannedM2LCount = 0;
+    std::uint64_t letPlannedP2PBlockCount = 0;
     std::uint64_t topologyEpoch = 0;
     std::uint64_t topologyRebuildCount = 0;
     std::uint64_t processTopologyRebuildCount = 0;
@@ -54,6 +58,8 @@ struct FmmSolveStats
     std::uint64_t letInactiveM2LCount = 0;
     std::uint64_t letInactiveP2PBlockCount = 0;
     std::uint64_t letZeroMultipolePayloadCount = 0;
+    std::uint64_t letOmittedMultipolePayloadCount = 0;
+    std::uint64_t letOmittedParticlePayloadCount = 0;
     bool localRootGeometryChanged = false;
     bool localLeafTopologyChanged = false;
     bool localLeafOccupancyChanged = false;

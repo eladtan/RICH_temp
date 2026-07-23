@@ -306,9 +306,17 @@ void FmmDualTreeTraversal::runLocalPlan(
     // or enter the hot M2L loop.
     std::vector<std::uint64_t> activeGeometryUseCounts(
         plan.geometries.size(), 0);
+    std::vector<std::uint32_t> activeM2LIndices;
+    std::vector<std::uint32_t> activeP2PIndices;
+    std::size_t progressCountdown = 4096;
+    if(plan.m2lPairs.size() > std::numeric_limits<std::uint32_t>::max() ||
+       plan.p2pPairs.size() > std::numeric_limits<std::uint32_t>::max())
+        throw UniversalError(
+            "FmmDualTreeTraversal::runLocalPlan: interaction plan is too large");
     std::size_t activeM2LCount = 0;
-    for(const FmmLocalInteractionPlan::M2LPair& pair : plan.m2lPairs)
+    for(std::size_t pairIndex = 0; pairIndex < plan.m2lPairs.size(); ++pairIndex)
     {
+        const FmmLocalInteractionPlan::M2LPair& pair = plan.m2lPairs[pairIndex];
         if(pair.targetNode >= nodes.size() || pair.sourceNode >= nodes.size() ||
            pair.geometryIndex >= plan.geometries.size())
             throw UniversalError(
@@ -317,8 +325,14 @@ void FmmDualTreeTraversal::runLocalPlan(
            nodes[pair.sourceNode].particleCount() == 0)
         {
             ++stats.localInactiveM2LCount;
+            if(progress != nullptr && --progressCountdown == 0)
+            {
+                progress(progressContext);
+                progressCountdown = 4096;
+            }
             continue;
         }
+        activeM2LIndices.push_back(static_cast<std::uint32_t>(pairIndex));
         if(activeGeometryUseCounts[pair.geometryIndex] ==
            std::numeric_limits<std::uint64_t>::max())
             throw UniversalError(
@@ -344,20 +358,11 @@ void FmmDualTreeTraversal::runLocalPlan(
     stats.rejectedRatio += plan.rejectedRatio;
     stats.maxTraversalStack = std::max(stats.maxTraversalStack,
                                       plan.maxTraversalStack);
-    std::size_t progressCountdown = 4096;
-    for(const FmmLocalInteractionPlan::M2LPair& pair : plan.m2lPairs)
+    for(std::uint32_t pairIndex : activeM2LIndices)
     {
+        const FmmLocalInteractionPlan::M2LPair& pair = plan.m2lPairs[pairIndex];
         const FmmNode& target = nodes[pair.targetNode];
         const FmmNode& source = nodes[pair.sourceNode];
-        if(target.particleCount() == 0 || source.particleCount() == 0)
-        {
-            if(progress != nullptr && --progressCountdown == 0)
-            {
-                progress(progressContext);
-                progressCountdown = 4096;
-            }
-            continue;
-        }
         const std::vector<double>* coefficients = nullptr;
         double inverseScale = plan.geometries[pair.geometryIndex].inverseScale;
         if(operatorsResolved)
@@ -385,8 +390,9 @@ void FmmDualTreeTraversal::runLocalPlan(
             progressCountdown = 4096;
         }
     }
-    for(const FmmLocalInteractionPlan::P2PPair& pair : plan.p2pPairs)
+    for(std::size_t pairIndex = 0; pairIndex < plan.p2pPairs.size(); ++pairIndex)
     {
+        const FmmLocalInteractionPlan::P2PPair& pair = plan.p2pPairs[pairIndex];
         const FmmNode& target = nodes[pair.targetNode];
         const FmmNode& source = nodes[pair.sourceNode];
         if(target.particleCount() == 0 || source.particleCount() == 0)
@@ -399,6 +405,13 @@ void FmmDualTreeTraversal::runLocalPlan(
             }
             continue;
         }
+        activeP2PIndices.push_back(static_cast<std::uint32_t>(pairIndex));
+    }
+    for(std::uint32_t pairIndex : activeP2PIndices)
+    {
+        const FmmLocalInteractionPlan::P2PPair& pair = plan.p2pPairs[pairIndex];
+        const FmmNode& target = nodes[pair.targetNode];
+        const FmmNode& source = nodes[pair.sourceNode];
         FmmKernels::accumulateP2P(
             positions, positions, masses,
             tree.particleOrder(), tree.particleOrder(),

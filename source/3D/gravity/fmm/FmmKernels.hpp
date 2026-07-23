@@ -36,6 +36,14 @@ void translateM2L(const FmmNode& source,
                   const std::vector<double>& translationOperator,
                   double inverseDistanceScale = 1.0);
 
+void translateM2LRaw(const FmmNode& source,
+                     const FmmNode& target,
+                     const FmmTaylorExpansion& layout,
+                     const double* sourceCoefficients,
+                     std::vector<double>& locals,
+                     const std::vector<double>& translationOperator,
+                     double inverseDistanceScale = 1.0);
+
 void translateL2L(const FmmNode& parent,
                   const FmmNode& child,
                   const FmmTaylorExpansion& layout,

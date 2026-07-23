@@ -21,20 +21,19 @@
 struct FmmLetM2LInteraction
 {
     std::uint32_t targetNode = 0;
-    int sourceRank = -1;
-    std::uint64_t sourceKey = 0;
+    std::uint32_t sourceIndex = 0;
+    std::uint32_t geometryIndex = 0;
 };
 
 struct FmmLetP2PInteraction
 {
     std::uint32_t targetNode = 0;
-    int sourceRank = -1;
-    std::uint64_t sourceKey = 0;
+    std::uint32_t sourceIndex = 0;
 };
 
-static_assert(sizeof(FmmLetM2LInteraction) == 16,
+static_assert(sizeof(FmmLetM2LInteraction) == 12,
               "LET M2L interaction must remain compact");
-static_assert(sizeof(FmmLetP2PInteraction) == 16,
+static_assert(sizeof(FmmLetP2PInteraction) == 8,
               "LET P2P interaction must remain compact");
 
 class FmmLetPlan
@@ -117,6 +116,19 @@ private:
         FmmNode node;
     };
 
+    struct RemoteSource
+    {
+        int sourceRank = -1;
+        std::uint64_t spatialKey = 0;
+    };
+
+    struct PendingInteraction
+    {
+        std::size_t targetNode = 0;
+        int sourceRank = -1;
+        std::uint64_t sourceKey = 0;
+    };
+
     struct PendingPair
     {
         std::size_t targetNode = 0;
@@ -137,12 +149,13 @@ private:
         std::unordered_map<std::uint64_t, FmmRemoteNodeDescriptor>> remoteDescriptors_;
     std::vector<FmmLetM2LInteraction> m2lInteractions_;
     std::vector<M2LSource> m2lSources_;
-    std::vector<std::uint32_t> m2lSourceIndices_;
     std::vector<FmmM2LOperatorCache::PreparedGeometry>
         m2lOperatorGeometries_;
-    std::vector<std::uint32_t> m2lOperatorGeometryIndices_;
     std::vector<std::uint64_t> m2lOperatorGeometryUseCounts_;
     std::vector<FmmLetP2PInteraction> p2pInteractions_;
+    std::vector<RemoteSource> p2pSources_;
+    std::vector<std::uint32_t> activeM2LInteractionIndices_;
+    std::vector<std::uint32_t> activeP2PInteractionIndices_;
     std::vector<PendingPair> pendingScratch_;
     std::vector<PendingPair> workScratch_;
     std::vector<PendingPair> blockedScratch_;

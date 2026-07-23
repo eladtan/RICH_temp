@@ -97,43 +97,78 @@ void traceFmmSolve(const FmmSolveStats& stats)
 
     static std::uint64_t call = 0;
     ++call;
-    const double localTimes[13] = {
+    const double localTimes[21] = {
         stats.totalSeconds, stats.buildSeconds, stats.topologyRebuildSeconds,
         stats.rootDescriptorExchangeSeconds, stats.processTopologySeconds,
         stats.letPlanSeconds, stats.letBuildResetSeconds,
         stats.letDescriptorTraversalSeconds, stats.letFinalizeSeconds,
         stats.letSubscriptionSeconds, stats.letPruneCompactSeconds,
-        stats.localTraversalSeconds,
-        stats.letExecuteSeconds};
-    double maximumTimes[13] = {};
+        stats.localTraversalSeconds, stats.letExecuteSeconds,
+        stats.upwardSeconds, stats.processUpwardSeconds,
+        stats.processInteractionSeconds, stats.processDownwardSeconds,
+        stats.letExchangeSeconds, stats.letM2LSeconds,
+        stats.letP2PSeconds, stats.downwardSeconds};
+    double maximumTimes[21] = {};
     unsigned long long reusedActiveRanks =
         stats.localInteractionPlanReused ? 1ull : 0ull;
     unsigned long long globalReusedActiveRanks = reusedActiveRanks;
     const unsigned long long localLetPlanBytes =
         static_cast<unsigned long long>(stats.letPlanBytes);
     unsigned long long maximumLetPlanBytes = localLetPlanBytes;
-    const unsigned long long localInactiveCounts[5] = {
+    const unsigned long long localInactiveCounts[9] = {
         static_cast<unsigned long long>(stats.localInactiveM2LCount),
         static_cast<unsigned long long>(stats.localInactiveP2PBlockCount),
         static_cast<unsigned long long>(stats.letInactiveM2LCount),
         static_cast<unsigned long long>(stats.letInactiveP2PBlockCount),
-        static_cast<unsigned long long>(stats.letZeroMultipolePayloadCount)};
-    unsigned long long globalInactiveCounts[5] = {
+        static_cast<unsigned long long>(stats.letZeroMultipolePayloadCount),
+        static_cast<unsigned long long>(stats.letOmittedMultipolePayloadCount),
+        static_cast<unsigned long long>(stats.letOmittedParticlePayloadCount),
+        static_cast<unsigned long long>(stats.bytesSent),
+        static_cast<unsigned long long>(stats.bytesReceived)};
+    const unsigned long long localPlanCounts[4] = {
+        static_cast<unsigned long long>(stats.localPlannedM2LCount),
+        static_cast<unsigned long long>(stats.localPlannedP2PBlockCount),
+        static_cast<unsigned long long>(stats.letPlannedM2LCount),
+        static_cast<unsigned long long>(stats.letPlannedP2PBlockCount)};
+    unsigned long long globalInactiveCounts[9] = {
         localInactiveCounts[0], localInactiveCounts[1], localInactiveCounts[2],
-        localInactiveCounts[3], localInactiveCounts[4]};
+        localInactiveCounts[3], localInactiveCounts[4], localInactiveCounts[5],
+        localInactiveCounts[6], localInactiveCounts[7], localInactiveCounts[8]};
+    unsigned long long globalPlanCounts[4] = {
+        localPlanCounts[0], localPlanCounts[1], localPlanCounts[2],
+        localPlanCounts[3]};
+    const unsigned long long localActiveCounts[2] = {
+        static_cast<unsigned long long>(stats.letM2LCount),
+        static_cast<unsigned long long>(stats.letP2PBlockCount)};
+    unsigned long long globalActiveCounts[2] = {
+        localActiveCounts[0], localActiveCounts[1]};
+    const unsigned long long localBytesOwned =
+        static_cast<unsigned long long>(stats.bytesOwned);
+    const unsigned long long localPeakRemoteBytes =
+        static_cast<unsigned long long>(stats.peakRemoteBytes);
+    unsigned long long maximumBytesOwned = localBytesOwned;
+    unsigned long long maximumPeakRemoteBytes = localPeakRemoteBytes;
     int rank = 0;
 #ifdef RICH_MPI
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Reduce(localTimes, maximumTimes, 13, MPI_DOUBLE, MPI_MAX, 0,
+    MPI_Reduce(localTimes, maximumTimes, 21, MPI_DOUBLE, MPI_MAX, 0,
                MPI_COMM_WORLD);
     MPI_Reduce(&reusedActiveRanks, &globalReusedActiveRanks, 1,
                MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&localLetPlanBytes, &maximumLetPlanBytes, 1,
                MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
-    MPI_Reduce(localInactiveCounts, globalInactiveCounts, 5,
+    MPI_Reduce(localInactiveCounts, globalInactiveCounts, 9,
                MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(localPlanCounts, globalPlanCounts, 4,
+               MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(localActiveCounts, globalActiveCounts, 2,
+               MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&localBytesOwned, &maximumBytesOwned, 1,
+               MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&localPeakRemoteBytes, &maximumPeakRemoteBytes, 1,
+               MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
 #else
-    for(int i = 0; i < 13; ++i)
+    for(int i = 0; i < 21; ++i)
         maximumTimes[i] = localTimes[i];
 #endif
     if(rank != 0)
@@ -156,6 +191,14 @@ void traceFmmSolve(const FmmSolveStats& stats)
          << " let_prune_compact_max=" << maximumTimes[10]
          << " local_traversal_max=" << maximumTimes[11]
          << " let_execute_max=" << maximumTimes[12]
+         << " upward_max=" << maximumTimes[13]
+         << " process_upward_max=" << maximumTimes[14]
+         << " process_interaction_max=" << maximumTimes[15]
+         << " process_downward_max=" << maximumTimes[16]
+         << " let_exchange_max=" << maximumTimes[17]
+         << " let_m2l_max=" << maximumTimes[18]
+         << " let_p2p_max=" << maximumTimes[19]
+         << " downward_max=" << maximumTimes[20]
          << " epoch=" << stats.topologyEpoch
          << " rebuilds=" << stats.topologyRebuildCount
          << " process_rebuilds=" << stats.processTopologyRebuildCount
@@ -189,11 +232,23 @@ void traceFmmSolve(const FmmSolveStats& stats)
          << (globalReusedActiveRanks ==
                  static_cast<unsigned long long>(stats.activeRankCount) ? 1 : 0)
          << " let_plan_bytes_max=" << maximumLetPlanBytes
+         << " bytes_owned_max=" << maximumBytesOwned
+         << " peak_remote_bytes_max=" << maximumPeakRemoteBytes
+         << " local_planned_m2l_sum=" << globalPlanCounts[0]
+         << " local_planned_p2p_blocks_sum=" << globalPlanCounts[1]
+         << " let_planned_m2l_sum=" << globalPlanCounts[2]
+         << " let_planned_p2p_blocks_sum=" << globalPlanCounts[3]
+         << " let_active_m2l_sum=" << globalActiveCounts[0]
+         << " let_active_p2p_blocks_sum=" << globalActiveCounts[1]
          << " local_inactive_m2l_sum=" << globalInactiveCounts[0]
          << " local_inactive_p2p_blocks_sum=" << globalInactiveCounts[1]
          << " let_inactive_m2l_sum=" << globalInactiveCounts[2]
          << " let_inactive_p2p_blocks_sum=" << globalInactiveCounts[3]
-         << " let_zero_multipole_payloads_sum=" << globalInactiveCounts[4];
+         << " let_zero_multipole_payloads_sum=" << globalInactiveCounts[4]
+         << " let_omitted_multipole_payloads_sum=" << globalInactiveCounts[5]
+         << " let_omitted_particle_payloads_sum=" << globalInactiveCounts[6]
+         << " bytes_sent_sum=" << globalInactiveCounts[7]
+         << " bytes_received_sum=" << globalInactiveCounts[8];
     std::cout << line.str() << std::endl;
 }
 }

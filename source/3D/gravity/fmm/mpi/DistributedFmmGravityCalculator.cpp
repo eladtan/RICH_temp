@@ -6,6 +6,9 @@
 #include <chrono>
 #include <cmath>
 #include <limits>
+#ifdef __GLIBC__
+#include <malloc.h>
+#endif
 #include <set>
 #include <string>
 #include <unordered_map>
@@ -856,6 +859,10 @@ void DistributedFmmGravityCalculator::solve(
     stats_.letTopologyRebuildCount = letTopologyRebuildCount_;
     stats_.activeRankCount = processTree_.activeRanks().size();
     stats_.processNodeCount = processTree_.nodes().size();
+    stats_.letPlannedM2LCount =
+        static_cast<std::uint64_t>(letPlan_.m2lInteractions().size());
+    stats_.letPlannedP2PBlockCount =
+        static_cast<std::uint64_t>(letPlan_.p2pInteractions().size());
 
     ProcessCoefficientStore processMultipoles(layout.coefficientCount());
     ProcessCoefficientStore processLocals(layout.coefficientCount());
@@ -1099,6 +1106,10 @@ void DistributedFmmGravityCalculator::solve(
             options_.maxOperatorCacheBytes, stats_,
             progressLetExchange, &letPlan_);
         stats_.localInteractionPlanReused = planReused;
+        stats_.localPlannedM2LCount =
+            static_cast<std::uint64_t>(localInteractionPlan_.m2lPairs.size());
+        stats_.localPlannedP2PBlockCount =
+            static_cast<std::uint64_t>(localInteractionPlan_.p2pPairs.size());
     }
     else
     {
@@ -1165,6 +1176,9 @@ void DistributedFmmGravityCalculator::solve(
         collectiveRequire(localOutputFinite, message,
             "DistributedFmmGravityCalculator::solve output validation", comm_);
     }
+#ifdef __GLIBC__
+    malloc_trim(0);
+#endif
     stats_.totalSeconds = elapsed(totalStart);
 }
 

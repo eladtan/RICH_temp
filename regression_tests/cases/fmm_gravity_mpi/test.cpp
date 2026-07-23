@@ -497,6 +497,10 @@ int main(int argc, char** argv)
                       std::isfinite(solver.stats().letPruneCompactSeconds) &&
                       std::isfinite(solver.stats().totalMass) &&
                       std::isfinite(solver.stats().rootMass) &&
+                      solver.stats().letPlannedM2LCount >=
+                          solver.stats().letM2LCount &&
+                      solver.stats().letPlannedP2PBlockCount >=
+                          solver.stats().letP2PBlockCount &&
                       solver.stats().activeRankCount ==
                           static_cast<std::size_t>(size >= 3 ? size - 1 : size) &&
                       solver.stats().bytesOwned > 0 &&
