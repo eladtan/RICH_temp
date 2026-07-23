@@ -73,9 +73,17 @@ Case get_case(std::string_view const case_num_sv){
 			return {"Till", 1.0*kev_kelvin, 10.0*kev_kelvin, true, true};
 		case 4: 
 			return {"Till, no compton", 1.0*kev_kelvin, 10.0*kev_kelvin, false, true};
+		case 5:
+			return {"t50_r1", 50.0*kev_kelvin, 1.0*kev_kelvin, true, true};
+		case 6:
+			return {"t20_r5", 20.0*kev_kelvin, 5.0*kev_kelvin, true, true};
+		case 7:
+			return {"t1_r50", 1.0*kev_kelvin, 50.0*kev_kelvin, true, true};
+		case 8:
+			return {"t5_r20", 5.0*kev_kelvin, 20.0*kev_kelvin, true, true};
 		default:
 			std::cout << "Error! No Such case as: " << case_num_sv << std::endl;
-			std::cout << "Available cases: 0, 1, 2, 3, 4" << std::endl;
+			std::cout << "Available cases: 0, 1, 2, 3, 4, 5, 6, 7, 8" << std::endl;
 			exit(1);
 	}
 }
@@ -105,15 +113,44 @@ int main(int argc, char *argv[])
 	std::cout << "T_mat = " << current_case.T_mat/kev_kelvin << " KeV, T_rad = " << current_case.T_rad/kev_kelvin << " KeV, compton = " << std::string(current_case.compton_on ? "ON " : "OFF") << ", absorption = " << std::string(current_case.absorption_on ? "ON " : "OFF") << std::endl;
 
 	std::optional<double> force_time_step{};
-	if(argc == 3){
-		std::cout << "Force Time Step ON" << std::endl;
-		double time_step = -1.0;
-		std::string_view time_step_sv = argv[2];
-		std::from_chars(time_step_sv.data(), time_step_sv.data() + time_step_sv.size(), time_step);
-		
-		force_time_step = time_step;
+	std::optional<double> custom_init_dt{};
+	std::optional<double> custom_max_dt{};
+	double dt_growth_factor = 1.2;
+	std::optional<double> custom_tf{};
 
-		std::cout << "Time step = " << *force_time_step << std::endl;
+	if(argc >= 3){
+		double dt_arg = -1.0;
+		std::string_view dt_sv = argv[2];
+		std::from_chars(dt_sv.data(), dt_sv.data() + dt_sv.size(), dt_arg);
+
+		if(argc == 3){
+			// Single dt argument: forced constant timestep (legacy behavior)
+			force_time_step = dt_arg;
+			std::cout << "Force Time Step ON = " << *force_time_step << std::endl;
+		} else {
+			// argv[2]=init_dt, argv[3]=max_dt, [argv[4]=growth_factor], [argv[5]=tf]
+			custom_init_dt = dt_arg;
+			double max_dt_arg = -1.0;
+			std::string_view max_dt_sv = argv[3];
+			std::from_chars(max_dt_sv.data(), max_dt_sv.data() + max_dt_sv.size(), max_dt_arg);
+			custom_max_dt = max_dt_arg;
+
+			if(argc >= 5){
+				std::string_view gf_sv = argv[4];
+				std::from_chars(gf_sv.data(), gf_sv.data() + gf_sv.size(), dt_growth_factor);
+			}
+			if(argc >= 6){
+				double tf_arg = -1.0;
+				std::string_view tf_sv = argv[5];
+				std::from_chars(tf_sv.data(), tf_sv.data() + tf_sv.size(), tf_arg);
+				custom_tf = tf_arg;
+			}
+			std::cout << "Custom adaptive dt: init_dt = " << *custom_init_dt
+			          << ", max_dt = " << *custom_max_dt
+			          << ", growth = " << dt_growth_factor
+			          << (custom_tf ? ", tf = " + std::to_string(*custom_tf) : "")
+			          << std::endl;
+		}
 	}
 
 	std::vector<double> energy_groups_center(G);
@@ -126,7 +163,7 @@ int main(int argc, char *argv[])
 	energy_groups_boundary[0] = Emin;
 	for(std::size_t g=0; g < G; ++g){
 		energy_groups_boundary[g+1] = std::pow(Emax/Emin, 1.0/G)*energy_groups_boundary[g];
-		energy_groups_center[g] = 0.5*(energy_groups_boundary[g+1]+energy_groups_boundary[g]);
+		energy_groups_center[g] = std::sqrt(energy_groups_boundary[g+1]*energy_groups_boundary[g]);
 	}
 	
 	if(energy_groups_center.size() != ENERGY_GROUPS_NUM){
@@ -233,6 +270,15 @@ int main(int argc, char *argv[])
 	constexpr bool doppler_on = false;
 	constexpr bool protections_on = false;
 
+	// Dense Compton temperature grid: linspace(0.8, 55, 50) keV + endpoints
+	std::vector<double> compton_temp_grid;
+	{
+		compton_temp_grid.push_back(0.0001 * kev_kelvin);
+		for(int i = 0; i < 50; ++i)
+			compton_temp_grid.push_back((0.8 + i * (55.0 - 0.8) / 49.0) * kev_kelvin);
+		compton_temp_grid.push_back(1e3 * kev_kelvin);
+	}
+
 	MultigroupDiffusion matrix_builder{
 		energy_groups_center, 
 		energy_groups_boundary, 
@@ -245,7 +291,9 @@ int main(int argc, char *argv[])
 		compton_on, 
 		doppler_on,
 		-1.0,
-		protections_on};
+		protections_on,
+		false,
+		compton_temp_grid};
 
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
@@ -270,8 +318,9 @@ int main(int argc, char *argv[])
 
 	HDSim3D sim(tess, cells, eos, pm, tsf, fc, cu, eu, force, std::pair<std::vector<std::string>, std::vector<std::string>> (ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames), false, true);
 
-	double init_dt = 5e-12 / tscale;
-	double const tf = 3e-8 / tscale;
+	double init_dt = custom_init_dt ? *custom_init_dt : 5e-12 / tscale;
+	double const max_dt_cap = custom_max_dt ? *custom_max_dt : 5e-11;
+	double const tf = custom_tf ? *custom_tf : 3e-8 / tscale;
 	double const dt_output = tf / 100.;
 	tsf.SetTimeStep(init_dt);
 	double nextT = dt_output;
@@ -282,18 +331,19 @@ int main(int argc, char *argv[])
 	++counter;
 
 	double new_dt = force_time_step ? *force_time_step : init_dt;
+	bool dt_still_growing = true;
 
 	while (sim.getTime() < tf)
 	{
-		if (sim.getCycle() % 1 == 0)
+		if (rank == 0)
 		{
-			if (rank == 0)
-			{
-				std::cout<<std::endl;
-				std::cout << "Cycle " << sim.getCycle() << " Time " << sim.getTime() << " dt " << new_dt << std::endl;
-			}
+			std::cout<<std::endl;
+			std::cout << "Cycle " << sim.getCycle() << " Time " << sim.getTime() << " dt " << new_dt << std::endl;
 		}
-		if (sim.getTime() > nextT or sim.getCycle() % 10 == 0 or sim.getCycle() < 10)
+
+		// Output every cycle while dt is growing; every 10 cycles once at max_dt
+		int output_interval = dt_still_growing ? 1 : 10;
+		if (sim.getTime() > nextT or sim.getCycle() % output_interval == 0 or sim.getCycle() < 10)
 		{
 			WriteSnapshot3D(sim, "snap_" + int2str(counter) + ".h5", appendices, true);
 			nextT = sim.getTime() + dt_output;
@@ -306,7 +356,8 @@ int main(int argc, char *argv[])
 			if (force_time_step) { 
 				new_dt = force_time_step.value();
 			} else {
-				new_dt = std::min(old_dt*1.2, 5e-11);
+				new_dt = std::min(old_dt * dt_growth_factor, max_dt_cap);
+				if (new_dt >= max_dt_cap) dt_still_growing = false;
 			}
 
 			if (rank == 0) std::cout<<"New time step is "<<new_dt<<std::endl;

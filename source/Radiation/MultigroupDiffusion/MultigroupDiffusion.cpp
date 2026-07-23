@@ -94,7 +94,8 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                          bool const doppler_on,
                                          double const minimum_temperature,
                                          bool const protections_on,
-                                         bool const cooling_time_limiter_on) :
+                                         bool const cooling_time_limiter_on,
+                                         std::vector<double> const& compton_temperature_grid) :
     RadiationDriver(eos,
         zero_cells,
         flux_limiter,
@@ -159,7 +160,7 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
         }
     }
     if(compton_on)
-        compton_matrix_gen.set_tables(compton_temperatures());
+        compton_matrix_gen.set_tables(compton_temperature_grid.empty() ? compton_temperatures() : compton_temperature_grid);
 }
 
 bool MultigroupDiffusion::prestep(Tessellation3D const& tess,

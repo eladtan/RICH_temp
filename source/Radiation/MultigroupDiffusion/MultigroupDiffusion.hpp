@@ -42,7 +42,8 @@ public:
                         bool const doppler_on,
                         double const minimum_temperature = -1,
                         bool const protections_on = true,
-                        bool const cooling_time_limiter_on = false);
+                        bool const cooling_time_limiter_on = false,
+                        std::vector<double> const& compton_temperature_grid = {});
 
     /**
      * @brief Destructor for the MultigroupDiffusion class.
