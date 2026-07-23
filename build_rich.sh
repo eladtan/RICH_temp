@@ -366,6 +366,14 @@ progress_bar_and_filtered_output() {
 }
 
 # ==================== Run Make ====================
+ZERO_OBJECTS=$(find "$BUILD_DIR/CMakeFiles" -type f -name "*.o" -size 0 2>/dev/null)
+if [[ -n "$ZERO_OBJECTS" ]]; then
+    echo -e "${PURPLE}Removing incomplete zero-byte object files...${NC}"
+    while IFS= read -r object_file; do
+        rm -f "$object_file"
+    done <<< "$ZERO_OBJECTS"
+fi
+
 echo -e "${CYAN}Running Make...${NC}"
 PROGRESS_FIFO=$(mktemp -u)
 mkfifo "$PROGRESS_FIFO"

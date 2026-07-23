@@ -186,7 +186,7 @@ public:
 
     void recordCrossing(Vector3D const& crossingPoint,
                         double weight, double frequency);
-    void recordCrossing(ObserverCrossingRecord const& record);
+    void recordCrossing(::ObserverCrossingRecord const& record);
 #ifdef MONTECARLO_POLARIZATION
     void recordCrossing(Vector3D const& crossingPoint,
                         double weight,
@@ -306,8 +306,8 @@ private:
     std::vector<std::vector<double>> groupSumWU2_;
 
     void buildSkyBases();
-    void rotateAndAccumulate(ObserverCrossingRecord const& rec, size_t obs);
-    void accumulateMismatch(ObserverCrossingRecord const& rec, size_t obs,
+    void rotateAndAccumulate(::ObserverCrossingRecord const& rec, size_t obs);
+    void accumulateMismatch(::ObserverCrossingRecord const& rec, size_t obs,
                             Vector3D const& rhat);
 #endif
 

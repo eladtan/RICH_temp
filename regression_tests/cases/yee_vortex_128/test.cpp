@@ -190,9 +190,17 @@ int main(void)
     }
 
     char file_buf[4096];
-    strncpy(file_buf, __FILE__, sizeof(file_buf) - 1);
-    file_buf[sizeof(file_buf) - 1] = '\0';
-    std::string dir_path = std::string(dirname(file_buf));
+    const char *artifact_dir = getenv("THUNDER_ARTIFACT_DIR");
+    std::string dir_path;
+    if(artifact_dir && artifact_dir[0] != '\0')
+    {
+        dir_path = artifact_dir;
+    }
+    else
+    {
+        getcwd(file_buf, sizeof(file_buf));
+        dir_path = file_buf;
+    }
 
     {
         Nlocal = tess.GetPointNo();

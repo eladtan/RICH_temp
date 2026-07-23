@@ -260,9 +260,17 @@ int main(void)
 
     // Compute output path in the same directory as this source file
     char file_buf[4096];
-    strncpy(file_buf, __FILE__, sizeof(file_buf) - 1);
-    file_buf[sizeof(file_buf) - 1] = '\0';
-    std::string const case_dir = dirname(file_buf);
+    const char *artifact_dir = getenv("THUNDER_ARTIFACT_DIR");
+    std::string case_dir;
+    if(artifact_dir && artifact_dir[0] != '\0')
+    {
+        case_dir = artifact_dir;
+    }
+    else
+    {
+        getcwd(file_buf, sizeof(file_buf));
+        case_dir = file_buf;
+    }
     std::string profile_path = case_dir + "/mach2_profile.txt";
 
     // Gather profile data from all MPI ranks and write to file

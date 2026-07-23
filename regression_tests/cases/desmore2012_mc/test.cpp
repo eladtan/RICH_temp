@@ -341,7 +341,9 @@ int main(int argc, char *argv[])
     if(rank == 0)
     {
         std::sort(cellData.begin(), cellData.end());
-        std::string const caseDir = fs::path(__FILE__).parent_path().string();
+        const char *envArtifact = std::getenv("THUNDER_ARTIFACT_DIR");
+        std::string const caseDir = (envArtifact && envArtifact[0] != '\0')
+            ? std::string(envArtifact) : fs::current_path().string();
         std::string const profilePath = caseDir + "/desmore2012_mc_profile.txt";
         std::ofstream out(profilePath);
         out << "# Densmore2012 MC regression  t=" << simTime << "  Nx=" << Nx << "\n";

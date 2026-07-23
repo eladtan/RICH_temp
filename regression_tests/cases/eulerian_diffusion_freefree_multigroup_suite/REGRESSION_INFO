@@ -1,9 +1,9 @@
-# THUNDER regression metadata migrated from regression_tests/tests/eulerian_diffusion_freefree_multigroup_suite.sh.sh
 TEST_ID="eulerian_diffusion_freefree_multigroup_suite"
 TAGS="mpi"
-BUILD_TEST_NAME="regression_tests/cases/eulerian_diffusion_freefree_multigroup_1d"
-BUILD_ARGS="--energy_groups_num=32"
-RUN_DIR_REL="regression_tests/cases/eulerian_diffusion_freefree_multigroup_1d"
-RUN_COMMAND="bash \"${ROOT_DIR}/regression_tests/run_freefree_multigroup_512_32.sh\" \"${CONFIG}\""
+DEPENDS_ON="eulerian_diffusion_freefree_multigroup_1d eulerian_diffusion_freefree_multigroup_1d_512_limited eulerian_diffusion_freefree_multigroup_1d_32 eulerian_diffusion_freefree_multigroup_1d_32_limited"
+SKIP_BUILD=YES
+RUN_COMMAND='python3 "${ROOT_DIR}/regression_tests/lib/plot_eulerian_diffusion_freefree_multigroup_compare.py" --profile-512 "${THUNDER_RUN_ROOT}/eulerian_diffusion_freefree_multigroup_1d/temperature_profile.txt" --profile-512-limited "${THUNDER_RUN_ROOT}/eulerian_diffusion_freefree_multigroup_1d_512_limited/temperature_profile.txt" --profile-32 "${THUNDER_RUN_ROOT}/eulerian_diffusion_freefree_multigroup_1d_32/temperature_profile.txt" --profile-32-limited "${THUNDER_RUN_ROOT}/eulerian_diffusion_freefree_multigroup_1d_32_limited/temperature_profile.txt" --output-dir "${THUNDER_ARTIFACT_DIR}"'
 CHECK_FUNCTION="check_eulerian_diffusion_freefree_multigroup_suite_case"
-RUN_MODE="direct"
+SLURM_NTASKS=1
+EXCLUSIVE=NO
+TIMEOUT=300

@@ -48,7 +48,7 @@ def planck_group_integral_keV(E_lo_keV, E_hi_keV, T_keV, npts=200):
         return 0.0
     E = np.linspace(E_lo_keV, E_hi_keV, npts)
     B = np.array([planck_energy_form(e, T_keV) for e in E])
-    return float(np.trapz(B, E)) * (4.0 * np.pi / C_LIGHT)
+    return float(np.trapezoid(B, E)) * (4.0 * np.pi / C_LIGHT)
 
 
 def collapse_opacity_planck():

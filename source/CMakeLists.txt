@@ -62,26 +62,33 @@ set(STORM_DIR        "${PROJECT_SOURCE_DIR}/monte")
 set(MPI_UTILS_DIR    "${PROJECT_SOURCE_DIR}/utils/mpi_utils")
 set(SPATIAL_DS_DIR   "${PROJECT_SOURCE_DIR}/utils/spatial_ds")
 set(MESH_DECOMP_DIR  "${PROJECT_SOURCE_DIR}/3D/tessellation/MeshDecomposer3D")
-set(RMA_DIR          "${PROJECT_SOURCE_DIR}/utils/rma")
-
-set(_SUBMODULE_DIRS
-    "${MADVORO_DIR}" "${MADCART_DIR}" "${STORM_DIR}"
-    "${MPI_UTILS_DIR}" "${SPATIAL_DS_DIR}" "${MESH_DECOMP_DIR}" "${RMA_DIR}"
-)
 
 # =============================================
 # Source collection
 # =============================================
-# RICH's own sources: glob everything, then subtract submodule directories
-file(GLOB_RECURSE RICH_SRC FOLLOW_SYMLINKS "${PROJECT_SOURCE_DIR}/*.cpp" "${PROJECT_SOURCE_DIR}/*.c")
-file(GLOB_RECURSE TEST_SRC FOLLOW_SYMLINKS "${TEST_SOURCE_DIR}/*.cpp" "${TEST_SOURCE_DIR}/*.c")
+# RICH sources are discovered recursively so adding a new RICH directory does
+# not require editing this file. Dependency projects are excluded before the
+# executable is created; their native CMake files below own their sources.
+file(GLOB_RECURSE RICH_SRC
+     "${PROJECT_SOURCE_DIR}/*.cpp"
+     "${PROJECT_SOURCE_DIR}/*.c")
 
-foreach(_sub_dir IN LISTS _SUBMODULE_DIRS)
-    file(GLOB_RECURSE _sub_files "${_sub_dir}/*.cpp" "${_sub_dir}/*.c")
-    if(_sub_files)
-        list(REMOVE_ITEM RICH_SRC ${_sub_files})
-    endif()
+set(RICH_EXTERNAL_SOURCE_DIRS
+    "${PROJECT_SOURCE_DIR}/monte"
+    "${PROJECT_SOURCE_DIR}/3D/tessellation/voronoi"
+    "${PROJECT_SOURCE_DIR}/3D/tessellation/cartesian"
+    "${PROJECT_SOURCE_DIR}/3D/tessellation/MeshDecomposer3D"
+    "${PROJECT_SOURCE_DIR}/utils/mpi_utils"
+    "${PROJECT_SOURCE_DIR}/utils/spatial_ds"
+    "${PROJECT_SOURCE_DIR}/utils/rma"
+)
+foreach(_external_source_dir IN LISTS RICH_EXTERNAL_SOURCE_DIRS)
+    list(FILTER RICH_SRC EXCLUDE REGEX "^${_external_source_dir}(/|$)")
 endforeach()
+
+file(GLOB_RECURSE TEST_SRC CONFIGURE_DEPENDS
+     "${TEST_SOURCE_DIR}/*.cpp"
+     "${TEST_SOURCE_DIR}/*.c")
 include(${CMAKE_SOURCE_DIR}/../config/find_HDF5.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_VTK.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_JSON.cmake)
@@ -181,8 +188,6 @@ include_directories(${PROJECT_SOURCE_DIR})
 include_directories("${PROJECT_SOURCE_DIR}/..") # TODO: REMOVE!
 include_directories("${PROJECT_SOURCE_DIR}/utils")
 include_directories("${PROJECT_SOURCE_DIR}/3D/tessellation")
-include_directories("${STORM_DIR}/deps")
-include_directories("${STORM_DIR}/deps/CMMC/src")
 include_directories("${BOOST_DIR}/include")
 include_directories(${HDF5_INCLUDE})
 
@@ -240,94 +245,53 @@ endif()
 # Parse MPI flags (reused for submodule targets)
 # =============================================
 if(DEFINED MPI)
+    find_package(MPI REQUIRED COMPONENTS CXX)
     separate_arguments(mpi_compile_flags UNIX_COMMAND "${MPI_COMPILE_FLAGS}")
     separate_arguments(mpi_link_flags UNIX_COMMAND "${MPI_LINK_FLAGS}")
 endif()
 
 # =============================================
-# Submodule library targets
+# Dependency library targets
 # =============================================
-
-# --- MadVoro (exception .cpp files) ---
-file(GLOB_RECURSE _madvoro_src "${MADVORO_DIR}/*.cpp")
-file(GLOB_RECURSE _madvoro_excl
-    "${MADVORO_DIR}/examples/*.cpp"
-    "${MADVORO_DIR}/io/*.cpp"
-)
-if(_madvoro_excl)
-    list(REMOVE_ITEM _madvoro_src ${_madvoro_excl})
-endif()
-if(_madvoro_src)
-    add_library(madvoro STATIC ${_madvoro_src})
-    target_include_directories(madvoro PUBLIC "${MADVORO_DIR}")
-    if(EXISTS "${MADVORO_DIR}/range/finders")
-        target_include_directories(madvoro PUBLIC "${MADVORO_DIR}/range/finders")
-    endif()
+if(DEFINED MPI)
+    set(MADVORO_WITH_MPI ON)
+    set(MADCART_WITH_MPI ON)
+    set(STORM_WITH_MPI ON)
 else()
-    add_library(madvoro INTERFACE)
-    target_include_directories(madvoro INTERFACE "${MADVORO_DIR}")
+    set(MADVORO_WITH_MPI OFF)
+    set(MADCART_WITH_MPI OFF)
+    set(STORM_WITH_MPI OFF)
 endif()
+set(MADVORO_BUILD_EXAMPLES OFF)
+set(MADCART_BUILD_EXAMPLES OFF)
+set(STORM_BUILD_EXAMPLES OFF)
+set(STORM_WITH_COMPTON ON)
 
-# --- MadCart (header-only) ---
-add_library(madcart INTERFACE)
-target_include_directories(madcart INTERFACE "${MADCART_DIR}")
+set(MADVORO_DEPS_DIR "${PROJECT_SOURCE_DIR}/utils")
+set(MADCART_DEPS_DIR "${PROJECT_SOURCE_DIR}/utils")
+set(STORM_DEPS_DIR "${PROJECT_SOURCE_DIR}/utils")
+set(STORM_MADVORO_DIR "${MADVORO_DIR}")
+set(STORM_MADCART_DIR "${MADCART_DIR}")
+set(STORM_MESH_DECOMPOSER_DIR "${MESH_DECOMP_DIR}")
 
-# --- STORM ---
-file(GLOB_RECURSE _storm_src "${STORM_DIR}/*.cpp")
-file(GLOB_RECURSE _storm_excl "${STORM_DIR}/examples/*.cpp")
-if(_storm_excl)
-    list(REMOVE_ITEM _storm_src ${_storm_excl})
-endif()
-if(_storm_src)
-    add_library(storm STATIC ${_storm_src})
-    target_include_directories(storm PUBLIC "${STORM_DIR}")
-else()
-    add_library(storm INTERFACE)
-    target_include_directories(storm INTERFACE "${STORM_DIR}")
-endif()
+add_subdirectory("${MPI_UTILS_DIR}" "${CMAKE_BINARY_DIR}/dependencies/mpi_utils"
+                 EXCLUDE_FROM_ALL)
+add_subdirectory("${MADVORO_DIR}" "${CMAKE_BINARY_DIR}/dependencies/madvoro"
+                 EXCLUDE_FROM_ALL)
+add_subdirectory("${MADCART_DIR}" "${CMAKE_BINARY_DIR}/dependencies/madcart"
+                 EXCLUDE_FROM_ALL)
+add_subdirectory("${STORM_DIR}" "${CMAKE_BINARY_DIR}/dependencies/storm"
+                 EXCLUDE_FROM_ALL)
 
-# --- mpi_utils ---
-file(GLOB_RECURSE _mpi_utils_src "${MPI_UTILS_DIR}/*.cpp")
-if(_mpi_utils_src)
-    add_library(mpi_utils STATIC ${_mpi_utils_src})
-    target_include_directories(mpi_utils PUBLIC "${MPI_UTILS_DIR}")
-else()
-    add_library(mpi_utils INTERFACE)
-    target_include_directories(mpi_utils INTERFACE "${MPI_UTILS_DIR}")
-endif()
-
-# --- spatial_ds (header-only) ---
+# Header-only dependencies do not currently define targets in their native
+# CMake files, so expose their include trees as local interface targets.
 add_library(spatial_ds INTERFACE)
 target_include_directories(spatial_ds INTERFACE "${SPATIAL_DS_DIR}")
 
-# --- MeshDecomposer3D (header-only) ---
 add_library(mesh_decomposer INTERFACE)
 target_include_directories(mesh_decomposer INTERFACE "${MESH_DECOMP_DIR}")
 
-# --- EasyRMA ---
-file(GLOB_RECURSE _rma_src "${RMA_DIR}/*.cpp")
-if(_rma_src)
-    add_library(easyrma STATIC ${_rma_src})
-    target_include_directories(easyrma PUBLIC "${RMA_DIR}")
-else()
-    add_library(easyrma INTERFACE)
-    target_include_directories(easyrma INTERFACE "${RMA_DIR}")
-endif()
-
-# Apply MPI compile/link flags to STATIC submodule targets
-if(DEFINED MPI)
-    foreach(_tgt madvoro storm mpi_utils easyrma)
-        if(TARGET ${_tgt})
-            get_target_property(_tgt_type ${_tgt} TYPE)
-            if(NOT _tgt_type STREQUAL "INTERFACE_LIBRARY")
-                target_compile_options(${_tgt} PRIVATE ${mpi_compile_flags})
-                target_link_options(${_tgt} PRIVATE ${mpi_link_flags})
-            endif()
-        endif()
-    endforeach()
-endif()
-
-message(STATUS "Submodule targets: madvoro madcart storm mpi_utils spatial_ds mesh_decomposer easyrma")
+message(STATUS "Dependency targets: madvoro madcart storm mpi_utils spatial_ds mesh_decomposer")
 
 # =============================================
 # RICH executable
@@ -355,7 +319,7 @@ find_package(ZLIB REQUIRED)
 target_link_libraries(
     ${EXE_NAME} 
     PRIVATE
-    madvoro madcart storm mpi_utils spatial_ds mesh_decomposer easyrma
+    madvoro madcart storm mpi_utils spatial_ds mesh_decomposer
     ZLIB::ZLIB
     ${HDF5_LIBS} 
     ${VTK_LIBRARIES}

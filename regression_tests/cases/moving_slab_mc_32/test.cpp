@@ -733,7 +733,9 @@ int main(int argc, char *argv[])
             std::cout << "Done. " << stepCount << " steps, wall time: " << wallTotal << "s" << std::endl;
         }
 
-        std::string const caseDir = fs::path(__FILE__).parent_path().string();
+        const char *envArtifact = std::getenv("THUNDER_ARTIFACT_DIR");
+        std::string const caseDir = (envArtifact && envArtifact[0] != '\0')
+            ? std::string(envArtifact) : fs::current_path().string();
         WriteSnapshot3D(hdsim, caseDir + "/moving_slab_mc_32_final.h5");
         if (rank == 0)
             std::cout << "Wrote snapshot to " << caseDir << std::endl;

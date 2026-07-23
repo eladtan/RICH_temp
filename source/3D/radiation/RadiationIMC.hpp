@@ -200,7 +200,7 @@ private:
 
         GroupCdf cumulative{};
         GroupArray centers = this->energyCenters(boundaries);
-        double const kT = STORM::constants::k_boltz * cell.temperature;
+        double const kT = units::k_boltz * cell.temperature;
         if(!(kT > 0.0) || !std::isfinite(kT))
         {
             return cumulative;
@@ -304,7 +304,6 @@ public:
     using GroupSamplingDiagnostics = typename Impl::GroupSamplingDiagnostics;
     using ComptonCellData = typename Impl::ComptonCellData;
     using Parameters = typename Impl::Parameters;
-    using ComptonKernel = typename Impl::ComptonKernel;
 
     class ObserverAdapter final : public STORM::RadiationObserver<Vector3D>
     {
@@ -323,7 +322,7 @@ public:
 
         void recordCrossing(const STORM::ObserverCrossingRecord<Vector3D> &record) override
         {
-            ObserverCrossingRecord oldRecord;
+            ::ObserverCrossingRecord oldRecord;
             oldRecord.crossingPoint = record.crossingPoint;
             oldRecord.direction = record.direction;
             oldRecord.weight = record.weight;
@@ -449,11 +448,6 @@ public:
         }
 #endif
         this->impl_.setObserver(observerAdapter_);
-    }
-
-    void setComptonKernel(std::shared_ptr<const ComptonKernel> kernel)
-    {
-        this->impl_.setComptonKernel(std::move(kernel));
     }
 
     void setNewPhotonsPerCell(std::size_t n) { this->impl_.setNewPhotonsPerCell(n); }

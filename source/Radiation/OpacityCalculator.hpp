@@ -41,8 +41,8 @@ public:
     virtual double CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const
     { throw UniversalError("CalcAbsorptionOpacity not implemented"); }
 
-    virtual double CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const
-    { throw UniversalError("CalcScatteringOpacity(energy) not implemented"); }
+    virtual double CalcScatteringOpacity(ComputationalCell3D const& cell, double /*energy*/) const
+    { return CalcScatteringOpacity(cell); }
 
     virtual bool ComptonIncludedInTransport() const { return false; }
 

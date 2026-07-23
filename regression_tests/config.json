@@ -18,22 +18,50 @@
       "config": "source/monte/regression_tests/config.json",
       "option_overrides": {
         "deps_dir": "{project_root}/source/utils",
-        "extra_include_dirs": "{project_root}/source/3D/tessellation;{project_root}/source/3D/tessellation/voronoi;{project_root}/source/3D/tessellation/voronoi/range/finders"
+        "madvoro_dir": "{project_root}/source/3D/tessellation/voronoi",
+        "madcart_dir": "{project_root}/source/3D/tessellation/cartesian",
+        "mesh_decomposer_dir": "{project_root}/source/3D/tessellation/MeshDecomposer3D"
       }
     }
   ],
   "builds": {
     "rich": {
-      "mode": "per_test",
+      "mode": "grouped",
       "build_dir": "build",
-      "command": [
-        "{project_root}/build_rich.sh",
-        "{config}",
-        "--test_name={build_test_name}",
-        "--build-subdir={build_id}",
-        "--jobs={nproc}"
+      "configure_command": [
+        "cmake",
+        "-S",
+        "{project_root}/source",
+        "-B",
+        "{build_dir}",
+        "-DCONFIG={config}",
+        "-DTEST_DIR={build_test_name}",
+        "-DCMAKE_RUNTIME_OUTPUT_DIRECTORY={build_dir}",
+        "-DCMAKE_EXPORT_COMPILE_COMMANDS=ON"
       ],
-      "binary": "{project_root}/build/{config}/{build_id}/rich"
+      "build_command": [
+        "cmake",
+        "--build",
+        "{build_dir}",
+        "-j",
+        "{nproc}"
+      ],
+      "target": "rich_{config}",
+      "binary": "{build_dir}/rich_{config}",
+      "argument_cmake": {
+        "--with_asan": "ASAN=1",
+        "--energy_groups_num": "ENERGY_GROUPS_NUM={value}",
+        "--debug_files": "DEBUG_FILES={value}",
+        "--mc_debug": "MC_DEBUG=1",
+        "--mc_trace_debug": "MC_TRACE_DEBUG={value}",
+        "--shared": "DYNAMIC_LIBS=1",
+        "--high-res": "HIGH_RES=1",
+        "--memory_debug": "MEMORY_DEBUG=1",
+        "--memory_profile": "MEMORY_PROFILE=1",
+        "--assert": "FORCE_ASSERT=1",
+        "--timing": "TIMING=1",
+        "--montecarlo-polarization": "RICH_MONTECARLO_POLARIZATION=ON"
+      }
     }
   },
   "runs": {

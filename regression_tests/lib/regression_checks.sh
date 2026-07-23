@@ -541,6 +541,14 @@ check_eulerian_diffusion_freefree_1d_case() {
     check_eulerian_diffusion_freefree_case_common "$run_dir" "$run_start_epoch" "$stdout_log" "$stderr_log" ""
 }
 
+check_eulerian_diffusion_freefree_subcase() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    check_eulerian_diffusion_freefree_case_common "$run_dir" "$run_start_epoch" "$stdout_log" "$stderr_log" ""
+}
+
 check_eulerian_diffusion_freefree_1d_32_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
@@ -563,8 +571,9 @@ check_eulerian_diffusion_freefree_suite_case() {
     local stdout_log="$3"
     local stderr_log="$4"
 
-    local compare_dir="${REGRESSION_ROOT}/cases/eulerian_diffusion_freefree_compare"
-    local cases_root="${REGRESSION_ROOT}/cases"
+    local compare_dir="$run_dir"
+    local cases_root
+    cases_root="$(dirname "$run_dir")"
 
     local profile_512="${cases_root}/eulerian_diffusion_freefree_1d/temperature_profile.txt"
     local profile_512_limited="${cases_root}/eulerian_diffusion_freefree_1d_512_limited/temperature_profile.txt"
@@ -584,7 +593,14 @@ check_eulerian_diffusion_freefree_suite_case() {
         "$profile_512" \
         "$profile_512_limited" \
         "$profile_32" \
-        "$profile_32_limited" \
+        "$profile_32_limited"; do
+        if [[ ! -s "$f" ]]; then
+            set_check_msg "missing dependency output: ${f}"
+            return 1
+        fi
+    done
+
+    for f in \
         "$compare_tgas" \
         "$compare_trad" \
         "$compare_density" \
@@ -595,7 +611,7 @@ check_eulerian_diffusion_freefree_suite_case() {
         fi
     done
 
-    set_check_msg "free-free suite ran 4 cases and generated 4-way comparison figures"
+    set_check_msg "free-free aggregate generated 4-way comparison figures"
     return 0
 }
 
@@ -605,8 +621,9 @@ check_eulerian_diffusion_freefree_multigroup_suite_case() {
     local stdout_log="$3"
     local stderr_log="$4"
 
-    local compare_dir="${REGRESSION_ROOT}/cases/eulerian_diffusion_freefree_multigroup_compare"
-    local cases_root="${REGRESSION_ROOT}/cases"
+    local compare_dir="$run_dir"
+    local cases_root
+    cases_root="$(dirname "$run_dir")"
 
     local profile_512="${cases_root}/eulerian_diffusion_freefree_multigroup_1d/temperature_profile.txt"
     local profile_512_limited="${cases_root}/eulerian_diffusion_freefree_multigroup_1d_512_limited/temperature_profile.txt"
@@ -626,7 +643,14 @@ check_eulerian_diffusion_freefree_multigroup_suite_case() {
         "$profile_512" \
         "$profile_512_limited" \
         "$profile_32" \
-        "$profile_32_limited" \
+        "$profile_32_limited"; do
+        if [[ ! -s "$f" ]]; then
+            set_check_msg "missing dependency output: ${f}"
+            return 1
+        fi
+    done
+
+    for f in \
         "$compare_tgas" \
         "$compare_trad" \
         "$compare_density" \
@@ -637,7 +661,7 @@ check_eulerian_diffusion_freefree_multigroup_suite_case() {
         fi
     done
 
-    set_check_msg "multigroup free-free suite ran 4 cases and generated 4-way comparison figures"
+    set_check_msg "multigroup free-free aggregate generated 4-way comparison figures"
     return 0
 }
 

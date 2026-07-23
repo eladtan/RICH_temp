@@ -606,7 +606,7 @@ void SphericalObserver::recordCrossing(Vector3D const& crossingPoint,
 #endif
 }
 
-void SphericalObserver::recordCrossing(ObserverCrossingRecord const& rec)
+void SphericalObserver::recordCrossing(::ObserverCrossingRecord const& rec)
 {
     if (rec.weight == 0.0 || !std::isfinite(rec.weight))
         return;
@@ -750,7 +750,7 @@ void SphericalObserver::buildSkyBases()
     }
 }
 
-void SphericalObserver::rotateAndAccumulate(ObserverCrossingRecord const& rec,
+void SphericalObserver::rotateAndAccumulate(::ObserverCrossingRecord const& rec,
                                             size_t obs)
 {
     if (!rec.polarizationInitialized) {
@@ -809,7 +809,7 @@ void SphericalObserver::rotateAndAccumulate(ObserverCrossingRecord const& rec,
     }
 }
 
-void SphericalObserver::accumulateMismatch(ObserverCrossingRecord const& rec,
+void SphericalObserver::accumulateMismatch(::ObserverCrossingRecord const& rec,
                                            size_t obs,
                                            Vector3D const& rhat)
 {

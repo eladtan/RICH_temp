@@ -306,7 +306,9 @@ int main(int argc, char* argv[]) {
       throw;
     }
   }
-  std::string const case_dir = fs::path(__FILE__).parent_path().string();
+  const char *envArtifact = std::getenv("THUNDER_ARTIFACT_DIR");
+  std::string const case_dir = (envArtifact && envArtifact[0] != '\0')
+      ? std::string(envArtifact) : fs::current_path().string();
   write_vector(time, case_dir + "/time.txt");
   write_vector(Tgas, case_dir + "/Tgas.txt");
   write_vector(Trad, case_dir + "/Trad.txt");
