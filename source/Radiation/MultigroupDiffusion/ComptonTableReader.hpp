@@ -23,7 +23,6 @@ public:
 
 private:
     void validate_energy_grid(Vector const& table_boundaries) const;
-    void compute_dSdUm_tables();
     void set_Bg_ng(double temperature) const;
 
     Vector const energy_groups_centers;
@@ -33,7 +32,7 @@ private:
 
     Vector temperature_grid;
     std::vector<Matrix> S_log_tables;
-    std::vector<Matrix> dSdUm_tables;
+    std::vector<Matrix> dSdT_tables;
 
     mutable Vector n_eq;
     mutable Vector B;

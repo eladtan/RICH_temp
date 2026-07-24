@@ -123,7 +123,15 @@ void ComptonTableReader::load_tables(std::string const& directory) {
         }
     }
 
-    compute_dSdUm_tables();
+    dSdT_tables.resize(n_temps, Matrix(num_energy_groups, Vector(num_energy_groups, 0.0)));
+    for (std::size_t i = 0; i < n_temps; ++i) {
+        auto const deriv_path = (fs::path(directory) / ("dSdT_" + std::to_string(i) + ".txt")).string();
+        if (!fs::exists(deriv_path)) {
+            std::cerr << "ComptonTableReader: missing derivative table file " << deriv_path << std::endl;
+            std::exit(1);
+        }
+        dSdT_tables[i] = read_matrix_file(deriv_path, num_energy_groups);
+    }
 
     std::cout << "ComptonTableReader: loaded " << n_temps
               << " temperature tables from " << directory << std::endl;
@@ -145,29 +153,6 @@ void ComptonTableReader::validate_energy_grid(Vector const& table_boundaries) co
                       << " expected=" << energy_groups_boundaries[i]
                       << " relative error=" << rel << std::endl;
             std::exit(1);
-        }
-    }
-}
-
-void ComptonTableReader::compute_dSdUm_tables() {
-    std::size_t const n_temps = temperature_grid.size();
-    dSdUm_tables.resize(n_temps, Matrix(num_energy_groups, Vector(num_energy_groups, 0.0)));
-
-    for (std::size_t i = 0; i < n_temps; ++i) {
-        std::size_t lower = i > 0 ? i - 1 : 0;
-        std::size_t upper = i < n_temps - 1 ? i + 1 : n_temps - 1;
-        while ((temperature_grid[upper] - temperature_grid[lower]) <
-               std::max(1e5, temperature_grid[i] * 0.2)) {
-            if (lower > 0) --lower;
-            if (upper < n_temps - 1) ++upper;
-            if (lower == 0 && upper == n_temps - 1) break;
-        }
-        double const dT = temperature_grid[upper] - temperature_grid[lower];
-        for (std::size_t g0 = 0; g0 < num_energy_groups; ++g0) {
-            for (std::size_t g = 0; g < num_energy_groups; ++g) {
-                dSdUm_tables[i][g0][g] =
-                    (std::exp(S_log_tables[upper][g0][g]) - std::exp(S_log_tables[lower][g0][g])) / dT;
-            }
         }
     }
 }
@@ -216,15 +201,15 @@ void ComptonTableReader::get_tau_matrix(
         for (std::size_t j = i; j < num_energy_groups; ++j) {
             tau[i][j] = std::exp(S_log_tables[tmp_i][i][j]) * (1.0 - x)
                       + std::exp(S_log_tables[tmp_i + 1][i][j]) * x;
-            dtau_dUm[i][j] = dSdUm_tables[tmp_i][i][j] * (1.0 - x)
-                            + dSdUm_tables[tmp_i + 1][i][j] * x;
+            dtau_dUm[i][j] = dSdT_tables[tmp_i][i][j] * (1.0 - x)
+                            + dSdT_tables[tmp_i + 1][i][j] * x;
 
             if (i == j) continue;
 
             tau[j][i] = std::exp(S_log_tables[tmp_i][j][i]) * (1.0 - x)
                       + std::exp(S_log_tables[tmp_i + 1][j][i]) * x;
-            dtau_dUm[j][i] = dSdUm_tables[tmp_i][j][i] * (1.0 - x)
-                            + dSdUm_tables[tmp_i + 1][j][i] * x;
+            dtau_dUm[j][i] = dSdT_tables[tmp_i][j][i] * (1.0 - x)
+                            + dSdT_tables[tmp_i + 1][j][i] * x;
 
             if (force_detailed_balance) {
                 if (B[j] * E_i < std::numeric_limits<double>::min() * 1e40)
