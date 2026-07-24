@@ -37,6 +37,7 @@ namespace fs = std::filesystem;
 #include <sstream>
 #include <source/Radiation/CMMC/src/planck_integral/planck_integral.hpp>
 #include <algorithm>
+#include <cstdlib>
 #include "boost/math/special_functions/pow.hpp"
 #include <string_view>
 #include <charconv>
@@ -271,13 +272,16 @@ int main(int argc, char *argv[])
 	constexpr bool protections_on = false;
 	constexpr bool clamp_coupling_strength = false;
 
-	// Dense Compton temperature grid: linspace(0.8, 55, 50) keV + endpoints
-	std::vector<double> compton_temp_grid;
+	std::string compton_table_dir;
 	{
-		compton_temp_grid.push_back(0.0001 * kev_kelvin);
-		for(int i = 0; i < 50; ++i)
-			compton_temp_grid.push_back((0.8 + i * (55.0 - 0.8) / 49.0) * kev_kelvin);
-		compton_temp_grid.push_back(1e3 * kev_kelvin);
+		char const* env = std::getenv("COMPTON_TABLE_DIR");
+		if (compton_on) {
+			if (!env || std::string(env).empty()) {
+				std::cerr << "Error: COMPTON_TABLE_DIR environment variable must be set when compton is on" << std::endl;
+				return 1;
+			}
+			compton_table_dir = env;
+		}
 	}
 
 	MultigroupDiffusion matrix_builder{
@@ -294,7 +298,7 @@ int main(int argc, char *argv[])
 		-1.0,
 		protections_on,
 		false,
-		compton_temp_grid,
+		compton_table_dir,
 		clamp_coupling_strength};
 
 	matrix_builder.length_scale_ = lscale;

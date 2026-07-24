@@ -52,26 +52,6 @@ std::size_t find_index_in_matrix(
     return static_cast<std::size_t>(std::distance(row.cbegin(), it));
 }
 
-std::vector<double> compton_temperatures() {
-    // std::vector<double> tmp_grid = linspace(-2, 4, 128);
-    std::vector<double> tmp_grid = linspace(0.8, 10.2, 20);
-
-    // for (size_t i = 0; i < tmp_grid.size(); ++i) {
-    //     tmp_grid[i] = std::pow(10.0, tmp_grid[i]);
-    // }
-
-    // tmp_grid.insert(tmp_grid.begin(), 0.005);
-    // tmp_grid.insert(tmp_grid.begin(), 0.001);
-    tmp_grid.insert(tmp_grid.begin(), 0.0001);
-    tmp_grid.push_back(1e3);
-    // tmp_grid = {1e-2, 0.1, 0.2, 0.3, 0.8, 1.5, 3.0, 4.0, 5.0, 7.5, 10.0, 13.0, 18.0, 20.0, 21.};
-    for (auto& temp : tmp_grid) {
-        temp *= units::kev_kelvin;
-    }
-
-    return tmp_grid;
-}
-
 std::vector<double> get_energy_groups_width(std::vector<double> const& energy_groups_boundary) {
     std::vector<double> energy_groups_width(energy_groups_boundary.size()-1, std::numeric_limits<double>::signaling_NaN());
 
@@ -95,7 +75,7 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                          double const minimum_temperature,
                                          bool const protections_on,
                                          bool const cooling_time_limiter_on,
-                                         std::vector<double> const& compton_temperature_grid,
+                                         std::string const& compton_table_directory,
                                          bool const clamp_coupling_strength) :
     RadiationDriver(eos,
         zero_cells,
@@ -122,12 +102,10 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
     doppler_on_(doppler_on),
     minimum_temperature_(minimum_temperature),
     displayed_warning_(false),
-    compton_matrix_gen(
+    compton_table_reader(
         energy_groups_center_,
         energy_groups_boundary_,
-        compton_on ? 200000 : 10,
-        true, // num of samples
-        1),
+        true),
     tau(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
     dtau_dUm(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
     S(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
@@ -161,8 +139,13 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
             exit(1);
         }
     }
-    if(compton_on)
-        compton_matrix_gen.set_tables(compton_temperature_grid.empty() ? compton_temperatures() : compton_temperature_grid);
+    if(compton_on) {
+        if(compton_table_directory.empty()) {
+            std::cerr << "MultigroupDiffusion: compton_on=true but no compton_table_directory provided" << std::endl;
+            exit(1);
+        }
+        compton_table_reader.load_tables(compton_table_directory);
+    }
 }
 
 bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
@@ -1424,36 +1407,18 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
 
     double const A = 1.0;
     double const Z = 1.0;
-    double const T = std::min(compton_matrix_gen.get_maximum_temperature_grid() * 0.9999, old_Tm[cell_index]);
-    compton_matrix_gen.get_tau_matrix(T, cell.density*mass_scale_/pow<3>(length_scale_), A, Z, tau, dtau_dUm);
-
-
-    // transform dtau_dT to dtau_dUm
-    // double const beta = 1.0 / (4.0*CG::radiation_constant*pow<3>(T));
-    // for (std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g) {
-    //     for (auto& val : dtau_dUm[g]) {
-    //         val *= beta;
-    //     }
-    // }
-
-    auto const [up_scattering_last, down_scattering_last] = compton_matrix_gen.get_last_group_upscattering_and_downscattering(T, cell.density*mass_scale_/pow<3>(length_scale_), A, Z);
+    double const T = std::min(compton_table_reader.get_maximum_temperature_grid() * 0.9999, old_Tm[cell_index]);
+    compton_table_reader.get_tau_matrix(T, cell.density*mass_scale_/pow<3>(length_scale_), A, Z, tau, dtau_dUm);
 
     fill_zero(S);
     fill_zero(dSdUm);
 
     for (std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g) {
         for (std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt) {
-            if (g+1 == ENERGY_GROUPS_NUM and gt+1 == ENERGY_GROUPS_NUM) {
-                S[g][g] += (up_scattering_last - down_scattering_last)*(1.0 + n[g]);
-                dSdUm[g][g] += dtau_dUm[g][g] * (1.0 + n[g]);
-                continue;
-            }
-
             // in scattering
             double const in_scattering_factor = energy_groups_center[g] / energy_groups_center[gt] * (1.0 + n[g]);
-            double const in_scattering_factor_dsdum = energy_groups_center[g] / energy_groups_center[gt] * (1.0 + n[g]);
             S[gt][g] += tau[gt][g] * in_scattering_factor;
-            dSdUm[gt][g] += dtau_dUm[gt][g] * in_scattering_factor_dsdum;
+            dSdUm[gt][g] += dtau_dUm[gt][g] * in_scattering_factor;
 
             // out scattering
             double const out_scattering_factor = 1.0 + n[gt];

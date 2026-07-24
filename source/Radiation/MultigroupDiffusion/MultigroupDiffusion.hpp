@@ -6,7 +6,7 @@
 #include "boost/math/special_functions/pow.hpp"
 #include "MultigroupDiffusionCoefficientCalculator.hpp"
 #include "MultigroupDiffusionBoundaryCalculator.hpp"
-#include "source/Radiation/CMMC/src/compton_matrix_mc.hpp"
+#include "ComptonTableReader.hpp"
 
 using namespace CG;
 
@@ -45,7 +45,7 @@ public:
                         double const minimum_temperature = -1,
                         bool const protections_on = true,
                         bool const cooling_time_limiter_on = false,
-                        std::vector<double> const& compton_temperature_grid = {},
+                        std::string const& compton_table_directory = "",
                         bool const clamp_coupling_strength = true);
 
     /**
@@ -119,7 +119,7 @@ public:
     bool const doppler_on_; // flag to indicate whether to add the doppler terms to the matrix
     double const minimum_temperature_; // enforce a minimal temperature 
 
-    mutable ComptonMatrixMC compton_matrix_gen; // generator for Compton cross sections matrices
+    mutable ComptonTableReader compton_table_reader;
 
     // used for Compton 
     mutable std::vector<std::vector<double>> tau;
