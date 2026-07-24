@@ -4,6 +4,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <iostream>
+#include <limits>
 #include <sstream>
 
 #include "misc/memory_profile.hpp"
@@ -108,6 +109,8 @@ void traceFmmSolve(const FmmSolveStats& stats)
         stats.processInteractionSeconds, stats.processDownwardSeconds,
         stats.letExchangeSeconds, stats.letM2LSeconds,
         stats.letP2PSeconds, stats.downwardSeconds};
+    double minimumTimes[21] = {};
+    double meanTimes[21] = {};
     double maximumTimes[21] = {};
     unsigned long long reusedActiveRanks =
         stats.localInteractionPlanReused ? 1ull : 0ull;
@@ -148,9 +151,27 @@ void traceFmmSolve(const FmmSolveStats& stats)
         static_cast<unsigned long long>(stats.peakRemoteBytes);
     unsigned long long maximumBytesOwned = localBytesOwned;
     unsigned long long maximumPeakRemoteBytes = localPeakRemoteBytes;
+    const unsigned long long localCacheCounts[8] = {
+        static_cast<unsigned long long>(stats.localOperatorCacheHits),
+        static_cast<unsigned long long>(stats.localOperatorCacheMisses),
+        static_cast<unsigned long long>(stats.localOperatorCacheBypasses),
+        static_cast<unsigned long long>(stats.letOperatorCacheHits),
+        static_cast<unsigned long long>(stats.letOperatorCacheMisses),
+        static_cast<unsigned long long>(stats.letOperatorCacheBypasses),
+        static_cast<unsigned long long>(stats.processOperatorCacheMisses),
+        static_cast<unsigned long long>(stats.processOperatorCacheBypasses)};
+    unsigned long long globalCacheCounts[8] = {};
+    const double localResidualWait = stats.letResidualWaitSeconds;
+    const double localPayloadLifetime = stats.letPayloadLifetimeSeconds;
+    double maximumResidualWait = localResidualWait;
+    double maximumPayloadLifetime = localPayloadLifetime;
     int rank = 0;
 #ifdef RICH_MPI
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Reduce(localTimes, minimumTimes, 21, MPI_DOUBLE, MPI_MIN, 0,
+               MPI_COMM_WORLD);
+    MPI_Reduce(localTimes, meanTimes, 21, MPI_DOUBLE, MPI_SUM, 0,
+               MPI_COMM_WORLD);
     MPI_Reduce(localTimes, maximumTimes, 21, MPI_DOUBLE, MPI_MAX, 0,
                MPI_COMM_WORLD);
     MPI_Reduce(&reusedActiveRanks, &globalReusedActiveRanks, 1,
@@ -167,9 +188,22 @@ void traceFmmSolve(const FmmSolveStats& stats)
                MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(&localPeakRemoteBytes, &maximumPeakRemoteBytes, 1,
                MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
-#else
+    MPI_Reduce(localCacheCounts, globalCacheCounts, 8,
+               MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&localResidualWait, &maximumResidualWait, 1, MPI_DOUBLE,
+               MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&localPayloadLifetime, &maximumPayloadLifetime, 1, MPI_DOUBLE,
+               MPI_MAX, 0, MPI_COMM_WORLD);
     for(int i = 0; i < 21; ++i)
+        meanTimes[i] /= static_cast<double>(stats.mpiRankCount);
+#else
+    for(int i = 0; i < 21; ++i) {
+        minimumTimes[i] = localTimes[i];
+        meanTimes[i] = localTimes[i];
         maximumTimes[i] = localTimes[i];
+    }
+    for(int i = 0; i < 8; ++i)
+        globalCacheCounts[i] = localCacheCounts[i];
 #endif
     if(rank != 0)
         return;
@@ -177,28 +211,20 @@ void traceFmmSolve(const FmmSolveStats& stats)
     std::ostringstream line;
     line.setf(std::ios::scientific);
     line.precision(8);
-    line << "fmm_solve_trace call=" << call
-         << " total_max=" << maximumTimes[0]
-         << " build_max=" << maximumTimes[1]
-         << " topology_max=" << maximumTimes[2]
-         << " descriptor_max=" << maximumTimes[3]
-         << " process_topology_max=" << maximumTimes[4]
-         << " let_plan_max=" << maximumTimes[5]
-         << " let_reset_max=" << maximumTimes[6]
-         << " let_descriptor_traversal_max=" << maximumTimes[7]
-         << " let_finalize_max=" << maximumTimes[8]
-         << " let_subscription_max=" << maximumTimes[9]
-         << " let_prune_compact_max=" << maximumTimes[10]
-         << " local_traversal_max=" << maximumTimes[11]
-         << " let_execute_max=" << maximumTimes[12]
-         << " upward_max=" << maximumTimes[13]
-         << " process_upward_max=" << maximumTimes[14]
-         << " process_interaction_max=" << maximumTimes[15]
-         << " process_downward_max=" << maximumTimes[16]
-         << " let_exchange_max=" << maximumTimes[17]
-         << " let_m2l_max=" << maximumTimes[18]
-         << " let_p2p_max=" << maximumTimes[19]
-         << " downward_max=" << maximumTimes[20]
+    const char* const phaseNames[21] = {
+        "total", "build", "topology", "descriptor", "process_topology",
+        "let_plan", "let_reset", "let_descriptor_traversal",
+        "let_finalize", "let_subscription", "let_prune_compact",
+        "local_traversal", "let_execute", "upward", "process_upward",
+        "process_interaction", "process_downward", "let_exchange",
+        "let_m2l", "let_p2p", "downward"};
+    line << "fmm_solve_trace call=" << call;
+    for(int i = 0; i < 21; ++i)
+        line << ' ' << phaseNames[i] << "_min=" << minimumTimes[i]
+             << ' ' << phaseNames[i] << "_mean=" << meanTimes[i]
+             << ' ' << phaseNames[i] << "_max=" << maximumTimes[i];
+    line << " let_residual_wait_max=" << maximumResidualWait
+         << " let_payload_lifetime_max=" << maximumPayloadLifetime
          << " epoch=" << stats.topologyEpoch
          << " rebuilds=" << stats.topologyRebuildCount
          << " process_rebuilds=" << stats.processTopologyRebuildCount
@@ -248,7 +274,15 @@ void traceFmmSolve(const FmmSolveStats& stats)
          << " let_omitted_multipole_payloads_sum=" << globalInactiveCounts[5]
          << " let_omitted_particle_payloads_sum=" << globalInactiveCounts[6]
          << " bytes_sent_sum=" << globalInactiveCounts[7]
-         << " bytes_received_sum=" << globalInactiveCounts[8];
+         << " bytes_received_sum=" << globalInactiveCounts[8]
+         << " local_cache_hits_sum=" << globalCacheCounts[0]
+         << " local_cache_misses_sum=" << globalCacheCounts[1]
+         << " local_cache_bypasses_sum=" << globalCacheCounts[2]
+         << " let_cache_hits_sum=" << globalCacheCounts[3]
+         << " let_cache_misses_sum=" << globalCacheCounts[4]
+         << " let_cache_bypasses_sum=" << globalCacheCounts[5]
+         << " process_cache_misses_sum=" << globalCacheCounts[6]
+         << " process_cache_bypasses_sum=" << globalCacheCounts[7];
     std::cout << line.str() << std::endl;
 }
 }

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -58,6 +59,23 @@ void recordRejection(RejectionReason reason, FmmSolveStats& stats)
         ++stats.rejectedOverlap;
     else if(reason == RejectionReason::Ratio)
         ++stats.rejectedRatio;
+}
+
+std::size_t progressInterval()
+{
+    static const std::size_t interval = [] {
+        const char* value = std::getenv("RICH_FMM_PROGRESS_INTERVAL");
+        if(value == nullptr || value[0] == '\0')
+            return static_cast<std::size_t>(4096);
+        char* end = nullptr;
+        const unsigned long long parsed = std::strtoull(value, &end, 10);
+        if(end == value || *end != '\0' || parsed == 0 ||
+           parsed > static_cast<unsigned long long>(
+               std::numeric_limits<std::size_t>::max()))
+            return static_cast<std::size_t>(4096);
+        return static_cast<std::size_t>(parsed);
+    }();
+    return interval;
 }
 }
 
@@ -308,7 +326,8 @@ void FmmDualTreeTraversal::runLocalPlan(
         plan.geometries.size(), 0);
     std::vector<std::uint32_t> activeM2LIndices;
     std::vector<std::uint32_t> activeP2PIndices;
-    std::size_t progressCountdown = 4096;
+    const std::size_t progressEvery = progressInterval();
+    std::size_t progressCountdown = progressEvery;
     if(plan.m2lPairs.size() > std::numeric_limits<std::uint32_t>::max() ||
        plan.p2pPairs.size() > std::numeric_limits<std::uint32_t>::max())
         throw UniversalError(
@@ -328,7 +347,7 @@ void FmmDualTreeTraversal::runLocalPlan(
             if(progress != nullptr && --progressCountdown == 0)
             {
                 progress(progressContext);
-                progressCountdown = 4096;
+                progressCountdown = progressEvery;
             }
             continue;
         }
@@ -387,7 +406,7 @@ void FmmDualTreeTraversal::runLocalPlan(
         if(progress != nullptr && --progressCountdown == 0)
         {
             progress(progressContext);
-            progressCountdown = 4096;
+            progressCountdown = progressEvery;
         }
     }
     for(std::size_t pairIndex = 0; pairIndex < plan.p2pPairs.size(); ++pairIndex)
@@ -401,7 +420,7 @@ void FmmDualTreeTraversal::runLocalPlan(
             if(progress != nullptr && --progressCountdown == 0)
             {
                 progress(progressContext);
-                progressCountdown = 4096;
+                progressCountdown = progressEvery;
             }
             continue;
         }
@@ -422,7 +441,7 @@ void FmmDualTreeTraversal::runLocalPlan(
         if(progress != nullptr && --progressCountdown == 0)
         {
             progress(progressContext);
-            progressCountdown = 4096;
+            progressCountdown = progressEvery;
         }
     }
     if(progress != nullptr)
