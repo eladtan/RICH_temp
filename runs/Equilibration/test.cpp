@@ -269,6 +269,7 @@ int main(int argc, char *argv[])
 	const     bool compton_on = current_case.compton_on;
 	constexpr bool doppler_on = false;
 	constexpr bool protections_on = false;
+	constexpr bool clamp_coupling_strength = false;
 
 	// Dense Compton temperature grid: linspace(0.8, 55, 50) keV + endpoints
 	std::vector<double> compton_temp_grid;
@@ -293,7 +294,8 @@ int main(int argc, char *argv[])
 		-1.0,
 		protections_on,
 		false,
-		compton_temp_grid};
+		compton_temp_grid,
+		clamp_coupling_strength};
 
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;

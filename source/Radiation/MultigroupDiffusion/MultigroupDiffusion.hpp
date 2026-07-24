@@ -29,6 +29,8 @@ public:
      * @param doppler_on Boolean indicating whether Doppler shift correction is on.
      * @param minimum_temperature Minimum temperature for the diffusion calculation. Default value is -1.
      * @param protections_on Enables protections in the diffusion calculation (modifies coupling strength). Default value is true.
+     * @param clamp_coupling_strength When true (default), caps the absorption opacity so that c*dt*sigma <= max_coupling_strength
+     *        and limits per-group energy exchange to 2*cv*T per timestep. Set to false for raw implicit solves.
      */
     MultigroupDiffusion(std::vector<double> const& energy_groups_center_,
                         std::vector<double> const& energy_groups_boundary_,
@@ -43,7 +45,8 @@ public:
                         double const minimum_temperature = -1,
                         bool const protections_on = true,
                         bool const cooling_time_limiter_on = false,
-                        std::vector<double> const& compton_temperature_grid = {});
+                        std::vector<double> const& compton_temperature_grid = {},
+                        bool const clamp_coupling_strength = true);
 
     /**
      * @brief Destructor for the MultigroupDiffusion class.
@@ -134,6 +137,7 @@ public:
 private:
     bool const protections_on_; // flag whether to use Elad's protections on the amount of change allowed per time step (should not be on when running tests...)
     bool const cooling_time_limiter_on_;
+    bool const clamp_coupling_strength_; // when true, cap opacity so c*dt*sigma <= max_coupling_strength and limit per-group exchange to 2*cv*T
     mutable bool displayed_warning_; // flag whether to display the planck sum warning
 
     void calculate_group_absorption_and_scattering_coefficients(Tessellation3D const& tess,

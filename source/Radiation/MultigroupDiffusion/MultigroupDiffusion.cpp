@@ -95,7 +95,8 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                          double const minimum_temperature,
                                          bool const protections_on,
                                          bool const cooling_time_limiter_on,
-                                         std::vector<double> const& compton_temperature_grid) :
+                                         std::vector<double> const& compton_temperature_grid,
+                                         bool const clamp_coupling_strength) :
     RadiationDriver(eos,
         zero_cells,
         flux_limiter,
@@ -136,7 +137,8 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
     Gammas(),
     use_n_zero(),
     protections_on_(protections_on),
-    cooling_time_limiter_on_(cooling_time_limiter_on) {
+    cooling_time_limiter_on_(cooling_time_limiter_on),
+    clamp_coupling_strength_(clamp_coupling_strength) {
 
     if (energy_groups_center.size() != ENERGY_GROUPS_NUM) {
         std::cout << "bad energy_groups_center.size()" << std::endl;
@@ -1235,8 +1237,11 @@ void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients
         double const Um = get_radiation_energy_density(cell.temperature);
         for (std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g) {
 
-            sigma_absorption_group[i][g] = std::min(coefficient_calculator.CalcAbsorptionCoefficientGroup(cell, g),
-                CG::max_coupling_strength / (CG::speed_of_light * dt));
+            sigma_absorption_group[i][g] = coefficient_calculator.CalcAbsorptionCoefficientGroup(cell, g);
+            if (clamp_coupling_strength_) {
+                sigma_absorption_group[i][g] = std::min(sigma_absorption_group[i][g],
+                    CG::max_coupling_strength / (CG::speed_of_light * dt));
+            }
             if (protections_on_) {
                 if (Trad > 1.1 * cells[i].temperature && cv < 0.1 * get_radiation_cv(Trad)) {
                     sigma_absorption_group[i][g] = std::min(sigma_absorption_group[i][g],
@@ -1247,10 +1252,10 @@ void MultigroupDiffusion::calculate_group_absorption_and_scattering_coefficients
             double const a = energy_groups_boundary[g] * kT_1;
             double const b = energy_groups_boundary[g+1] * kT_1;
             double const bg = planck_integral::planck_integral(a, b);
-            if (cell.density > 1e-12 && CG::speed_of_light * dt * sigma_absorption_group[i][g] * (cell.Eg[g] * cell.density - bg * Um) > 2 * cv * cell.temperature)
+            if (clamp_coupling_strength_ && cell.density > 1e-12 && CG::speed_of_light * dt * sigma_absorption_group[i][g] * (cell.Eg[g] * cell.density - bg * Um) > 2 * cv * cell.temperature)
             {
                 double const new_sigma =  2 * cv * cell.temperature / (CG::speed_of_light * dt * (cell.Eg[g] * cell.density - bg * Um));
-                sigma_absorption_group[i][g] = std::min(sigma_absorption_group[i][g], new_sigma);//std::max(cell.density * 0.34 * 0.1, new_sigma));
+                sigma_absorption_group[i][g] = std::min(sigma_absorption_group[i][g], new_sigma);
             }
 
             if (sigma_absorption_group[i][g] < 0.) {
