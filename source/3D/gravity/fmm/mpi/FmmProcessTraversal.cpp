@@ -133,6 +133,10 @@ FmmProcessPairPlan FmmProcessTraversal::build(const FmmProcessTree& tree,
                 {
                     ++plan.localSelfRankCount;
                 }
+                else if(target.leafOwnerRank == source.leafOwnerRank)
+                {
+                    ++plan.localCrossPatchPairCount;
+                }
                 else
                 {
                     ++plan.letRankPairCount;

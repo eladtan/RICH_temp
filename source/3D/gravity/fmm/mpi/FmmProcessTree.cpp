@@ -7,6 +7,7 @@
 #include <cfloat>
 #include <cstring>
 #include <limits>
+#include <unordered_map>
 
 #include "misc/universal_error.hpp"
 
@@ -61,14 +62,24 @@ void FmmProcessTree::build(const std::vector<FmmPatchRootDescriptor>& descriptor
 
     bool haveEpoch = false;
     std::uint64_t epoch = 0;
+    std::unordered_map<int, int> activePatchesPerOwner;
     for(std::size_t i = 0; i < descriptorsByIndex_.size(); ++i)
     {
         const FmmPatchRootDescriptor& descriptor = descriptorsByIndex_[i];
         if(descriptor.magic != FMM_MPI_PACKET_MAGIC ||
            descriptor.version != FMM_MPI_PACKET_VERSION)
             throw UniversalError("FmmProcessTree::build: incompatible root descriptor protocol");
-        if(descriptor.ownerRank != static_cast<int>(i))
-            throw UniversalError("FmmProcessTree::build: descriptor owner/index mismatch");
+        // Compatibility mode: MPI_Allgather still delivers one descriptor per rank
+        // at gather index i. Reject multiple patches per owner until Phase 3.
+        if(descriptor.active != 0)
+        {
+            if(descriptor.ownerRank != static_cast<int>(i))
+                throw UniversalError(
+                    "FmmProcessTree::build: descriptor owner/index mismatch in compat gather layout");
+            if(++activePatchesPerOwner[descriptor.ownerRank] > 1)
+                throw UniversalError(
+                    "FmmProcessTree::build: multiple patches per rank require Phase 3 descriptor gather");
+        }
         if(!haveEpoch)
         {
             epoch = descriptor.epoch;
@@ -208,7 +219,14 @@ std::size_t FmmProcessTree::buildRange(std::size_t begin,
         node.halfSize = descriptor.halfSize;
         if(!finiteCube(node.center, node.halfSize))
             throw UniversalError("FmmProcessTree::buildRange: invalid process leaf cube");
-        node.radius = std::sqrt(3.0) * node.halfSize;
+        const double cubeRadius = std::sqrt(3.0) * node.halfSize;
+        const double radiusTolerance =
+            32.0 * std::numeric_limits<double>::epsilon() *
+            std::max(1.0, cubeRadius);
+        if(!std::isfinite(descriptor.radius) || descriptor.radius < 0.0 ||
+           descriptor.radius > cubeRadius + radiusTolerance)
+            throw UniversalError("FmmProcessTree::buildRange: invalid tight patch radius");
+        node.radius = descriptor.radius;
         const FmmPatchKey patchKey = node.leafKey();
         if(!patchKey.valid())
             throw UniversalError("FmmProcessTree::buildRange: invalid leaf patch key");
@@ -249,7 +267,6 @@ void FmmProcessTree::computeHash()
             static_cast<std::uint64_t>(node.owner + 1),
             static_cast<std::uint64_t>(node.leafOwnerRank + 1),
             node.leafPatchId,
-            static_cast<std::uint64_t>(node.leafDescriptorIndex),
             static_cast<std::uint64_t>(node.begin),
             static_cast<std::uint64_t>(node.end),
             static_cast<std::uint64_t>(node.depth),

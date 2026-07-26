@@ -571,6 +571,9 @@ void FmmLetPlan::build(const FmmTree& localTree,
                     "FmmLetPlan::build descriptor request");
                 if(request.patchId == 0)
                     throw UniversalError("FmmLetPlan::build: descriptor request missing patch ID");
+                if(request.patchId != FMM_COMPAT_PATCH_ID)
+                    throw UniversalError(
+                        "FmmLetPlan::build: non-compat patch ID in descriptor request");
                 const auto localIt = localNodeByKey_.find(request.spatialKey);
                 if(localIt == localNodeByKey_.end())
                     throw UniversalError("FmmLetPlan::build: requested local node does not exist");
@@ -1109,7 +1112,7 @@ void FmmLetPlan::build(const FmmTree& localTree,
                     detail);
             }
             if(maxLetWaveBytes != 0 && waveBytes != 0 &&
-               waveBytes + cost.second > maxLetWaveBytes)
+               cost.second > maxLetWaveBytes - waveBytes)
             {
                 ++wave;
                 waveBytes = 0;
@@ -1296,6 +1299,13 @@ void FmmLetPlan::build(const FmmTree& localTree,
                 "FmmLetPlan::build subscription");
             if(subscription.patchId == 0)
                 throw UniversalError("FmmLetPlan::build: subscription missing patch ID");
+            if(subscription.patchId != FMM_COMPAT_PATCH_ID)
+                throw UniversalError(
+                    "FmmLetPlan::build: non-compat patch ID in subscription");
+            if(subscription.waveIndex < 0 ||
+               static_cast<std::size_t>(subscription.waveIndex) >= waveCount_)
+                throw UniversalError(
+                    "FmmLetPlan::build: subscription wave index out of range");
             const auto nodeIt = localNodeByKey_.find(subscription.spatialKey);
             if(nodeIt == localNodeByKey_.end())
                 throw UniversalError("FmmLetPlan::build: subscription references missing local node");
@@ -1568,6 +1578,9 @@ void FmmLetPlan::beginExecute(
             // honour it rather than deciding independently.
             if(static_cast<std::size_t>(subscription.waveIndex) != wave)
                 continue;
+            if(subscription.waveIndex < 0)
+                throw UniversalError(
+                    "FmmLetPlan::execute: subscription wave index out of range");
             const auto nodeIt = localNodeByKey_.find(subscription.spatialKey);
             if(nodeIt == localNodeByKey_.end())
                 throw UniversalError("FmmLetPlan::execute: subscribed source node vanished");
@@ -1638,6 +1651,9 @@ void FmmLetPlan::beginExecute(
         {
             if(static_cast<std::size_t>(subscription.waveIndex) != wave)
                 continue;
+            if(subscription.waveIndex < 0)
+                throw UniversalError(
+                    "FmmLetPlan::execute: subscription wave index out of range");
             const std::size_t nodeIndex = localNodeByKey_.find(
                 subscription.spatialKey)->second;
             const FmmNode& node = localTree.nodes()[nodeIndex];
@@ -1805,6 +1821,9 @@ void FmmLetPlan::finishExecute(
         {
             if(static_cast<std::size_t>(subscription.waveIndex) != wave)
                 continue;
+            if(subscription.waveIndex < 0)
+                throw UniversalError(
+                    "FmmLetPlan::execute: subscription wave index out of range");
             if(expectedRecordCount == std::numeric_limits<std::size_t>::max())
                 abortLetInvariant(comm_,
                     "FmmLetPlan::execute: expected payload count overflow");
@@ -1821,6 +1840,9 @@ void FmmLetPlan::finishExecute(
         {
             if(static_cast<std::size_t>(subscription.waveIndex) != wave)
                 continue;
+            if(subscription.waveIndex < 0)
+                throw UniversalError(
+                    "FmmLetPlan::execute: subscription wave index out of range");
             expectedPayloadKeys.push_back(std::make_tuple(
                 FmmPatchKey{entry.first, subscription.patchId},
                 subscription.spatialKey, subscription.kind));
@@ -1891,6 +1913,13 @@ void FmmLetPlan::finishExecute(
             if(header.patchId == 0)
                 throw UniversalError(
                     "FmmLetPlan::execute: payload record missing patch ID");
+            if(header.patchId != FMM_COMPAT_PATCH_ID)
+                throw UniversalError(
+                    "FmmLetPlan::execute: non-compat patch ID in payload");
+            if(header.waveIndex < 0 ||
+               static_cast<std::size_t>(header.waveIndex) != wave)
+                throw UniversalError(
+                    "FmmLetPlan::execute: payload arrived in wrong LET wave");
             const FmmPatchKey sourcePatch{message.source, header.patchId};
             const auto descriptorPatch = remoteDescriptors_.find(sourcePatch);
             if(descriptorPatch == remoteDescriptors_.end())

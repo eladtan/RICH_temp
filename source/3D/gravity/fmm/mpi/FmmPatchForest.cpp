@@ -4,9 +4,11 @@
 #include <array>
 #include <cmath>
 #include <cstring>
+#include <iterator>
 #include <limits>
 #include <map>
 #include <numeric>
+#include <type_traits>
 #include <unordered_map>
 #include <utility>
 
@@ -57,6 +59,20 @@ std::vector<std::uint64_t> leafOccupancySignature(const FmmTree& tree)
     return signature;
 }
 
+std::uint64_t saturatingAddU64(std::uint64_t first, std::uint64_t second)
+{
+    if(first > std::numeric_limits<std::uint64_t>::max() - second)
+        return std::numeric_limits<std::uint64_t>::max();
+    return first + second;
+}
+
+std::uint64_t saturatingMultiplyU64(std::uint64_t first, std::uint64_t second)
+{
+    if(first != 0 && second > std::numeric_limits<std::uint64_t>::max() / first)
+        return std::numeric_limits<std::uint64_t>::max();
+    return first * second;
+}
+
 void accumulateDirectCrossPatch(const std::vector<Vector3D>& targetPositions,
                                 std::vector<Vector3D>& targetAcceleration,
                                 std::vector<double>* targetPotential,
@@ -99,6 +115,71 @@ void accumulateDirectCrossPatch(const std::vector<Vector3D>& targetPositions,
 
 FmmPatchForest::FmmPatchForest() = default;
 
+void FmmPatchForest::validatePrepareInputs(
+    const std::vector<Vector3D>& positions,
+    const std::vector<double>& masses,
+    const std::vector<std::uint64_t>& cellIds,
+    const Vector3D& domainLower,
+    const Vector3D& domainUpper,
+    const FmmGravityOptions& gravityOptions,
+    const FmmDistributedOptions& distributedOptions,
+    int ownerRank) const
+{
+    if(positions.size() != masses.size() ||
+       positions.size() != cellIds.size())
+        throw UniversalError("FmmPatchForest::prepare: input size mismatch");
+    if(ownerRank < 0)
+        throw UniversalError("FmmPatchForest::prepare: invalid owner rank");
+    if(distributedOptions.maxLocalPatchCount == 0)
+        throw UniversalError("FmmPatchForest::prepare: maxLocalPatchCount must be positive");
+    if(!(domainLower.x < domainUpper.x) ||
+       !(domainLower.y < domainUpper.y) ||
+       !(domainLower.z < domainUpper.z))
+        throw UniversalError("FmmPatchForest::prepare: invalid domain bounds");
+    if(gravityOptions.expansionOrder < 1 ||
+       gravityOptions.expansionOrder > FMM_MAX_ORDER)
+        throw UniversalError("FmmPatchForest::prepare: invalid expansion order");
+    if(!(gravityOptions.thetaCritical > 0.0) ||
+       gravityOptions.thetaCritical > 1.0 ||
+       !std::isfinite(gravityOptions.thetaCritical))
+        throw UniversalError("FmmPatchForest::prepare: invalid theta");
+    if(gravityOptions.leafCapacity == 0)
+        throw UniversalError("FmmPatchForest::prepare: invalid leaf capacity");
+    if(distributedOptions.minimumPatchLevel < 0 ||
+       distributedOptions.minimumPatchLevel > FMM_MAX_TREE_DEPTH ||
+       distributedOptions.maximumPatchLevel <
+           distributedOptions.minimumPatchLevel ||
+       distributedOptions.maximumPatchLevel > FMM_MAX_TREE_DEPTH)
+        throw UniversalError("FmmPatchForest::prepare: invalid patch levels");
+
+    const FmmGlobalDyadicLattice lattice =
+        FmmGlobalDyadicLattice::fromDomain(domainLower, domainUpper);
+    const Vector3D domainLo = lattice.globalRoot().lower();
+    const Vector3D domainHi = lattice.globalRoot().upper();
+    for(std::size_t index = 0; index < positions.size(); ++index)
+    {
+        const Vector3D& point = positions[index];
+        if(!std::isfinite(point.x) || !std::isfinite(point.y) ||
+           !std::isfinite(point.z) || !std::isfinite(masses[index]))
+        {
+            UniversalError error("FmmPatchForest::prepare: non-finite input");
+            error.addEntry("particle", index);
+            throw error;
+        }
+        if(point.x < domainLo.x || point.x > domainHi.x ||
+           point.y < domainLo.y || point.y > domainHi.y ||
+           point.z < domainLo.z || point.z > domainHi.z)
+        {
+            UniversalError error("FmmPatchForest::prepare: point outside domain");
+            error.addEntry("particle", index);
+            error.addEntry("x", point.x);
+            error.addEntry("y", point.y);
+            error.addEntry("z", point.z);
+            throw error;
+        }
+    }
+}
+
 FmmPatchForestChange FmmPatchForest::prepare(
     const std::vector<Vector3D>& positions,
     const std::vector<double>& masses,
@@ -109,36 +190,37 @@ FmmPatchForestChange FmmPatchForest::prepare(
     const FmmDistributedOptions& distributedOptions,
     int ownerRank)
 {
-    if(positions.size() != masses.size() ||
-       positions.size() != cellIds.size())
-        throw UniversalError("FmmPatchForest::prepare: input size mismatch");
+    validatePrepareInputs(positions, masses, cellIds, domainLower, domainUpper,
+                          gravityOptions, distributedOptions, ownerRank);
 
     gravityOptions_ = gravityOptions;
     distributedOptions_ = distributedOptions;
     lattice_ = FmmGlobalDyadicLattice::fromDomain(domainLower, domainUpper);
+    inputCount_ = positions.size();
 
     previousPatches_.swap(patches_);
     patches_.clear();
-    patchIdToIndex_.clear();
 
-  std::size_t overfullPatches = 0;
+    std::size_t overfullPatches = 0;
+    std::size_t fixedLevelPatchCount = 0;
     const std::vector<PatchBucket> buckets =
-        partitionParticles(positions, distributedOptions, overfullPatches);
+        partitionParticles(positions, distributedOptions, overfullPatches,
+                           fixedLevelPatchCount);
     buildPatchObjects(buckets, positions, masses, cellIds, ownerRank);
 
+    fixedLevelPatchCount_ = fixedLevelPatchCount;
     updateHashes();
-    updateDiagnostics();
-    diagnostics_.overfullPatches = overfullPatches;
-
     FmmPatchForestChange change = compareWithPrevious();
     change.overfullPatches = overfullPatches;
+    updateDiagnostics(change, fixedLevelPatchCount);
     return change;
 }
 
 std::vector<FmmPatchForest::PatchBucket> FmmPatchForest::partitionParticles(
     const std::vector<Vector3D>& positions,
     const FmmDistributedOptions& distributedOptions,
-    std::size_t& overfullPatches) const
+    std::size_t& overfullPatches,
+    std::size_t& fixedLevelPatchCount) const
 {
     if(distributedOptions.minimumPatchLevel < 0 ||
        distributedOptions.minimumPatchLevel > FMM_MAX_TREE_DEPTH ||
@@ -155,6 +237,8 @@ std::vector<FmmPatchForest::PatchBucket> FmmPatchForest::partitionParticles(
             positions[index], distributedOptions.minimumPatchLevel);
         fixedBuckets[patchId].push_back(index);
     }
+
+    fixedLevelPatchCount = fixedBuckets.size();
 
     std::vector<PatchBucket> refined;
     refined.reserve(fixedBuckets.size());
@@ -291,7 +375,6 @@ void FmmPatchForest::buildPatchObjects(
     int ownerRank)
 {
     patches_.reserve(buckets.size());
-    patchIdToIndex_.clear();
 
     for(const PatchBucket& bucket : buckets)
     {
@@ -323,14 +406,6 @@ void FmmPatchForest::buildPatchObjects(
 
         patches_.push_back(std::move(patch));
     }
-
-    std::uint64_t maxPatchId = 0;
-    for(const FmmLocalPatch& patch : patches_)
-        maxPatchId = std::max(maxPatchId, patch.key.patchId);
-    patchIdToIndex_.assign(static_cast<std::size_t>(maxPatchId) + 1,
-                           std::numeric_limits<std::size_t>::max());
-    for(std::size_t index = 0; index < patches_.size(); ++index)
-        patchIdToIndex_[patches_[index].key.patchId] = index;
 }
 
 void FmmPatchForest::buildUpward(const FmmTaylorExpansion& layout)
@@ -400,19 +475,21 @@ void FmmPatchForest::executeDirectCrossPatch(const FmmTaylorExpansion& layout,
             accumulateDirectCrossPatch(target.positions, target.acceleration,
                                        potential, source.positions,
                                        source.masses);
-            stats.p2pPairCount += target.positions.size() * source.positions.size();
+            const std::uint64_t pairCount = saturatingMultiplyU64(
+                static_cast<std::uint64_t>(target.positions.size()),
+                static_cast<std::uint64_t>(source.positions.size()));
+            stats.p2pPairCount = saturatingAddU64(stats.p2pPairCount, pairCount);
             ++stats.p2pBlockCount;
         }
     }
 }
 
-void FmmPatchForest::applyDownward(const FmmTaylorExpansion& layout,
-                                   bool computePotential)
+void FmmPatchForest::applyDownward(const FmmTaylorExpansion& layout)
 {
     for(FmmLocalPatch& patch : patches_)
     {
         std::vector<double>* potential =
-            computePotential ? &patch.potential : nullptr;
+            gravityOptions_.computePotential ? &patch.potential : nullptr;
         FmmPasses::downward(patch.tree, patch.positions, layout, patch.locals,
                             patch.acceleration, potential);
     }
@@ -421,12 +498,17 @@ void FmmPatchForest::applyDownward(const FmmTaylorExpansion& layout,
 void FmmPatchForest::scatterAcceleration(
     std::vector<Vector3D>& acceleration) const
 {
+    if(acceleration.size() != inputCount_)
+        throw UniversalError("FmmPatchForest::scatterAcceleration: output size mismatch");
     for(const FmmLocalPatch& patch : patches_)
     {
         for(std::size_t localIndex = 0; localIndex < patch.inputIndices.size();
             ++localIndex)
         {
             const std::size_t globalIndex = patch.inputIndices[localIndex];
+            if(globalIndex >= acceleration.size())
+                throw UniversalError(
+                    "FmmPatchForest::scatterAcceleration: input index out of range");
             acceleration[globalIndex] = patch.acceleration[localIndex];
         }
     }
@@ -434,12 +516,17 @@ void FmmPatchForest::scatterAcceleration(
 
 void FmmPatchForest::scatterPotential(std::vector<double>& potential) const
 {
+    if(potential.size() != inputCount_)
+        throw UniversalError("FmmPatchForest::scatterPotential: output size mismatch");
     for(const FmmLocalPatch& patch : patches_)
     {
         for(std::size_t localIndex = 0; localIndex < patch.inputIndices.size();
             ++localIndex)
         {
             const std::size_t globalIndex = patch.inputIndices[localIndex];
+            if(globalIndex >= potential.size())
+                throw UniversalError(
+                    "FmmPatchForest::scatterPotential: input index out of range");
             potential[globalIndex] = patch.potential[localIndex];
         }
     }
@@ -491,9 +578,14 @@ std::vector<FmmPatchRootDescriptor> FmmPatchForest::descriptors(
 
 std::size_t FmmPatchForest::findPatch(std::uint64_t patchId) const
 {
-    if(patchId >= patchIdToIndex_.size())
+    const auto it = std::lower_bound(
+        patches_.begin(), patches_.end(), patchId,
+        [](const FmmLocalPatch& patch, std::uint64_t id) {
+            return patch.key.patchId < id;
+        });
+    if(it == patches_.end() || it->key.patchId != patchId)
         return std::numeric_limits<std::size_t>::max();
-    return patchIdToIndex_[patchId];
+    return static_cast<std::size_t>(std::distance(patches_.begin(), it));
 }
 
 void FmmPatchForest::updateHashes()
@@ -533,6 +625,7 @@ FmmPatchForestChange FmmPatchForest::compareWithPrevious() const
     for(const FmmLocalPatch& patch : patches_)
         currentById.emplace(patch.key.patchId, &patch);
 
+    bool allChangesCountOnly = !patches_.empty();
     for(const auto& entry : currentById)
     {
         const auto previous = previousById.find(entry.first);
@@ -540,25 +633,29 @@ FmmPatchForestChange FmmPatchForest::compareWithPrevious() const
         {
             ++change.createdPatches;
             change.patchSetChanged = true;
+            allChangesCountOnly = false;
             continue;
         }
-        ++change.reusedPatches;
+        ++change.matchedPatchIds;
         const FmmLocalPatch& current = *entry.second;
         const FmmLocalPatch& prior = *previous->second;
+        const bool structureSame =
+            current.topologyHash == prior.topologyHash &&
+            current.structuralSignature == prior.structuralSignature;
+        const bool occupancyDiff =
+            current.occupancySignature != prior.occupancySignature;
+
         if(current.root.center.x != prior.root.center.x ||
            current.root.center.y != prior.root.center.y ||
            current.root.center.z != prior.root.center.z ||
            current.root.halfSize != prior.root.halfSize)
-        {
             change.patchGeometryChanged = true;
-        }
-        if(current.topologyHash != prior.topologyHash ||
-           current.structuralSignature != prior.structuralSignature)
+        if(!structureSame)
             change.structuralTopologyChanged = true;
-        if(current.occupancySignature != prior.occupancySignature)
+        if(occupancyDiff)
             change.occupancyChanged = true;
-        else if(current.inputIndices.size() != prior.inputIndices.size())
-            change.countOnlyChanged = true;
+        if(!(structureSame && occupancyDiff))
+            allChangesCountOnly = false;
     }
 
     for(const auto& entry : previousById)
@@ -567,19 +664,28 @@ FmmPatchForestChange FmmPatchForest::compareWithPrevious() const
         {
             ++change.removedPatches;
             change.patchSetChanged = true;
+            allChangesCountOnly = false;
         }
     }
 
     if(change.createdPatches > 0 || change.removedPatches > 0)
         change.patchSetChanged = true;
+    change.countOnlyChanged = allChangesCountOnly &&
+        (change.occupancyChanged || change.createdPatches > 0 ||
+         change.removedPatches > 0);
     return change;
 }
 
-void FmmPatchForest::updateDiagnostics()
+void FmmPatchForest::updateDiagnostics(const FmmPatchForestChange& change,
+                                       std::size_t fixedLevelPatchCount)
 {
     diagnostics_ = FmmPatchForestDiagnostics();
     diagnostics_.patchCount = patches_.size();
-    diagnostics_.fixedLevelPatchCount = patches_.size();
+    diagnostics_.fixedLevelPatchCount = fixedLevelPatchCount;
+    diagnostics_.createdPatches = change.createdPatches;
+    diagnostics_.removedPatches = change.removedPatches;
+    diagnostics_.matchedPatchIds = change.matchedPatchIds;
+    diagnostics_.overfullPatches = change.overfullPatches;
     diagnostics_.levelHistogram.assign(static_cast<std::size_t>(FMM_MAX_TREE_DEPTH) + 1, 0);
 
     std::vector<std::size_t> counts;

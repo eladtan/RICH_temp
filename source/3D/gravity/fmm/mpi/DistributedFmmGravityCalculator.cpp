@@ -609,7 +609,7 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
     MPI_Allreduce(localDoubleOptions, maximumDoubleOptions, 5,
                   MPI_DOUBLE, MPI_MAX, comm_);
 
-    const unsigned long long localIntegerOptions[13] = {
+    const unsigned long long localIntegerOptions[20] = {
         static_cast<unsigned long long>(options_.expansionOrder),
         static_cast<unsigned long long>(options_.leafCapacity),
         static_cast<unsigned long long>(options_.maxDepth),
@@ -623,19 +623,28 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
         static_cast<unsigned long long>(
             distributedOptions_.maxLeafHalfSizeLevel),
         distributedOptions_.enableLeafM2P ? 1ull : 0ull,
-        static_cast<unsigned long long>(distributedOptions_.maxLetWaveBytes)};
-    unsigned long long minimumIntegerOptions[13] = {};
-    unsigned long long maximumIntegerOptions[13] = {};
-    MPI_Allreduce(localIntegerOptions, minimumIntegerOptions, 13,
+        static_cast<unsigned long long>(distributedOptions_.maxLetWaveBytes),
+        distributedOptions_.enablePatchForest ? 1ull : 0ull,
+        static_cast<unsigned long long>(distributedOptions_.minimumPatchLevel),
+        static_cast<unsigned long long>(distributedOptions_.maximumPatchLevel),
+        static_cast<unsigned long long>(
+            distributedOptions_.targetParticlesPerPatch),
+        static_cast<unsigned long long>(distributedOptions_.maxLocalPatchCount),
+        static_cast<unsigned long long>(
+            distributedOptions_.maxTargetPatchesPerWave),
+        distributedOptions_.useLocalPatchLet ? 1ull : 0ull};
+    unsigned long long minimumIntegerOptions[20] = {};
+    unsigned long long maximumIntegerOptions[20] = {};
+    MPI_Allreduce(localIntegerOptions, minimumIntegerOptions, 20,
                   MPI_UNSIGNED_LONG_LONG, MPI_MIN, comm_);
-    MPI_Allreduce(localIntegerOptions, maximumIntegerOptions, 13,
+    MPI_Allreduce(localIntegerOptions, maximumIntegerOptions, 20,
                   MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm_);
 
     bool optionsMatch = true;
     for(int i = 0; i < 5; ++i)
         optionsMatch = optionsMatch &&
             minimumDoubleOptions[i] == maximumDoubleOptions[i];
-    for(int i = 0; i < 13; ++i)
+    for(int i = 0; i < 20; ++i)
         optionsMatch = optionsMatch &&
             minimumIntegerOptions[i] == maximumIntegerOptions[i];
     if(!optionsMatch)
@@ -1056,7 +1065,8 @@ void DistributedFmmGravityCalculator::solve(
         prepareLocalTree(positions, domainLower, domainUpper);
     const bool occupancyRequiresRebuild =
         localChange.leafOccupancyChanged &&
-        !distributedOptions_.reuseInteractionPlansAcrossLeafCountChanges;
+        (!distributedOptions_.reuseInteractionPlansAcrossLeafCountChanges ||
+         distributedOptions_.maxLetWaveBytes > 0);
     const bool localTreeTopologyChanged =
         localChange.rootGeometryChanged || localChange.leafTopologyChanged ||
         occupancyRequiresRebuild;
@@ -1147,7 +1157,8 @@ void DistributedFmmGravityCalculator::solve(
     const bool processTopologyChanged =
         stats_.topologyRebuildForced || globalTopologyTerms[1] != 0ull;
     const bool globalOccupancyRequiresRebuild =
-        !distributedOptions_.reuseInteractionPlansAcrossLeafCountChanges &&
+        (!distributedOptions_.reuseInteractionPlansAcrossLeafCountChanges ||
+         distributedOptions_.maxLetWaveBytes > 0) &&
         globalTopologyTerms[3] != 0ull;
     const bool letTopologyChanged =
         processTopologyChanged || globalTopologyTerms[2] != 0ull ||

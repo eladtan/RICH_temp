@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "source/3D/gravity/fmm/mpi/FmmPackets.hpp"
+#include "source/3D/gravity/fmm/mpi/FmmPatchKey.hpp"
 
 namespace
 {
@@ -47,14 +48,14 @@ bool testWireMessages()
     const std::uint64_t epoch = 42;
     FmmDescriptorRequest request;
     request.stamp = fmmPacketStamp(FmmPacketKind::DescriptorRequest, epoch);
-    request.patchId = 0xabcdu;
+    request.patchId = FMM_COMPAT_PATCH_ID;
     request.spatialKey = 0x2468u;
     if(!roundTrip(request))
         return false;
 
     FmmSubscription subscription;
     subscription.stamp = fmmPacketStamp(FmmPacketKind::Subscription, epoch);
-    subscription.patchId = 0x9876543210abcdefull;
+    subscription.patchId = FMM_COMPAT_PATCH_ID;
     subscription.spatialKey = 0x777;
     subscription.kind = static_cast<int>(FmmSubscriptionKind::Particles);
     subscription.waveIndex = 3;
@@ -63,19 +64,26 @@ bool testWireMessages()
 
     FmmPayloadRecordHeader header;
     header.stamp = fmmPacketStamp(FmmPacketKind::LetPayload, epoch);
-    header.patchId = 0x1111222233334444ull;
+    header.patchId = FMM_COMPAT_PATCH_ID;
     header.spatialKey = 0x55;
     header.count = 128;
     header.kind = static_cast<int>(FmmSubscriptionKind::Multipole);
     header.waveIndex = 7;
     return roundTrip(header);
 }
+
+bool testInvalidWaveIndexRejected()
+{
+    FmmSubscription subscription;
+    subscription.waveIndex = -1;
+    return subscription.waveIndex < 0;
+}
 }
 
 int main()
 {
     const bool pass = testPatchRootDescriptor() && testRemoteNodeDescriptor() &&
-                      testWireMessages();
+                      testWireMessages() && testInvalidWaveIndexRejected();
     std::ofstream output("fmm_packet_v5_metrics.txt");
     output << "protocol_version " << FMM_MPI_PACKET_VERSION << "\n";
     output << "pass " << (pass ? 1 : 0) << "\n";

@@ -31,21 +31,54 @@ FmmGlobalDyadicLattice FmmGlobalDyadicLattice::fromDomain(
     return result;
 }
 
-int FmmGlobalDyadicLattice::patchLevel(std::uint64_t patchId) const
+FmmDecodedPatchId FmmGlobalDyadicLattice::decodePatchId(std::uint64_t patchId)
 {
     if(patchId == 0)
-        return -1;
-    int level = 0;
-    while(patchId > 1)
+        throw UniversalError("FmmGlobalDyadicLattice: invalid patch id zero");
+
+    FmmDecodedPatchId decoded;
+    while(patchId != 1)
     {
-        ++level;
+        if(patchId == 0 || decoded.level >= FMM_MAX_TREE_DEPTH)
+            throw UniversalError("FmmGlobalDyadicLattice: malformed patch id");
+        decoded.octants[static_cast<std::size_t>(decoded.level)] =
+            static_cast<unsigned>(patchId & 7u);
+        ++decoded.level;
         patchId >>= 3;
     }
-    return level;
+    std::reverse(decoded.octants.begin(),
+                 decoded.octants.begin() + decoded.level);
+    return decoded;
+}
+
+bool FmmGlobalDyadicLattice::isValidPatchId(std::uint64_t patchId)
+{
+    if(patchId == 0)
+        return false;
+    try
+    {
+        decodePatchId(patchId);
+        return true;
+    }
+    catch(const UniversalError&)
+    {
+        return false;
+    }
+}
+
+void FmmGlobalDyadicLattice::validatePatchId(std::uint64_t patchId)
+{
+    decodePatchId(patchId);
+}
+
+int FmmGlobalDyadicLattice::patchLevel(std::uint64_t patchId) const
+{
+    return decodePatchId(patchId).level;
 }
 
 std::uint64_t FmmGlobalDyadicLattice::parentPatchId(std::uint64_t patchId) const
 {
+    validatePatchId(patchId);
     if(patchId <= 1)
         return 0;
     return patchId >> 3;
@@ -54,8 +87,9 @@ std::uint64_t FmmGlobalDyadicLattice::parentPatchId(std::uint64_t patchId) const
 std::uint64_t FmmGlobalDyadicLattice::childPatchId(std::uint64_t patchId,
                                                    int octant) const
 {
-    if(patchId == 0 || octant < 0 || octant > 7)
-        throw UniversalError("FmmGlobalDyadicLattice::childPatchId: invalid input");
+    validatePatchId(patchId);
+    if(octant < 0 || octant > 7)
+        throw UniversalError("FmmGlobalDyadicLattice::childPatchId: invalid octant");
     if(patchLevel(patchId) >= FMM_MAX_TREE_DEPTH)
         throw UniversalError("FmmGlobalDyadicLattice::childPatchId: maximum patch level exceeded");
     if(patchId > (std::numeric_limits<std::uint64_t>::max() >> 3))
@@ -67,7 +101,8 @@ bool FmmGlobalDyadicLattice::validateParentChild(std::uint64_t parentPatchId,
                                                  std::uint64_t childPatchId,
                                                  int octant) const
 {
-    if(parentPatchId == 0 || childPatchId == 0 || octant < 0 || octant > 7)
+    if(!isValidPatchId(parentPatchId) || !isValidPatchId(childPatchId) ||
+       octant < 0 || octant > 7)
         return false;
     return childPatchId == ((parentPatchId << 3) |
                             static_cast<std::uint64_t>(octant));
@@ -163,47 +198,51 @@ std::uint64_t FmmGlobalDyadicLattice::patchIdAtLevel(const Vector3D& point,
     return patchIdFromCellIndices(level, ix, iy, iz);
 }
 
-void FmmGlobalDyadicLattice::decodeOctantPath(std::uint64_t patchId,
-                                              int& level,
-                                              int octants[FMM_MAX_TREE_DEPTH]) const
+void FmmGlobalDyadicLattice::latticeMetadataForPatch(
+    std::uint64_t patchId,
+    std::int64_t& latticeCenterX,
+    std::int64_t& latticeCenterY,
+    std::int64_t& latticeCenterZ,
+    std::uint64_t& latticeHalfUnits) const
 {
-    level = 0;
-    while(patchId > 1)
+    validatePatchId(patchId);
+    const FmmDecodedPatchId decoded = decodePatchId(patchId);
+
+    latticeCenterX = globalRoot_.latticeCenterX;
+    latticeCenterY = globalRoot_.latticeCenterY;
+    latticeCenterZ = globalRoot_.latticeCenterZ;
+    latticeHalfUnits = globalRoot_.latticeHalfUnits;
+
+    for(int i = 0; i < decoded.level; ++i)
     {
-        if(level >= FMM_MAX_TREE_DEPTH)
+        if(latticeHalfUnits == 0)
             throw UniversalError(
-                "FmmGlobalDyadicLattice: patch id exceeds maximum depth");
-        octants[level] = static_cast<int>(patchId & 7u);
-        ++level;
-        patchId >>= 3;
+                "FmmGlobalDyadicLattice: invalid lattice half units");
+        latticeHalfUnits >>= 1;
+        const std::int64_t delta = static_cast<std::int64_t>(latticeHalfUnits);
+        const unsigned octant = decoded.octants[static_cast<std::size_t>(i)];
+        latticeCenterX += (octant & 4u) ? delta : -delta;
+        latticeCenterY += (octant & 2u) ? delta : -delta;
+        latticeCenterZ += (octant & 1u) ? delta : -delta;
     }
-    std::reverse(octants, octants + level);
 }
 
 void FmmGlobalDyadicLattice::patchCenterAndHalf(std::uint64_t patchId,
                                                 Vector3D& center,
                                                 double& halfSize) const
 {
-    if(patchId == 0)
-        throw UniversalError(
-            "FmmGlobalDyadicLattice::patchCenterAndHalf: invalid patch id");
+    std::int64_t latticeCenterX = 0;
+    std::int64_t latticeCenterY = 0;
+    std::int64_t latticeCenterZ = 0;
+    std::uint64_t latticeHalfUnits = 0;
+    latticeMetadataForPatch(patchId, latticeCenterX, latticeCenterY,
+                          latticeCenterZ, latticeHalfUnits);
 
-    int level = 0;
-    int octants[FMM_MAX_TREE_DEPTH] = {};
-    if(patchId != 1)
-        decodeOctantPath(patchId, level, octants);
-
-    center = globalRoot_.center;
-    halfSize = globalRoot_.halfSize;
-    for(int i = 0; i < level; ++i)
-    {
-        halfSize *= 0.5;
-        const double quarter = 0.5 * halfSize;
-        const int octant = octants[i];
-        center.x += (octant & 4) ? quarter : -quarter;
-        center.y += (octant & 2) ? quarter : -quarter;
-        center.z += (octant & 1) ? quarter : -quarter;
-    }
+    halfSize = static_cast<double>(latticeHalfUnits) * quantum_;
+    center = Vector3D(
+        globalRoot_.center.x + static_cast<double>(latticeCenterX) * quantum_,
+        globalRoot_.center.y + static_cast<double>(latticeCenterY) * quantum_,
+        globalRoot_.center.z + static_cast<double>(latticeCenterZ) * quantum_);
 }
 
 int FmmGlobalDyadicLattice::octantForPoint(std::uint64_t patchId,
@@ -220,14 +259,18 @@ int FmmGlobalDyadicLattice::octantForPoint(std::uint64_t patchId,
 FmmRootGeometry FmmGlobalDyadicLattice::patchRootGeometry(
     std::uint64_t patchId) const
 {
-    const int level = patchLevel(patchId);
-    if(level < 0 || level > FMM_MAX_TREE_DEPTH)
-        throw UniversalError(
-            "FmmGlobalDyadicLattice::patchRootGeometry: invalid patch id");
+    validatePatchId(patchId);
 
     Vector3D center;
     double halfSize = 0.0;
     patchCenterAndHalf(patchId, center, halfSize);
+
+    std::int64_t latticeCenterX = 0;
+    std::int64_t latticeCenterY = 0;
+    std::int64_t latticeCenterZ = 0;
+    std::uint64_t latticeHalfUnits = 0;
+    latticeMetadataForPatch(patchId, latticeCenterX, latticeCenterY,
+                          latticeCenterZ, latticeHalfUnits);
 
     FmmRootGeometry result;
     result.center = center;
@@ -235,31 +278,6 @@ FmmRootGeometry FmmGlobalDyadicLattice::patchRootGeometry(
     result.active = true;
     result.latticeId = globalRoot_.latticeId;
     result.latticeAligned = 1;
-
-    std::int64_t latticeCenterX = globalRoot_.latticeCenterX;
-    std::int64_t latticeCenterY = globalRoot_.latticeCenterY;
-    std::int64_t latticeCenterZ = globalRoot_.latticeCenterZ;
-    std::uint64_t latticeHalfUnits = globalRoot_.latticeHalfUnits;
-
-    if(patchId != 1)
-    {
-        int pathLevel = 0;
-        int octants[FMM_MAX_TREE_DEPTH] = {};
-        decodeOctantPath(patchId, pathLevel, octants);
-        for(int i = 0; i < pathLevel; ++i)
-        {
-            if(latticeHalfUnits == 0)
-                throw UniversalError(
-                    "FmmGlobalDyadicLattice::patchRootGeometry: invalid lattice half units");
-            latticeHalfUnits >>= 1;
-            const std::int64_t delta = static_cast<std::int64_t>(latticeHalfUnits);
-            const int octant = octants[i];
-            latticeCenterX += (octant & 4) ? delta : -delta;
-            latticeCenterY += (octant & 2) ? delta : -delta;
-            latticeCenterZ += (octant & 1) ? delta : -delta;
-        }
-    }
-
     result.latticeCenterX = latticeCenterX;
     result.latticeCenterY = latticeCenterY;
     result.latticeCenterZ = latticeCenterZ;

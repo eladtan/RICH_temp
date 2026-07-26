@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <numeric>
 #include <random>
 #include <vector>
 
@@ -68,7 +69,7 @@ SolveOutcome solveForest(const std::vector<Vector3D>& positions,
     forest.executeLocalSelf(layout, operatorCache, options.maxOperatorCacheBytes,
                             stats);
     forest.executeDirectCrossPatch(layout, stats);
-    forest.applyDownward(layout, options.computePotential);
+    forest.applyDownward(layout);
 
     SolveOutcome result;
     result.acceleration.assign(positions.size(), Vector3D());
@@ -86,10 +87,22 @@ SolveOutcome solveForest(const std::vector<Vector3D>& positions,
         options.computePotential ? &referencePotential : nullptr;
     DirectGravityReference::computeAcceleration(
         positions, masses, reference, potentialPtr);
-  std::vector<double> forceScale;
+    std::vector<double> forceScale;
     DirectGravityReference::computeForceScale(positions, masses, forceScale);
     result.error = DirectGravityReference::compareAcceleration(
         reference, result.acceleration, forceScale, 1.0e-12);
+    if(options.computePotential && !referencePotential.empty())
+    {
+        double maxPotentialError = 0.0;
+        for(std::size_t i = 0; i < positions.size(); ++i)
+        {
+            maxPotentialError = std::max(
+                maxPotentialError,
+                std::abs(referencePotential[i] - result.potential[i]));
+        }
+        if(maxPotentialError > 0.15)
+            result.error.maxRelativeError = 1.0;
+    }
     return result;
 }
 
@@ -209,10 +222,11 @@ std::vector<Vector3D> twoClumps()
 
 std::vector<Vector3D> thinShell()
 {
+    const double pi = std::acos(-1.0);
     std::vector<Vector3D> result;
     for(int i = 0; i < 48; ++i)
     {
-        const double angle = 2.0 * M_PI * static_cast<double>(i) / 48.0;
+        const double angle = 2.0 * pi * static_cast<double>(i) / 48.0;
         result.emplace_back(0.75 * std::cos(angle),
                             0.75 * std::sin(angle),
                             0.04 * static_cast<double>((i % 5) - 2));
@@ -237,6 +251,56 @@ std::vector<Vector3D> boundaryPoints()
     return result;
 }
 
+bool testAnalyticalChildGeometry()
+{
+    const FmmGlobalDyadicLattice lattice =
+        FmmGlobalDyadicLattice::fromDomain(kDomainLower, kDomainUpper);
+    const double parentHalf = lattice.globalRoot().halfSize;
+    for(int octant = 0; octant < 8; ++octant)
+    {
+        const std::uint64_t childId = lattice.childPatchId(1, octant);
+        const FmmRootGeometry child = lattice.patchRootGeometry(childId);
+        if(!close(child.halfSize, 0.5 * parentHalf, 1.0e-12))
+            return false;
+        const double offset = 0.5 * parentHalf;
+        const Vector3D expected(
+            lattice.globalRoot().center.x +
+                ((octant & 4) ? offset : -offset),
+            lattice.globalRoot().center.y +
+                ((octant & 2) ? offset : -offset),
+            lattice.globalRoot().center.z +
+                ((octant & 1) ? offset : -offset));
+        if(!closeVector(child.center, expected, 1.0e-10))
+            return false;
+    }
+    return true;
+}
+
+bool testDeepPatchLookup()
+{
+    const FmmGlobalDyadicLattice lattice =
+        FmmGlobalDyadicLattice::fromDomain(kDomainLower, kDomainUpper);
+    std::uint64_t patchId = 1;
+    for(int level = 0; level < 10; ++level)
+        patchId = lattice.childPatchId(patchId, level % 8);
+
+    std::vector<Vector3D> positions;
+    std::vector<double> masses;
+    const FmmRootGeometry root = lattice.patchRootGeometry(patchId);
+    positions.push_back(root.center);
+    masses.push_back(1.0);
+
+    FmmDistributedOptions options;
+    options.minimumPatchLevel = 10;
+    options.targetParticlesPerPatch = 0;
+
+    FmmPatchForest forest;
+    forest.prepare(positions, masses, cellIdsForCount(1), kDomainLower,
+                   kDomainUpper, FmmGravityOptions(), options, 0);
+    return forest.findPatch(patchId) != std::numeric_limits<std::size_t>::max() &&
+           forest.findPatch(patchId + 1) == std::numeric_limits<std::size_t>::max();
+}
+
 bool testPermutationDeterminism()
 {
     std::vector<Vector3D> positions = twoClumps();
@@ -255,18 +319,28 @@ bool testPermutationDeterminism()
     for(const FmmLocalPatch& patch : first.patches())
         firstIds.push_back(patch.key.patchId);
 
-    std::shuffle(positions.begin(), positions.end(), std::mt19937(12345));
-    std::shuffle(masses.begin(), masses.end(), std::mt19937(54321));
-    std::shuffle(cellIds.begin(), cellIds.end(), std::mt19937(98765));
+    std::vector<std::size_t> permutation(positions.size());
+    std::iota(permutation.begin(), permutation.end(), 0);
+    std::shuffle(permutation.begin(), permutation.end(), std::mt19937(12345));
+
+    std::vector<Vector3D> shuffledPositions(positions.size());
+    std::vector<double> shuffledMasses(positions.size());
+    std::vector<std::uint64_t> shuffledCellIds(positions.size());
+    for(std::size_t i = 0; i < permutation.size(); ++i)
+    {
+        shuffledPositions[i] = positions[permutation[i]];
+        shuffledMasses[i] = masses[permutation[i]];
+        shuffledCellIds[i] = cellIds[permutation[i]];
+    }
 
     FmmPatchForest second;
-    second.prepare(positions, masses, cellIds, kDomainLower, kDomainUpper,
-                   FmmGravityOptions(), options, 0);
+    second.prepare(shuffledPositions, shuffledMasses, shuffledCellIds,
+                   kDomainLower, kDomainUpper, FmmGravityOptions(), options, 0);
     std::vector<std::uint64_t> secondIds;
     for(const FmmLocalPatch& patch : second.patches())
         secondIds.push_back(patch.key.patchId);
 
-    return firstIds == secondIds;
+    return firstIds == secondIds && first.geometryHash() == second.geometryHash();
 }
 
 bool testAdaptiveSplitAndCap()
@@ -352,6 +426,8 @@ int main()
 
     const bool pass =
         testLatticeBoundaries() &&
+        testAnalyticalChildGeometry() &&
+        testDeepPatchLookup() &&
         testPartitionCoverage(uniform, distributedOptions) &&
         testPartitionCoverage(clumps, distributedOptions) &&
         testAccuracyCase(uniform, uniformMasses, distributedOptions, 0.08, true) &&
@@ -367,7 +443,7 @@ int main()
 
     std::ofstream output("fmm_patch_forest_local_metrics.txt");
     output << "pass " << (pass ? 1 : 0) << "\n";
-    output << "cases 9\n";
+    output << "cases 11\n";
     std::cout << "fmm_patch_forest_local pass=" << pass << std::endl;
     return pass ? 0 : 1;
 }

@@ -25,8 +25,9 @@ struct FmmProcessPairPlan
     std::vector<int> letSourceRanks;
     std::vector<int> letTargetRanks;
     std::uint64_t acceptedPairCount = 0;
-    std::uint64_t letRankPairCount = 0;
     std::uint64_t localSelfRankCount = 0;
+    std::uint64_t localCrossPatchPairCount = 0;
+    std::uint64_t letRankPairCount = 0;
 
     std::size_t bytesOwned() const;
 };

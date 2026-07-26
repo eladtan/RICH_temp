@@ -26,7 +26,7 @@ struct FmmPatchForestChange
     bool countOnlyChanged = false;
     std::size_t createdPatches = 0;
     std::size_t removedPatches = 0;
-    std::size_t reusedPatches = 0;
+    std::size_t matchedPatchIds = 0;
     std::uint64_t persistentLeafSplits = 0;
     std::uint64_t persistentSubtreeMerges = 0;
     std::uint64_t persistentEmptyLeaves = 0;
@@ -46,7 +46,7 @@ struct FmmPatchForestDiagnostics
     std::size_t patchTreeBytes = 0;
     std::size_t createdPatches = 0;
     std::size_t removedPatches = 0;
-    std::size_t reusedPatches = 0;
+    std::size_t matchedPatchIds = 0;
     std::size_t overfullPatches = 0;
     double largestPatchRadius = 0.0;
 };
@@ -73,8 +73,7 @@ public:
                           FmmSolveStats& stats);
     void executeDirectCrossPatch(const FmmTaylorExpansion& layout,
                                  FmmSolveStats& stats);
-    void applyDownward(const FmmTaylorExpansion& layout,
-                       bool computePotential);
+    void applyDownward(const FmmTaylorExpansion& layout);
 
     void scatterAcceleration(std::vector<Vector3D>& acceleration) const;
     void scatterPotential(std::vector<double>& potential) const;
@@ -110,7 +109,8 @@ private:
     std::vector<PatchBucket> partitionParticles(
         const std::vector<Vector3D>& positions,
         const FmmDistributedOptions& distributedOptions,
-        std::size_t& overfullPatches) const;
+        std::size_t& overfullPatches,
+        std::size_t& fixedLevelPatchCount) const;
     std::vector<PatchBucket> adaptiveRefine(
         std::uint64_t patchId,
         int level,
@@ -119,8 +119,17 @@ private:
         const FmmDistributedOptions& distributedOptions,
         std::size_t& overfullPatches,
         std::size_t& projectedPatchCount) const;
+    void validatePrepareInputs(const std::vector<Vector3D>& positions,
+                               const std::vector<double>& masses,
+                               const std::vector<std::uint64_t>& cellIds,
+                               const Vector3D& domainLower,
+                               const Vector3D& domainUpper,
+                               const FmmGravityOptions& gravityOptions,
+                               const FmmDistributedOptions& distributedOptions,
+                               int ownerRank) const;
     FmmPatchForestChange compareWithPrevious() const;
-    void updateDiagnostics();
+    void updateDiagnostics(const FmmPatchForestChange& change,
+                           std::size_t fixedLevelPatchCount);
     void updateHashes();
 
     FmmGlobalDyadicLattice lattice_;
@@ -128,7 +137,8 @@ private:
     FmmDistributedOptions distributedOptions_;
     std::vector<FmmLocalPatch> patches_;
     std::vector<FmmLocalPatch> previousPatches_;
-    std::vector<std::size_t> patchIdToIndex_;
+    std::size_t inputCount_ = 0;
+    std::size_t fixedLevelPatchCount_ = 0;
     FmmPatchForestDiagnostics diagnostics_;
     std::uint64_t geometryHash_ = 0;
     std::uint64_t structuralHash_ = 0;
