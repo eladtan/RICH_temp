@@ -15,6 +15,7 @@
 #include "3D/gravity/fmm/FmmTaylorExpansion.hpp"
 #include "3D/gravity/fmm/FmmTree.hpp"
 #include "3D/gravity/fmm/mpi/FmmPackets.hpp"
+#include "3D/gravity/fmm/mpi/FmmPatchKey.hpp"
 #include "3D/gravity/fmm/mpi/FmmPeerExchange.hpp"
 #include "3D/gravity/fmm/mpi/FmmProcessTraversal.hpp"
 
@@ -53,7 +54,7 @@ public:
 
     void build(const FmmTree& localTree,
                const std::vector<Vector3D>& positions,
-               const std::vector<FmmRankRootDescriptor>& rootDescriptors,
+               const std::vector<FmmPatchRootDescriptor>& rootDescriptors,
                const FmmProcessPairPlan& processPlan,
                double thetaCritical,
                std::uint64_t topologyEpoch,
@@ -137,34 +138,34 @@ private:
 
     struct M2LSource
     {
-        int sourceRank = -1;
+        FmmPatchKey sourcePatch;
         std::uint64_t spatialKey = 0;
         FmmNode node;
     };
 
     struct RemoteSource
     {
-        int sourceRank = -1;
+        FmmPatchKey sourcePatch;
         std::uint64_t spatialKey = 0;
     };
 
     struct PendingInteraction
     {
         std::size_t targetNode = 0;
-        int sourceRank = -1;
+        FmmPatchKey sourcePatch;
         std::uint64_t sourceKey = 0;
     };
 
     struct PendingPair
     {
         std::size_t targetNode = 0;
-        int sourceRank = -1;
+        FmmPatchKey sourcePatch;
         std::uint64_t sourceKey = 0;
     };
 
     static FmmRemoteNodeDescriptor descriptorForNode(const FmmNode& node,
-                                                       int sourceRank,
-                                                       std::uint64_t topologyEpoch);
+                                                     const FmmPatchKey& patch,
+                                                     std::uint64_t topologyEpoch);
     static bool admissible(const FmmNode& target,
                            const FmmRemoteNodeDescriptor& source,
                            double thetaCritical);
@@ -179,8 +180,9 @@ private:
 
     std::unordered_map<std::uint64_t, std::size_t> localNodeByKey_;
     std::vector<RemoteLatticeRoot> remoteLatticeRoots_;
-    std::unordered_map<int,
-        std::unordered_map<std::uint64_t, FmmRemoteNodeDescriptor>> remoteDescriptors_;
+    std::unordered_map<FmmPatchKey,
+        std::unordered_map<std::uint64_t, FmmRemoteNodeDescriptor>,
+        FmmPatchKeyHash> remoteDescriptors_;
     std::vector<FmmLetM2LInteraction> m2lInteractions_;
     std::vector<M2LSource> m2lSources_;
     std::vector<FmmM2LOperatorCache::PreparedGeometry>

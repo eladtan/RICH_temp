@@ -1871,6 +1871,84 @@ check_fmm_sparse_rank_waves_case() {
     return 0
 }
 
+check_fmm_patch_key_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_patch_key_metrics.txt"
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_patch_key_metrics.txt"
+        return 1
+    fi
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "FMM patch key unit test failed"
+        return 1
+    fi
+    set_check_msg "FMM patch key unit test passed"
+    return 0
+}
+
+check_fmm_packet_v5_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_packet_v5_metrics.txt"
+    local version
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_packet_v5_metrics.txt"
+        return 1
+    fi
+    version=$(awk '$1 == "protocol_version" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    if [[ "$version" != "5" ]]; then
+        set_check_msg "FMM packet v5 test reported wrong protocol version (${version})"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "FMM packet v5 round-trip test failed"
+        return 1
+    fi
+    set_check_msg "FMM packet v5 round-trip test passed"
+    return 0
+}
+
+check_fmm_patch_forest_local_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_patch_forest_local_metrics.txt"
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_patch_forest_local_metrics.txt"
+        return 1
+    fi
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "FMM patch forest local validation failed"
+        return 1
+    fi
+    set_check_msg "FMM patch forest local validation passed"
+    return 0
+}
+
 check_fmm_process_pair_coverage_case() {
     local run_dir="$1"
     local run_start_epoch="$2"

@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cfloat>
 #include <cstring>
 #include <limits>
 
@@ -33,7 +34,7 @@ bool finiteCube(const Vector3D& center, double halfSize)
         std::isfinite(center.y + halfSize) &&
         std::isfinite(center.z - halfSize) &&
         std::isfinite(center.z + halfSize) &&
-        halfSize <= std::numeric_limits<double>::max() / std::sqrt(3.0);
+        halfSize <= DBL_MAX / std::sqrt(3.0);
 }
 
 std::size_t saturatingAdd(std::size_t first, std::size_t second)
@@ -49,24 +50,25 @@ std::size_t saturatingMultiply(std::size_t first, std::size_t second)
 }
 }
 
-void FmmProcessTree::build(const std::vector<FmmRankRootDescriptor>& descriptors)
+void FmmProcessTree::build(const std::vector<FmmPatchRootDescriptor>& descriptors)
 {
-    descriptorsByRank_ = descriptors;
+    descriptorsByIndex_ = descriptors;
     activeRanks_.clear();
+    activeDescriptorIndices_.clear();
     nodes_.clear();
     levels_.clear();
-    leafByRank_.clear();
+    leafByPatch_.clear();
 
     bool haveEpoch = false;
     std::uint64_t epoch = 0;
-    for(std::size_t i = 0; i < descriptorsByRank_.size(); ++i)
+    for(std::size_t i = 0; i < descriptorsByIndex_.size(); ++i)
     {
-        const FmmRankRootDescriptor& descriptor = descriptorsByRank_[i];
+        const FmmPatchRootDescriptor& descriptor = descriptorsByIndex_[i];
         if(descriptor.magic != FMM_MPI_PACKET_MAGIC ||
            descriptor.version != FMM_MPI_PACKET_VERSION)
             throw UniversalError("FmmProcessTree::build: incompatible root descriptor protocol");
-        if(descriptor.rank != static_cast<int>(i))
-            throw UniversalError("FmmProcessTree::build: descriptor rank/index mismatch");
+        if(descriptor.ownerRank != static_cast<int>(i))
+            throw UniversalError("FmmProcessTree::build: descriptor owner/index mismatch");
         if(!haveEpoch)
         {
             epoch = descriptor.epoch;
@@ -84,6 +86,7 @@ void FmmProcessTree::build(const std::vector<FmmRankRootDescriptor>& descriptors
             continue;
         }
         if(descriptor.active != 1 || descriptor.particleCount == 0 ||
+           descriptor.patchId == 0 ||
            !finiteCube(descriptor.centerVector(), descriptor.halfSize))
             throw UniversalError("FmmProcessTree::build: invalid active root descriptor");
         if((descriptor.rootLeaf != 0 && descriptor.rootLeaf != 1) ||
@@ -91,19 +94,20 @@ void FmmProcessTree::build(const std::vector<FmmRankRootDescriptor>& descriptors
            (descriptor.rootLeaf != 0 && descriptor.childMask != 0) ||
            (descriptor.rootLeaf == 0 && descriptor.childMask == 0))
             throw UniversalError("FmmProcessTree::build: inconsistent root topology descriptor");
-        activeRanks_.push_back(descriptor.rank);
+        activeDescriptorIndices_.push_back(i);
+        activeRanks_.push_back(descriptor.ownerRank);
     }
-    if(activeRanks_.empty())
+    if(activeDescriptorIndices_.empty())
     {
         topologyHash_ = 0;
-        std::vector<FmmRankRootDescriptor>().swap(descriptorsByRank_);
+        std::vector<FmmPatchRootDescriptor>().swap(descriptorsByIndex_);
         return;
     }
 
-    buildRange(0, activeRanks_.size(), 0);
+    buildRange(0, activeDescriptorIndices_.size(), 0);
     buildLevels();
     computeHash();
-    std::vector<FmmRankRootDescriptor>().swap(descriptorsByRank_);
+    std::vector<FmmPatchRootDescriptor>().swap(descriptorsByIndex_);
 }
 
 std::size_t FmmProcessTree::buildRange(std::size_t begin,
@@ -118,8 +122,8 @@ std::size_t FmmProcessTree::buildRange(std::size_t begin,
     bool first = true;
     for(std::size_t i = begin; i < end; ++i)
     {
-        const FmmRankRootDescriptor& descriptor =
-            descriptorsByRank_[static_cast<std::size_t>(activeRanks_[i])];
+        const FmmPatchRootDescriptor& descriptor =
+            descriptorsByIndex_[activeDescriptorIndices_[i]];
         const Vector3D center = descriptor.centerVector();
         const Vector3D lo(center.x - descriptor.halfSize,
                           center.y - descriptor.halfSize,
@@ -149,15 +153,24 @@ std::size_t FmmProcessTree::buildRange(std::size_t begin,
         const Vector3D extent = upper - lower;
         const int axis = extent.x >= extent.y && extent.x >= extent.z ? 0 :
             (extent.y >= extent.z ? 1 : 2);
-        std::stable_sort(activeRanks_.begin() + static_cast<std::ptrdiff_t>(begin),
-                         activeRanks_.begin() + static_cast<std::ptrdiff_t>(end),
-            [&](int lhs, int rhs)
+        std::stable_sort(activeDescriptorIndices_.begin() +
+                             static_cast<std::ptrdiff_t>(begin),
+                         activeDescriptorIndices_.begin() +
+                             static_cast<std::ptrdiff_t>(end),
+            [&](std::size_t lhs, std::size_t rhs)
             {
-                const Vector3D a = descriptorsByRank_[static_cast<std::size_t>(lhs)].centerVector();
-                const Vector3D b = descriptorsByRank_[static_cast<std::size_t>(rhs)].centerVector();
+                const Vector3D a =
+                    descriptorsByIndex_[lhs].centerVector();
+                const Vector3D b =
+                    descriptorsByIndex_[rhs].centerVector();
                 const double av = axis == 0 ? a.x : (axis == 1 ? a.y : a.z);
                 const double bv = axis == 0 ? b.x : (axis == 1 ? b.y : b.z);
-                return av < bv || (av == bv && lhs < rhs);
+                const int ownerA = descriptorsByIndex_[lhs].ownerRank;
+                const int ownerB = descriptorsByIndex_[rhs].ownerRank;
+                return av < bv || (av == bv && ownerA < ownerB) ||
+                       (av == bv && ownerA == ownerB &&
+                        descriptorsByIndex_[lhs].patchId <
+                            descriptorsByIndex_[rhs].patchId);
             });
     }
 
@@ -184,21 +197,28 @@ std::size_t FmmProcessTree::buildRange(std::size_t begin,
 
     if(end - begin == 1)
     {
-        node.leafRank = activeRanks_[begin];
-        node.owner = node.leafRank;
-        const FmmRankRootDescriptor& descriptor =
-            descriptorsByRank_[static_cast<std::size_t>(node.leafRank)];
+        const std::size_t descriptorIndex = activeDescriptorIndices_[begin];
+        const FmmPatchRootDescriptor& descriptor =
+            descriptorsByIndex_[descriptorIndex];
+        node.leafOwnerRank = descriptor.ownerRank;
+        node.leafPatchId = descriptor.patchId;
+        node.leafDescriptorIndex = descriptorIndex;
+        node.owner = node.leafOwnerRank;
         node.center = descriptor.centerVector();
         node.halfSize = descriptor.halfSize;
         if(!finiteCube(node.center, node.halfSize))
             throw UniversalError("FmmProcessTree::buildRange: invalid process leaf cube");
         node.radius = std::sqrt(3.0) * node.halfSize;
-        leafByRank_[node.leafRank] = nodeIndex;
+        const FmmPatchKey patchKey = node.leafKey();
+        if(!patchKey.valid())
+            throw UniversalError("FmmProcessTree::buildRange: invalid leaf patch key");
+        if(!leafByPatch_.emplace(patchKey, nodeIndex).second)
+            throw UniversalError("FmmProcessTree::buildRange: duplicate patch leaf");
         return nodeIndex;
     }
 
     const std::size_t mid = begin + (end - begin) / 2;
-    const int owner = activeRanks_[mid];
+    const int owner = descriptorsByIndex_[activeDescriptorIndices_[mid]].ownerRank;
     nodes_[nodeIndex].owner = owner;
     const std::size_t left = buildRange(begin, mid, depth + 1);
     const std::size_t right = buildRange(mid, end, depth + 1);
@@ -227,7 +247,9 @@ void FmmProcessTree::computeHash()
     {
         const std::uint64_t fields[] = {
             static_cast<std::uint64_t>(node.owner + 1),
-            static_cast<std::uint64_t>(node.leafRank + 1),
+            static_cast<std::uint64_t>(node.leafOwnerRank + 1),
+            node.leafPatchId,
+            static_cast<std::uint64_t>(node.leafDescriptorIndex),
             static_cast<std::uint64_t>(node.begin),
             static_cast<std::uint64_t>(node.end),
             static_cast<std::uint64_t>(node.depth),
@@ -249,9 +271,11 @@ std::size_t FmmProcessTree::bytesOwned() const
 {
     std::size_t result = 0;
     result = saturatingAdd(result, saturatingMultiply(
-        descriptorsByRank_.capacity(), sizeof(FmmRankRootDescriptor)));
+        descriptorsByIndex_.capacity(), sizeof(FmmPatchRootDescriptor)));
     result = saturatingAdd(result, saturatingMultiply(
         activeRanks_.capacity(), sizeof(int)));
+    result = saturatingAdd(result, saturatingMultiply(
+        activeDescriptorIndices_.capacity(), sizeof(std::size_t)));
     result = saturatingAdd(result, saturatingMultiply(
         nodes_.capacity(), sizeof(FmmProcessNode)));
     result = saturatingAdd(result, saturatingMultiply(
@@ -260,16 +284,27 @@ std::size_t FmmProcessTree::bytesOwned() const
         result = saturatingAdd(result, saturatingMultiply(
             level.capacity(), sizeof(std::size_t)));
     const std::size_t mapEntryBytes =
-        sizeof(std::pair<const int, std::size_t>) + 2 * sizeof(void*);
+        sizeof(std::pair<const FmmPatchKey, std::size_t>) + 2 * sizeof(void*);
     result = saturatingAdd(result, saturatingMultiply(
-        leafByRank_.size(), mapEntryBytes));
+        leafByPatch_.size(), mapEntryBytes));
     return result;
+}
+
+std::size_t FmmProcessTree::leafForPatch(const FmmPatchKey& patch) const
+{
+    const auto it = leafByPatch_.find(patch);
+    return it == leafByPatch_.end() ? invalidIndex() : it->second;
 }
 
 std::size_t FmmProcessTree::leafForRank(int rank) const
 {
-    const auto it = leafByRank_.find(rank);
-    return it == leafByRank_.end() ? invalidIndex() : it->second;
+    const std::size_t leaf = leafForPatch(fmmCompatPatchKey(rank));
+    if(leaf == invalidIndex())
+        return invalidIndex();
+    const FmmProcessNode& node = nodes_[leaf];
+    if(node.leafOwnerRank != rank)
+        throw UniversalError("FmmProcessTree::leafForRank: rank owns multiple patches");
+    return leaf;
 }
 
 #endif // RICH_MPI

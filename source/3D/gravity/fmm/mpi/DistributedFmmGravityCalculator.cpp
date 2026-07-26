@@ -543,6 +543,30 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
         localOptionsError =
             "DistributedFmmGravityCalculator: invalid persistent merge factor";
     }
+    else if(distributedOptions_.enablePatchForest)
+    {
+        localOptionsOk = false;
+        localOptionsError =
+            "DistributedFmmGravityCalculator: patch forest mode is not implemented yet";
+    }
+    else if(distributedOptions_.minimumPatchLevel < 0 ||
+            distributedOptions_.minimumPatchLevel > FMM_MAX_TREE_DEPTH ||
+            distributedOptions_.maximumPatchLevel < 0 ||
+            distributedOptions_.maximumPatchLevel > FMM_MAX_TREE_DEPTH ||
+            distributedOptions_.minimumPatchLevel >
+                distributedOptions_.maximumPatchLevel)
+    {
+        localOptionsOk = false;
+        localOptionsError =
+            "DistributedFmmGravityCalculator: invalid patch level bounds";
+    }
+    else if(distributedOptions_.maxLocalPatchCount == 0 ||
+            distributedOptions_.maxTargetPatchesPerWave == 0)
+    {
+        localOptionsOk = false;
+        localOptionsError =
+            "DistributedFmmGravityCalculator: invalid patch count limits";
+    }
     if(localOptionsOk && distributedOptions_.persistentLocalTreeTopology)
     {
         try
@@ -852,10 +876,11 @@ DistributedFmmGravityCalculator::prepareLocalTree(
     return change;
 }
 
-FmmRankRootDescriptor DistributedFmmGravityCalculator::localRootDescriptor() const
+FmmPatchRootDescriptor DistributedFmmGravityCalculator::localRootDescriptor() const
 {
-    FmmRankRootDescriptor result;
-    result.rank = rank_;
+    FmmPatchRootDescriptor result;
+    result.ownerRank = rank_;
+    result.patchId = FMM_COMPAT_PATCH_ID;
     result.active = localTree_.nodes().empty() ? 0 : 1;
     result.topologyHash = lastLocalTopologyHash_;
     result.epoch = topologyEpoch_;
@@ -898,11 +923,11 @@ void DistributedFmmGravityCalculator::rebuildTopology(
         ++processTopologyRebuildCount_;
 
     const Clock::time_point descriptorStart = Clock::now();
-    const FmmRankRootDescriptor local = localRootDescriptor();
+    const FmmPatchRootDescriptor local = localRootDescriptor();
     rootDescriptors_.resize(static_cast<std::size_t>(size_));
-    MPI_Allgather(&local, static_cast<int>(sizeof(FmmRankRootDescriptor)), MPI_BYTE,
+    MPI_Allgather(&local, static_cast<int>(sizeof(FmmPatchRootDescriptor)), MPI_BYTE,
                   rootDescriptors_.data(),
-                  static_cast<int>(sizeof(FmmRankRootDescriptor)), MPI_BYTE,
+                  static_cast<int>(sizeof(FmmPatchRootDescriptor)), MPI_BYTE,
                   comm_);
     stats_.rootDescriptorExchangeSeconds = elapsed(descriptorStart);
 
@@ -1446,7 +1471,7 @@ void DistributedFmmGravityCalculator::solve(
     stats_.bytesOwned = stats_.localTreeBytes +
         stats_.localMultipoleBytes + stats_.localLocalBytes +
         stats_.localInteractionPlanBytes + operatorCache_.bytesOwned() +
-        rootDescriptors_.capacity() * sizeof(FmmRankRootDescriptor) +
+        rootDescriptors_.capacity() * sizeof(FmmPatchRootDescriptor) +
         lastLocalStructuralSignature_.capacity() * sizeof(std::uint64_t) +
         lastLocalOccupancySignature_.capacity() * sizeof(std::uint64_t) +
         processTree_.bytesOwned() + processPlan_.bytesOwned() +

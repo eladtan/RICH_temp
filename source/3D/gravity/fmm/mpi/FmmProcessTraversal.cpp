@@ -129,15 +129,15 @@ FmmProcessPairPlan FmmProcessTraversal::build(const FmmProcessTree& tree,
 
             if(target.isLeaf() && source.isLeaf())
             {
-                if(target.leafRank == source.leafRank)
+                if(target.leafKey() == source.leafKey())
                 {
                     ++plan.localSelfRankCount;
                 }
                 else
                 {
                     ++plan.letRankPairCount;
-                    letSources.insert(source.leafRank);
-                    dependencies[source.leafRank].insert(std::make_pair(0u, 2));
+                    letSources.insert(source.leafOwnerRank);
+                    dependencies[source.leafOwnerRank].insert(std::make_pair(0u, 2));
                 }
                 continue;
             }
