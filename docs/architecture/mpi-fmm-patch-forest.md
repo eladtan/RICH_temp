@@ -51,6 +51,13 @@ compatibility tree. Its particle buffers, tree storage, coefficient arrays, and
 local interaction plan are retained where valid. Removed patches release their
 owned storage.
 
+Each persistent patch also carries a monotonic topology generation. The
+generation advances on a root/structure change or conservative-radius growth
+and is unchanged by occupancy changes or radius contraction. Remote target
+subplans compare this generation rather than relying on a probabilistic geometry
+hash, so a retained plan cannot survive a source-topology change through a hash
+collision.
+
 Local self-interaction plans are reused only when node identity, leaf status,
 centers, half sizes, and conservative admissibility bounds remain valid.
 Particle-count changes alone do not invalidate a local plan.
@@ -140,6 +147,8 @@ policy is justified.
 - warm occupancy-only motion with process and LET reuse;
 - stable particle-count changes without payload-shape rebuild;
 - persistent patch-tree split and merge events;
+- empty full-octant leaves transported through patch-aware descriptor
+  traversal;
 - incremental target-subplan reuse and source invalidation;
 - patch appearance/disappearance and full process rebuild;
 - bounded multi-wave LET execution;

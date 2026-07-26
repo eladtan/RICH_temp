@@ -63,8 +63,11 @@ bool validRemoteDescriptor(const FmmRemoteNodeDescriptor& descriptor)
         std::isfinite(descriptor.radius) &&
         descriptor.radius <= cubeRadius + tolerance &&
         descriptor.spatialKey != 0 && descriptor.patchId != 0 &&
-        descriptor.particleCount != 0 &&
         descriptor.sourceRank >= 0 &&
+        // Persistent full-octant trees deliberately expose empty leaf nodes so
+        // a later occupancy-only solve can reuse the same interaction plan.
+        // Empty internal nodes are never a valid retained topology state.
+        (descriptor.particleCount != 0 || descriptor.isLeaf != 0) &&
         (descriptor.isLeaf == 0 || descriptor.isLeaf == 1) &&
         descriptor.childMask >= 0 && descriptor.childMask <= 255 &&
         ((descriptor.isLeaf != 0 && descriptor.childMask == 0) ||

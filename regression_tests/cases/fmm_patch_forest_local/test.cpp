@@ -406,6 +406,85 @@ bool testScatterAccumulation()
                            return closeVector(value, Vector3D(1.0, 2.0, 3.0), 1.0e-12);
                        });
 }
+
+bool testCountOnlyChangeClassification()
+{
+    FmmGravityOptions gravity;
+    gravity.leafCapacity = 16;
+    FmmDistributedOptions options;
+    options.minimumPatchLevel = 1;
+    options.maximumPatchLevel = 1;
+    options.targetParticlesPerPatch = 0;
+
+    std::vector<Vector3D> firstPositions{
+        Vector3D(-0.75, -0.75, -0.75),
+        Vector3D(0.75, 0.75, 0.75)};
+    std::vector<double> firstMasses(firstPositions.size(), 1.0);
+    FmmPatchForest forest;
+    forest.prepare(firstPositions, firstMasses,
+                   cellIdsForCount(firstPositions.size()),
+                   kDomainLower, kDomainUpper, gravity, options, 0);
+
+    // Change the occupancy of only one patch while leaving its geometry and
+    // tree address space unchanged. An unchanged second patch must not prevent
+    // the aggregate change from being classified as count-only.
+    std::vector<Vector3D> secondPositions = firstPositions;
+    secondPositions.push_back(firstPositions.front());
+    std::vector<double> secondMasses(secondPositions.size(), 1.0);
+    const FmmPatchForestChange change = forest.prepare(
+        secondPositions, secondMasses,
+        cellIdsForCount(secondPositions.size()),
+        kDomainLower, kDomainUpper, gravity, options, 0);
+    return change.occupancyChanged && change.countOnlyChanged &&
+           !change.patchSetChanged && !change.patchGeometryChanged &&
+           !change.structuralTopologyChanged;
+}
+
+bool testPhysicalDomainValidation()
+{
+    const Vector3D lower(-1.0, -0.25, -0.25);
+    const Vector3D upper(1.0, 0.25, 0.25);
+    // This point lies inside the padded cubic lattice root but outside the
+    // caller's physical rectangular domain.
+    const std::vector<Vector3D> positions{Vector3D(0.0, 0.75, 0.0)};
+    bool rejected = false;
+    try
+    {
+        FmmPatchForest forest;
+        forest.prepare(positions, std::vector<double>(1, 1.0),
+                       cellIdsForCount(1), lower, upper,
+                       FmmGravityOptions(), FmmDistributedOptions(), 0);
+    }
+    catch(const UniversalError&)
+    {
+        rejected = true;
+    }
+    return rejected;
+}
+
+bool testPersistentOptionValidation()
+{
+    FmmDistributedOptions options;
+    options.minimumPatchLevel = 1;
+    options.maximumPatchLevel = 1;
+    options.persistentLocalTreeTopology = true;
+    options.persistentLeafMergeFactor =
+        std::numeric_limits<double>::quiet_NaN();
+    bool rejected = false;
+    try
+    {
+        FmmPatchForest forest;
+        const std::vector<Vector3D> positions{Vector3D(-0.5, -0.5, -0.5)};
+        forest.preparePersistent(
+            positions, std::vector<double>(1, 1.0), cellIdsForCount(1),
+            kDomainLower, kDomainUpper, FmmGravityOptions(), options, 0);
+    }
+    catch(const UniversalError&)
+    {
+        rejected = true;
+    }
+    return rejected;
+}
 }
 
 int main()
@@ -439,11 +518,14 @@ int main()
                          distributedOptions, 0.12, false) &&
         testPermutationDeterminism() &&
         testAdaptiveSplitAndCap() &&
-        testScatterAccumulation();
+        testScatterAccumulation() &&
+        testCountOnlyChangeClassification() &&
+        testPhysicalDomainValidation() &&
+        testPersistentOptionValidation();
 
     std::ofstream output("fmm_patch_forest_local_metrics.txt");
     output << "pass " << (pass ? 1 : 0) << "\n";
-    output << "cases 11\n";
+    output << "cases 15\n";
     std::cout << "fmm_patch_forest_local pass=" << pass << std::endl;
     return pass ? 0 : 1;
 }

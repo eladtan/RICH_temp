@@ -29,6 +29,33 @@ std::uint64_t hashDouble(double value)
     return bits;
 }
 
+std::uint64_t structuralSignatureHash(
+    const std::vector<std::uint64_t>& signature)
+{
+    std::uint64_t hash = 1469598103934665603ull;
+    for(std::uint64_t value : signature)
+        hash = hashCombine(hash, value);
+    return hash;
+}
+
+std::uint64_t descriptorTopologyHash(const FmmTree& tree)
+{
+    std::uint64_t hash = 1469598103934665603ull;
+    for(const FmmNode& node : tree.nodes())
+    {
+        hash = hashCombine(hash, node.spatialKey);
+        hash = hashCombine(hash, static_cast<std::uint64_t>(node.childMask));
+        hash = hashCombine(hash, static_cast<std::uint64_t>(node.isLeaf()));
+        hash = hashCombine(hash, static_cast<std::uint64_t>(node.depth));
+        hash = hashCombine(hash, hashDouble(node.center.x));
+        hash = hashCombine(hash, hashDouble(node.center.y));
+        hash = hashCombine(hash, hashDouble(node.center.z));
+        hash = hashCombine(hash, hashDouble(node.halfSize));
+        hash = hashCombine(hash, hashDouble(node.radius));
+    }
+    return hash;
+}
+
 std::vector<std::uint64_t> structuralTopologySignature(const FmmTree& tree)
 {
     std::vector<std::uint64_t> signature;
@@ -132,7 +159,10 @@ void FmmPatchForest::validatePrepareInputs(
         throw UniversalError("FmmPatchForest::prepare: invalid owner rank");
     if(distributedOptions.maxLocalPatchCount == 0)
         throw UniversalError("FmmPatchForest::prepare: maxLocalPatchCount must be positive");
-    if(!(domainLower.x < domainUpper.x) ||
+    if(!std::isfinite(domainLower.x) || !std::isfinite(domainLower.y) ||
+       !std::isfinite(domainLower.z) || !std::isfinite(domainUpper.x) ||
+       !std::isfinite(domainUpper.y) || !std::isfinite(domainUpper.z) ||
+       !(domainLower.x < domainUpper.x) ||
        !(domainLower.y < domainUpper.y) ||
        !(domainLower.z < domainUpper.z))
         throw UniversalError("FmmPatchForest::prepare: invalid domain bounds");
@@ -145,6 +175,21 @@ void FmmPatchForest::validatePrepareInputs(
         throw UniversalError("FmmPatchForest::prepare: invalid theta");
     if(gravityOptions.leafCapacity == 0)
         throw UniversalError("FmmPatchForest::prepare: invalid leaf capacity");
+    if(gravityOptions.maxDepth <= 0 ||
+       gravityOptions.maxDepth > FMM_MAX_TREE_DEPTH)
+        throw UniversalError("FmmPatchForest::prepare: invalid maximum tree depth");
+    if(gravityOptions.maxLeafHalfSize < 0.0 ||
+       !std::isfinite(gravityOptions.maxLeafHalfSize))
+        throw UniversalError("FmmPatchForest::prepare: invalid maximum leaf half size");
+    if(distributedOptions.persistentLocalTreeTopology &&
+       (!(distributedOptions.persistentLeafSplitFactor > 1.0) ||
+        !std::isfinite(distributedOptions.persistentLeafSplitFactor)))
+        throw UniversalError("FmmPatchForest::prepare: invalid persistent split factor");
+    if(distributedOptions.persistentLocalTreeTopology &&
+       (!(distributedOptions.persistentLeafMergeFactor >= 0.0) ||
+        !(distributedOptions.persistentLeafMergeFactor < 1.0) ||
+        !std::isfinite(distributedOptions.persistentLeafMergeFactor)))
+        throw UniversalError("FmmPatchForest::prepare: invalid persistent merge factor");
     if(distributedOptions.minimumPatchLevel < 0 ||
        distributedOptions.minimumPatchLevel > FMM_MAX_TREE_DEPTH ||
        distributedOptions.maximumPatchLevel <
@@ -152,10 +197,6 @@ void FmmPatchForest::validatePrepareInputs(
        distributedOptions.maximumPatchLevel > FMM_MAX_TREE_DEPTH)
         throw UniversalError("FmmPatchForest::prepare: invalid patch levels");
 
-    const FmmGlobalDyadicLattice lattice =
-        FmmGlobalDyadicLattice::fromDomain(domainLower, domainUpper);
-    const Vector3D domainLo = lattice.globalRoot().lower();
-    const Vector3D domainHi = lattice.globalRoot().upper();
     for(std::size_t index = 0; index < positions.size(); ++index)
     {
         const Vector3D& point = positions[index];
@@ -166,9 +207,9 @@ void FmmPatchForest::validatePrepareInputs(
             error.addEntry("particle", index);
             throw error;
         }
-        if(point.x < domainLo.x || point.x > domainHi.x ||
-           point.y < domainLo.y || point.y > domainHi.y ||
-           point.z < domainLo.z || point.z > domainHi.z)
+        if(point.x < domainLower.x || point.x > domainUpper.x ||
+           point.y < domainLower.y || point.y > domainUpper.y ||
+           point.z < domainLower.z || point.z > domainUpper.z)
         {
             UniversalError error("FmmPatchForest::prepare: point outside domain");
             error.addEntry("particle", index);
@@ -401,9 +442,11 @@ void FmmPatchForest::buildPatchObjects(
         sortIndicesWithinPatch(patch);
 
         patch.tree.build(patch.positions, patch.root, gravityOptions_);
-        patch.topologyHash = patch.tree.topologyHash();
         patch.structuralSignature = structuralTopologySignature(patch.tree);
+        patch.structuralTreeHash =
+            structuralSignatureHash(patch.structuralSignature);
         patch.occupancySignature = leafOccupancySignature(patch.tree);
+        patch.topologyHash = descriptorTopologyHash(patch.tree);
         FmmDualTreeTraversal::buildLocalPlan(
             patch.tree, gravityOptions_.thetaCritical, patch.localPlan);
 
@@ -628,7 +671,6 @@ FmmPatchForestChange FmmPatchForest::compareWithPrevious() const
     for(const FmmLocalPatch& patch : patches_)
         currentById.emplace(patch.key.patchId, &patch);
 
-    bool allChangesCountOnly = !patches_.empty();
     for(const auto& entry : currentById)
     {
         const auto previous = previousById.find(entry.first);
@@ -636,7 +678,6 @@ FmmPatchForestChange FmmPatchForest::compareWithPrevious() const
         {
             ++change.createdPatches;
             change.patchSetChanged = true;
-            allChangesCountOnly = false;
             continue;
         }
         ++change.matchedPatchIds;
@@ -644,6 +685,7 @@ FmmPatchForestChange FmmPatchForest::compareWithPrevious() const
         const FmmLocalPatch& prior = *previous->second;
         const bool structureSame =
             current.topologyHash == prior.topologyHash &&
+            current.structuralTreeHash == prior.structuralTreeHash &&
             current.structuralSignature == prior.structuralSignature;
         const bool occupancyDiff =
             current.occupancySignature != prior.occupancySignature;
@@ -657,8 +699,6 @@ FmmPatchForestChange FmmPatchForest::compareWithPrevious() const
             change.structuralTopologyChanged = true;
         if(occupancyDiff)
             change.occupancyChanged = true;
-        if(!(structureSame && occupancyDiff))
-            allChangesCountOnly = false;
     }
 
     for(const auto& entry : previousById)
@@ -667,15 +707,14 @@ FmmPatchForestChange FmmPatchForest::compareWithPrevious() const
         {
             ++change.removedPatches;
             change.patchSetChanged = true;
-            allChangesCountOnly = false;
         }
     }
 
     if(change.createdPatches > 0 || change.removedPatches > 0)
         change.patchSetChanged = true;
-    change.countOnlyChanged = allChangesCountOnly &&
-        (change.occupancyChanged || change.createdPatches > 0 ||
-         change.removedPatches > 0);
+    change.countOnlyChanged = change.occupancyChanged &&
+        !change.patchSetChanged && !change.patchGeometryChanged &&
+        !change.structuralTopologyChanged;
     return change;
 }
 

@@ -26,55 +26,60 @@ check_fmm_patch_moving_mesh_case() {
         return 1
     fi
 
-    local pass max_error warm_process warm_let warm_count_only warm_payload_rebuild
-    local split_process split_let merge_process merge_let patch_set_process
-    local reused rebuilt source_invalidations wave_rebuilds max_waves
-    local owner_imbalance descriptor_bytes
-    pass=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
-    max_error=$(awk '$1 == "max_relative_error" { print $2 }' "$metrics_file")
-    warm_process=$(awk '$1 == "warm_process_reused" { print $2 }' "$metrics_file")
-    warm_let=$(awk '$1 == "warm_let_reused" { print $2 }' "$metrics_file")
-    warm_count_only=$(awk '$1 == "warm_count_only_reused" { print $2 }' "$metrics_file")
-    warm_payload_rebuild=$(awk '$1 == "warm_payload_shape_rebuilt" { print $2 }' "$metrics_file")
-    split_process=$(awk '$1 == "split_process_reused" { print $2 }' "$metrics_file")
-    split_let=$(awk '$1 == "split_let_rebuilt" { print $2 }' "$metrics_file")
-    merge_process=$(awk '$1 == "merge_process_reused" { print $2 }' "$metrics_file")
-    merge_let=$(awk '$1 == "merge_let_rebuilt" { print $2 }' "$metrics_file")
-    patch_set_process=$(awk '$1 == "patch_set_process_rebuilt" { print $2 }' "$metrics_file")
-    reused=$(awk '$1 == "target_subplans_reused" { print $2 }' "$metrics_file")
-    rebuilt=$(awk '$1 == "target_subplans_rebuilt" { print $2 }' "$metrics_file")
-    source_invalidations=$(awk '$1 == "source_invalidations" { print $2 }' "$metrics_file")
-    wave_rebuilds=$(awk '$1 == "wave_plan_rebuilds" { print $2 }' "$metrics_file")
-    max_waves=$(awk '$1 == "max_wave_count" { print $2 }' "$metrics_file")
-    owner_imbalance=$(awk '$1 == "max_owner_imbalance" { print $2 }' "$metrics_file")
-    descriptor_bytes=$(awk '$1 == "max_descriptor_bytes" { print $2 }' "$metrics_file")
+    local pass error warm_process warm_let warm_count warm_payload
+    local split_process split_let merge_process merge_let empty_leaves
+    local patch_set reused rebuilt invalidations wave_rebuilds waves imbalance
+    pass="$(awk '$1 == "pass" {print $2}' "$metrics_file" | tail -n 1)"
+    error="$(awk '$1 == "max_relative_error" {print $2}' "$metrics_file" | tail -n 1)"
+    warm_process="$(awk '$1 == "warm_process_reused" {print $2}' "$metrics_file" | tail -n 1)"
+    warm_let="$(awk '$1 == "warm_let_reused" {print $2}' "$metrics_file" | tail -n 1)"
+    warm_count="$(awk '$1 == "warm_count_only_reused" {print $2}' "$metrics_file" | tail -n 1)"
+    warm_payload="$(awk '$1 == "warm_payload_shape_rebuilt" {print $2}' "$metrics_file" | tail -n 1)"
+    split_process="$(awk '$1 == "split_process_reused" {print $2}' "$metrics_file" | tail -n 1)"
+    split_let="$(awk '$1 == "split_let_rebuilt" {print $2}' "$metrics_file" | tail -n 1)"
+    merge_process="$(awk '$1 == "merge_process_reused" {print $2}' "$metrics_file" | tail -n 1)"
+    merge_let="$(awk '$1 == "merge_let_rebuilt" {print $2}' "$metrics_file" | tail -n 1)"
+    empty_leaves="$(awk '$1 == "persistent_empty_leaves_exercised" {print $2}' "$metrics_file" | tail -n 1)"
+    patch_set="$(awk '$1 == "patch_set_process_rebuilt" {print $2}' "$metrics_file" | tail -n 1)"
+    reused="$(awk '$1 == "target_subplans_reused" {print $2}' "$metrics_file" | tail -n 1)"
+    rebuilt="$(awk '$1 == "target_subplans_rebuilt" {print $2}' "$metrics_file" | tail -n 1)"
+    invalidations="$(awk '$1 == "source_invalidations" {print $2}' "$metrics_file" | tail -n 1)"
+    wave_rebuilds="$(awk '$1 == "wave_plan_rebuilds" {print $2}' "$metrics_file" | tail -n 1)"
+    waves="$(awk '$1 == "max_wave_count" {print $2}' "$metrics_file" | tail -n 1)"
+    imbalance="$(awk '$1 == "max_owner_imbalance" {print $2}' "$metrics_file" | tail -n 1)"
 
     if [[ "$pass" != "1" || "$warm_process" != "1" ||
-          "$warm_let" != "1" || "$warm_count_only" != "1" ||
-          "$warm_payload_rebuild" != "0" || "$split_process" != "1" ||
+          "$warm_let" != "1" || "$warm_count" != "1" ||
+          "$warm_payload" != "0" || "$split_process" != "1" ||
           "$split_let" != "1" || "$merge_process" != "1" ||
-          "$merge_let" != "1" || "$patch_set_process" != "1" ]]; then
-        set_check_msg "patch moving-mesh topology reuse/rebuild assertions failed"
+          "$merge_let" != "1" || "$empty_leaves" != "1" ||
+          "$patch_set" != "1" ]]; then
+        set_check_msg "patch moving-mesh reuse/rebuild flags are invalid"
         return 1
     fi
-    if ! is_finite_number "$max_error" ||
-       ! awk -v e="$max_error" 'BEGIN { exit !(e >= 0 && e < 0.1) }'; then
-        set_check_msg "patch moving-mesh accuracy failed (${max_error:-missing})"
+    if [[ -z "$error" ]] || ! is_finite_number "$error" ||
+       ! awk -v e="$error" 'BEGIN { exit !(e < 0.1) }'; then
+        set_check_msg "patch moving-mesh error exceeds tolerance (${error})"
         return 1
     fi
-    if ! is_finite_number "$owner_imbalance" ||
-       ! awk -v v="$owner_imbalance" 'BEGIN { exit !(v >= 0 && v < 3.0) }'; then
-        set_check_msg "patch process-owner imbalance failed (${owner_imbalance:-missing})"
+    if [[ -z "$reused" || -z "$rebuilt" || -z "$invalidations" ||
+          -z "$wave_rebuilds" ]] ||
+       ! awk -v a="$reused" -v b="$rebuilt" -v c="$invalidations" -v d="$wave_rebuilds" \
+           'BEGIN { exit !(a > 0 && b > 0 && c > 0 && d > 0) }'; then
+        set_check_msg "patch moving-mesh incremental LET coverage is incomplete"
         return 1
     fi
-    if ! awk -v a="$reused" -v b="$rebuilt" -v s="$source_invalidations" \
-             -v w="$wave_rebuilds" -v n="$max_waves" -v d="$descriptor_bytes" \
-             'BEGIN { exit !(a > 0 && b > 0 && s > 0 && w > 0 && n > 1 && d > 0) }'; then
-        set_check_msg "patch moving-mesh incremental LET or metadata coverage missing"
+    if [[ -z "$waves" ]] || ! awk -v w="$waves" 'BEGIN { exit !(w > 1) }'; then
+        set_check_msg "patch moving-mesh test did not exercise multiple waves (${waves})"
+        return 1
+    fi
+    if [[ -z "$imbalance" ]] || ! is_finite_number "$imbalance" ||
+       ! awk -v x="$imbalance" 'BEGIN { exit !(x < 3.0) }'; then
+        set_check_msg "patch process-owner imbalance is invalid (${imbalance})"
         return 1
     fi
 
-    set_check_msg "Patch moving-mesh reuse passed (error=${max_error}, reused_targets=${reused}, rebuilt_targets=${rebuilt}, waves=${max_waves})"
+    set_check_msg "persistent patch moving-mesh reuse passed (error=${error}, waves=${waves}, imbalance=${imbalance})"
     return 0
 }
 

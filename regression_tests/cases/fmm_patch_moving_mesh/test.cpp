@@ -308,6 +308,8 @@ int main(int argc, char** argv)
         !stepStats[3].processTopologyRebuilt &&
         stepStats[3].letTopologyRebuilt &&
         stepStats[3].persistentSubtreeMergeCount > 0;
+    const bool emptyPersistentLeavesExercised =
+        stepStats[2].persistentEmptyLeafCount > 0;
     const bool patchSetRebuild = stepStats[4].processTopologyRebuilt &&
         stepStats[4].letTopologyRebuilt;
     const bool incrementalCoverage = globalIncremental[0] > 0 &&
@@ -320,6 +322,7 @@ int main(int argc, char** argv)
         stepStats[0].letTopologyRebuilt && warmReuse &&
         splitIncremental && mergeIncremental && patchSetRebuild &&
         incrementalCoverage && memoryBound && globalWaves > 1 &&
+        emptyPersistentLeavesExercised &&
         std::isfinite(maximumImbalance) && maximumImbalance < 3.0;
 
     if(rank == 0)
@@ -344,6 +347,8 @@ int main(int argc, char** argv)
                << (!stepStats[3].processTopologyRebuilt ? 1 : 0) << "\n";
         output << "merge_let_rebuilt "
                << (stepStats[3].letTopologyRebuilt ? 1 : 0) << "\n";
+        output << "persistent_empty_leaves_exercised "
+               << (emptyPersistentLeavesExercised ? 1 : 0) << "\n";
         output << "patch_set_process_rebuilt "
                << (stepStats[4].processTopologyRebuilt ? 1 : 0) << "\n";
         output << "target_subplans_reused " << globalIncremental[0] << "\n";

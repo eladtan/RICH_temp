@@ -4,7 +4,6 @@
 
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 #include <limits>
 #include <unordered_map>
 #include <utility>
@@ -33,25 +32,21 @@ std::uint64_t hashCombine(std::uint64_t seed, std::uint64_t value)
                    (seed << 6) + (seed >> 2));
 }
 
-std::uint64_t doubleBits(double value)
-{
-    std::uint64_t bits = 0;
-    std::memcpy(&bits, &value, sizeof(bits));
-    return bits;
-}
-
-std::uint64_t descriptorTopologyHash(const FmmTree& tree)
+std::uint64_t structuralSignatureHash(
+    const std::vector<std::uint64_t>& signature)
 {
     std::uint64_t hash = 1469598103934665603ull;
-    for(const FmmNode& node : tree.nodes())
-    {
-        hash = hashCombine(hash, node.spatialKey);
-        hash = hashCombine(hash, static_cast<std::uint64_t>(node.childMask));
-        hash = hashCombine(hash, static_cast<std::uint64_t>(node.isLeaf()));
-        hash = hashCombine(hash, static_cast<std::uint64_t>(node.depth));
-        hash = hashCombine(hash, doubleBits(node.radius));
-    }
+    for(std::uint64_t value : signature)
+        hash = hashCombine(hash, value);
     return hash;
+}
+
+std::uint64_t nextTopologyGeneration(std::uint64_t previous)
+{
+    if(previous == std::numeric_limits<std::uint64_t>::max())
+        throw UniversalError(
+            "FmmPatchForest::preparePersistent: topology generation overflow");
+    return previous + 1;
 }
 
 std::size_t patchPersistentBytes(const FmmLocalPatch& patch)
@@ -255,7 +250,7 @@ FmmPatchForestChange FmmPatchForest::preparePersistent(
         FmmRootGeometry previousRoot;
         double previousRootRadius = 0.0;
         std::uint64_t previousStructuralTreeHash = 0;
-        std::uint64_t previousDescriptorTopologyHash = 0;
+        std::uint64_t previousTopologyGeneration = 0;
         if(matched)
         {
             const std::size_t previousIndex = previousIt->second;
@@ -263,7 +258,7 @@ FmmPatchForestChange FmmPatchForest::preparePersistent(
             patch = std::move(previousPatches_[previousIndex]);
             previousRoot = patch.root;
             previousStructuralTreeHash = patch.structuralTreeHash;
-            previousDescriptorTopologyHash = patch.topologyHash;
+            previousTopologyGeneration = patch.topologyHash;
             if(!patch.tree.nodes().empty())
                 previousRootRadius = patch.tree.nodes()[0].radius;
             ++change.matchedPatchIds;
@@ -322,10 +317,10 @@ FmmPatchForestChange FmmPatchForest::preparePersistent(
         change.persistentSubtreeMerges += persistentStats.subtreeMerges;
         change.persistentEmptyLeaves += persistentStats.emptyLeaves;
 
-        const std::uint64_t currentStructuralTreeHash =
-            patch.tree.topologyHash();
         std::vector<std::uint64_t> currentStructural =
             structuralTopologySignature(patch.tree);
+        const std::uint64_t currentStructuralTreeHash =
+            structuralSignatureHash(currentStructural);
         std::vector<std::uint64_t> currentOccupancy =
             leafOccupancySignature(patch.tree);
         const bool structureSame = matched &&
@@ -346,12 +341,19 @@ FmmPatchForestChange FmmPatchForest::preparePersistent(
             ++change.nodeGeometryExpansionPatches;
 
         patch.structuralTreeHash = currentStructuralTreeHash;
-        // Radius contraction cannot invalidate a previously accepted LET
-        // interaction. Preserve the old descriptor hash in that case so an
-        // unrelated patch rebuild can retain conservative cached geometry.
-        patch.topologyHash = matched && structureSame &&
-            !nodeGeometryExpanded ? previousDescriptorTopologyHash :
-                                    descriptorTopologyHash(patch.tree);
+        // The wire-visible value is a collision-free generation counter within
+        // one patch lifetime. Radius contraction is conservative and keeps the
+        // previous generation; any structural/root change or radius expansion
+        // advances it and invalidates dependent cached target subplans.
+        const bool descriptorTopologyChanged = !rootUnchanged ||
+            !structureSame || nodeGeometryExpanded;
+        if(!matched)
+            patch.topologyHash = 1;
+        else if(descriptorTopologyChanged)
+            patch.topologyHash = nextTopologyGeneration(
+                previousTopologyGeneration);
+        else
+            patch.topologyHash = previousTopologyGeneration;
         patch.structuralSignature.swap(currentStructural);
         patch.occupancySignature.swap(currentOccupancy);
 
