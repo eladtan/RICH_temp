@@ -40,6 +40,33 @@ std::size_t saturatingMultiply(std::size_t first, std::size_t second)
         std::numeric_limits<std::size_t>::max() : first * second;
 }
 
+std::size_t maximumStableLeafOccupancy(
+    const FmmGravityOptions& options,
+    const FmmDistributedOptions& distributedOptions)
+{
+    if(!distributedOptions.persistentLocalTreeTopology)
+        return options.leafCapacity;
+    const long double scaled = std::ceil(
+        static_cast<long double>(options.leafCapacity) *
+        static_cast<long double>(
+            distributedOptions.persistentLeafSplitFactor));
+    if(!std::isfinite(static_cast<double>(scaled)) ||
+       scaled > static_cast<long double>(
+           std::numeric_limits<std::size_t>::max()))
+        throw UniversalError(
+            "FmmPatchDistributedSolver: stable leaf occupancy overflow");
+    std::size_t result = static_cast<std::size_t>(scaled);
+    if(result <= options.leafCapacity)
+    {
+        if(options.leafCapacity ==
+           std::numeric_limits<std::size_t>::max())
+            throw UniversalError(
+                "FmmPatchDistributedSolver: stable leaf occupancy overflow");
+        result = options.leafCapacity + 1;
+    }
+    return result;
+}
+
 void collectiveRequire(bool localOk,
                        const std::string& localMessage,
                        const char* context,
@@ -251,32 +278,57 @@ bool finiteVector(const Vector3D& value)
            std::isfinite(value.z);
 }
 
-std::size_t patchForestBytes(const FmmPatchForest& forest)
+struct PatchForestMemory
 {
-    std::size_t bytes = saturatingMultiply(
+    std::size_t total = 0;
+    std::size_t treeAndInputs = 0;
+    std::size_t multipoles = 0;
+    std::size_t locals = 0;
+};
+
+PatchForestMemory patchForestMemory(const FmmPatchForest& forest)
+{
+    PatchForestMemory memory;
+    const std::size_t patchObjects = saturatingMultiply(
         forest.patches().capacity(), sizeof(FmmLocalPatch));
+    memory.total = patchObjects;
+    memory.treeAndInputs = patchObjects;
     for(const FmmLocalPatch& patch : forest.patches())
     {
-        bytes = saturatingAdd(bytes, saturatingMultiply(
+        std::size_t treeBytes = patch.tree.bytesOwned();
+        treeBytes = saturatingAdd(treeBytes, saturatingMultiply(
             patch.inputIndices.capacity(), sizeof(std::size_t)));
-        bytes = saturatingAdd(bytes, saturatingMultiply(
+        treeBytes = saturatingAdd(treeBytes, saturatingMultiply(
             patch.positions.capacity(), sizeof(Vector3D)));
-        bytes = saturatingAdd(bytes, saturatingMultiply(
+        treeBytes = saturatingAdd(treeBytes, saturatingMultiply(
             patch.masses.capacity(), sizeof(double)));
-        bytes = saturatingAdd(bytes, saturatingMultiply(
+        treeBytes = saturatingAdd(treeBytes, saturatingMultiply(
             patch.cellIds.capacity(), sizeof(std::uint64_t)));
-        bytes = saturatingAdd(bytes, patch.tree.bytesOwned());
-        bytes = saturatingAdd(bytes, patch.localPlan.bytesOwned());
-        bytes = saturatingAdd(bytes, saturatingMultiply(
-            patch.multipoles.capacity(), sizeof(double)));
-        bytes = saturatingAdd(bytes, saturatingMultiply(
-            patch.locals.capacity(), sizeof(double)));
-        bytes = saturatingAdd(bytes, saturatingMultiply(
+        treeBytes = saturatingAdd(treeBytes, saturatingMultiply(
+            patch.structuralSignature.capacity(), sizeof(std::uint64_t)));
+        treeBytes = saturatingAdd(treeBytes, saturatingMultiply(
+            patch.occupancySignature.capacity(), sizeof(std::uint64_t)));
+        memory.treeAndInputs = saturatingAdd(
+            memory.treeAndInputs, treeBytes);
+        memory.total = saturatingAdd(memory.total, treeBytes);
+
+        memory.total = saturatingAdd(
+            memory.total, patch.localPlan.bytesOwned());
+        const std::size_t multipoleBytes = saturatingMultiply(
+            patch.multipoles.capacity(), sizeof(double));
+        const std::size_t localBytes = saturatingMultiply(
+            patch.locals.capacity(), sizeof(double));
+        memory.multipoles = saturatingAdd(
+            memory.multipoles, multipoleBytes);
+        memory.locals = saturatingAdd(memory.locals, localBytes);
+        memory.total = saturatingAdd(memory.total, multipoleBytes);
+        memory.total = saturatingAdd(memory.total, localBytes);
+        memory.total = saturatingAdd(memory.total, saturatingMultiply(
             patch.acceleration.capacity(), sizeof(Vector3D)));
-        bytes = saturatingAdd(bytes, saturatingMultiply(
+        memory.total = saturatingAdd(memory.total, saturatingMultiply(
             patch.potential.capacity(), sizeof(double)));
     }
-    return bytes;
+    return memory;
 }
 }
 
@@ -285,7 +337,9 @@ FmmPatchDistributedSolver::FmmPatchDistributedSolver(
     const FmmDistributedOptions& distributedOptions,
     const MPI_Comm& comm):
     options_(options), distributedOptions_(distributedOptions), comm_(comm),
-    rank_(0), size_(1), topologyEpoch_(0), topologyRebuildCount_(0)
+    rank_(0), size_(1), topologyEpoch_(0), topologyRebuildCount_(0),
+    processTopologyRebuildCount_(0), letTopologyRebuildCount_(0),
+    topologyInitialized_(false)
 {
     MPI_Comm_rank(comm_, &rank_);
     MPI_Comm_size(comm_, &size_);
@@ -309,20 +363,13 @@ void FmmPatchDistributedSolver::solve(
     stats.operatorCacheBytesAtSolveStart = operatorCache_.bytesOwned();
     stats.operatorCacheEntriesAtSolveStart = operatorCache_.entries();
 
-    if(topologyEpoch_ == std::numeric_limits<std::uint64_t>::max() ||
-       topologyRebuildCount_ == std::numeric_limits<std::uint64_t>::max())
-        throw UniversalError(
-            "FmmPatchDistributedSolver::solve: topology epoch overflow");
-    ++topologyEpoch_;
-    ++topologyRebuildCount_;
-
     const Clock::time_point buildStart = Clock::now();
     FmmPatchForestChange forestChange;
     bool localPrepareOk = true;
     std::string localPrepareError;
     try
     {
-        forestChange = forest_.prepare(
+        forestChange = forest_.preparePersistent(
             positions, masses, cellIds, domainLower, domainUpper,
             options_, distributedOptions_, rank_);
     }
@@ -345,13 +392,36 @@ void FmmPatchDistributedSolver::solve(
     stats.localLeafTopologyChanged = forestChange.structuralTopologyChanged;
     stats.localLeafOccupancyChanged = forestChange.occupancyChanged;
     stats.localCountOnlyLeafChange = forestChange.countOnlyChanged;
-    const unsigned long long localTopologyTerms[4] = {
+    stats.localPatchCount = forest_.patches().size();
+    stats.reusedPatchCount = forestChange.reusedPatches;
+    stats.reusedLocalPatchPlanCount = forestChange.reusedLocalPlans;
+    stats.rebuiltLocalPatchPlanCount = forestChange.rebuiltLocalPlans;
+    stats.patchNodeGeometryExpansionCount =
+        forestChange.nodeGeometryExpansionPatches;
+    stats.patchRetainedBytes = forestChange.retainedBytes;
+    stats.patchReleasedBytes = forestChange.releasedBytes;
+    stats.persistentLeafSplitCount = forestChange.persistentLeafSplits;
+    stats.persistentSubtreeMergeCount = forestChange.persistentSubtreeMerges;
+    stats.persistentEmptyLeafCount = forestChange.persistentEmptyLeaves;
+    stats.localInteractionPlanReused = !forest_.patches().empty() &&
+        forestChange.reusedLocalPlans == forest_.patches().size();
+
+    bool localPersistentRefit = false;
+    for(const FmmLocalPatch& patch : forest_.patches())
+        localPersistentRefit = localPersistentRefit || patch.persistentTreeRefit;
+
+    const unsigned long long localTopologyTerms[9] = {
         stats.localRootGeometryChanged ? 1ull : 0ull,
         stats.localLeafTopologyChanged ? 1ull : 0ull,
         stats.localLeafOccupancyChanged ? 1ull : 0ull,
-        stats.localCountOnlyLeafChange ? 1ull : 0ull};
-    unsigned long long globalTopologyTerms[4] = {};
-    MPI_Allreduce(localTopologyTerms, globalTopologyTerms, 4,
+        stats.localCountOnlyLeafChange ? 1ull : 0ull,
+        localPersistentRefit ? 1ull : 0ull,
+        static_cast<unsigned long long>(forestChange.persistentLeafSplits),
+        static_cast<unsigned long long>(forestChange.persistentSubtreeMerges),
+        static_cast<unsigned long long>(forestChange.persistentEmptyLeaves),
+        static_cast<unsigned long long>(forest_.patches().size())};
+    unsigned long long globalTopologyTerms[9] = {};
+    MPI_Allreduce(localTopologyTerms, globalTopologyTerms, 9,
                   MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm_);
     stats.ranksWithRootGeometryChange =
         static_cast<std::size_t>(globalTopologyTerms[0]);
@@ -361,7 +431,18 @@ void FmmPatchDistributedSolver::solve(
         static_cast<std::size_t>(globalTopologyTerms[2]);
     stats.ranksWithCountOnlyLeafChange =
         static_cast<std::size_t>(globalTopologyTerms[3]);
-    stats.topologyRebuildForced = true;
+    stats.persistentTreeRefitRankCount =
+        static_cast<std::size_t>(globalTopologyTerms[4]);
+    stats.persistentLeafSplitCount = globalTopologyTerms[5];
+    stats.persistentSubtreeMergeCount = globalTopologyTerms[6];
+    stats.persistentEmptyLeafCount = globalTopologyTerms[7];
+    if(globalTopologyTerms[8] > static_cast<unsigned long long>(
+           std::numeric_limits<std::size_t>::max()))
+        throw UniversalError(
+            "FmmPatchDistributedSolver::solve: global patch count exceeds size_t");
+    stats.globalPatchCount = static_cast<std::size_t>(globalTopologyTerms[8]);
+    stats.replicatedDescriptorBytes = saturatingMultiply(
+        stats.globalPatchCount, sizeof(FmmPatchRootDescriptor));
 
     long double localMassExtended = 0.0L;
     long double localAbsoluteMassExtended = 0.0L;
@@ -382,20 +463,121 @@ void FmmPatchDistributedSolver::solve(
         throw UniversalError(
             "FmmPatchDistributedSolver::solve: non-finite global mass sum");
 
-    const Clock::time_point topologyStart = Clock::now();
-    const std::vector<FmmPatchRootDescriptor> localDescriptors =
-        forest_.descriptors(rank_, topologyEpoch_);
-    const Clock::time_point gatherStart = Clock::now();
-    rootDescriptors_ = FmmDescriptorGather::gather(
-        localDescriptors, static_cast<std::uint64_t>(positions.size()),
-        topologyEpoch_, distributedOptions_.maxReplicatedDescriptorBytes,
-        comm_);
-    stats.rootDescriptorExchangeSeconds = elapsed(gatherStart);
+    int localPayloadShapeReusable =
+        topologyInitialized_ && letPlan_.localPayloadShapeReusable(forest_) ?
+        1 : 0;
+    int globalPayloadShapeReusable = 0;
+    MPI_Allreduce(&localPayloadShapeReusable, &globalPayloadShapeReusable, 1,
+                  MPI_INT, MPI_LAND, comm_);
+    const bool payloadShapeRequiresRebuild = topologyInitialized_ &&
+        globalPayloadShapeReusable == 0;
 
-    const Clock::time_point processTopologyStart = Clock::now();
-    processTree_.build(rootDescriptors_);
-    processPlan_ = FmmProcessTraversal::build(
-        processTree_, options_.thetaCritical, topologyEpoch_, rank_, comm_);
+    const bool forcedRebuild = distributedOptions_.rebuildTopologyEverySolve;
+    const bool rebuildProcessTopology = !topologyInitialized_ ||
+        forcedRebuild || globalTopologyTerms[0] != 0;
+    const bool rebuildLetTopology = rebuildProcessTopology ||
+        globalTopologyTerms[1] != 0 || payloadShapeRequiresRebuild;
+    stats.topologyRebuildForced = forcedRebuild;
+    stats.letPayloadShapeTriggeredRebuild = payloadShapeRequiresRebuild;
+    stats.processTopologyRebuilt = rebuildProcessTopology;
+    stats.letTopologyRebuilt = rebuildLetTopology;
+    stats.countOnlyTopologyReused = globalTopologyTerms[3] != 0 &&
+        !rebuildLetTopology;
+
+    const Clock::time_point topologyStart = Clock::now();
+    if(rebuildLetTopology)
+    {
+        if(topologyEpoch_ == std::numeric_limits<std::uint64_t>::max() ||
+           topologyRebuildCount_ == std::numeric_limits<std::uint64_t>::max() ||
+           (rebuildProcessTopology && processTopologyRebuildCount_ ==
+                std::numeric_limits<std::uint64_t>::max()) ||
+           letTopologyRebuildCount_ ==
+                std::numeric_limits<std::uint64_t>::max())
+            throw UniversalError(
+                "FmmPatchDistributedSolver::solve: topology epoch overflow");
+        ++topologyEpoch_;
+        ++topologyRebuildCount_;
+        ++letTopologyRebuildCount_;
+        if(rebuildProcessTopology)
+            ++processTopologyRebuildCount_;
+
+        const std::vector<FmmPatchRootDescriptor> localDescriptors =
+            forest_.descriptors(rank_, topologyEpoch_);
+        const Clock::time_point gatherStart = Clock::now();
+        rootDescriptors_ = FmmDescriptorGather::gather(
+            localDescriptors, static_cast<std::uint64_t>(positions.size()),
+            topologyEpoch_, distributedOptions_.maxReplicatedDescriptorBytes,
+            comm_);
+        stats.rootDescriptorExchangeSeconds = elapsed(gatherStart);
+
+        if(rebuildProcessTopology)
+        {
+            const Clock::time_point processTopologyStart = Clock::now();
+            processTree_.build(rootDescriptors_, true);
+            processPlan_ = FmmProcessTraversal::build(
+                processTree_, options_.thetaCritical, topologyEpoch_, rank_,
+                comm_);
+
+            std::set<int> upPeers;
+            std::set<int> downPeers;
+            for(std::size_t nodeIndex = 0;
+                nodeIndex < processTree_.nodes().size(); ++nodeIndex)
+            {
+                const FmmProcessNode& node = processTree_.nodes()[nodeIndex];
+                if(node.owner == rank_ &&
+                   node.parent != FmmProcessTree::invalidIndex())
+                {
+                    const int parentOwner =
+                        processTree_.nodes()[node.parent].owner;
+                    if(parentOwner != rank_)
+                        upPeers.insert(parentOwner);
+                }
+                if(node.owner == rank_ && !node.isLeaf())
+                {
+                    const int leftOwner = processTree_.nodes()[node.left].owner;
+                    const int rightOwner = processTree_.nodes()[node.right].owner;
+                    if(leftOwner != rank_)
+                        downPeers.insert(leftOwner);
+                    if(rightOwner != rank_)
+                        downPeers.insert(rightOwner);
+                }
+            }
+            std::vector<int> m2lPeers;
+            for(const auto& entry : processPlan_.processSendNodesByRank)
+                m2lPeers.push_back(entry.first);
+            const bool upReset = processUpExchange_.resetIfChanged(
+                comm_, std::vector<int>(upPeers.begin(), upPeers.end()));
+            const bool m2lReset = processM2LExchange_.resetIfChanged(
+                comm_, m2lPeers);
+            const bool downReset = processDownExchange_.resetIfChanged(
+                comm_, std::vector<int>(downPeers.begin(), downPeers.end()));
+            stats.processCommunicatorsReused =
+                !upReset && !m2lReset && !downReset;
+            stats.processTopologySeconds = elapsed(processTopologyStart);
+        }
+        else
+        {
+            stats.processCommunicatorsReused = true;
+        }
+
+        letPlan_.build(
+            forest_, rootDescriptors_, processPlan_, options_.thetaCritical,
+            topologyEpoch_, distributedOptions_.maxLetWaveBytes,
+            distributedOptions_.maxTargetPatchesPerWave,
+            layout.coefficientCount(),
+            maximumStableLeafOccupancy(options_, distributedOptions_),
+            comm_, stats,
+            topologyInitialized_ && !rebuildProcessTopology &&
+                !payloadShapeRequiresRebuild);
+        std::vector<FmmPatchRootDescriptor>().swap(rootDescriptors_);
+    }
+    else
+    {
+        stats.processCommunicatorsReused = true;
+        letPlan_.reuse(forest_, topologyEpoch_, stats);
+    }
+    topologyInitialized_ = true;
+    stats.topologyRebuildSeconds = elapsed(topologyStart);
 
     std::vector<FmmPatchKey> expectedLocalSelf;
     expectedLocalSelf.reserve(forest_.patches().size());
@@ -407,59 +589,35 @@ void FmmPatchDistributedSolver::solve(
         throw UniversalError(
             "FmmPatchDistributedSolver::solve: local self patch coverage mismatch");
 
-    std::set<int> upPeers;
-    std::set<int> downPeers;
-    for(std::size_t nodeIndex = 0;
-        nodeIndex < processTree_.nodes().size(); ++nodeIndex)
-    {
-        const FmmProcessNode& node = processTree_.nodes()[nodeIndex];
-        if(node.owner == rank_ &&
-           node.parent != FmmProcessTree::invalidIndex())
-        {
-            const int parentOwner =
-                processTree_.nodes()[node.parent].owner;
-            if(parentOwner != rank_)
-                upPeers.insert(parentOwner);
-        }
-        if(node.owner == rank_ && !node.isLeaf())
-        {
-            const int leftOwner = processTree_.nodes()[node.left].owner;
-            const int rightOwner = processTree_.nodes()[node.right].owner;
-            if(leftOwner != rank_)
-                downPeers.insert(leftOwner);
-            if(rightOwner != rank_)
-                downPeers.insert(rightOwner);
-        }
-    }
-    std::vector<int> m2lPeers;
-    for(const auto& entry : processPlan_.processSendNodesByRank)
-        m2lPeers.push_back(entry.first);
-    const bool upReset = processUpExchange_.resetIfChanged(
-        comm_, std::vector<int>(upPeers.begin(), upPeers.end()));
-    const bool m2lReset = processM2LExchange_.resetIfChanged(comm_, m2lPeers);
-    const bool downReset = processDownExchange_.resetIfChanged(
-        comm_, std::vector<int>(downPeers.begin(), downPeers.end()));
-    stats.processCommunicatorsReused = !upReset && !m2lReset && !downReset;
-    stats.processTopologySeconds = elapsed(processTopologyStart);
-
-    letPlan_.build(forest_, rootDescriptors_, processPlan_,
-                   options_.thetaCritical, topologyEpoch_,
-                   distributedOptions_.maxLetWaveBytes,
-                   distributedOptions_.maxTargetPatchesPerWave,
-                   layout.coefficientCount(), comm_, stats);
-    // The process tree and LET plan now own the compact state they need. The
-    // replicated root directory is rebuilt every solve in Phases 3-4, so do
-    // not retain it through the expensive interaction passes.
-    std::vector<FmmPatchRootDescriptor>().swap(rootDescriptors_);
-    stats.topologyRebuildSeconds = elapsed(topologyStart);
-    stats.processTopologyRebuilt = true;
-    stats.letTopologyRebuilt = true;
     stats.topologyEpoch = topologyEpoch_;
     stats.topologyRebuildCount = topologyRebuildCount_;
-    stats.processTopologyRebuildCount = topologyRebuildCount_;
-    stats.letTopologyRebuildCount = topologyRebuildCount_;
+    stats.processTopologyRebuildCount = processTopologyRebuildCount_;
+    stats.letTopologyRebuildCount = letTopologyRebuildCount_;
     stats.activeRankCount = processTree_.activeRanks().size();
     stats.processNodeCount = processTree_.nodes().size();
+    stats.processTreeBytes = processTree_.bytesOwned();
+    stats.processPlanBytes = processPlan_.bytesOwned();
+
+    unsigned long long localOwnedNodes = 0;
+    for(const FmmProcessNode& node : processTree_.nodes())
+        localOwnedNodes += node.owner == rank_ ? 1ull : 0ull;
+    const unsigned long long localOwnedM2L =
+        static_cast<unsigned long long>(processPlan_.localM2LPairs.size());
+    unsigned long long maxOwnedNodes = 0;
+    unsigned long long maxOwnedM2L = 0;
+    MPI_Allreduce(&localOwnedNodes, &maxOwnedNodes, 1,
+                  MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm_);
+    MPI_Allreduce(&localOwnedM2L, &maxOwnedM2L, 1,
+                  MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm_);
+    stats.processOwnedNodeCount = static_cast<std::size_t>(localOwnedNodes);
+    stats.processOwnedNodeCountMax = static_cast<std::size_t>(maxOwnedNodes);
+    stats.processOwnedM2LCount = localOwnedM2L;
+    stats.processOwnedM2LCountMax = maxOwnedM2L;
+    const double meanOwnedNodes = stats.activeRankCount == 0 ? 0.0 :
+        static_cast<double>(stats.processNodeCount) /
+        static_cast<double>(stats.activeRankCount);
+    stats.processOwnedNodeImbalance = meanOwnedNodes == 0.0 ? 0.0 :
+        static_cast<double>(maxOwnedNodes) / meanOwnedNodes;
 
     ProcessCoefficientStore processMultipoles(layout.coefficientCount());
     ProcessCoefficientStore processLocals(layout.coefficientCount());
@@ -752,9 +910,22 @@ void FmmPatchDistributedSolver::solve(
     }
     stats.localTraversalSeconds = elapsed(localStart);
 
+    const std::size_t persistentLetBytes = letPlan_.bytesOwned();
+    const bool localLetBudgetOk = persistentLetBytes <=
+        distributedOptions_.maxRemoteBytes -
+            std::min<std::size_t>(2, distributedOptions_.maxRemoteBytes);
+    collectiveRequire(
+        localLetBudgetOk,
+        localLetBudgetOk ? std::string() :
+            "FmmPatchDistributedSolver::solve: persistent LET plan exhausts remote memory budget",
+        "FmmPatchDistributedSolver::solve LET plan budget", comm_);
+    const std::size_t transientRemoteBytes =
+        distributedOptions_.maxRemoteBytes - persistentLetBytes;
     letPlan_.execute(forest_, layout, operatorCache_,
-                     distributedOptions_.maxRemoteBytes,
+                     transientRemoteBytes,
                      options_.maxOperatorCacheBytes, stats);
+    stats.peakRemoteBytes = saturatingAdd(
+        persistentLetBytes, stats.peakRemoteBytes);
     stats.interactionSeconds = elapsed(interactionStart);
 
     const Clock::time_point downwardStart = Clock::now();
@@ -817,12 +988,15 @@ void FmmPatchDistributedSolver::solve(
     stats.averageLeafOccupancy = occupiedLeaves == 0 ? 0.0 :
         static_cast<double>(occupiedParticles) /
         static_cast<double>(occupiedLeaves);
-    stats.localTreeBytes = patchForestBytes(forest_);
+    const PatchForestMemory forestMemory = patchForestMemory(forest_);
+    stats.localTreeBytes = forestMemory.treeAndInputs;
+    stats.localMultipoleBytes = forestMemory.multipoles;
+    stats.localLocalBytes = forestMemory.locals;
     stats.letPlanBytes = letPlan_.bytesOwned();
     stats.operatorCacheBytes = operatorCache_.bytesOwned();
     stats.operatorCacheEntries = operatorCache_.entries();
     stats.operatorCacheMaxEntries = operatorCache_.maxEntries();
-    stats.bytesOwned = stats.localTreeBytes;
+    stats.bytesOwned = forestMemory.total;
     stats.bytesOwned = saturatingAdd(stats.bytesOwned, stats.letPlanBytes);
     stats.bytesOwned = saturatingAdd(stats.bytesOwned, saturatingMultiply(
         rootDescriptors_.capacity(), sizeof(FmmPatchRootDescriptor)));

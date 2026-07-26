@@ -11,6 +11,73 @@ set_check_msg() {
     REGRESSION_CHECK_MSG="$1"
 }
 
+check_fmm_patch_moving_mesh_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_patch_moving_mesh_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_patch_moving_mesh_metrics.txt"
+        return 1
+    fi
+
+    local pass max_error warm_process warm_let warm_count_only warm_payload_rebuild
+    local split_process split_let merge_process merge_let patch_set_process
+    local reused rebuilt source_invalidations wave_rebuilds max_waves
+    local owner_imbalance descriptor_bytes
+    pass=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    max_error=$(awk '$1 == "max_relative_error" { print $2 }' "$metrics_file")
+    warm_process=$(awk '$1 == "warm_process_reused" { print $2 }' "$metrics_file")
+    warm_let=$(awk '$1 == "warm_let_reused" { print $2 }' "$metrics_file")
+    warm_count_only=$(awk '$1 == "warm_count_only_reused" { print $2 }' "$metrics_file")
+    warm_payload_rebuild=$(awk '$1 == "warm_payload_shape_rebuilt" { print $2 }' "$metrics_file")
+    split_process=$(awk '$1 == "split_process_reused" { print $2 }' "$metrics_file")
+    split_let=$(awk '$1 == "split_let_rebuilt" { print $2 }' "$metrics_file")
+    merge_process=$(awk '$1 == "merge_process_reused" { print $2 }' "$metrics_file")
+    merge_let=$(awk '$1 == "merge_let_rebuilt" { print $2 }' "$metrics_file")
+    patch_set_process=$(awk '$1 == "patch_set_process_rebuilt" { print $2 }' "$metrics_file")
+    reused=$(awk '$1 == "target_subplans_reused" { print $2 }' "$metrics_file")
+    rebuilt=$(awk '$1 == "target_subplans_rebuilt" { print $2 }' "$metrics_file")
+    source_invalidations=$(awk '$1 == "source_invalidations" { print $2 }' "$metrics_file")
+    wave_rebuilds=$(awk '$1 == "wave_plan_rebuilds" { print $2 }' "$metrics_file")
+    max_waves=$(awk '$1 == "max_wave_count" { print $2 }' "$metrics_file")
+    owner_imbalance=$(awk '$1 == "max_owner_imbalance" { print $2 }' "$metrics_file")
+    descriptor_bytes=$(awk '$1 == "max_descriptor_bytes" { print $2 }' "$metrics_file")
+
+    if [[ "$pass" != "1" || "$warm_process" != "1" ||
+          "$warm_let" != "1" || "$warm_count_only" != "1" ||
+          "$warm_payload_rebuild" != "0" || "$split_process" != "1" ||
+          "$split_let" != "1" || "$merge_process" != "1" ||
+          "$merge_let" != "1" || "$patch_set_process" != "1" ]]; then
+        set_check_msg "patch moving-mesh topology reuse/rebuild assertions failed"
+        return 1
+    fi
+    if ! is_finite_number "$max_error" ||
+       ! awk -v e="$max_error" 'BEGIN { exit !(e >= 0 && e < 0.1) }'; then
+        set_check_msg "patch moving-mesh accuracy failed (${max_error:-missing})"
+        return 1
+    fi
+    if ! is_finite_number "$owner_imbalance" ||
+       ! awk -v v="$owner_imbalance" 'BEGIN { exit !(v >= 0 && v < 3.0) }'; then
+        set_check_msg "patch process-owner imbalance failed (${owner_imbalance:-missing})"
+        return 1
+    fi
+    if ! awk -v a="$reused" -v b="$rebuilt" -v s="$source_invalidations" \
+             -v w="$wave_rebuilds" -v n="$max_waves" -v d="$descriptor_bytes" \
+             'BEGIN { exit !(a > 0 && b > 0 && s > 0 && w > 0 && n > 1 && d > 0) }'; then
+        set_check_msg "patch moving-mesh incremental LET or metadata coverage missing"
+        return 1
+    fi
+
+    set_check_msg "Patch moving-mesh reuse passed (error=${max_error}, reused_targets=${reused}, rebuilt_targets=${rebuilt}, waves=${max_waves})"
+    return 0
+}
+
 has_fatal_markers() {
     local file_path="$1"
     [[ -f "$file_path" ]] || return 1

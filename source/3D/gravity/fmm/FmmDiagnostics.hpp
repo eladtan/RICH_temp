@@ -33,6 +33,31 @@ struct FmmSolveStats
     std::size_t mpiRankCount = 1;
     std::size_t activeRankCount = 1;
     std::size_t processNodeCount = 0;
+
+    // Patch-forest reuse, replicated metadata, and process-owner balance.
+    std::size_t localPatchCount = 0;
+    std::size_t globalPatchCount = 0;
+    std::size_t reusedPatchCount = 0;
+    std::size_t reusedLocalPatchPlanCount = 0;
+    std::size_t rebuiltLocalPatchPlanCount = 0;
+    std::size_t patchNodeGeometryExpansionCount = 0;
+    std::size_t patchRetainedBytes = 0;
+    std::size_t patchReleasedBytes = 0;
+    std::size_t replicatedDescriptorBytes = 0;
+    std::size_t processTreeBytes = 0;
+    std::size_t processPlanBytes = 0;
+    std::size_t processOwnedNodeCount = 0;
+    std::size_t processOwnedNodeCountMax = 0;
+    double processOwnedNodeImbalance = 0.0;
+    std::uint64_t processOwnedM2LCount = 0;
+    std::uint64_t processOwnedM2LCountMax = 0;
+    std::uint64_t letTargetSubplansReused = 0;
+    std::uint64_t letTargetSubplansRebuilt = 0;
+    std::uint64_t letSourceTriggeredInvalidations = 0;
+    std::uint64_t letWavePlanRebuildCount = 0;
+    std::uint64_t letDescriptorTraversalSkippedCount = 0;
+    bool letPayloadShapeTriggeredRebuild = false;
+
     std::uint64_t processM2LCount = 0;
     std::uint64_t letM2LCount = 0;
     std::uint64_t letP2PBlockCount = 0;

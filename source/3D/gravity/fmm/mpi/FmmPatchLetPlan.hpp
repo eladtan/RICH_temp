@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <map>
+#include <set>
 #include <tuple>
 #include <unordered_map>
 #include <utility>
@@ -48,8 +49,22 @@ public:
                std::size_t maxLetWaveBytes,
                std::size_t maxTargetPatchesPerWave,
                std::size_t multipoleCoefficientCount,
+               std::size_t maxParticlePayloadCount,
                const MPI_Comm& comm,
+               FmmSolveStats& stats,
+               bool reuseUnaffectedTargetSubplans = false);
+
+    // Reuse a previously built patch LET when patch identities and node
+    // structure are unchanged. Payload counts and coefficients are refreshed
+    // by execute(); only the interaction topology and subscriptions persist.
+    void reuse(const FmmPatchForest& forest,
+               std::uint64_t topologyEpoch,
                FmmSolveStats& stats);
+
+    // True when every retained particle subscription still fits the payload
+    // capacity used to construct its wave. A false result requires a LET
+    // rebuild before any payload exchange is started.
+    bool localPayloadShapeReusable(const FmmPatchForest& forest) const;
 
     void execute(FmmPatchForest& forest,
                  const FmmTaylorExpansion& layout,
@@ -94,6 +109,10 @@ private:
         int kind = 0;
     };
 
+    typedef std::tuple<FmmPatchKey, std::uint64_t, int> SourceIdentity;
+    typedef std::tuple<std::size_t, SourceIdentity> WaveSourceIdentity;
+    typedef std::tuple<std::size_t, SourceIdentity> TargetDependencyKey;
+
     struct SourceRecord
     {
         FmmRemoteNodeKey key;
@@ -103,15 +122,33 @@ private:
         FmmNode sourceNode;
     };
 
+    struct CachedSource
+    {
+        FmmRemoteNodeDescriptor descriptor;
+        RemoteRootGeometry root;
+    };
+
+    struct CachedTerminal
+    {
+        std::uint64_t targetSpatialKey = 0;
+        SourceIdentity source;
+    };
+
+    struct CachedTargetSubplan
+    {
+        FmmPatchKey targetPatch;
+        std::uint64_t targetTopologyHash = 0;
+        std::set<FmmPatchKey> sourcePatches;
+        std::map<SourceIdentity, CachedSource> sources;
+        std::vector<CachedTerminal> m2l;
+        std::vector<CachedTerminal> p2p;
+    };
+
     struct PayloadView
     {
         const char* data = nullptr;
         std::size_t count = 0;
     };
-
-    typedef std::tuple<FmmPatchKey, std::uint64_t, int> SourceIdentity;
-    typedef std::tuple<std::size_t, SourceIdentity> WaveSourceIdentity;
-    typedef std::tuple<std::size_t, SourceIdentity> TargetDependencyKey;
 
     static FmmRemoteNodeDescriptor descriptorForNode(
         const FmmNode& node,
@@ -152,15 +189,21 @@ private:
     std::vector<std::pair<std::size_t, std::size_t>> p2pWaveRanges_;
 
     std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsReceived_;
+    std::map<std::pair<std::uint64_t, std::uint64_t>, std::size_t>
+        localParticlePayloadCaps_;
+    std::map<FmmPatchKey, CachedTargetSubplan> targetSubplans_;
+    std::map<FmmPatchKey, std::uint64_t> sourceTopologyHashes_;
     FmmPeerExchange exchange_;
     std::size_t waveCount_;
     std::size_t localWaveCount_;
     std::size_t maxLetWaveBytes_;
     std::size_t maxTargetPatchesPerWave_;
     std::size_t multipoleCoefficientCount_;
+    std::size_t maxParticlePayloadCount_;
     std::uint64_t topologyEpoch_;
     MPI_Comm comm_;
     int rank_;
+    bool initialized_;
 };
 
 #endif // RICH_MPI

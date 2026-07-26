@@ -31,6 +31,12 @@ struct FmmPatchForestChange
     std::uint64_t persistentSubtreeMerges = 0;
     std::uint64_t persistentEmptyLeaves = 0;
     std::size_t overfullPatches = 0;
+    std::size_t reusedPatches = 0;
+    std::size_t reusedLocalPlans = 0;
+    std::size_t rebuiltLocalPlans = 0;
+    std::size_t nodeGeometryExpansionPatches = 0;
+    std::size_t retainedBytes = 0;
+    std::size_t releasedBytes = 0;
 };
 
 struct FmmPatchForestDiagnostics
@@ -48,6 +54,12 @@ struct FmmPatchForestDiagnostics
     std::size_t removedPatches = 0;
     std::size_t matchedPatchIds = 0;
     std::size_t overfullPatches = 0;
+    std::size_t reusedPatches = 0;
+    std::size_t reusedLocalPlans = 0;
+    std::size_t rebuiltLocalPlans = 0;
+    std::size_t nodeGeometryExpansionPatches = 0;
+    std::size_t retainedBytes = 0;
+    std::size_t releasedBytes = 0;
     double largestPatchRadius = 0.0;
 };
 
@@ -64,6 +76,19 @@ public:
                                  const FmmGravityOptions& gravityOptions,
                                  const FmmDistributedOptions& distributedOptions,
                                  int ownerRank);
+
+    // Reuse patch objects by stable patch ID.  Existing trees are refit with
+    // persistent split/merge hysteresis and local interaction plans are kept
+    // whenever their conservative geometry contract remains valid.
+    FmmPatchForestChange preparePersistent(
+        const std::vector<Vector3D>& positions,
+        const std::vector<double>& masses,
+        const std::vector<std::uint64_t>& cellIds,
+        const Vector3D& domainLower,
+        const Vector3D& domainUpper,
+        const FmmGravityOptions& gravityOptions,
+        const FmmDistributedOptions& distributedOptions,
+        int ownerRank);
 
     void buildUpward(const FmmTaylorExpansion& layout);
     void clearLocals(const FmmTaylorExpansion& layout);

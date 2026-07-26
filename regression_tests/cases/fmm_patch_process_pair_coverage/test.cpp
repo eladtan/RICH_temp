@@ -98,7 +98,30 @@ bool auditCase(int rank, int size, int which)
     const std::vector<FmmPatchRootDescriptor> descriptors =
         descriptorsForCase(size, which, epoch);
     FmmProcessTree tree;
-    tree.build(descriptors);
+    tree.build(descriptors, true);
+    FmmProcessTree repeatedTree;
+    repeatedTree.build(descriptors, true);
+    if(tree.nodes().size() != repeatedTree.nodes().size())
+        return false;
+    std::map<int, std::size_t> ownerCounts;
+    for(std::size_t nodeIndex = 0; nodeIndex < tree.nodes().size(); ++nodeIndex)
+    {
+        if(tree.nodes()[nodeIndex].owner !=
+           repeatedTree.nodes()[nodeIndex].owner)
+            return false;
+        ++ownerCounts[tree.nodes()[nodeIndex].owner];
+    }
+    if(!tree.nodes().empty() && !tree.activeRanks().empty())
+    {
+        std::size_t maximumOwned = 0;
+        for(int activeRank : tree.activeRanks())
+            maximumOwned = std::max(maximumOwned, ownerCounts[activeRank]);
+        const double meanOwned = static_cast<double>(tree.nodes().size()) /
+            static_cast<double>(tree.activeRanks().size());
+        if(meanOwned > 0.0 &&
+           static_cast<double>(maximumOwned) / meanOwned >= 3.0)
+            return false;
+    }
     const FmmProcessPairPlan plan = FmmProcessTraversal::build(
         tree, 0.5, epoch, rank, MPI_COMM_WORLD);
 

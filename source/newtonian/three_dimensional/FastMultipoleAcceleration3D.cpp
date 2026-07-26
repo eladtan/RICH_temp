@@ -161,6 +161,33 @@ void traceFmmSolve(const FmmSolveStats& stats)
         static_cast<unsigned long long>(stats.processOperatorCacheMisses),
         static_cast<unsigned long long>(stats.processOperatorCacheBypasses)};
     unsigned long long globalCacheCounts[8] = {};
+    const unsigned long long localPatchSums[13] = {
+        static_cast<unsigned long long>(stats.localPatchCount),
+        static_cast<unsigned long long>(stats.reusedPatchCount),
+        static_cast<unsigned long long>(stats.reusedLocalPatchPlanCount),
+        static_cast<unsigned long long>(stats.rebuiltLocalPatchPlanCount),
+        static_cast<unsigned long long>(stats.patchNodeGeometryExpansionCount),
+        static_cast<unsigned long long>(stats.patchRetainedBytes),
+        static_cast<unsigned long long>(stats.patchReleasedBytes),
+        static_cast<unsigned long long>(stats.letTargetSubplansReused),
+        static_cast<unsigned long long>(stats.letTargetSubplansRebuilt),
+        static_cast<unsigned long long>(stats.letSourceTriggeredInvalidations),
+        static_cast<unsigned long long>(stats.letWavePlanRebuildCount),
+        static_cast<unsigned long long>(stats.letDescriptorTraversalSkippedCount),
+        stats.letPayloadShapeTriggeredRebuild ? 1ull : 0ull};
+    unsigned long long globalPatchSums[13] = {};
+    const unsigned long long localPatchMaxima[7] = {
+        static_cast<unsigned long long>(stats.globalPatchCount),
+        static_cast<unsigned long long>(stats.replicatedDescriptorBytes),
+        static_cast<unsigned long long>(stats.processTreeBytes),
+        static_cast<unsigned long long>(stats.processPlanBytes),
+        static_cast<unsigned long long>(stats.processOwnedNodeCountMax),
+        static_cast<unsigned long long>(stats.processOwnedM2LCountMax),
+        static_cast<unsigned long long>(stats.letWaveCount)};
+    unsigned long long globalPatchMaxima[7] = {};
+    const double localProcessOwnerImbalance =
+        stats.processOwnedNodeImbalance;
+    double maximumProcessOwnerImbalance = localProcessOwnerImbalance;
     const double localResidualWait = stats.letResidualWaitSeconds;
     const double localPayloadLifetime = stats.letPayloadLifetimeSeconds;
     double maximumResidualWait = localResidualWait;
@@ -190,6 +217,12 @@ void traceFmmSolve(const FmmSolveStats& stats)
                MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(localCacheCounts, globalCacheCounts, 8,
                MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(localPatchSums, globalPatchSums, 13,
+               MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(localPatchMaxima, globalPatchMaxima, 7,
+               MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&localProcessOwnerImbalance, &maximumProcessOwnerImbalance, 1,
+               MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(&localResidualWait, &maximumResidualWait, 1, MPI_DOUBLE,
                MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(&localPayloadLifetime, &maximumPayloadLifetime, 1, MPI_DOUBLE,
@@ -204,6 +237,10 @@ void traceFmmSolve(const FmmSolveStats& stats)
     }
     for(int i = 0; i < 8; ++i)
         globalCacheCounts[i] = localCacheCounts[i];
+    for(int i = 0; i < 13; ++i)
+        globalPatchSums[i] = localPatchSums[i];
+    for(int i = 0; i < 7; ++i)
+        globalPatchMaxima[i] = localPatchMaxima[i];
 #endif
     if(rank != 0)
         return;
@@ -258,6 +295,28 @@ void traceFmmSolve(const FmmSolveStats& stats)
          << (globalReusedActiveRanks ==
                  static_cast<unsigned long long>(stats.activeRankCount) ? 1 : 0)
          << " let_plan_bytes_max=" << maximumLetPlanBytes
+         << " local_patch_count_sum=" << globalPatchSums[0]
+         << " global_patch_count=" << globalPatchMaxima[0]
+         << " reused_patch_count_sum=" << globalPatchSums[1]
+         << " reused_patch_plan_count_sum=" << globalPatchSums[2]
+         << " rebuilt_patch_plan_count_sum=" << globalPatchSums[3]
+         << " patch_geometry_expansions_sum=" << globalPatchSums[4]
+         << " patch_retained_bytes_sum=" << globalPatchSums[5]
+         << " patch_released_bytes_sum=" << globalPatchSums[6]
+         << " replicated_descriptor_bytes_max=" << globalPatchMaxima[1]
+         << " process_tree_bytes_max=" << globalPatchMaxima[2]
+         << " process_plan_bytes_max=" << globalPatchMaxima[3]
+         << " process_owned_nodes_max=" << globalPatchMaxima[4]
+         << " process_owned_m2l_max=" << globalPatchMaxima[5]
+         << " process_owner_imbalance_max="
+         << maximumProcessOwnerImbalance
+         << " let_target_subplans_reused_sum=" << globalPatchSums[7]
+         << " let_target_subplans_rebuilt_sum=" << globalPatchSums[8]
+         << " let_source_invalidations_sum=" << globalPatchSums[9]
+         << " let_wave_plan_rebuilds_sum=" << globalPatchSums[10]
+         << " let_descriptor_traversal_skipped_sum=" << globalPatchSums[11]
+         << " let_payload_shape_rebuild_ranks=" << globalPatchSums[12]
+         << " let_wave_count_max=" << globalPatchMaxima[6]
          << " bytes_owned_max=" << maximumBytesOwned
          << " peak_remote_bytes_max=" << maximumPeakRemoteBytes
          << " local_planned_m2l_sum=" << globalPlanCounts[0]

@@ -28,13 +28,19 @@ struct FmmLocalPatch
     std::vector<Vector3D> acceleration;
     std::vector<double> potential;
 
+    // topologyHash is the wire-visible LET topology/geometry signature.
+    // structuralTreeHash is the exact local tree-structure signature used to
+    // decide whether a persistent patch tree retained its address space.
     std::uint64_t topologyHash = 0;
+    std::uint64_t structuralTreeHash = 0;
     std::vector<std::uint64_t> structuralSignature;
     std::vector<std::uint64_t> occupancySignature;
 
     bool rootGeometryChanged = false;
     bool leafTopologyChanged = false;
     bool leafOccupancyChanged = false;
+    bool localPlanReused = false;
+    bool persistentTreeRefit = false;
 };
 
 #endif // RICH_MPI

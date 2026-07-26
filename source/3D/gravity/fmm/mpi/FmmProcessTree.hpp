@@ -46,7 +46,8 @@ struct FmmProcessNode
 class FmmProcessTree
 {
 public:
-    void build(const std::vector<FmmPatchRootDescriptor>& descriptors);
+    void build(const std::vector<FmmPatchRootDescriptor>& descriptors,
+               bool balanceInternalOwners = false);
 
     const std::vector<FmmProcessNode>& nodes() const { return nodes_; }
     const std::vector<int>& activeRanks() const { return activeRanks_; }
@@ -76,6 +77,8 @@ private:
     std::vector<std::vector<std::size_t>> levels_;
     std::unordered_map<FmmPatchKey, std::size_t, FmmPatchKeyHash> leafByPatch_;
     std::unordered_map<int, std::size_t> compatLeafByRank_;
+    std::unordered_map<int, std::size_t> ownerWork_;
+    bool balanceInternalOwners_ = false;
     std::uint64_t topologyHash_ = 0;
 };
 

@@ -61,7 +61,9 @@ double centerDistance(const FmmProcessNode& first,
 }
 }
 
-void FmmProcessTree::build(const std::vector<FmmPatchRootDescriptor>& descriptors)
+void FmmProcessTree::build(
+    const std::vector<FmmPatchRootDescriptor>& descriptors,
+    bool balanceInternalOwners)
 {
     descriptorsByIndex_ = descriptors;
     activeRanks_.clear();
@@ -70,6 +72,8 @@ void FmmProcessTree::build(const std::vector<FmmPatchRootDescriptor>& descriptor
     levels_.clear();
     leafByPatch_.clear();
     compatLeafByRank_.clear();
+    ownerWork_.clear();
+    balanceInternalOwners_ = balanceInternalOwners;
 
     bool haveEpoch = false;
     std::uint64_t epoch = 0;
@@ -140,6 +144,7 @@ void FmmProcessTree::build(const std::vector<FmmPatchRootDescriptor>& descriptor
     buildRange(0, activeDescriptorIndices_.size(), 0);
     buildLevels();
     computeHash();
+    std::unordered_map<int, std::size_t>().swap(ownerWork_);
 
     std::unordered_map<int, std::size_t> patchCountByRank;
     for(const auto& leaf : leafByPatch_)
@@ -264,12 +269,12 @@ std::size_t FmmProcessTree::buildRange(std::size_t begin,
             throw UniversalError("FmmProcessTree::buildRange: invalid leaf patch key");
         if(!leafByPatch_.emplace(patchKey, nodeIndex).second)
             throw UniversalError("FmmProcessTree::buildRange: duplicate patch leaf");
+        if(balanceInternalOwners_)
+            ++ownerWork_[node.owner];
         return nodeIndex;
     }
 
     const std::size_t mid = begin + (end - begin) / 2;
-    const int owner = descriptorsByIndex_[activeDescriptorIndices_[mid]].ownerRank;
-    nodes_[nodeIndex].owner = owner;
     const std::size_t left = buildRange(begin, mid, depth + 1);
     const std::size_t right = buildRange(mid, end, depth + 1);
     nodes_[nodeIndex].left = left;
@@ -278,6 +283,22 @@ std::size_t FmmProcessTree::buildRange(std::size_t begin,
     nodes_[right].parent = nodeIndex;
 
     FmmProcessNode& completed = nodes_[nodeIndex];
+    if(balanceInternalOwners_)
+    {
+        const int leftOwner = nodes_[left].owner;
+        const int rightOwner = nodes_[right].owner;
+        const std::size_t leftWork = ownerWork_[leftOwner];
+        const std::size_t rightWork = ownerWork_[rightOwner];
+        completed.owner = leftWork < rightWork ? leftOwner :
+            (rightWork < leftWork ? rightOwner :
+             std::min(leftOwner, rightOwner));
+        ++ownerWork_[completed.owner];
+    }
+    else
+    {
+        completed.owner = descriptorsByIndex_[
+            activeDescriptorIndices_[mid]].ownerRank;
+    }
     completed.radius = std::max(
         centerDistance(completed, nodes_[left]) + nodes_[left].radius,
         centerDistance(completed, nodes_[right]) + nodes_[right].radius);

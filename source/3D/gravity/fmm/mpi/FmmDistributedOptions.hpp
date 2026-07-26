@@ -8,6 +8,8 @@
 struct FmmDistributedOptions
 {
     double rootSlackFactor = 1.25;
+    // In patch mode this bounds persistent LET-plan storage plus the peak
+    // transient storage of one payload wave.
     std::size_t maxRemoteBytes = static_cast<std::size_t>(2) * 1024 * 1024 * 1024;
     bool rebuildTopologyEverySolve = false;
     bool reuseInteractionPlansAcrossLeafCountChanges = true;
@@ -37,21 +39,23 @@ struct FmmDistributedOptions
     std::size_t maxLetWaveBytes =
         static_cast<std::size_t>(256) * 1024 * 1024;
 
-    // Patch-forest options. Phases 3-4 rebuild the forest topology each solve;
-    // persistent patch reuse is introduced separately.
-    bool enablePatchForest = false;
-    int minimumPatchLevel = 0;
+    // Patch-forest mode is the production default.  Set enablePatchForest=false
+    // for the one-tree-per-rank compatibility path during the fallback cycle.
+    // The fixed level-7 partition is deliberately conservative; adaptive patch
+    // splitting remains opt-in through targetParticlesPerPatch.
+    bool enablePatchForest = true;
+    int minimumPatchLevel = 7;
     int maximumPatchLevel = FMM_MAX_TREE_DEPTH;
     std::size_t targetParticlesPerPatch = 0;
     std::size_t maxLocalPatchCount = 65536;
     std::size_t maxTargetPatchesPerWave = 64;
     bool useLocalPatchLet = true;
 
-    // The patch-root directory is replicated on every rank in Phases 3-4.
-    // Crossing this guard requires a distributed directory rather than an
-    // unbounded MPI_Allgatherv allocation.
+    // The patch-root directory and compact process tree are replicated on every
+    // rank.  Crossing this guard requires a distributed directory rather than
+    // an unbounded MPI_Allgatherv allocation.
     std::size_t maxReplicatedDescriptorBytes =
-        static_cast<std::size_t>(512) * 1024 * 1024;
+        static_cast<std::size_t>(256) * 1024 * 1024;
 };
 
 #endif // FMM_DISTRIBUTED_OPTIONS_HPP

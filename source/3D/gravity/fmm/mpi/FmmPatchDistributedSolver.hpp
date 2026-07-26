@@ -43,6 +43,9 @@ private:
     int size_;
     std::uint64_t topologyEpoch_;
     std::uint64_t topologyRebuildCount_;
+    std::uint64_t processTopologyRebuildCount_;
+    std::uint64_t letTopologyRebuildCount_;
+    bool topologyInitialized_;
 
     FmmPatchForest forest_;
     std::vector<FmmPatchRootDescriptor> rootDescriptors_;

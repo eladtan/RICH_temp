@@ -227,6 +227,10 @@ int main(int argc, char** argv)
     std::size_t singleWaveCount = 0;
     {
         FmmDistributedOptions distributed;
+        // This is deliberately the historical rank-root pathology. Keep the
+        // compatibility geometry here; patch-mode sparse coverage lives in
+        // fmm_patch_let_mpi and fmm_patch_moving_mesh.
+        distributed.enablePatchForest = false;
         distributed.maxRemoteBytes = 64u * 1024u * 1024u;
         distributed.maxLetWaveBytes = 0; // splitting disabled
         DistributedFmmGravityCalculator solver(options, distributed);
@@ -246,6 +250,7 @@ int main(int argc, char** argv)
     std::size_t manyWavePeakBytes = 0;
     {
         FmmDistributedOptions distributed;
+        distributed.enablePatchForest = false;
         distributed.maxRemoteBytes = 64u * 1024u * 1024u;
         distributed.maxLetWaveBytes = 2048;
         DistributedFmmGravityCalculator solver(options, distributed);

@@ -217,6 +217,10 @@ int main(int argc, char** argv)
     options.validateFinite = true;
 
     FmmDistributedOptions distributed;
+    // This regression intentionally exercises the one-tree-per-rank fallback
+    // and its historical process/LET invalidation counters. Patch-forest
+    // production behavior is covered by fmm_patch_moving_mesh.
+    distributed.enablePatchForest = false;
     distributed.maxRemoteBytes = 64u * 1024u * 1024u;
     // Preserve the legacy sparse-tree rebuild checks below. Persistent-tree
     // execution, plan reuse, splitting, and automatic merging are exercised
