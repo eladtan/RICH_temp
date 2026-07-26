@@ -31,6 +31,26 @@ struct FmmDistributedOptions
     bool persistentLocalTreeTopology = true;
     double persistentLeafSplitFactor = 1.5;
     double persistentLeafMergeFactor = 0.5;
+
+    // Bounds non-empty leaves to globalRootHalfSize / 2^level, so that ranks
+    // owning a spatially large sparse domain cannot end up with leaves whose
+    // own radius exceeds thetaCritical * distance to every remote source.
+    // Zero disables the bound; FmmGravityOptions::maxLeafHalfSize overrides it.
+    int maxLeafHalfSizeLevel = 0;
+
+    // Lets an inadmissible leaf target accept a remote multipole evaluated at
+    // each of its particles. This removes the target radius from the accuracy
+    // bound, but pays an uncached translation operator per particle and source,
+    // so it is off by default and only worth enabling for distributions with
+    // spatially oversized ranks.
+    bool enableLeafM2P = false;
+
+    // Upper bound on the LET payload a single rank may request in one exchange.
+    // Requests above this are split into several waves, so peak LET memory is
+    // set by configuration rather than by the union of a rank's near fields.
+    // Zero disables splitting and restores the single-exchange behaviour.
+    std::size_t maxLetWaveBytes =
+        static_cast<std::size_t>(256) * 1024 * 1024;
 };
 
 class DistributedFmmGravityCalculator
@@ -75,8 +95,15 @@ private:
     LocalTopologyChange prepareLocalTree(const std::vector<Vector3D>& positions,
                                          const Vector3D& domainLower,
                                          const Vector3D& domainUpper);
-    void rebuildTopology(bool rebuildProcessTopology);
+    void rebuildTopology(const std::vector<Vector3D>& positions,
+                         bool rebuildProcessTopology);
     FmmRankRootDescriptor localRootDescriptor() const;
+    double effectiveMaxLeafHalfSize(const Vector3D& domainLower,
+                                    const Vector3D& domainUpper) const;
+    // Collective on comm_.
+    void logPatchCountSurvey(const std::vector<Vector3D>& positions,
+                             const Vector3D& domainLower,
+                             const Vector3D& domainUpper) const;
 
     FmmGravityOptions options_;
     FmmDistributedOptions distributedOptions_;
@@ -87,6 +114,7 @@ private:
     FmmSolveStats stats_;
     FmmRootGeometry localRoot_;
     bool rootInitialized_;
+    double lastEffectiveMaxLeafHalfSize_;
     std::uint64_t lastLocalTopologyHash_;
     std::vector<std::uint64_t> lastLocalStructuralSignature_;
     std::vector<std::uint64_t> lastLocalOccupancySignature_;

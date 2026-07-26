@@ -3,6 +3,7 @@
 #ifdef RICH_MPI
 
 #include <algorithm>
+#include <cstdio>
 #include <limits>
 #include <string>
 #include <utility>
@@ -22,8 +23,16 @@ void checkMpi(int status, const char* operation)
                          std::string(text, static_cast<std::size_t>(length)));
 }
 
-[[noreturn]] void abortInvariant(const MPI_Comm& comm, const char* message)
+[[noreturn]] void abortInvariant(const MPI_Comm& comm, const char* message,
+                                 const char* detail = nullptr)
 {
+    int rank = -1;
+    MPI_Comm_rank(comm, &rank);
+    std::fprintf(stderr, "FMM peer exchange abort on MPI rank %d: %s\n",
+                   rank, message);
+    if(detail != nullptr && detail[0] != '\0')
+        std::fprintf(stderr, "%s\n", detail);
+    std::fflush(stderr);
     MPI_Abort(comm, 91);
     throw UniversalError(message);
 }
@@ -421,8 +430,17 @@ void FmmPeerExchange::beginExchangeBytes(
         request.totalSend_ += count;
     }
     if(localInvalid != 0)
+    {
+        char detail[512];
+        std::snprintf(detail, sizeof(detail),
+            "totalSend=%zu mpiCountMax=%zu destinationPeers=%zu",
+            request.totalSend_,
+            static_cast<std::size_t>(std::numeric_limits<int>::max()),
+            destinations_.size());
         abortInvariant(graph_,
-            "FmmPeerExchange::beginExchangeBytes: invalid or oversized send");
+            "FmmPeerExchange::beginExchangeBytes: invalid or oversized send",
+            detail);
+    }
 
     request.sendBuffer_.resize(request.totalSend_);
     for(std::size_t i = 0; i < destinations_.size(); ++i)
@@ -473,16 +491,35 @@ void FmmPeerExchange::beginExchangeBytes(
     if(request.totalReceive_ > maxReceiveBytes)
         localInvalid = 1;
     if(localInvalid != 0)
+    {
+        char detail[512];
+        std::snprintf(detail, sizeof(detail),
+            "totalReceive=%zu maxReceiveBytes=%zu totalSend=%zu "
+            "maxRequestBytes=%zu sourcePeers=%zu",
+            request.totalReceive_, maxReceiveBytes, request.totalSend_,
+            maxRequestBytes, sources_.size());
         abortInvariant(graph_,
-            "FmmPeerExchange::beginExchangeBytes: receive size or memory budget exceeded");
+            "FmmPeerExchange::beginExchangeBytes: receive size or memory budget exceeded",
+            detail);
+    }
 
     request.result_.storage_.clear();
     request.result_.storage_.resize(request.totalReceive_);
     request.result_.messages_.clear();
     request.result_.messages_.reserve(request.sourceRanks_.size());
-    if(request.bytesOwned() > maxRequestBytes)
+    const std::size_t requestBytesOwned = request.bytesOwned();
+    if(requestBytesOwned > maxRequestBytes)
+    {
+        char detail[512];
+        std::snprintf(detail, sizeof(detail),
+            "requestBytesOwned=%zu maxRequestBytes=%zu totalReceive=%zu "
+            "totalSend=%zu maxReceiveBytes=%zu",
+            requestBytesOwned, maxRequestBytes, request.totalReceive_,
+            request.totalSend_, maxReceiveBytes);
         abortInvariant(graph_,
-            "FmmPeerExchange::beginExchangeBytes: request workspace exceeds memory budget");
+            "FmmPeerExchange::beginExchangeBytes: request workspace exceeds memory budget",
+            detail);
+    }
     if(timings != nullptr)
         timings->receiveSetupSeconds += MPI_Wtime() - receiveSetupStart;
 

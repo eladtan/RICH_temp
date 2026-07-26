@@ -304,7 +304,10 @@ void FmmTree::buildNode(std::size_t nodeIndex,
                         const FmmGravityOptions& options)
 {
     const FmmNode node = nodes_[nodeIndex];
-    if(node.particleCount() <= options.leafCapacity ||
+    const bool sizeRequiresSplit = node.particleCount() != 0 &&
+        options.maxLeafHalfSize > 0.0 &&
+        node.halfSize > options.maxLeafHalfSize;
+    if((node.particleCount() <= options.leafCapacity && !sizeRequiresSplit) ||
        node.depth >= static_cast<std::size_t>(options.maxDepth) ||
        node.halfSize <= std::numeric_limits<double>::min())
         return;
@@ -338,10 +341,14 @@ void FmmTree::buildPersistentNode(
     const bool canSplit =
         node.depth < static_cast<std::size_t>(options.maxDepth) &&
         node.halfSize > std::numeric_limits<double>::min();
+    const bool sizeRequiresSplit = node.particleCount() != 0 &&
+        options.maxLeafHalfSize > 0.0 &&
+        node.halfSize > options.maxLeafHalfSize;
     const bool shouldSplit = canSplit &&
-        (initializeFromScratch ? node.particleCount() > options.leafCapacity :
+        (sizeRequiresSplit ||
+         (initializeFromScratch ? node.particleCount() > options.leafCapacity :
          (wasInternal ? node.particleCount() > mergeCapacity :
-                        node.particleCount() > splitCapacity));
+                        node.particleCount() > splitCapacity)));
 
     if(!shouldSplit)
     {

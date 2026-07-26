@@ -5,6 +5,8 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <limits>
 #ifdef __GLIBC__
 #include <malloc.h>
@@ -25,6 +27,11 @@ namespace
 {
 typedef std::chrono::steady_clock Clock;
 
+// Each extra forced level costs roughly eight nodes per particle once leaves
+// hold a single body. This only catches runaway depth; the real signal is the
+// requested LET payload reported by the FMMLET diagnostic.
+constexpr std::size_t kMaxNodesPerParticle = 64;
+
 double elapsed(const Clock::time_point& start)
 {
     return std::chrono::duration<double>(Clock::now() - start).count();
@@ -34,6 +41,146 @@ bool finiteVector(const Vector3D& value)
 {
     return std::isfinite(value.x) && std::isfinite(value.y) &&
            std::isfinite(value.z);
+}
+
+// Compares the node radius the admissibility test actually uses
+// (sqrt(3) * halfSize) against the tightest radius that would still enclose
+// every local particle.  The ratio is the geometric over-estimate introduced
+// by cubification, root slack, and dyadic round-up.
+void logRootGeometryDiagnostic(int rank,
+                               const std::vector<Vector3D>& positions,
+                               const FmmRootGeometry& root)
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("RICH_FMM_GEOM_LOG");
+        return value != nullptr && value[0] != '\0' &&
+               !(value[0] == '0' && value[1] == '\0');
+    }();
+    if(!enabled || positions.empty() || !root.active)
+        return;
+
+    Vector3D lower = positions.front();
+    Vector3D upper = positions.front();
+    double tightRadiusSquared = 0.0;
+    for(const Vector3D& point : positions)
+    {
+        lower.x = std::min(lower.x, point.x);
+        lower.y = std::min(lower.y, point.y);
+        lower.z = std::min(lower.z, point.z);
+        upper.x = std::max(upper.x, point.x);
+        upper.y = std::max(upper.y, point.y);
+        upper.z = std::max(upper.z, point.z);
+        const Vector3D delta = point - root.center;
+        tightRadiusSquared = std::max(tightRadiusSquared,
+            delta.x * delta.x + delta.y * delta.y + delta.z * delta.z);
+    }
+    const double tightRadius = std::sqrt(tightRadiusSquared);
+    const double boxRadius = std::sqrt(3.0) * root.halfSize;
+    std::fprintf(stderr,
+        "FMMGEOM rank=%d points=%zu extent=%.6e,%.6e,%.6e halfSize=%.6e "
+        "boxRadius=%.6e tightRadius=%.6e inflation=%.3f\n",
+        rank, positions.size(),
+        upper.x - lower.x, upper.y - lower.y, upper.z - lower.z,
+        root.halfSize, boxRadius, tightRadius,
+        tightRadius > 0.0 ? boxRadius / tightRadius : -1.0);
+    std::fflush(stderr);
+}
+
+void logLeafGeometryDiagnostic(int rank, const FmmTree& tree,
+                               std::size_t particleCount,
+                               double maxLeafHalfSize)
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("RICH_FMM_GEOM_LOG");
+        return value != nullptr && value[0] != '\0' &&
+               !(value[0] == '0' && value[1] == '\0');
+    }();
+    if(!enabled)
+        return;
+
+    std::vector<double> halfSizes;
+    std::vector<double> radii;
+    std::vector<double> inflation;
+    std::size_t radiusOver10 = 0;
+    std::size_t radiusOver100 = 0;
+    std::size_t radiusOver1000 = 0;
+    for(const FmmNode& node : tree.nodes())
+    {
+        if(!node.isLeaf() || node.particleCount() == 0)
+            continue;
+        halfSizes.push_back(node.halfSize);
+        radii.push_back(node.radius);
+        const double boxRadius = std::sqrt(3.0) * node.halfSize;
+        inflation.push_back(node.radius > 0.0 ?
+            boxRadius / node.radius : std::numeric_limits<double>::infinity());
+        radiusOver10 += node.radius > 10.0 ? 1 : 0;
+        radiusOver100 += node.radius > 100.0 ? 1 : 0;
+        radiusOver1000 += node.radius > 1000.0 ? 1 : 0;
+    }
+    if(halfSizes.empty())
+        return;
+
+    auto median = [](std::vector<double>& values) {
+        const auto middle = values.begin() +
+            static_cast<std::ptrdiff_t>(values.size() / 2);
+        std::nth_element(values.begin(), middle, values.end());
+        return *middle;
+    };
+    const double minHalfSize = *std::min_element(halfSizes.begin(), halfSizes.end());
+    const double maxHalfSize = *std::max_element(halfSizes.begin(), halfSizes.end());
+    const double minRadius = *std::min_element(radii.begin(), radii.end());
+    const double maxRadius = *std::max_element(radii.begin(), radii.end());
+    const double maxInflation = *std::max_element(inflation.begin(), inflation.end());
+    const double medianHalfSize = median(halfSizes);
+    const double medianRadius = median(radii);
+    const double medianInflation = median(inflation);
+    std::fprintf(stderr,
+        "FMMLEAF rank=%d leaves=%zu nodes=%zu particles=%zu "
+        "nodesPerParticle=%.2f maxLeafHalfSize=%.6e halfSizeMin=%.6e "
+        "halfSizeMedian=%.6e halfSizeMax=%.6e radiusMin=%.6e "
+        "radiusMedian=%.6e radiusMax=%.6e inflationMedian=%.3f "
+        "inflationMax=%.3f radiusOver10=%zu radiusOver100=%zu "
+        "radiusOver1000=%zu\n",
+        rank, halfSizes.size(), tree.nodes().size(), particleCount,
+        particleCount == 0 ? 0.0 :
+            static_cast<double>(tree.nodes().size()) /
+                static_cast<double>(particleCount),
+        maxLeafHalfSize, minHalfSize, medianHalfSize, maxHalfSize,
+        minRadius, medianRadius, maxRadius, medianInflation, maxInflation,
+        radiusOver10, radiusOver100, radiusOver1000);
+    std::fflush(stderr);
+}
+
+bool geometryLogEnabled()
+{
+    static const bool enabled = [] {
+        const char* value = std::getenv("RICH_FMM_GEOM_LOG");
+        return value != nullptr && value[0] != '\0' &&
+               !(value[0] == '0' && value[1] == '\0');
+    }();
+    return enabled;
+}
+
+// Integer lattice index of a point within the dyadic cell grid at `level`,
+// measured from the global root cube. Packed as a Morton-ish key; only
+// distinctness matters here, not ordering.
+std::uint64_t dyadicCellKey(const Vector3D& point,
+                            const FmmRootGeometry& globalRoot,
+                            int level)
+{
+    const double cells = std::ldexp(1.0, level);
+    const double cellSize = 2.0 * globalRoot.halfSize / cells;
+    const Vector3D lower = globalRoot.lower();
+    const auto axisIndex = [&](double value, double origin) {
+        const double scaled = (value - origin) / cellSize;
+        const double clamped = std::min(std::max(scaled, 0.0), cells - 1.0);
+        return static_cast<std::uint64_t>(clamped);
+    };
+    const std::uint64_t ix = axisIndex(point.x, lower.x);
+    const std::uint64_t iy = axisIndex(point.y, lower.y);
+    const std::uint64_t iz = axisIndex(point.z, lower.z);
+    // level <= 20 keeps each axis inside 21 bits.
+    return (ix << 42) | (iy << 21) | iz;
 }
 
 bool sameRoot(const FmmRootGeometry& first, const FmmRootGeometry& second)
@@ -314,6 +461,7 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
     rank_(0),
     size_(1),
     rootInitialized_(false),
+    lastEffectiveMaxLeafHalfSize_(0.0),
     lastLocalTopologyHash_(0),
     topologyEpoch_(0),
     topologyRebuildCount_(0),
@@ -352,6 +500,20 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
     {
         localOptionsOk = false;
         localOptionsError = "DistributedFmmGravityCalculator: invalid maximum tree depth";
+    }
+    else if(!(options_.maxLeafHalfSize >= 0.0) ||
+            !std::isfinite(options_.maxLeafHalfSize))
+    {
+        localOptionsOk = false;
+        localOptionsError =
+            "DistributedFmmGravityCalculator: invalid maximum leaf half-size";
+    }
+    else if(distributedOptions_.maxLeafHalfSizeLevel < 0 ||
+            distributedOptions_.maxLeafHalfSizeLevel > FMM_MAX_TREE_DEPTH)
+    {
+        localOptionsOk = false;
+        localOptionsError =
+            "DistributedFmmGravityCalculator: invalid maximum leaf half-size level";
     }
     else if(!(distributedOptions_.rootSlackFactor >= 1.0) ||
             !std::isfinite(distributedOptions_.rootSlackFactor))
@@ -411,18 +573,19 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
             localOptionsError);
     }
 
-    const double localDoubleOptions[4] = {
+    const double localDoubleOptions[5] = {
         options_.thetaCritical, distributedOptions_.rootSlackFactor,
         distributedOptions_.persistentLeafSplitFactor,
-        distributedOptions_.persistentLeafMergeFactor};
-    double minimumDoubleOptions[4] = {0.0, 0.0, 0.0, 0.0};
-    double maximumDoubleOptions[4] = {0.0, 0.0, 0.0, 0.0};
-    MPI_Allreduce(localDoubleOptions, minimumDoubleOptions, 4,
+        distributedOptions_.persistentLeafMergeFactor,
+        options_.maxLeafHalfSize};
+    double minimumDoubleOptions[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+    double maximumDoubleOptions[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+    MPI_Allreduce(localDoubleOptions, minimumDoubleOptions, 5,
                   MPI_DOUBLE, MPI_MIN, comm_);
-    MPI_Allreduce(localDoubleOptions, maximumDoubleOptions, 4,
+    MPI_Allreduce(localDoubleOptions, maximumDoubleOptions, 5,
                   MPI_DOUBLE, MPI_MAX, comm_);
 
-    const unsigned long long localIntegerOptions[10] = {
+    const unsigned long long localIntegerOptions[13] = {
         static_cast<unsigned long long>(options_.expansionOrder),
         static_cast<unsigned long long>(options_.leafCapacity),
         static_cast<unsigned long long>(options_.maxDepth),
@@ -432,19 +595,23 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
         static_cast<unsigned long long>(distributedOptions_.maxRemoteBytes),
         distributedOptions_.rebuildTopologyEverySolve ? 1ull : 0ull,
         distributedOptions_.reuseInteractionPlansAcrossLeafCountChanges ? 1ull : 0ull,
-        distributedOptions_.persistentLocalTreeTopology ? 1ull : 0ull};
-    unsigned long long minimumIntegerOptions[10] = {};
-    unsigned long long maximumIntegerOptions[10] = {};
-    MPI_Allreduce(localIntegerOptions, minimumIntegerOptions, 10,
+        distributedOptions_.persistentLocalTreeTopology ? 1ull : 0ull,
+        static_cast<unsigned long long>(
+            distributedOptions_.maxLeafHalfSizeLevel),
+        distributedOptions_.enableLeafM2P ? 1ull : 0ull,
+        static_cast<unsigned long long>(distributedOptions_.maxLetWaveBytes)};
+    unsigned long long minimumIntegerOptions[13] = {};
+    unsigned long long maximumIntegerOptions[13] = {};
+    MPI_Allreduce(localIntegerOptions, minimumIntegerOptions, 13,
                   MPI_UNSIGNED_LONG_LONG, MPI_MIN, comm_);
-    MPI_Allreduce(localIntegerOptions, maximumIntegerOptions, 10,
+    MPI_Allreduce(localIntegerOptions, maximumIntegerOptions, 13,
                   MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm_);
 
     bool optionsMatch = true;
-    for(int i = 0; i < 4; ++i)
+    for(int i = 0; i < 5; ++i)
         optionsMatch = optionsMatch &&
             minimumDoubleOptions[i] == maximumDoubleOptions[i];
-    for(int i = 0; i < 10; ++i)
+    for(int i = 0; i < 13; ++i)
         optionsMatch = optionsMatch &&
             minimumIntegerOptions[i] == maximumIntegerOptions[i];
     if(!optionsMatch)
@@ -508,12 +675,89 @@ void DistributedFmmGravityCalculator::validateInputs(
     }
 }
 
+// Collective on comm_: every rank must call this. Reports, for a range of
+// candidate patch levels, how many process-tree leaves a patch forest would
+// create and what the replicated descriptor storage would cost. This decides
+// whether a replicated patch process tree is viable before any is built.
+void DistributedFmmGravityCalculator::logPatchCountSurvey(
+    const std::vector<Vector3D>& positions,
+    const Vector3D& domainLower,
+    const Vector3D& domainUpper) const
+{
+    const FmmRootGeometry globalRoot =
+        FmmRootGeometry::fromDomain(domainLower, domainUpper, true);
+
+    constexpr int kFirstLevel = 5;
+    constexpr int kLastLevel = 10;
+    constexpr int kLevelCount = kLastLevel - kFirstLevel + 1;
+
+    unsigned long long localCounts[kLevelCount] = {};
+    std::unordered_set<std::uint64_t> cells;
+    for(int level = kFirstLevel; level <= kLastLevel; ++level)
+    {
+        cells.clear();
+        for(const Vector3D& point : positions)
+            cells.insert(dyadicCellKey(point, globalRoot, level));
+        localCounts[level - kFirstLevel] =
+            static_cast<unsigned long long>(cells.size());
+    }
+
+    unsigned long long totalCounts[kLevelCount] = {};
+    unsigned long long maxCounts[kLevelCount] = {};
+    MPI_Allreduce(localCounts, totalCounts, kLevelCount,
+                  MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm_);
+    MPI_Allreduce(localCounts, maxCounts, kLevelCount,
+                  MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm_);
+
+    if(rank_ != 0)
+        return;
+
+    // Ranks per node is not known here; report per-rank bytes and let the
+    // reader multiply by the actual packing.
+    const std::size_t descriptorBytes = 128;
+    for(int level = kFirstLevel; level <= kLastLevel; ++level)
+    {
+        const int index = level - kFirstLevel;
+        const double halfSize = std::ldexp(globalRoot.halfSize, -level);
+        std::fprintf(stderr,
+            "FMMPATCHSURVEY level=%d patchHalfSize=%.6e totalPatches=%llu "
+            "maxLocalPatches=%llu descriptorMiBPerRank=%.2f "
+            "globalRootHalfSize=%.6e\n",
+            level, halfSize, totalCounts[index], maxCounts[index],
+            static_cast<double>(totalCounts[index]) *
+                static_cast<double>(descriptorBytes) / 1048576.0,
+            globalRoot.halfSize);
+    }
+    std::fflush(stderr);
+}
+
+// The bound has to be one global length rather than a per-rank one, because
+// admissibility compares local nodes against descriptors from every other rank.
+double DistributedFmmGravityCalculator::effectiveMaxLeafHalfSize(
+    const Vector3D& domainLower,
+    const Vector3D& domainUpper) const
+{
+    if(options_.maxLeafHalfSize > 0.0)
+        return options_.maxLeafHalfSize;
+    if(distributedOptions_.maxLeafHalfSizeLevel <= 0)
+        return 0.0;
+    const FmmRootGeometry globalRoot =
+        FmmRootGeometry::fromDomain(domainLower, domainUpper, true);
+    const double bound = std::ldexp(globalRoot.halfSize,
+                                    -distributedOptions_.maxLeafHalfSizeLevel);
+    return std::isfinite(bound) && bound > 0.0 ? bound : 0.0;
+}
+
 DistributedFmmGravityCalculator::LocalTopologyChange
 DistributedFmmGravityCalculator::prepareLocalTree(
     const std::vector<Vector3D>& positions,
     const Vector3D& domainLower,
     const Vector3D& domainUpper)
 {
+    FmmGravityOptions treeOptions = options_;
+    treeOptions.maxLeafHalfSize =
+        effectiveMaxLeafHalfSize(domainLower, domainUpper);
+
     FmmRootGeometry nextRoot;
     if(!positions.empty())
     {
@@ -536,15 +780,18 @@ DistributedFmmGravityCalculator::prepareLocalTree(
     }
 
     LocalTopologyChange change;
+    // A changed bound invalidates any retained topology, since the split
+    // decision that produced it no longer holds.
     change.rootGeometryChanged =
-        !rootInitialized_ || !sameRoot(localRoot_, nextRoot);
+        !rootInitialized_ || !sameRoot(localRoot_, nextRoot) ||
+        treeOptions.maxLeafHalfSize != lastEffectiveMaxLeafHalfSize_;
     if(distributedOptions_.persistentLocalTreeTopology)
     {
         FmmPersistentTreeStats persistentStats;
         const bool initializeFromScratch =
             change.rootGeometryChanged || localTree_.nodes().empty();
         localTree_.buildPersistent(
-            positions, nextRoot, options_,
+            positions, nextRoot, treeOptions,
             persistentSplitCapacity(options_.leafCapacity,
                 distributedOptions_.persistentLeafSplitFactor),
             persistentMergeCapacity(options_.leafCapacity,
@@ -558,7 +805,26 @@ DistributedFmmGravityCalculator::prepareLocalTree(
     }
     else
     {
-        localTree_.build(positions, nextRoot, options_);
+        localTree_.build(positions, nextRoot, treeOptions);
+    }
+    // Only the oversized-domain ranks can trip this, so throwing would leave
+    // the rest of the communicator waiting in the next collective. Abort with a
+    // printed reason instead, matching the convention in FmmPeerExchange.
+    if(treeOptions.maxLeafHalfSize > 0.0 && !positions.empty() &&
+       localTree_.nodes().size() / positions.size() > kMaxNodesPerParticle)
+    {
+        std::fprintf(stderr,
+            "DistributedFmmGravityCalculator abort on MPI rank %d: leaf "
+            "half-size bound produced an excessive local tree; raise "
+            "maxLeafHalfSizeLevel\n"
+            "nodes=%zu particles=%zu nodesPerParticle=%.2f "
+            "maxLeafHalfSize=%.6e limit=%zu\n",
+            rank_, localTree_.nodes().size(), positions.size(),
+            static_cast<double>(localTree_.nodes().size()) /
+                static_cast<double>(positions.size()),
+            treeOptions.maxLeafHalfSize, kMaxNodesPerParticle);
+        std::fflush(stderr);
+        MPI_Abort(comm_, 94);
     }
     const std::uint64_t hash = localTree_.topologyHash();
     std::vector<std::uint64_t> structuralSignature =
@@ -572,10 +838,17 @@ DistributedFmmGravityCalculator::prepareLocalTree(
     change.countOnlyLeafChange = !change.rootGeometryChanged &&
         !change.leafTopologyChanged && change.leafOccupancyChanged;
     localRoot_ = nextRoot;
+    lastEffectiveMaxLeafHalfSize_ = treeOptions.maxLeafHalfSize;
     lastLocalTopologyHash_ = hash;
     lastLocalStructuralSignature_.swap(structuralSignature);
     lastLocalOccupancySignature_.swap(occupancySignature);
     rootInitialized_ = true;
+    if(change.rootGeometryChanged)
+    {
+        logRootGeometryDiagnostic(rank_, positions, localRoot_);
+        logLeafGeometryDiagnostic(rank_, localTree_, positions.size(),
+                                  treeOptions.maxLeafHalfSize);
+    }
     return change;
 }
 
@@ -593,6 +866,7 @@ FmmRankRootDescriptor DistributedFmmGravityCalculator::localRootDescriptor() con
         result.center[1] = root.center.y;
         result.center[2] = root.center.z;
         result.halfSize = root.halfSize;
+        result.radius = root.radius;
         result.particleCount = static_cast<std::uint64_t>(root.particleCount());
         result.latticeId = root.latticeId;
         result.latticeCenter[0] = root.latticeCenterX;
@@ -606,6 +880,7 @@ FmmRankRootDescriptor DistributedFmmGravityCalculator::localRootDescriptor() con
 }
 
 void DistributedFmmGravityCalculator::rebuildTopology(
+    const std::vector<Vector3D>& positions,
     bool rebuildProcessTopology)
 {
     const Clock::time_point topologyStart = Clock::now();
@@ -679,9 +954,12 @@ void DistributedFmmGravityCalculator::rebuildTopology(
         stats_.processCommunicatorsReused = true;
     }
 
-    letPlan_.build(localTree_, rootDescriptors_, processPlan_,
+    letPlan_.build(localTree_, positions, rootDescriptors_, processPlan_,
                    options_.thetaCritical, topologyEpoch_, comm_,
-                   !rebuildProcessTopology, stats_);
+                   !rebuildProcessTopology,
+                   distributedOptions_.enableLeafM2P,
+                   distributedOptions_.maxLetWaveBytes,
+                   fmmTaylorCoefficientCount(options_.expansionOrder), stats_);
     stats_.topologyRebuildSeconds = elapsed(topologyStart);
 }
 
@@ -797,6 +1075,12 @@ void DistributedFmmGravityCalculator::solve(
     double globalMassTerms[2] = {0.0, 0.0};
     MPI_Allreduce(localMassTerms, globalMassTerms, 2, MPI_DOUBLE, MPI_SUM, comm_);
 
+    // Phase 0 sizing for a patch forest. The process tree gets one leaf per
+    // (ownerRank, patchId), so the descriptor count is the sum over ranks of
+    // each rank's distinct occupied cells -- a plain SUM, no global set needed.
+    if(geometryLogEnabled())
+        logPatchCountSurvey(positions, domainLower, domainUpper);
+
     const unsigned long long localTopologyTerms[9] = {
         static_cast<unsigned long long>(positions.size()),
         localChange.rootGeometryChanged ? 1ull : 0ull,
@@ -846,7 +1130,7 @@ void DistributedFmmGravityCalculator::solve(
     stats_.countOnlyTopologyReused =
         globalTopologyTerms[4] != 0ull && !letTopologyChanged;
     if(letTopologyChanged)
-        rebuildTopology(processTopologyChanged);
+        rebuildTopology(positions, processTopologyChanged);
     else
     {
         stats_.processCommunicatorsReused = true;
@@ -1073,7 +1357,7 @@ void DistributedFmmGravityCalculator::solve(
     // Pack and start the large LET payload before local work. The count
     // exchange is already complete, so progress calls advance the payload.
     const Clock::time_point letBeginStart = Clock::now();
-    letPlan_.beginExecute(localTree_, positions, masses, cellIds, layout,
+    letPlan_.beginExecute(0, localTree_, positions, masses, cellIds, layout,
                           localMultipoles_, localLocals_, acceleration,
                           positiveKernelPotential,
                           distributedOptions_.maxRemoteBytes, stats_);
@@ -1120,10 +1404,25 @@ void DistributedFmmGravityCalculator::solve(
     stats_.localTraversalSeconds = elapsed(localTraversalStart);
 
     const Clock::time_point letFinishStart = Clock::now();
-    letPlan_.finishExecute(localTree_, positions, layout, localLocals_,
+    letPlan_.finishExecute(0, localTree_, positions, layout, localLocals_,
                            acceleration, positiveKernelPotential,
                            operatorCache_, distributedOptions_.maxRemoteBytes,
                            options_.maxOperatorCacheBytes, stats_);
+    // Only wave 0 can be overlapped with local traversal. Remaining waves run
+    // back to back; every rank must participate because the payload exchange is
+    // a neighborhood collective, even when its own groups are empty.
+    for(std::size_t wave = 1; wave < letPlan_.waveCount(); ++wave)
+    {
+        letPlan_.beginExecute(wave, localTree_, positions, masses, cellIds,
+                              layout, localMultipoles_, localLocals_,
+                              acceleration, positiveKernelPotential,
+                              distributedOptions_.maxRemoteBytes, stats_);
+        letPlan_.finishExecute(wave, localTree_, positions, layout,
+                               localLocals_, acceleration,
+                               positiveKernelPotential, operatorCache_,
+                               distributedOptions_.maxRemoteBytes,
+                               options_.maxOperatorCacheBytes, stats_);
+    }
     stats_.letExecuteSeconds = letBeginSeconds + elapsed(letFinishStart);
     if(stats_.peakRemoteBytes > distributedOptions_.maxRemoteBytes)
         throw UniversalError("DistributedFmmGravityCalculator::solve: LET memory budget exceeded");

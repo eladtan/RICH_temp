@@ -1775,6 +1775,102 @@ check_fmm_gravity_mpi_case() {
     return 0
 }
 
+check_fmm_sparse_rank_waves_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_sparse_rank_waves_metrics.txt"
+    local ranks
+    local single_wave_error
+    local many_wave_error
+    local wave_difference
+    local single_wave_count
+    local many_wave_count
+    local span_ratio
+    local single_wave_accurate
+    local many_wave_accurate
+    local waves_agree
+    local waves_split
+    local pathology_present
+    local finite
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_sparse_rank_waves_metrics.txt"
+        return 1
+    fi
+
+    ranks=$(awk '$1 == "ranks" { print $2 }' "$metrics_file")
+    single_wave_error=$(awk '$1 == "single_wave_error" { print $2 }' "$metrics_file")
+    many_wave_error=$(awk '$1 == "many_wave_error" { print $2 }' "$metrics_file")
+    wave_difference=$(awk '$1 == "wave_difference" { print $2 }' "$metrics_file")
+    single_wave_count=$(awk '$1 == "single_wave_count" { print $2 }' "$metrics_file")
+    many_wave_count=$(awk '$1 == "many_wave_count" { print $2 }' "$metrics_file")
+    span_ratio=$(awk '$1 == "span_ratio" { print $2 }' "$metrics_file")
+    single_wave_accurate=$(awk '$1 == "single_wave_accurate" { print $2 }' "$metrics_file")
+    many_wave_accurate=$(awk '$1 == "many_wave_accurate" { print $2 }' "$metrics_file")
+    waves_agree=$(awk '$1 == "waves_agree" { print $2 }' "$metrics_file")
+    waves_split=$(awk '$1 == "waves_split" { print $2 }' "$metrics_file")
+    pathology_present=$(awk '$1 == "pathology_present" { print $2 }' "$metrics_file")
+    finite=$(awk '$1 == "finite" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$ranks" || -z "$single_wave_error" || -z "$many_wave_error" ||
+          -z "$wave_difference" || -z "$single_wave_count" ||
+          -z "$many_wave_count" || -z "$span_ratio" ||
+          -z "$single_wave_accurate" || -z "$many_wave_accurate" ||
+          -z "$waves_agree" || -z "$waves_split" ||
+          -z "$pathology_present" || -z "$finite" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse sparse-rank LET wave metrics"
+        return 1
+    fi
+    if ! is_finite_number "$single_wave_error" ||
+       ! is_finite_number "$many_wave_error" ||
+       ! is_finite_number "$wave_difference"; then
+        set_check_msg "sparse-rank LET wave errors are not finite"
+        return 1
+    fi
+    if ! awk -v n="$ranks" 'BEGIN { exit !(n >= 3) }'; then
+        set_check_msg "sparse-rank LET wave test did not use enough ranks (${ranks})"
+        return 1
+    fi
+    if [[ "$pathology_present" != "1" ]]; then
+        set_check_msg "sparse-rank geometry was not reproduced (span_ratio=${span_ratio}); the test would pass vacuously"
+        return 1
+    fi
+    if [[ "$waves_split" != "1" ]]; then
+        set_check_msg "tiny wave budget did not split the LET payload (${single_wave_count} -> ${many_wave_count})"
+        return 1
+    fi
+    if [[ "$single_wave_accurate" != "1" ]]; then
+        set_check_msg "single-wave LET disagreed with direct summation (${single_wave_error})"
+        return 1
+    fi
+    if [[ "$many_wave_accurate" != "1" ]]; then
+        set_check_msg "multi-wave LET disagreed with direct summation (${many_wave_error})"
+        return 1
+    fi
+    if [[ "$waves_agree" != "1" ]]; then
+        set_check_msg "wave count changed the result, so an interaction was dropped or double counted (${wave_difference})"
+        return 1
+    fi
+    if [[ "$finite" != "1" ]]; then
+        set_check_msg "sparse-rank LET wave test produced non-finite output"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "sparse-rank LET wave test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "Sparse-rank LET waves passed (ranks=${ranks}, span_ratio=${span_ratio}, waves=${single_wave_count}->${many_wave_count}, error=${many_wave_error})"
+    return 0
+}
+
 check_fmm_process_pair_coverage_case() {
     local run_dir="$1"
     local run_start_epoch="$2"

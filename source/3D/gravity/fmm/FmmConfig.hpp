@@ -13,6 +13,8 @@ struct FmmGravityOptions
     double thetaCritical = 0.5;
     std::size_t leafCapacity = 32;
     int maxDepth = FMM_MAX_TREE_DEPTH;
+    // Physical half-size limit for non-empty leaves. Zero disables the limit.
+    double maxLeafHalfSize = 0.0;
     bool computePotential = false;
     bool validateFinite = true;
 

@@ -57,6 +57,11 @@ struct FmmSolveStats
     std::uint64_t localInactiveP2PBlockCount = 0;
     std::uint64_t letInactiveM2LCount = 0;
     std::uint64_t letInactiveP2PBlockCount = 0;
+    std::uint64_t letM2PCount = 0;
+    std::uint64_t letInactiveM2PCount = 0;
+    std::size_t letWaveCount = 1;
+    std::size_t letLocalWaveCount = 1;
+    std::size_t letMaxWavePayloadBytes = 0;
     std::uint64_t letZeroMultipolePayloadCount = 0;
     std::uint64_t letOmittedMultipolePayloadCount = 0;
     std::uint64_t letOmittedParticlePayloadCount = 0;
@@ -164,6 +169,7 @@ struct FmmSolveStats
 
     double letM2LSeconds = 0;
     double letP2PSeconds = 0;
+    double letM2PSeconds = 0;
     double localTraversalSeconds = 0;
 };
 

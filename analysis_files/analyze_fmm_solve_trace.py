@@ -10,29 +10,34 @@ import sys
 from pathlib import Path
 from typing import Iterable
 
-TIMING_KEYS = (
-    "total_max",
-    "build_max",
-    "topology_max",
-    "descriptor_max",
-    "process_topology_max",
-    "let_plan_max",
-    "let_reset_max",
-    "let_descriptor_traversal_max",
-    "let_finalize_max",
-    "let_subscription_max",
-    "let_prune_compact_max",
-    "local_traversal_max",
-    "let_execute_max",
-    "upward_max",
-    "process_upward_max",
-    "process_interaction_max",
-    "process_downward_max",
-    "let_exchange_max",
-    "let_m2l_max",
-    "let_p2p_max",
-    "downward_max",
+PHASE_NAMES = (
+    "total",
+    "build",
+    "topology",
+    "descriptor",
+    "process_topology",
+    "let_plan",
+    "let_reset",
+    "let_descriptor_traversal",
+    "let_finalize",
+    "let_subscription",
+    "let_prune_compact",
+    "local_traversal",
+    "let_execute",
+    "upward",
+    "process_upward",
+    "process_interaction",
+    "process_downward",
+    "let_exchange",
+    "let_m2l",
+    "let_p2p",
+    "downward",
 )
+TIMING_KEYS = tuple(
+    f"{phase}_{suffix}"
+    for phase in PHASE_NAMES
+    for suffix in ("min", "mean", "max")
+) + ("let_residual_wait_max", "let_payload_lifetime_max")
 
 INTEGER_KEYS = (
     "call",
@@ -76,6 +81,14 @@ INTEGER_KEYS = (
     "active_ranks",
     "local_plan_reused_ranks",
     "local_plan_reused_all",
+    "local_cache_hits_sum",
+    "local_cache_misses_sum",
+    "local_cache_bypasses_sum",
+    "let_cache_hits_sum",
+    "let_cache_misses_sum",
+    "let_cache_bypasses_sum",
+    "process_cache_misses_sum",
+    "process_cache_bypasses_sum",
 )
 
 
@@ -134,13 +147,78 @@ def fraction(records: list[dict[str, float | int]], key: str) -> float:
     return statistics.fmean(values) if values else float("nan")
 
 
+def number(record: dict[str, float | int], key: str) -> float:
+    value = record.get(key)
+    return float(value) if value is not None else float("nan")
+
+
+def safe_ratio(numerator: float, denominator: float) -> float:
+    return numerator / denominator if math.isfinite(numerator) and denominator > 0.0 else float("nan")
+
+
+def derived_values(record: dict[str, float | int]) -> dict[str, float]:
+    local_active_m2l = number(record, "local_planned_m2l_sum") - number(
+        record, "local_inactive_m2l_sum")
+    local_active_p2p = number(record, "local_planned_p2p_blocks_sum") - number(
+        record, "local_inactive_p2p_blocks_sum")
+    let_active_m2l = number(record, "let_active_m2l_sum")
+    let_active_p2p = number(record, "let_active_p2p_blocks_sum")
+    total = number(record, "total_max")
+    local_traversal = number(record, "local_traversal_max")
+    let_execute = number(record, "let_execute_max")
+    accounted = (
+        number(record, "build_max")
+        + number(record, "upward_max")
+        + max(local_traversal, let_execute)
+        + number(record, "downward_max")
+    )
+    local_cache_total = sum(number(record, key) for key in (
+        "local_cache_hits_sum", "local_cache_misses_sum"))
+    let_cache_total = sum(number(record, key) for key in (
+        "let_cache_hits_sum", "let_cache_misses_sum"))
+    omitted = sum(number(record, key) for key in (
+        "let_omitted_multipole_payloads_sum",
+        "let_omitted_particle_payloads_sum"))
+    payload_records = omitted + let_active_m2l + let_active_p2p
+    payload_lifetime = number(record, "let_payload_lifetime_max")
+    residual_wait = number(record, "let_residual_wait_max")
+    return {
+        "phase_share_build": safe_ratio(number(record, "build_max"), total),
+        "phase_share_local_traversal": safe_ratio(local_traversal, total),
+        "phase_share_let_execute": safe_ratio(let_execute, total),
+        "phase_share_let_m2l": safe_ratio(number(record, "let_m2l_max"), total),
+        "phase_share_let_p2p": safe_ratio(number(record, "let_p2p_max"), total),
+        "phase_share_let_exchange": safe_ratio(number(record, "let_exchange_max"), total),
+        "unaccounted_seconds": total - accounted if math.isfinite(total) else float("nan"),
+        "unaccounted_fraction": safe_ratio(total - accounted, total),
+        "local_active_m2l": local_active_m2l,
+        "local_active_p2p_blocks": local_active_p2p,
+        "local_active_fraction_m2l": safe_ratio(local_active_m2l, number(record, "local_planned_m2l_sum")),
+        "local_active_fraction_p2p": safe_ratio(local_active_p2p, number(record, "local_planned_p2p_blocks_sum")),
+        "let_active_fraction_m2l": safe_ratio(let_active_m2l, number(record, "let_planned_m2l_sum")),
+        "let_active_fraction_p2p": safe_ratio(let_active_p2p, number(record, "let_planned_p2p_blocks_sum")),
+        "payload_omission_fraction": safe_ratio(omitted, payload_records),
+        "bytes_per_active_let_m2l": safe_ratio(number(record, "bytes_received_sum"), let_active_m2l),
+        "bytes_per_active_let_p2p_block": safe_ratio(number(record, "bytes_received_sum"), let_active_p2p),
+        "local_cache_hit_rate": safe_ratio(number(record, "local_cache_hits_sum"), local_cache_total),
+        "let_cache_hit_rate": safe_ratio(number(record, "let_cache_hits_sum"), let_cache_total),
+        "exchange_hidden_fraction": (
+            1.0 - safe_ratio(residual_wait, payload_lifetime)
+            if math.isfinite(payload_lifetime) and payload_lifetime > 0.0 else float("nan")
+        ),
+    }
+
+
 def print_group(name: str, records: list[dict[str, float | int]]) -> None:
     print(f"[{name}] calls={len(records)}")
-    for key in TIMING_KEYS:
-        print(
-            f"  {key:24s} median={median(records, key):.8e} "
-            f"mean={mean(records, key):.8e}"
+    for phase in PHASE_NAMES:
+        values = " ".join(
+            f"{suffix}={median(records, f'{phase}_{suffix}'):.8e}"
+            for suffix in ("min", "mean", "max")
         )
+        print(f"  {phase:28s}{values}")
+    for key in ("let_residual_wait_max", "let_payload_lifetime_max"):
+        print(f"  {key:28s}median={median(records, key):.8e} mean={mean(records, key):.8e}")
     for key in (
         "process_rebuilt",
         "let_rebuilt",
@@ -190,6 +268,15 @@ def print_group(name: str, records: list[dict[str, float | int]]) -> None:
         print(
             f"  {key:32s} median={median(records, key):.1f} "
             f"mean={mean(records, key):.1f}"
+        )
+    derived = [derived_values(record) for record in records]
+    print("  derived_metrics")
+    for key in sorted({key for values in derived for key in values}):
+        values = [values[key] for values in derived if math.isfinite(values[key])]
+        print(
+            f"    {key:30s} median={statistics.median(values):.8e} "
+            f"mean={statistics.fmean(values):.8e}"
+            if values else f"    {key:30s} median=nan mean=nan"
         )
 
 

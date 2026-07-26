@@ -6,6 +6,8 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <map>
@@ -31,17 +33,21 @@ bool finiteVector(const Vector3D& value)
            std::isfinite(value.z);
 }
 
-bool cubesOverlap(const FmmNode& target, const FmmRemoteNodeDescriptor& source)
+double geometricRadius(const FmmNode& node);
+
+bool boundingSpheresOverlap(const FmmNode& target,
+                            const FmmRemoteNodeDescriptor& source)
 {
-    const Vector3D center = source.centerVector();
-    return std::abs(target.center.x - center.x) <= target.halfSize + source.halfSize &&
-           std::abs(target.center.y - center.y) <= target.halfSize + source.halfSize &&
-           std::abs(target.center.z - center.z) <= target.halfSize + source.halfSize;
+    const Vector3D delta = target.center - source.centerVector();
+    const double radius = geometricRadius(target) + source.geometricRadius();
+    return delta.x * delta.x + delta.y * delta.y + delta.z * delta.z <=
+           radius * radius;
 }
 
 double geometricRadius(const FmmNode& node)
 {
-    return std::sqrt(3.0) * node.halfSize;
+    return node.radius > 0.0 ? node.radius :
+        std::sqrt(3.0) * node.halfSize;
 }
 
 bool validRemoteDescriptor(const FmmRemoteNodeDescriptor& descriptor)
@@ -49,6 +55,7 @@ bool validRemoteDescriptor(const FmmRemoteNodeDescriptor& descriptor)
     const Vector3D center = descriptor.centerVector();
     return finiteVector(center) &&
         descriptor.halfSize > 0.0 && std::isfinite(descriptor.halfSize) &&
+        descriptor.radius >= 0.0 && std::isfinite(descriptor.radius) &&
         descriptor.halfSize <= std::numeric_limits<double>::max() / std::sqrt(3.0) &&
         std::isfinite(center.x - descriptor.halfSize) &&
         std::isfinite(center.x + descriptor.halfSize) &&
@@ -138,8 +145,15 @@ const Payload* findPayload(const std::vector<Payload>& payloads,
     return &*found;
 }
 
-[[noreturn]] void abortLetInvariant(const MPI_Comm& comm, const char* message)
+[[noreturn]] void abortLetInvariant(const MPI_Comm& comm, const char* message,
+                                    const char* detail = nullptr)
 {
+    int rank = -1;
+    MPI_Comm_rank(comm, &rank);
+    std::fprintf(stderr, "FMM LET abort on MPI rank %d: %s\n", rank, message);
+    if(detail != nullptr && detail[0] != '\0')
+        std::fprintf(stderr, "%s\n", detail);
+    std::fflush(stderr);
     MPI_Abort(comm, 92);
     throw UniversalError(message);
 }
@@ -216,6 +230,7 @@ void applyRemoteLatticeMetadata(std::uint64_t latticeId,
 }
 
 FmmLetPlan::FmmLetPlan():
+    waveCount_(1),
     executePending_(false), pendingMaxRemoteBytes_(0),
     pendingExchangePreparationSeconds_(0.0), pendingProgressCallCount_(0),
     pendingProgressIncompleteCount_(0), pendingCompletionProgressCall_(0),
@@ -231,6 +246,7 @@ FmmRemoteNodeDescriptor FmmLetPlan::descriptorForNode(
     result.center[1] = node.center.y;
     result.center[2] = node.center.z;
     result.halfSize = node.halfSize;
+    result.radius = node.radius;
     result.spatialKey = node.spatialKey;
     result.particleCount = static_cast<std::uint64_t>(node.particleCount());
     result.topologyEpoch = topologyEpoch;
@@ -244,7 +260,7 @@ bool FmmLetPlan::admissible(const FmmNode& target,
                             const FmmRemoteNodeDescriptor& source,
                             double thetaCritical)
 {
-    if(cubesOverlap(target, source))
+    if(boundingSpheresOverlap(target, source))
         return false;
     const Vector3D delta = target.center - source.centerVector();
     const double distance = std::sqrt(delta.x * delta.x + delta.y * delta.y +
@@ -253,13 +269,41 @@ bool FmmLetPlan::admissible(const FmmNode& target,
         geometricRadius(target) + source.geometricRadius() <= thetaCritical * distance;
 }
 
+bool FmmLetPlan::m2pAdmissible(const FmmNode& target,
+                               const FmmRemoteNodeDescriptor& source,
+                               const std::vector<std::size_t>& particleOrder,
+                               const std::vector<Vector3D>& positions,
+                               double thetaCritical)
+{
+    if(target.particleCount() == 0)
+        return false;
+    const Vector3D sourceCenter = source.centerVector();
+    const double sourceRadius = source.geometricRadius();
+    // The expansion is evaluated at each particle, so the binding distance is
+    // that of the closest particle rather than of the enclosing cell.
+    for(std::size_t k = target.particleBegin; k < target.particleEnd; ++k)
+    {
+        const Vector3D delta = positions[particleOrder[k]] - sourceCenter;
+        const double distanceSquared =
+            delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
+        const double limit = thetaCritical * std::sqrt(distanceSquared);
+        if(!(distanceSquared > 0.0) || sourceRadius > limit)
+            return false;
+    }
+    return true;
+}
+
 void FmmLetPlan::build(const FmmTree& localTree,
+                       const std::vector<Vector3D>& positions,
                        const std::vector<FmmRankRootDescriptor>& rootDescriptors,
                        const FmmProcessPairPlan& processPlan,
                        double thetaCritical,
                        std::uint64_t topologyEpoch,
                        const MPI_Comm& comm,
                        bool reuseBuildStorage,
+                       bool enableLeafM2P,
+                       std::size_t maxLetWaveBytes,
+                       std::size_t multipoleCoefficientCount,
                        FmmSolveStats& stats)
 {
     const Clock::time_point start = Clock::now();
@@ -296,8 +340,14 @@ void FmmLetPlan::build(const FmmTree& localTree,
     m2lOperatorGeometryUseCounts_.clear();
     p2pInteractions_.clear();
     p2pSources_.clear();
+    m2pInteractions_.clear();
+    m2lWaveRanges_.clear();
+    p2pWaveRanges_.clear();
+    m2pWaveRanges_.clear();
+    waveCount_ = 1;
     activeM2LInteractionIndices_.clear();
     activeP2PInteractionIndices_.clear();
+    activeM2PInteractionIndices_.clear();
     pendingScratch_.clear();
     workScratch_.clear();
     blockedScratch_.clear();
@@ -332,6 +382,7 @@ void FmmLetPlan::build(const FmmTree& localTree,
     std::vector<PendingPair>& pending = pendingScratch_;
     std::vector<PendingInteraction> pendingM2LInteractions;
     std::vector<PendingInteraction> pendingP2PInteractions;
+    std::vector<PendingInteraction> pendingM2PInteractions;
     for(int sourceRank : processPlan.letSourceRanks)
     {
         if(sourceRank < 0 ||
@@ -360,6 +411,7 @@ void FmmLetPlan::build(const FmmTree& localTree,
         descriptor.center[1] = root.center[1];
         descriptor.center[2] = root.center[2];
         descriptor.halfSize = root.halfSize;
+        descriptor.radius = root.radius;
         descriptor.spatialKey = 1;
         descriptor.particleCount = root.particleCount;
         descriptor.topologyEpoch = topologyEpoch_;
@@ -404,6 +456,17 @@ void FmmLetPlan::build(const FmmTree& localTree,
             if(admissible(target, source, thetaCritical))
             {
                 pendingM2LInteractions.push_back(PendingInteraction{
+                    pair.targetNode, pair.sourceRank, pair.sourceKey});
+                continue;
+            }
+            // A leaf target cannot shrink its own radius, so without this the
+            // pair descends the source all the way to leaves and pulls
+            // particles even when a coarse multipole would be accurate.
+            if(enableLeafM2P && target.isLeaf() &&
+               m2pAdmissible(target, source, localTree.particleOrder(),
+                             positions, thetaCritical))
+            {
+                pendingM2PInteractions.push_back(PendingInteraction{
                     pair.targetNode, pair.sourceRank, pair.sourceKey});
                 continue;
             }
@@ -620,12 +683,32 @@ void FmmLetPlan::build(const FmmTree& localTree,
     if(duplicateM2L != pendingM2LInteractions.end())
         throw UniversalError("FmmLetPlan::build: duplicate LET M2L interaction");
 
-    // Resolve each unique remote M2L source once while the topology is built.
-    // Warm solves keep target-major interaction order for local-locality, but
-    // use a compact direct source index instead of repeating descriptor hash
-    // lookups and lattice-key reconstruction for every interaction.
+    std::sort(pendingM2PInteractions.begin(), pendingM2PInteractions.end(),
+        [](const PendingInteraction& a, const PendingInteraction& b)
+        {
+            return std::tie(a.targetNode, a.sourceRank, a.sourceKey) <
+                   std::tie(b.targetNode, b.sourceRank, b.sourceKey);
+        });
+    const auto duplicateM2P = std::adjacent_find(
+        pendingM2PInteractions.begin(), pendingM2PInteractions.end(),
+        [](const PendingInteraction& a, const PendingInteraction& b)
+        {
+            return a.targetNode == b.targetNode && a.sourceRank == b.sourceRank &&
+                   a.sourceKey == b.sourceKey;
+        });
+    if(duplicateM2P != pendingM2PInteractions.end())
+        throw UniversalError("FmmLetPlan::build: duplicate LET M2P interaction");
+
+    // Resolve each unique remote multipole source once while the topology is
+    // built. Warm solves keep target-major interaction order for local-locality,
+    // but use a compact direct source index instead of repeating descriptor hash
+    // lookups and lattice-key reconstruction for every interaction. M2P shares
+    // this table because it consumes the same multipole payload.
     std::map<std::pair<int, std::uint64_t>, std::uint32_t> sourceIndexByKey;
     for(const PendingInteraction& interaction : pendingM2LInteractions)
+        sourceIndexByKey.emplace(
+            std::make_pair(interaction.sourceRank, interaction.sourceKey), 0u);
+    for(const PendingInteraction& interaction : pendingM2PInteractions)
         sourceIndexByKey.emplace(
             std::make_pair(interaction.sourceRank, interaction.sourceKey), 0u);
     if(sourceIndexByKey.size() > static_cast<std::size_t>(
@@ -679,6 +762,21 @@ void FmmLetPlan::build(const FmmTree& localTree,
         m2lInteractions_.push_back(FmmLetM2LInteraction{
             static_cast<std::uint32_t>(interaction.targetNode),
             found->second, 0u});
+    }
+
+    // M2P needs no translation operator, so it carries no geometry index and is
+    // deliberately excluded from the operator-cache grouping below.
+    m2pInteractions_.reserve(pendingM2PInteractions.size());
+    for(const PendingInteraction& interaction : pendingM2PInteractions)
+    {
+        const auto found = sourceIndexByKey.find(
+            std::make_pair(interaction.sourceRank, interaction.sourceKey));
+        if(found == sourceIndexByKey.end())
+            throw UniversalError(
+                "FmmLetPlan::build: unresolved LET M2P source index");
+        m2pInteractions_.push_back(FmmLetM2PInteraction{
+            static_cast<std::uint32_t>(interaction.targetNode),
+            found->second});
     }
 
     typedef std::tuple<std::uint64_t, std::uint64_t, std::uint64_t,
@@ -822,6 +920,59 @@ void FmmLetPlan::build(const FmmTree& localTree,
             return std::tie(first.sourceIndex, first.targetNode) <
                    std::tie(second.sourceIndex, second.targetNode);
         });
+    const char* geometryLog = std::getenv("RICH_FMM_GEOM_LOG");
+    if(geometryLog != nullptr && geometryLog[0] != '\0' &&
+       !(geometryLog[0] == '0' && geometryLog[1] == '\0'))
+    {
+        std::set<int> m2lRanks;
+        for(const M2LSource& source : m2lSources_)
+            m2lRanks.insert(source.sourceRank);
+        std::set<int> p2pRanks;
+        for(const RemoteSource& source : p2pSources_)
+            p2pRanks.insert(source.sourceRank);
+        std::set<std::uint32_t> m2pSourceSet;
+        std::set<int> m2pRanks;
+        for(const FmmLetM2PInteraction& interaction : m2pInteractions_)
+        {
+            m2pSourceSet.insert(interaction.sourceIndex);
+            m2pRanks.insert(m2lSources_[interaction.sourceIndex].sourceRank);
+        }
+        // Empty leaves are valid subscription targets but carry no payload, so
+        // source counts alone overstate the request. Price it from the
+        // descriptor particle counts instead.
+        std::size_t p2pActiveSources = 0;
+        std::size_t p2pParticles = 0;
+        std::set<int> p2pActiveRanks;
+        for(const RemoteSource& source : p2pSources_)
+        {
+            const auto rankIt = remoteDescriptors_.find(source.sourceRank);
+            if(rankIt == remoteDescriptors_.end())
+                continue;
+            const auto nodeIt = rankIt->second.find(source.spatialKey);
+            if(nodeIt == rankIt->second.end() ||
+               nodeIt->second.particleCount == 0)
+                continue;
+            ++p2pActiveSources;
+            p2pParticles += static_cast<std::size_t>(
+                nodeIt->second.particleCount);
+            p2pActiveRanks.insert(source.sourceRank);
+        }
+        const std::size_t p2pPayloadBytes =
+            p2pActiveSources * sizeof(FmmPayloadRecordHeader) +
+            p2pParticles * sizeof(FmmWireParticle);
+        std::fprintf(stderr,
+            "FMMLET rank=%d localNodes=%zu m2lInteractions=%zu "
+            "m2lSources=%zu m2lRanks=%zu p2pInteractions=%zu "
+            "p2pSources=%zu p2pRanks=%zu m2pInteractions=%zu "
+            "m2pSources=%zu m2pRanks=%zu p2pActiveSources=%zu "
+            "p2pActiveRanks=%zu p2pParticles=%zu p2pPayloadBytes=%zu\n",
+            rank_, localTree.nodes().size(), m2lInteractions_.size(),
+            m2lSources_.size(), m2lRanks.size(), p2pInteractions_.size(),
+            p2pSources_.size(), p2pRanks.size(), m2pInteractions_.size(),
+            m2pSourceSet.size(), m2pRanks.size(), p2pActiveSources,
+            p2pActiveRanks.size(), p2pParticles, p2pPayloadBytes);
+        std::fflush(stderr);
+    }
 
     std::set<std::tuple<std::size_t, int, std::uint64_t>> terminalKeys;
     for(const PendingInteraction& interaction : pendingM2LInteractions)
@@ -834,6 +985,14 @@ void FmmLetPlan::build(const FmmTree& localTree,
                                                 interaction.sourceRank,
                                                 interaction.sourceKey)).second)
             throw UniversalError("FmmLetPlan::build: interaction classified as both M2L and P2P");
+    }
+    for(const PendingInteraction& interaction : pendingM2PInteractions)
+    {
+        if(!terminalKeys.insert(std::make_tuple(interaction.targetNode,
+                                                interaction.sourceRank,
+                                                interaction.sourceKey)).second)
+            throw UniversalError(
+                "FmmLetPlan::build: interaction classified as both M2P and another kind");
     }
 
     stats.letFinalizeSeconds += elapsed(finalizeStart);
@@ -854,6 +1013,135 @@ void FmmLetPlan::build(const FmmTree& localTree,
             std::make_pair(source.spatialKey,
                            static_cast<int>(FmmSubscriptionKind::Particles)));
     }
+    for(const FmmLetM2PInteraction& interaction : m2pInteractions_)
+    {
+        const M2LSource& source = m2lSources_[interaction.sourceIndex];
+        subscriptionSets[source.sourceRank].insert(
+            std::make_pair(source.spatialKey,
+                           static_cast<int>(FmmSubscriptionKind::Multipole)));
+    }
+
+    // Split this rank's request into waves no larger than maxLetWaveBytes, so
+    // peak LET memory is set by configuration rather than by the union of all
+    // local near fields. The subscriber owns the decision and ships the wave
+    // index inside the subscription, so owners need no extra communication to
+    // know which wave a record belongs to.
+    typedef std::tuple<int, std::uint64_t, int> SourceIdentity;
+    std::map<SourceIdentity, std::size_t> waveBySource;
+    std::size_t localWaveCount = 1;
+    {
+        std::vector<std::pair<SourceIdentity, std::size_t>> costs;
+        for(const auto& entry : subscriptionSets)
+        {
+            for(const auto& item : entry.second)
+            {
+                std::size_t bytes = sizeof(FmmPayloadRecordHeader);
+                if(item.second == static_cast<int>(FmmSubscriptionKind::Multipole))
+                {
+                    bytes += multipoleCoefficientCount * sizeof(double);
+                }
+                else
+                {
+                    const auto rankIt = remoteDescriptors_.find(entry.first);
+                    if(rankIt == remoteDescriptors_.end())
+                        throw UniversalError(
+                            "FmmLetPlan::build: missing descriptor rank for wave sizing");
+                    const auto nodeIt = rankIt->second.find(item.first);
+                    if(nodeIt == rankIt->second.end())
+                        throw UniversalError(
+                            "FmmLetPlan::build: missing descriptor for wave sizing");
+                    bytes += static_cast<std::size_t>(
+                        nodeIt->second.particleCount) * sizeof(FmmWireParticle);
+                }
+                costs.push_back(std::make_pair(
+                    SourceIdentity(entry.first, item.first, item.second), bytes));
+            }
+        }
+        std::sort(costs.begin(), costs.end(),
+            [](const std::pair<SourceIdentity, std::size_t>& a,
+               const std::pair<SourceIdentity, std::size_t>& b)
+            {
+                return a.first < b.first;
+            });
+
+        std::size_t wave = 0;
+        std::size_t waveBytes = 0;
+        for(const auto& cost : costs)
+        {
+            if(maxLetWaveBytes != 0 && cost.second > maxLetWaveBytes)
+            {
+                char detail[512];
+                std::snprintf(detail, sizeof(detail),
+                    "sourceRank=%d spatialKey=%llu kind=%d recordBytes=%zu "
+                    "maxLetWaveBytes=%zu",
+                    std::get<0>(cost.first),
+                    static_cast<unsigned long long>(std::get<1>(cost.first)),
+                    std::get<2>(cost.first), cost.second, maxLetWaveBytes);
+                abortLetInvariant(comm_,
+                    "FmmLetPlan::build: one LET payload record exceeds the wave budget",
+                    detail);
+            }
+            if(maxLetWaveBytes != 0 && waveBytes != 0 &&
+               waveBytes + cost.second > maxLetWaveBytes)
+            {
+                ++wave;
+                waveBytes = 0;
+            }
+            waveBySource[cost.first] = wave;
+            waveBytes += cost.second;
+        }
+        localWaveCount = wave + 1;
+    }
+
+    // Every rank must call the neighborhood collective the same number of
+    // times, so the wave count is a global maximum. Ranks needing fewer waves
+    // contribute empty groups for the remainder.
+    unsigned long long localWaves =
+        static_cast<unsigned long long>(localWaveCount);
+    unsigned long long globalWaves = 0;
+    MPI_Allreduce(&localWaves, &globalWaves, 1, MPI_UNSIGNED_LONG_LONG,
+                  MPI_MAX, comm_);
+    waveCount_ = static_cast<std::size_t>(globalWaves);
+    if(waveCount_ == 0)
+        waveCount_ = 1;
+    stats.letWaveCount = waveCount_;
+    stats.letLocalWaveCount = localWaveCount;
+    {
+        const char* waveLog = std::getenv("RICH_FMM_GEOM_LOG");
+        if(waveLog != nullptr && waveLog[0] != '\0' &&
+           !(waveLog[0] == '0' && waveLog[1] == '\0'))
+        {
+            std::size_t requestedBytes = 0;
+            for(const auto& entry : subscriptionSets)
+            {
+                for(const auto& item : entry.second)
+                {
+                    requestedBytes += sizeof(FmmPayloadRecordHeader);
+                    if(item.second ==
+                       static_cast<int>(FmmSubscriptionKind::Multipole))
+                    {
+                        requestedBytes +=
+                            multipoleCoefficientCount * sizeof(double);
+                        continue;
+                    }
+                    const auto rankIt = remoteDescriptors_.find(entry.first);
+                    if(rankIt == remoteDescriptors_.end())
+                        continue;
+                    const auto nodeIt = rankIt->second.find(item.first);
+                    if(nodeIt == rankIt->second.end())
+                        continue;
+                    requestedBytes += static_cast<std::size_t>(
+                        nodeIt->second.particleCount) * sizeof(FmmWireParticle);
+                }
+            }
+            std::fprintf(stderr,
+                "FMMWAVE rank=%d localWaves=%zu globalWaves=%zu "
+                "requestedBytes=%zu maxLetWaveBytes=%zu\n",
+                rank_, localWaveCount, waveCount_, requestedBytes,
+                maxLetWaveBytes);
+            std::fflush(stderr);
+        }
+    }
 
     std::unordered_map<int, std::vector<char>> subscriptionBuffers;
     for(const auto& entry : subscriptionSets)
@@ -866,10 +1154,101 @@ void FmmLetPlan::build(const FmmTree& localTree,
                                                 topologyEpoch_);
             subscription.spatialKey = item.first;
             subscription.kind = item.second;
+            const auto waveIt = waveBySource.find(
+                SourceIdentity(entry.first, item.first, item.second));
+            if(waveIt == waveBySource.end())
+                throw UniversalError(
+                    "FmmLetPlan::build: subscription without an assigned wave");
+            subscription.reserved = static_cast<int>(waveIt->second);
             subscriptions.push_back(subscription);
             FmmPacketIO::appendPod(subscriptionBuffers[entry.first], subscription);
         }
     }
+    // Reorder interactions so each wave owns a contiguous range. stable_sort on
+    // the wave alone preserves the orderings established above: M2L grouped by
+    // operator geometry for cache reuse, P2P by source index for payload
+    // locality. Both optimizations survive inside a wave.
+    {
+        std::vector<std::size_t> m2lSourceWave(m2lSources_.size(), 0);
+        for(std::size_t i = 0; i < m2lSources_.size(); ++i)
+        {
+            const auto waveIt = waveBySource.find(SourceIdentity(
+                m2lSources_[i].sourceRank, m2lSources_[i].spatialKey,
+                static_cast<int>(FmmSubscriptionKind::Multipole)));
+            if(waveIt == waveBySource.end())
+                throw UniversalError(
+                    "FmmLetPlan::build: multipole source without an assigned wave");
+            m2lSourceWave[i] = waveIt->second;
+        }
+        std::vector<std::size_t> p2pSourceWave(p2pSources_.size(), 0);
+        for(std::size_t i = 0; i < p2pSources_.size(); ++i)
+        {
+            const auto waveIt = waveBySource.find(SourceIdentity(
+                p2pSources_[i].sourceRank, p2pSources_[i].spatialKey,
+                static_cast<int>(FmmSubscriptionKind::Particles)));
+            if(waveIt == waveBySource.end())
+                throw UniversalError(
+                    "FmmLetPlan::build: particle source without an assigned wave");
+            p2pSourceWave[i] = waveIt->second;
+        }
+
+        std::stable_sort(m2lInteractions_.begin(), m2lInteractions_.end(),
+            [&m2lSourceWave](const FmmLetM2LInteraction& a,
+                             const FmmLetM2LInteraction& b)
+            {
+                return m2lSourceWave[a.sourceIndex] <
+                       m2lSourceWave[b.sourceIndex];
+            });
+        std::stable_sort(m2pInteractions_.begin(), m2pInteractions_.end(),
+            [&m2lSourceWave](const FmmLetM2PInteraction& a,
+                             const FmmLetM2PInteraction& b)
+            {
+                return m2lSourceWave[a.sourceIndex] <
+                       m2lSourceWave[b.sourceIndex];
+            });
+        std::stable_sort(p2pInteractions_.begin(), p2pInteractions_.end(),
+            [&p2pSourceWave](const FmmLetP2PInteraction& a,
+                             const FmmLetP2PInteraction& b)
+            {
+                return p2pSourceWave[a.sourceIndex] <
+                       p2pSourceWave[b.sourceIndex];
+            });
+
+        const auto buildRanges = [](std::size_t count,
+                                    const std::vector<std::size_t>& waveOf,
+                                    std::vector<std::pair<std::size_t,
+                                                          std::size_t>>& ranges)
+        {
+            ranges.assign(count, std::make_pair(std::size_t(0), std::size_t(0)));
+            std::size_t cursor = 0;
+            for(std::size_t wave = 0; wave < count; ++wave)
+            {
+                const std::size_t begin = cursor;
+                while(cursor < waveOf.size() && waveOf[cursor] == wave)
+                    ++cursor;
+                ranges[wave] = std::make_pair(begin, cursor);
+            }
+            if(cursor != waveOf.size())
+                throw UniversalError(
+                    "FmmLetPlan::build: interaction wave partition is not contiguous");
+        };
+
+        std::vector<std::size_t> sortedWaves(m2lInteractions_.size());
+        for(std::size_t i = 0; i < m2lInteractions_.size(); ++i)
+            sortedWaves[i] = m2lSourceWave[m2lInteractions_[i].sourceIndex];
+        buildRanges(waveCount_, sortedWaves, m2lWaveRanges_);
+
+        sortedWaves.assign(m2pInteractions_.size(), 0);
+        for(std::size_t i = 0; i < m2pInteractions_.size(); ++i)
+            sortedWaves[i] = m2lSourceWave[m2pInteractions_[i].sourceIndex];
+        buildRanges(waveCount_, sortedWaves, m2pWaveRanges_);
+
+        sortedWaves.assign(p2pInteractions_.size(), 0);
+        for(std::size_t i = 0; i < p2pInteractions_.size(); ++i)
+            sortedWaves[i] = p2pSourceWave[p2pInteractions_[i].sourceIndex];
+        buildRanges(waveCount_, sortedWaves, p2pWaveRanges_);
+    }
+
     FmmPeerExchangeResult receivedSubscriptions = exchange_.exchangeBytes(
         subscriptionBuffers, &stats.bytesSent, &stats.bytesReceived);
     for(const FmmReceivedMessage& message : receivedSubscriptions.messages())
@@ -954,6 +1333,7 @@ void FmmLetPlan::build(const FmmTree& localTree,
         m2lOperatorGeometryUseCounts_.shrink_to_fit();
         p2pInteractions_.shrink_to_fit();
         p2pSources_.shrink_to_fit();
+        m2pInteractions_.shrink_to_fit();
         pendingScratch_.shrink_to_fit();
         workScratch_.shrink_to_fit();
         blockedScratch_.shrink_to_fit();
@@ -1012,9 +1392,20 @@ std::size_t FmmLetPlan::bytesOwned() const
     result = saturatingAdd(result, saturatingMultiply(
         p2pSources_.capacity(), sizeof(RemoteSource)));
     result = saturatingAdd(result, saturatingMultiply(
+        m2pInteractions_.capacity(), sizeof(FmmLetM2PInteraction)));
+    const std::size_t waveRangeBytes = sizeof(std::pair<std::size_t, std::size_t>);
+    result = saturatingAdd(result, saturatingMultiply(
+        m2lWaveRanges_.capacity(), waveRangeBytes));
+    result = saturatingAdd(result, saturatingMultiply(
+        p2pWaveRanges_.capacity(), waveRangeBytes));
+    result = saturatingAdd(result, saturatingMultiply(
+        m2pWaveRanges_.capacity(), waveRangeBytes));
+    result = saturatingAdd(result, saturatingMultiply(
         activeM2LInteractionIndices_.capacity(), sizeof(std::uint32_t)));
     result = saturatingAdd(result, saturatingMultiply(
         activeP2PInteractionIndices_.capacity(), sizeof(std::uint32_t)));
+    result = saturatingAdd(result, saturatingMultiply(
+        activeM2PInteractionIndices_.capacity(), sizeof(std::uint32_t)));
     result = saturatingAdd(result, saturatingMultiply(
         pendingScratch_.capacity(), sizeof(PendingPair)));
     result = saturatingAdd(result, saturatingMultiply(
@@ -1038,6 +1429,7 @@ std::size_t FmmLetPlan::bytesOwned() const
 }
 
 void FmmLetPlan::beginExecute(
+    std::size_t wave,
     const FmmTree& localTree,
     const std::vector<Vector3D>& positions,
     const std::vector<double>& masses,
@@ -1073,11 +1465,23 @@ void FmmLetPlan::beginExecute(
     if(maxRemoteBytes < 2)
         throw UniversalError("FmmLetPlan::beginExecute: remote memory budget is too small");
     if(m2lInteractions_.size() > std::numeric_limits<std::uint32_t>::max() ||
-       p2pInteractions_.size() > std::numeric_limits<std::uint32_t>::max())
+       p2pInteractions_.size() > std::numeric_limits<std::uint32_t>::max() ||
+       m2pInteractions_.size() > std::numeric_limits<std::uint32_t>::max())
         throw UniversalError("FmmLetPlan::beginExecute: interaction plan is too large");
+    if(wave >= waveCount_)
+        throw UniversalError("FmmLetPlan::beginExecute: wave index out of range");
+    // stats is reset per solve, but the plan survives warm solves that skip
+    // build(), so restate the wave count here rather than only at build time.
+    stats.letWaveCount = waveCount_;
+    // Only this wave's interactions are active; the rest belong to other waves
+    // and must not run here, or they would be applied more than once.
+    const std::pair<std::size_t, std::size_t> m2lRange = m2lWaveRanges_[wave];
+    const std::pair<std::size_t, std::size_t> p2pRange = p2pWaveRanges_[wave];
+    const std::pair<std::size_t, std::size_t> m2pRange = m2pWaveRanges_[wave];
     activeM2LInteractionIndices_.clear();
     activeP2PInteractionIndices_.clear();
-    for(std::size_t i = 0; i < m2lInteractions_.size(); ++i)
+    activeM2PInteractionIndices_.clear();
+    for(std::size_t i = m2lRange.first; i < m2lRange.second; ++i)
     {
         const FmmLetM2LInteraction& interaction = m2lInteractions_[i];
         if(interaction.targetNode >= localTree.nodes().size())
@@ -1089,7 +1493,7 @@ void FmmLetPlan::beginExecute(
         }
         activeM2LInteractionIndices_.push_back(static_cast<std::uint32_t>(i));
     }
-    for(std::size_t i = 0; i < p2pInteractions_.size(); ++i)
+    for(std::size_t i = p2pRange.first; i < p2pRange.second; ++i)
     {
         const FmmLetP2PInteraction& interaction = p2pInteractions_[i];
         if(interaction.targetNode >= localTree.nodes().size())
@@ -1100,6 +1504,18 @@ void FmmLetPlan::beginExecute(
             continue;
         }
         activeP2PInteractionIndices_.push_back(static_cast<std::uint32_t>(i));
+    }
+    for(std::size_t i = m2pRange.first; i < m2pRange.second; ++i)
+    {
+        const FmmLetM2PInteraction& interaction = m2pInteractions_[i];
+        if(interaction.targetNode >= localTree.nodes().size())
+            throw UniversalError("FmmLetPlan::beginExecute: invalid M2P target");
+        if(localTree.nodes()[interaction.targetNode].particleCount() == 0)
+        {
+            ++stats.letInactiveM2PCount;
+            continue;
+        }
+        activeM2PInteractionIndices_.push_back(static_cast<std::uint32_t>(i));
     }
     pendingProgressCallCount_ = 0;
     pendingProgressIncompleteCount_ = 0;
@@ -1114,6 +1530,10 @@ void FmmLetPlan::beginExecute(
             validateFmmPacketStamp(subscription.stamp,
                 FmmPacketKind::Subscription, topologyEpoch_,
                 "FmmLetPlan::execute retained subscription");
+            // The subscriber chose the wave and shipped it in the record, so
+            // honour it rather than deciding independently.
+            if(static_cast<std::size_t>(subscription.reserved) != wave)
+                continue;
             const auto nodeIt = localNodeByKey_.find(subscription.spatialKey);
             if(nodeIt == localNodeByKey_.end())
                 throw UniversalError("FmmLetPlan::execute: subscribed source node vanished");
@@ -1162,8 +1582,15 @@ void FmmLetPlan::beginExecute(
         outgoingBytes += peerBytes;
     }
     if(outgoingBytes > maxRemoteBytes / 2)
+    {
+        char detail[512];
+        std::snprintf(detail, sizeof(detail),
+            "outgoingBytes=%zu maxRemoteBytes=%zu outgoingLimit=%zu",
+            outgoingBytes, maxRemoteBytes, maxRemoteBytes / 2);
         abortLetInvariant(comm_,
-            "FmmLetPlan::execute: outgoing LET payload exceeds memory budget");
+            "FmmLetPlan::execute: outgoing LET payload exceeds memory budget",
+            detail);
+    }
     stats.letPayloadPlanningSeconds += elapsed(start);
 
     const Clock::time_point packingStart = Clock::now();
@@ -1175,6 +1602,8 @@ void FmmLetPlan::beginExecute(
         std::vector<char>& buffer = sendBuffers[entry.first];
         for(const FmmSubscription& subscription : entry.second)
         {
+            if(static_cast<std::size_t>(subscription.reserved) != wave)
+                continue;
             const std::size_t nodeIndex = localNodeByKey_.find(
                 subscription.spatialKey)->second;
             const FmmNode& node = localTree.nodes()[nodeIndex];
@@ -1227,8 +1656,17 @@ void FmmLetPlan::beginExecute(
         sendCapacityBytes += entry.second.capacity();
     }
     if(sendCapacityBytes > maxRemoteBytes - outgoingBytes)
+    {
+        char detail[512];
+        std::snprintf(detail, sizeof(detail),
+            "sendCapacityBytes=%zu outgoingBytes=%zu maxRemoteBytes=%zu "
+            "remainingBudget=%zu",
+            sendCapacityBytes, outgoingBytes, maxRemoteBytes,
+            maxRemoteBytes - outgoingBytes);
         abortLetInvariant(comm_,
-            "FmmLetPlan::execute: outgoing LET buffers exceed memory budget");
+            "FmmLetPlan::execute: MPI send scratch exceeds memory budget",
+            detail);
+    }
 
     // The per-peer payload and contiguous MPI send scratch coexist during
     // the neighborhood collective. Bound both, then release the per-peer
@@ -1271,6 +1709,7 @@ void FmmLetPlan::progressExecute()
 }
 
 void FmmLetPlan::finishExecute(
+    std::size_t wave,
     const FmmTree& localTree,
     const std::vector<Vector3D>& positions,
     const FmmTaylorExpansion& layout,
@@ -1304,20 +1743,37 @@ void FmmLetPlan::finishExecute(
         exchangeWorkspaceBytes, receivedWorkspaceBytes);
     if(wireWorkspaceBytes == std::numeric_limits<std::size_t>::max() ||
        wireWorkspaceBytes > maxRemoteBytes)
+    {
+        char detail[512];
+        std::snprintf(detail, sizeof(detail),
+            "wireWorkspaceBytes=%zu maxRemoteBytes=%zu "
+            "exchangeWorkspaceBytes=%zu receivedWorkspaceBytes=%zu",
+            wireWorkspaceBytes, maxRemoteBytes, exchangeWorkspaceBytes,
+            receivedWorkspaceBytes);
         abortLetInvariant(comm_,
-            "FmmLetPlan::finishExecute: exchange workspace exceeds memory budget");
+            "FmmLetPlan::finishExecute: exchange workspace exceeds memory budget",
+            detail);
+    }
     stats.peakRemoteBytes = std::max(
         stats.peakRemoteBytes, wireWorkspaceBytes);
+    stats.letMaxWavePayloadBytes = std::max(
+        stats.letMaxWavePayloadBytes, receivedWorkspaceBytes);
 
     typedef std::tuple<int, std::uint64_t, int> PayloadKey;
+    // Only this wave's own requests are expected back; records for other waves
+    // arrive in their own exchange.
     std::size_t expectedRecordCount = 0;
     for(const auto& entry : subscriptionsToSend_)
     {
-        if(entry.second.size() >
-           std::numeric_limits<std::size_t>::max() - expectedRecordCount)
-            abortLetInvariant(comm_,
-                "FmmLetPlan::execute: expected payload count overflow");
-        expectedRecordCount += entry.second.size();
+        for(const FmmSubscription& subscription : entry.second)
+        {
+            if(static_cast<std::size_t>(subscription.reserved) != wave)
+                continue;
+            if(expectedRecordCount == std::numeric_limits<std::size_t>::max())
+                abortLetInvariant(comm_,
+                    "FmmLetPlan::execute: expected payload count overflow");
+            ++expectedRecordCount;
+        }
     }
     std::size_t expectedMultipoleRecords = 0;
     std::size_t expectedParticleRecords = 0;
@@ -1327,6 +1783,8 @@ void FmmLetPlan::finishExecute(
     {
         for(const FmmSubscription& subscription : entry.second)
         {
+            if(static_cast<std::size_t>(subscription.reserved) != wave)
+                continue;
             expectedPayloadKeys.push_back(std::make_tuple(
                 entry.first, subscription.spatialKey, subscription.kind));
             if(subscription.kind ==
@@ -1357,8 +1815,17 @@ void FmmLetPlan::finishExecute(
         keyTableCount, sizeof(PayloadKey));
     if(keyTableBytes == std::numeric_limits<std::size_t>::max() ||
        keyTableBytes > maxRemoteBytes - wireWorkspaceBytes)
+    {
+        char detail[512];
+        std::snprintf(detail, sizeof(detail),
+            "keyTableBytes=%zu maxRemoteBytes=%zu wireWorkspaceBytes=%zu "
+            "remainingBudget=%zu",
+            keyTableBytes, maxRemoteBytes, wireWorkspaceBytes,
+            maxRemoteBytes - wireWorkspaceBytes);
         abortLetInvariant(comm_,
-            "FmmLetPlan::execute: payload key tables exceed memory budget");
+            "FmmLetPlan::execute: payload key tables exceed memory budget",
+            detail);
+    }
     stats.peakRemoteBytes = std::max(stats.peakRemoteBytes,
         wireWorkspaceBytes + keyTableBytes);
     std::size_t totalCoefficientCount = 0;
@@ -1475,8 +1942,17 @@ void FmmLetPlan::finishExecute(
     addRequestedBytes(m2lSources_.size(), sizeof(unsigned char));
     if(decodedRequestedBytes == std::numeric_limits<std::size_t>::max() ||
        decodedRequestedBytes > maxRemoteBytes - wireWorkspaceBytes)
+    {
+        char detail[512];
+        std::snprintf(detail, sizeof(detail),
+            "decodedRequestedBytes=%zu maxRemoteBytes=%zu "
+            "wireWorkspaceBytes=%zu remainingBudget=%zu",
+            decodedRequestedBytes, maxRemoteBytes, wireWorkspaceBytes,
+            maxRemoteBytes - wireWorkspaceBytes);
         abortLetInvariant(comm_,
-            "FmmLetPlan::execute: decoded LET payload exceeds memory budget");
+            "FmmLetPlan::execute: decoded LET payload exceeds memory budget",
+            detail);
+    }
 
     std::vector<RemoteMultipolePayload> remoteMultipoles;
     std::vector<RemoteParticlePayload> remoteParticles;
@@ -1498,8 +1974,17 @@ void FmmLetPlan::finishExecute(
         resolvedM2LSourceActive.capacity(), sizeof(unsigned char)));
     if(decodedBytes == std::numeric_limits<std::size_t>::max() ||
        decodedBytes > maxRemoteBytes - wireWorkspaceBytes)
+    {
+        char detail[512];
+        std::snprintf(detail, sizeof(detail),
+            "decodedBytes=%zu maxRemoteBytes=%zu wireWorkspaceBytes=%zu "
+            "remainingBudget=%zu",
+            decodedBytes, maxRemoteBytes, wireWorkspaceBytes,
+            maxRemoteBytes - wireWorkspaceBytes);
         abortLetInvariant(comm_,
-            "FmmLetPlan::execute: allocated LET payload exceeds memory budget");
+            "FmmLetPlan::execute: allocated LET payload exceeds memory budget",
+            detail);
+    }
 
     std::size_t coefficientCursor = 0;
     std::size_t particleCursor = 0;
@@ -1721,6 +2206,60 @@ void FmmLetPlan::finishExecute(
     stats.letOperatorIntegerKeyHits = operatorCache.integerKeyHits();
     stats.letOperatorIntegerKeyMisses = operatorCache.integerKeyMisses();
     stats.letM2LSeconds += elapsed(m2lStart);
+
+    // M2P evaluates the remote multipole at each target particle instead of
+    // translating it into a local expansion, so the target extent never enters
+    // the accuracy bound. Runs before the multipole payloads are released.
+    const Clock::time_point m2pStart = Clock::now();
+    std::vector<double> m2pLocals(layout.coefficientCount(), 0.0);
+    for(std::uint32_t interactionIndex : activeM2PInteractionIndices_)
+    {
+        const FmmLetM2PInteraction& interaction =
+            m2pInteractions_[interactionIndex];
+        const std::uint32_t sourceIndex = interaction.sourceIndex;
+        if(static_cast<std::size_t>(sourceIndex) >= resolvedM2LSources.size())
+            throw UniversalError(
+                "FmmLetPlan::execute: invalid resolved LET M2P source index");
+        if(resolvedM2LSourceActive[sourceIndex] == 0 ||
+           remoteMultipoleCoefficients[sourceIndex] == nullptr)
+        {
+            ++stats.letInactiveM2PCount;
+            continue;
+        }
+        const FmmNode& source = resolvedM2LSources[sourceIndex];
+        const FmmNode& targetNode = localTree.nodes()[interaction.targetNode];
+        if(!targetNode.isLeaf())
+            throw UniversalError("FmmLetPlan::execute: M2P target is not a leaf");
+        for(std::size_t k = targetNode.particleBegin;
+            k < targetNode.particleEnd; ++k)
+        {
+            const std::size_t body = localTree.particleOrder()[k];
+            // A zero-radius single-particle target centred on the body turns
+            // the existing M2L plus L2P pair into a direct evaluation.
+            FmmNode pointTarget;
+            pointTarget.center = positions[body];
+            pointTarget.halfSize = 0.0;
+            pointTarget.radius = 0.0;
+            pointTarget.particleBegin = k;
+            pointTarget.particleEnd = k + 1;
+            pointTarget.localOffset = 0;
+            const Vector3D displacement = pointTarget.center - source.center;
+            FmmKernels::computeM2LOperator(displacement, layout,
+                                           derivativeScratch, uncachedOperator);
+            std::fill(m2pLocals.begin(), m2pLocals.end(), 0.0);
+            FmmKernels::translateM2LRaw(
+                source, pointTarget, layout,
+                remoteMultipoleCoefficients[sourceIndex], m2pLocals,
+                uncachedOperator, 1.0);
+            FmmKernels::evaluateL2P(pointTarget, positions,
+                                    localTree.particleOrder(), layout,
+                                    m2pLocals, acceleration,
+                                    positiveKernelPotential);
+            ++stats.letM2PCount;
+        }
+    }
+    stats.letM2PSeconds += elapsed(m2pStart);
+
     std::vector<RemoteMultipolePayload>().swap(remoteMultipoles);
 
     const Clock::time_point p2pStart = Clock::now();
@@ -1805,12 +2344,15 @@ void FmmLetPlan::execute(const FmmTree& localTree,
                          std::size_t maxOperatorCacheBytes,
                          FmmSolveStats& stats)
 {
-    beginExecute(localTree, positions, masses, cellIds, layout,
-                 localMultipoles, localLocals, acceleration,
-                 positiveKernelPotential, maxRemoteBytes, stats);
-    finishExecute(localTree, positions, layout, localLocals, acceleration,
-                  positiveKernelPotential, operatorCache, maxRemoteBytes,
-                  maxOperatorCacheBytes, stats);
+    for(std::size_t wave = 0; wave < waveCount_; ++wave)
+    {
+        beginExecute(wave, localTree, positions, masses, cellIds, layout,
+                     localMultipoles, localLocals, acceleration,
+                     positiveKernelPotential, maxRemoteBytes, stats);
+        finishExecute(wave, localTree, positions, layout, localLocals,
+                      acceleration, positiveKernelPotential, operatorCache,
+                      maxRemoteBytes, maxOperatorCacheBytes, stats);
+    }
 }
 
 #endif // RICH_MPI

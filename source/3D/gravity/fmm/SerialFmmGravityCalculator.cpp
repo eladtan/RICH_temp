@@ -158,6 +158,10 @@ void SerialFmmGravityCalculator::validateOptions() const
         throw UniversalError("SerialFmmGravityCalculator: leafCapacity must be positive");
     if(options_.maxDepth <= 0 || options_.maxDepth > FMM_MAX_TREE_DEPTH)
         throw UniversalError("SerialFmmGravityCalculator: maxDepth outside supported range");
+    if(!(options_.maxLeafHalfSize >= 0.0) ||
+       !std::isfinite(options_.maxLeafHalfSize))
+        throw UniversalError(
+            "SerialFmmGravityCalculator: maxLeafHalfSize must be finite and non-negative");
 }
 
 void SerialFmmGravityCalculator::validateInputs(const std::vector<Vector3D>& positions,
