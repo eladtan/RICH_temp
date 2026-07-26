@@ -121,14 +121,9 @@ public:
 
     mutable ComptonTableReader compton_table_reader;
 
-    // used for Compton 
-    mutable std::vector<std::vector<double>> tau;
-    mutable std::vector<std::vector<double>> dtau_dUm;
     mutable std::vector<std::vector<double>> S;
     mutable std::vector<std::vector<double>> dSdUm;
-
-    mutable std::vector<double> n; // occupancy number
-    mutable std::size_t cell_id_of_compton_matrices; // for debugging make sure that the compton values are generated for the correct cell 
+    mutable std::size_t cell_id_of_compton_matrices;
 
     mutable std::vector<double> Gammas; // fleck_factor = 1.0 / (1.0 + c*dt*beta*Gamma)
     mutable std::vector<bool> use_n_zero; // flag for cells that need to use n=0 due to negative fleck factor

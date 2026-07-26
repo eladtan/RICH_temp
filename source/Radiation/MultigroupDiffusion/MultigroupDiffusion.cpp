@@ -104,13 +104,9 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
     displayed_warning_(false),
     compton_table_reader(
         energy_groups_center_,
-        energy_groups_boundary_,
-        true),
-    tau(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
-    dtau_dUm(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
+        energy_groups_boundary_),
     S(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
     dSdUm(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
-    n(ENERGY_GROUPS_NUM, 0.0),
     cell_id_of_compton_matrices(std::numeric_limits<std::size_t>::max()),
     Gammas(),
     use_n_zero(),
@@ -1390,51 +1386,19 @@ void MultigroupDiffusion::calculate_planck_absorption_coefficient(Tessellation3D
 void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D const& cell, std::size_t const cell_index, double const dt_cgs, bool const calculate_n) const {
     cell_id_of_compton_matrices = cell.ID;
 
-    double constexpr fac = pow<3>(units::clight) / (8.0*M_PI*units::planck_constant);
-
-    for (std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g) {
-        if (calculate_n) {
-            double const dnu = energy_groups_width[g]/units::planck_constant;
-            double const nu = energy_groups_center[g]/units::planck_constant;
-
-            double const Eg = cell.Eg[g] * cell.density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
-
-            n[g] = std::min(100.0, fac * Eg / (pow<3>(nu)*dnu));
-        } else {
-            n[g] = 0.0;
-        }
-    }
-
-    double const A = 1.0;
-    double const Z = 1.0;
     double const T = std::min(compton_table_reader.get_maximum_temperature_grid() * 0.9999, old_Tm[cell_index]);
-    compton_table_reader.get_tau_matrix(T, cell.density*mass_scale_/pow<3>(length_scale_), A, Z, tau, dtau_dUm);
+    double const rho_cgs = cell.density * mass_scale_ / pow<3>(length_scale_);
 
-    fill_zero(S);
-    fill_zero(dSdUm);
+    Vector E_g(ENERGY_GROUPS_NUM);
+    for (std::size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+        E_g[g] = calculate_n
+            ? cell.Eg[g] * cell.density * mass_scale_ / (length_scale_ * pow<2>(time_scale_))
+            : 0.0;
 
-    for (std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g) {
-        for (std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt) {
-            // in scattering
-            double const in_scattering_factor = energy_groups_center[g] / energy_groups_center[gt] * (1.0 + n[g]);
-            S[gt][g] += tau[gt][g] * in_scattering_factor;
-            dSdUm[gt][g] += dtau_dUm[gt][g] * in_scattering_factor;
-
-            // out scattering
-            double const out_scattering_factor = 1.0 + n[gt];
-            S[g][g] -= tau[g][gt] * out_scattering_factor;
-            dSdUm[g][g] -= dtau_dUm[g][gt] * (1 + n[gt]);
-        }
-    }
-    double const Um = CG::radiation_constant*pow<4>(cell.temperature);
-    double const Um_factor = 1.0 / (4 * CG::radiation_constant*pow<3>(cell.temperature));
-    for (std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g) {
-        for (std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt) {
-            dSdUm[g][gt] *= Um_factor;
-        }
-    }
+    compton_table_reader.get_S_and_dSdUm(T, rho_cgs, 1.0, 1.0, E_g, calculate_n, S, dSdUm);
 
     if (protections_on_) {
+        double const Um = get_radiation_energy_density(T);
         double dE = 0;
         for (std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g) {
             for (std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt) {

@@ -9,8 +9,11 @@
 #include "ComptonTableReader.hpp"
 #include "source/Radiation/CMMC/src/units/units.hpp"
 #include "source/Radiation/CMMC/src/planck_integral/planck_integral.hpp"
+#include "source/Radiation/conj_grad_solve.hpp"
 
 #include <boost/math/special_functions/pow.hpp>
+
+using boost::math::pow;
 
 namespace {
 
@@ -68,15 +71,43 @@ Matrix read_matrix_file(std::string const& path, std::size_t expected_rows) {
 
 ComptonTableReader::ComptonTableReader(
     Vector const& energy_groups_centers_,
-    Vector const& energy_groups_boundaries_,
-    bool force_detailed_balance_)
+    Vector const& energy_groups_boundaries_)
     : energy_groups_centers(energy_groups_centers_),
       energy_groups_boundaries(energy_groups_boundaries_),
       num_energy_groups(energy_groups_centers_.size()),
-      force_detailed_balance(force_detailed_balance_),
-      n_eq(energy_groups_centers_.size(), 0.0),
-      B(energy_groups_centers_.size(), 0.0)
+      sigma_out_buf(energy_groups_centers_.size(), Vector(energy_groups_centers_.size(), 0.0)),
+      dsigma_out_buf(energy_groups_centers_.size(), Vector(energy_groups_centers_.size(), 0.0)),
+      sigma_in_buf(energy_groups_centers_.size(), Vector(energy_groups_centers_.size(), 0.0)),
+      dsigma_in_buf(energy_groups_centers_.size(), Vector(energy_groups_centers_.size(), 0.0)),
+      B_eq_buf(energy_groups_centers_.size(), 0.0),
+      n_eq_buf(energy_groups_centers_.size(), 0.0),
+      dBdT_buf(energy_groups_centers_.size(), 0.0),
+      n_buf(energy_groups_centers_.size(), 0.0)
 {}
+
+void ComptonTableReader::validate_table_version(std::string const& path) const {
+    std::ifstream ifs(path);
+    if (!ifs.is_open()) {
+        std::cerr << "ComptonTableReader: cannot open " << path << std::endl;
+        std::exit(1);
+    }
+    std::string first_line;
+    std::getline(ifs, first_line);
+    if (first_line.find("version:") == std::string::npos) {
+        std::cerr << "ComptonTableReader: no version marker in " << path
+                  << ". Expected version " << EXPECTED_TABLE_VERSION << std::endl;
+        std::exit(1);
+    }
+    auto pos = first_line.find("version:") + 8;
+    auto end_pos = first_line.find("(", pos);
+    int version = std::stoi(first_line.substr(pos, end_pos - pos));
+    if (version != EXPECTED_TABLE_VERSION) {
+        std::cerr << "ComptonTableReader: table version " << version
+                  << " is not supported. Expected version "
+                  << EXPECTED_TABLE_VERSION << std::endl;
+        std::exit(1);
+    }
+}
 
 void ComptonTableReader::load_tables(std::string const& directory) {
     namespace fs = std::filesystem;
@@ -89,6 +120,8 @@ void ComptonTableReader::load_tables(std::string const& directory) {
 
     auto const energy_path = (fs::path(directory) / "energy_groups.txt").string();
     auto const temp_path   = (fs::path(directory) / "temperatures.txt").string();
+
+    validate_table_version(energy_path);
 
     Vector table_boundaries = read_column_file(energy_path);
     validate_energy_grid(table_boundaries);
@@ -106,35 +139,45 @@ void ComptonTableReader::load_tables(std::string const& directory) {
     }
 
     std::size_t const n_temps = temperature_grid.size();
-    S_log_tables.resize(n_temps, Matrix(num_energy_groups, Vector(num_energy_groups, 0.0)));
+
+    sigma_out_tables.resize(n_temps);
+    dsigma_out_dT_tables.resize(n_temps);
+    sigma_in_tables.resize(n_temps);
+    dsigma_in_dT_tables.resize(n_temps);
 
     for (std::size_t i = 0; i < n_temps; ++i) {
-        auto const mat_path = (fs::path(directory) / (std::to_string(i) + ".txt")).string();
-        if (!fs::exists(mat_path)) {
-            std::cerr << "ComptonTableReader: missing table file " << mat_path << std::endl;
+        auto const out_path = (fs::path(directory) / (std::to_string(i) + ".txt")).string();
+        if (!fs::exists(out_path)) {
+            std::cerr << "ComptonTableReader: missing table file " << out_path << std::endl;
             std::exit(1);
         }
-        Matrix S = read_matrix_file(mat_path, num_energy_groups);
-        for (std::size_t g0 = 0; g0 < num_energy_groups; ++g0) {
-            for (std::size_t g = 0; g < num_energy_groups; ++g) {
-                double const val = S[g0][g];
-                S_log_tables[i][g0][g] = std::log(std::max(val, std::numeric_limits<double>::min()));
-            }
-        }
-    }
+        sigma_out_tables[i] = read_matrix_file(out_path, num_energy_groups);
 
-    dSdT_tables.resize(n_temps, Matrix(num_energy_groups, Vector(num_energy_groups, 0.0)));
-    for (std::size_t i = 0; i < n_temps; ++i) {
-        auto const deriv_path = (fs::path(directory) / ("dSdT_" + std::to_string(i) + ".txt")).string();
-        if (!fs::exists(deriv_path)) {
-            std::cerr << "ComptonTableReader: missing derivative table file " << deriv_path << std::endl;
+        auto const dout_path = (fs::path(directory) / ("dSdT_" + std::to_string(i) + ".txt")).string();
+        if (!fs::exists(dout_path)) {
+            std::cerr << "ComptonTableReader: missing derivative table file " << dout_path << std::endl;
             std::exit(1);
         }
-        dSdT_tables[i] = read_matrix_file(deriv_path, num_energy_groups);
+        dsigma_out_dT_tables[i] = read_matrix_file(dout_path, num_energy_groups);
+
+        auto const in_path = (fs::path(directory) / (std::to_string(i) + "_in.txt")).string();
+        if (!fs::exists(in_path)) {
+            std::cerr << "ComptonTableReader: missing sigma_in table file " << in_path << std::endl;
+            std::exit(1);
+        }
+        sigma_in_tables[i] = read_matrix_file(in_path, num_energy_groups);
+
+        auto const din_path = (fs::path(directory) / ("dSdT_" + std::to_string(i) + "_in.txt")).string();
+        if (!fs::exists(din_path)) {
+            std::cerr << "ComptonTableReader: missing dsigma_in/dT table file " << din_path << std::endl;
+            std::exit(1);
+        }
+        dsigma_in_dT_tables[i] = read_matrix_file(din_path, num_energy_groups);
     }
 
     std::cout << "ComptonTableReader: loaded " << n_temps
-              << " temperature tables from " << directory << std::endl;
+              << " sigma_out + sigma_in tables (version " << EXPECTED_TABLE_VERSION
+              << ") from " << directory << std::endl;
 }
 
 void ComptonTableReader::validate_energy_grid(Vector const& table_boundaries) const {
@@ -157,83 +200,136 @@ void ComptonTableReader::validate_energy_grid(Vector const& table_boundaries) co
     }
 }
 
-void ComptonTableReader::set_Bg_ng(double const temperature) const {
-    using boost::math::pow;
-    double constexpr fac = pow<3>(units::clight) / (8.0 * M_PI * units::planck_constant);
-    for (std::size_t g = 0; g < num_energy_groups; ++g) {
-        double const Bg = planck_integral::planck_energy_density_group_integral(
-            energy_groups_boundaries[g], energy_groups_boundaries[g + 1], temperature);
-        double const nu  = energy_groups_centers[g] / units::planck_constant;
-        double const dnu = (energy_groups_boundaries[g + 1] - energy_groups_boundaries[g])
-                         / units::planck_constant;
-        n_eq[g] = fac * Bg / (pow<3>(nu) * dnu);
-        B[g] = Bg;
-    }
-}
-
-void ComptonTableReader::get_tau_matrix(
-    double const temperature, double const density,
+void ComptonTableReader::get_S_and_dSdUm(
+    double const T, double const density,
     double const A, double const Z,
-    Matrix& tau, Matrix& dtau_dUm) const
+    Vector const& E_g, bool const calculate_n,
+    Matrix& S, Matrix& dSdUm) const
 {
+    // 1. Interpolate all four matrices at temperature T
     auto const tmp_iterator = std::lower_bound(
-        temperature_grid.cbegin(), temperature_grid.cend(), temperature);
+        temperature_grid.cbegin(), temperature_grid.cend(), T);
     auto const tmp_i = std::distance(temperature_grid.cbegin(), tmp_iterator) - 1;
 
     if (tmp_i + 1 == static_cast<int>(temperature_grid.size())) {
         printf("ComptonTableReader: temperature T=%gkev is too high (max=%gkev)\n",
-               temperature / units::kev_kelvin, temperature_grid.back() / units::kev_kelvin);
+               T / units::kev_kelvin, temperature_grid.back() / units::kev_kelvin);
         std::exit(1);
     }
     if (tmp_i == -1) {
         printf("ComptonTableReader: temperature T=%gkev is too low (min=%gkev)\n",
-               temperature / units::kev_kelvin, temperature_grid[0] / units::kev_kelvin);
+               T / units::kev_kelvin, temperature_grid[0] / units::kev_kelvin);
         std::exit(1);
     }
 
-    if (force_detailed_balance) set_Bg_ng(temperature);
-
-    double const x = (temperature - temperature_grid[tmp_i])
+    double const x = (T - temperature_grid[tmp_i])
                    / (temperature_grid[tmp_i + 1] - temperature_grid[tmp_i]);
 
     for (std::size_t i = 0; i < num_energy_groups; ++i) {
-        double const E_i = energy_groups_centers[i];
-        for (std::size_t j = i; j < num_energy_groups; ++j) {
-            tau[i][j] = std::exp(S_log_tables[tmp_i][i][j]) * (1.0 - x)
-                      + std::exp(S_log_tables[tmp_i + 1][i][j]) * x;
-            dtau_dUm[i][j] = dSdT_tables[tmp_i][i][j] * (1.0 - x)
-                            + dSdT_tables[tmp_i + 1][i][j] * x;
+        for (std::size_t j = 0; j < num_energy_groups; ++j) {
+            sigma_out_buf[i][j]  = sigma_out_tables[tmp_i][i][j]  * (1.0 - x) + sigma_out_tables[tmp_i + 1][i][j]  * x;
+            dsigma_out_buf[i][j] = dsigma_out_dT_tables[tmp_i][i][j] * (1.0 - x) + dsigma_out_dT_tables[tmp_i + 1][i][j] * x;
+            sigma_in_buf[i][j]   = sigma_in_tables[tmp_i][i][j]   * (1.0 - x) + sigma_in_tables[tmp_i + 1][i][j]   * x;
+            dsigma_in_buf[i][j]  = dsigma_in_dT_tables[tmp_i][i][j]  * (1.0 - x) + dsigma_in_dT_tables[tmp_i + 1][i][j]  * x;
+        }
+    }
 
-            if (i == j) continue;
+    // 2. Scale by N_e
+    double const Nelectron = density * units::Navogadro / A * Z;
+    for (std::size_t i = 0; i < num_energy_groups; ++i) {
+        for (std::size_t j = 0; j < num_energy_groups; ++j) {
+            sigma_out_buf[i][j]  *= Nelectron;
+            dsigma_out_buf[i][j] *= Nelectron;
+            sigma_in_buf[i][j]   *= Nelectron;
+            dsigma_in_buf[i][j]  *= Nelectron;
+        }
+    }
 
-            tau[j][i] = std::exp(S_log_tables[tmp_i][j][i]) * (1.0 - x)
-                      + std::exp(S_log_tables[tmp_i + 1][j][i]) * x;
-            dtau_dUm[j][i] = dSdT_tables[tmp_i][j][i] * (1.0 - x)
-                            + dSdT_tables[tmp_i + 1][j][i] * x;
+    // 3. Compute equilibrium B_g(T), n^B_g(T), dB_g/dT
+    double constexpr fac = pow<3>(units::clight) / (8.0 * M_PI * units::planck_constant);
 
-            if (force_detailed_balance) {
-                if (B[j] * E_i < std::numeric_limits<double>::min() * 1e40)
-                    continue;
-                double const E_j = energy_groups_centers[j];
-                double const detailed_balance_factor =
-                    (1.0 + n_eq[j]) * B[i] * E_j / ((1.0 + n_eq[i]) * B[j] * E_i);
+    for (std::size_t g = 0; g < num_energy_groups; ++g) {
+        B_eq_buf[g] = planck_integral::planck_energy_density_group_integral(
+            energy_groups_boundaries[g], energy_groups_boundaries[g + 1], T);
+        double const nu  = energy_groups_centers[g] / units::planck_constant;
+        double const dnu = (energy_groups_boundaries[g + 1] - energy_groups_boundaries[g])
+                         / units::planck_constant;
+        n_eq_buf[g] = fac * B_eq_buf[g] / (pow<3>(nu) * dnu);
+    }
 
-                if (std::isnan(detailed_balance_factor)) continue;
+    double constexpr dT_frac = 1e-5;
+    double const dT = T * dT_frac;
+    for (std::size_t g = 0; g < num_energy_groups; ++g) {
+        double const Bp = planck_integral::planck_energy_density_group_integral(
+            energy_groups_boundaries[g], energy_groups_boundaries[g + 1], T + dT);
+        double const Bm = planck_integral::planck_energy_density_group_integral(
+            energy_groups_boundaries[g], energy_groups_boundaries[g + 1], T - dT);
+        dBdT_buf[g] = (Bp - Bm) / (2.0 * dT);
+    }
 
-                if (detailed_balance_factor < 1.0) {
-                    tau[j][i] = tau[i][j] * detailed_balance_factor;
-                } else {
-                    tau[i][j] = tau[j][i] / detailed_balance_factor;
-                }
+    // 4. Compute nonequilibrium occupation numbers from E_g
+    for (std::size_t g = 0; g < num_energy_groups; ++g) {
+        if (calculate_n) {
+            double const nu  = energy_groups_centers[g] / units::planck_constant;
+            double const dnu = (energy_groups_boundaries[g + 1] - energy_groups_boundaries[g])
+                             / units::planck_constant;
+            n_buf[g] = std::min(100.0, fac * E_g[g] / (pow<3>(nu) * dnu));
+        } else {
+            n_buf[g] = 0.0;
+        }
+    }
+
+    // 5. Always-shrink DB enforcement
+    double constexpr tiny_thresh = std::numeric_limits<double>::min() * 1e40;
+
+    for (std::size_t g = 0; g < num_energy_groups; ++g) {
+        for (std::size_t gp = 0; gp < num_energy_groups; ++gp) {
+            if (B_eq_buf[g] < tiny_thresh || B_eq_buf[gp] < tiny_thresh) continue;
+            if (sigma_out_buf[g][gp] < tiny_thresh && sigma_in_buf[gp][g] < tiny_thresh) continue;
+
+            double const rhs = sigma_out_buf[g][gp] * (1.0 + n_eq_buf[gp]) * B_eq_buf[g];
+            if (rhs < tiny_thresh) continue;
+
+            double const lhs = sigma_in_buf[gp][g] * (1.0 + n_eq_buf[g]) * B_eq_buf[gp];
+            double const F = lhs / rhs;
+
+            if (std::isnan(F) || std::isinf(F)) continue;
+
+            if (F > 1.0) {
+                sigma_in_buf[gp][g]  /= F;
+                dsigma_in_buf[gp][g] /= F;
+            } else if (F < 1.0) {
+                sigma_out_buf[g][gp]  *= F;
+                dsigma_out_buf[g][gp] *= F;
             }
         }
     }
 
-    double const Nelectron = density * units::Navogadro / A * Z;
+    // 6. Assemble S and dS/dT
     for (std::size_t i = 0; i < num_energy_groups; ++i) {
         for (std::size_t j = 0; j < num_energy_groups; ++j) {
-            tau[i][j] *= Nelectron;
-            dtau_dUm[i][j] *= Nelectron;
+            S[i][j] = 0.0;
+            dSdUm[i][j] = 0.0;
+        }
+    }
+
+    Matrix dS_dT(num_energy_groups, Vector(num_energy_groups, 0.0));
+
+    for (std::size_t g = 0; g < num_energy_groups; ++g) {
+        for (std::size_t gp = 0; gp < num_energy_groups; ++gp) {
+            S[g][g]       -= sigma_out_buf[g][gp] * (1.0 + n_buf[gp]);
+            dS_dT[g][g]   -= dsigma_out_buf[g][gp] * (1.0 + n_buf[gp]);
+
+            S[gp][g]      += sigma_in_buf[gp][g] * (1.0 + n_buf[g]);
+            dS_dT[gp][g]  += dsigma_in_buf[gp][g] * (1.0 + n_buf[g]);
+        }
+    }
+
+    // 7. Convert dS/dT to dS/dU_m
+    double const Um_factor = 1.0 / (4.0 * CG::radiation_constant * pow<3>(T));
+    for (std::size_t i = 0; i < num_energy_groups; ++i) {
+        for (std::size_t j = 0; j < num_energy_groups; ++j) {
+            dSdUm[i][j] = dS_dT[i][j] * Um_factor;
         }
     }
 }
