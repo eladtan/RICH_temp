@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <tuple>
 #include <unordered_map>
 #include <vector>
 
@@ -18,10 +19,30 @@ struct FmmProcessM2LPair
     std::size_t sourceNode = 0;
 };
 
+struct FmmPatchPair
+{
+    FmmPatchKey target;
+    FmmPatchKey source;
+};
+
+inline bool operator==(const FmmPatchPair& first, const FmmPatchPair& second)
+{
+    return first.target == second.target && first.source == second.source;
+}
+
+inline bool operator<(const FmmPatchPair& first, const FmmPatchPair& second)
+{
+    return std::tie(first.target, first.source) <
+           std::tie(second.target, second.source);
+}
+
 struct FmmProcessPairPlan
 {
     std::vector<FmmProcessM2LPair> localM2LPairs;
     std::unordered_map<int, std::vector<std::size_t>> processSendNodesByRank;
+    std::vector<FmmPatchKey> localSelfPatches;
+    std::vector<FmmPatchPair> localCrossPatchPairs;
+    std::vector<FmmPatchPair> remoteLetPairs;
     std::vector<int> letSourceRanks;
     std::vector<int> letTargetRanks;
     std::uint64_t acceptedPairCount = 0;

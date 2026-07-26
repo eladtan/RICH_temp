@@ -20,6 +20,7 @@
 #include "3D/gravity/fmm/FmmKernels.hpp"
 #include "3D/gravity/fmm/FmmPasses.hpp"
 #include "3D/gravity/fmm/FmmTaylorExpansion.hpp"
+#include "3D/gravity/fmm/mpi/FmmPatchDistributedSolver.hpp"
 #include "3D/gravity/fmm/mpi/FmmPackets.hpp"
 #include "misc/universal_error.hpp"
 
@@ -543,12 +544,6 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
         localOptionsError =
             "DistributedFmmGravityCalculator: invalid persistent merge factor";
     }
-    else if(distributedOptions_.enablePatchForest)
-    {
-        localOptionsOk = false;
-        localOptionsError =
-            "DistributedFmmGravityCalculator: patch forest mode is not implemented yet";
-    }
     else if(distributedOptions_.minimumPatchLevel < 0 ||
             distributedOptions_.minimumPatchLevel > FMM_MAX_TREE_DEPTH ||
             distributedOptions_.maximumPatchLevel < 0 ||
@@ -566,6 +561,14 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
         localOptionsOk = false;
         localOptionsError =
             "DistributedFmmGravityCalculator: invalid patch count limits";
+    }
+    else if(distributedOptions_.enablePatchForest &&
+            distributedOptions_.maxReplicatedDescriptorBytes <
+                sizeof(FmmPatchRootDescriptor))
+    {
+        localOptionsOk = false;
+        localOptionsError =
+            "DistributedFmmGravityCalculator: replicated patch descriptor budget is too small";
     }
     if(localOptionsOk && distributedOptions_.persistentLocalTreeTopology)
     {
@@ -609,7 +612,7 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
     MPI_Allreduce(localDoubleOptions, maximumDoubleOptions, 5,
                   MPI_DOUBLE, MPI_MAX, comm_);
 
-    const unsigned long long localIntegerOptions[20] = {
+    const unsigned long long localIntegerOptions[21] = {
         static_cast<unsigned long long>(options_.expansionOrder),
         static_cast<unsigned long long>(options_.leafCapacity),
         static_cast<unsigned long long>(options_.maxDepth),
@@ -632,19 +635,21 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
         static_cast<unsigned long long>(distributedOptions_.maxLocalPatchCount),
         static_cast<unsigned long long>(
             distributedOptions_.maxTargetPatchesPerWave),
-        distributedOptions_.useLocalPatchLet ? 1ull : 0ull};
-    unsigned long long minimumIntegerOptions[20] = {};
-    unsigned long long maximumIntegerOptions[20] = {};
-    MPI_Allreduce(localIntegerOptions, minimumIntegerOptions, 20,
+        distributedOptions_.useLocalPatchLet ? 1ull : 0ull,
+        static_cast<unsigned long long>(
+            distributedOptions_.maxReplicatedDescriptorBytes)};
+    unsigned long long minimumIntegerOptions[21] = {};
+    unsigned long long maximumIntegerOptions[21] = {};
+    MPI_Allreduce(localIntegerOptions, minimumIntegerOptions, 21,
                   MPI_UNSIGNED_LONG_LONG, MPI_MIN, comm_);
-    MPI_Allreduce(localIntegerOptions, maximumIntegerOptions, 20,
+    MPI_Allreduce(localIntegerOptions, maximumIntegerOptions, 21,
                   MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm_);
 
     bool optionsMatch = true;
     for(int i = 0; i < 5; ++i)
         optionsMatch = optionsMatch &&
             minimumDoubleOptions[i] == maximumDoubleOptions[i];
-    for(int i = 0; i < 20; ++i)
+    for(int i = 0; i < 21; ++i)
         optionsMatch = optionsMatch &&
             minimumIntegerOptions[i] == maximumIntegerOptions[i];
     if(!optionsMatch)
@@ -659,6 +664,7 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
 
 DistributedFmmGravityCalculator::~DistributedFmmGravityCalculator()
 {
+    patchSolver_.reset();
     processUpExchange_.clear();
     processM2LExchange_.clear();
     processDownExchange_.clear();
@@ -1052,6 +1058,19 @@ void DistributedFmmGravityCalculator::solve(
     if(!commonDomain)
         throw UniversalError(
             "DistributedFmmGravityCalculator::solve: domain bounds differ across MPI ranks");
+
+    if(distributedOptions_.enablePatchForest)
+    {
+        if(!patchSolver_)
+        {
+            patchSolver_.reset(new FmmPatchDistributedSolver(
+                options_, distributedOptions_, comm_));
+        }
+        patchSolver_->solve(positions, masses, cellIds, domainLower,
+                            domainUpper, acceleration,
+                            positiveKernelPotential, stats_);
+        return;
+    }
 
     const Clock::time_point totalStart = Clock::now();
     stats_ = FmmSolveStats();

@@ -2601,3 +2601,71 @@ check_ddmc_mpi_zero_cell_case() {
     set_check_msg "DDMC zero-cell/cross-rank MPI passed (zero_ranks=${zero_ranks}, cross_faces=${cross_rank_faces}, remote_leaks=${remote_leaks}, reciprocity=${cross_rank_reciprocity}, weight_error=${weight_rel_error})"
     return 0
 }
+
+
+check_fmm_patch_let_mpi_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_patch_let_mpi_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_patch_let_mpi_metrics.txt"
+        return 1
+    fi
+
+    local pass error waves nodes mass_pass
+    pass="$(awk '$1 == "pass" {print $2}' "$metrics_file" | tail -n 1)"
+    error="$(awk '$1 == "max_relative_error" {print $2}' "$metrics_file" | tail -n 1)"
+    waves="$(awk '$1 == "max_wave_count" {print $2}' "$metrics_file" | tail -n 1)"
+    nodes="$(awk '$1 == "max_process_nodes" {print $2}' "$metrics_file" | tail -n 1)"
+    mass_pass="$(awk '$1 == "root_mass_pass" {print $2}' "$metrics_file" | tail -n 1)"
+    if [[ "$pass" != "1" || "$mass_pass" != "1" ]]; then
+        set_check_msg "patch LET MPI reported failure (pass=${pass}, root_mass_pass=${mass_pass})"
+        return 1
+    fi
+    if [[ -z "$error" ]] || ! awk -v e="$error" 'BEGIN { exit !(e < 0.08) }'; then
+        set_check_msg "patch LET MPI error exceeds tolerance (${error})"
+        return 1
+    fi
+    if [[ -z "$waves" ]] || ! awk -v w="$waves" 'BEGIN { exit !(w > 1) }'; then
+        set_check_msg "patch LET test did not exercise multiple waves (${waves})"
+        return 1
+    fi
+    if [[ -z "$nodes" ]] || ! awk -v n="$nodes" 'BEGIN { exit !(n > 8) }'; then
+        set_check_msg "patch process tree did not contain multiple patch leaves (${nodes})"
+        return 1
+    fi
+
+    set_check_msg "patch-aware distributed LET passed (error=${error}, waves=${waves}, process_nodes=${nodes})"
+    return 0
+}
+
+
+check_fmm_patch_process_pair_coverage_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_patch_process_pair_coverage_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_patch_process_pair_coverage_metrics.txt"
+        return 1
+    fi
+    local pass
+    pass="$(awk '$1 == "pass" {print $2}' "$metrics_file" | tail -n 1)"
+    if [[ "$pass" != "1" ]]; then
+        set_check_msg "patch process-pair coverage failed"
+        return 1
+    fi
+    set_check_msg "patch process-pair exact-one coverage passed"
+    return 0
+}

@@ -75,6 +75,7 @@ private:
     std::vector<FmmProcessNode> nodes_;
     std::vector<std::vector<std::size_t>> levels_;
     std::unordered_map<FmmPatchKey, std::size_t, FmmPatchKeyHash> leafByPatch_;
+    std::unordered_map<int, std::size_t> compatLeafByRank_;
     std::uint64_t topologyHash_ = 0;
 };
 

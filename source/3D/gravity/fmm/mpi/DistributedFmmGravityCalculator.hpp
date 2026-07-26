@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include <mpi.h>
@@ -21,6 +22,8 @@
 #include "3D/gravity/fmm/mpi/FmmProcessTree.hpp"
 
 #include "3D/gravity/fmm/mpi/FmmDistributedOptions.hpp"
+
+class FmmPatchDistributedSolver;
 
 class DistributedFmmGravityCalculator
 {
@@ -104,6 +107,7 @@ private:
     FmmPeerExchange processUpExchange_;
     FmmPeerExchange processM2LExchange_;
     FmmPeerExchange processDownExchange_;
+    std::unique_ptr<FmmPatchDistributedSolver> patchSolver_;
 };
 
 #endif // RICH_MPI

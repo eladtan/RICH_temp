@@ -46,6 +46,9 @@ std::size_t FmmProcessPairPlan::bytesOwned() const
         sizeof(std::pair<const int, std::vector<std::size_t>>) +
         2 * sizeof(void*);
     std::size_t result = localM2LPairs.capacity() * sizeof(FmmProcessM2LPair) +
+        localSelfPatches.capacity() * sizeof(FmmPatchKey) +
+        localCrossPatchPairs.capacity() * sizeof(FmmPatchPair) +
+        remoteLetPairs.capacity() * sizeof(FmmPatchPair) +
         letSourceRanks.capacity() * sizeof(int) +
         letTargetRanks.capacity() * sizeof(int) +
         processSendNodesByRank.size() * mapEntryBytes;
@@ -129,19 +132,30 @@ FmmProcessPairPlan FmmProcessTraversal::build(const FmmProcessTree& tree,
 
             if(target.isLeaf() && source.isLeaf())
             {
-                if(target.leafKey() == source.leafKey())
+                const FmmPatchKey targetPatch = target.leafKey();
+                const FmmPatchKey sourcePatch = source.leafKey();
+                if(!targetPatch.valid() || !sourcePatch.valid())
+                    throw UniversalError(
+                        "FmmProcessTraversal::build: invalid patch leaf identity");
+                if(targetPatch == sourcePatch)
                 {
                     ++plan.localSelfRankCount;
+                    plan.localSelfPatches.push_back(targetPatch);
                 }
-                else if(target.leafOwnerRank == source.leafOwnerRank)
+                else if(targetPatch.ownerRank == sourcePatch.ownerRank)
                 {
                     ++plan.localCrossPatchPairCount;
+                    plan.localCrossPatchPairs.push_back(
+                        FmmPatchPair{targetPatch, sourcePatch});
                 }
                 else
                 {
                     ++plan.letRankPairCount;
-                    letSources.insert(source.leafOwnerRank);
-                    dependencies[source.leafOwnerRank].insert(std::make_pair(0u, 2));
+                    plan.remoteLetPairs.push_back(
+                        FmmPatchPair{targetPatch, sourcePatch});
+                    letSources.insert(sourcePatch.ownerRank);
+                    dependencies[sourcePatch.ownerRank].insert(
+                        std::make_pair(0u, 2));
                 }
                 continue;
             }
@@ -202,6 +216,7 @@ FmmProcessPairPlan FmmProcessTraversal::build(const FmmProcessTree& tree,
                 queue.push_back(task);
             }
         }
+        received.releaseStorage();
     }
 
     std::vector<int> dependencyPeers;
@@ -254,6 +269,7 @@ FmmProcessPairPlan FmmProcessTraversal::build(const FmmProcessTree& tree,
             }
         }
     }
+    receivedDependencies.releaseStorage();
 
     for(const auto& entry : sendNodeSets)
         plan.processSendNodesByRank[entry.first] =
@@ -275,6 +291,26 @@ FmmProcessPairPlan FmmProcessTraversal::build(const FmmProcessTree& tree,
         });
     if(duplicate != plan.localM2LPairs.end())
         throw UniversalError("FmmProcessTraversal::build: duplicate accepted process pair");
+
+    std::sort(plan.localSelfPatches.begin(), plan.localSelfPatches.end());
+    if(std::adjacent_find(plan.localSelfPatches.begin(),
+                          plan.localSelfPatches.end()) !=
+       plan.localSelfPatches.end())
+        throw UniversalError(
+            "FmmProcessTraversal::build: duplicate local self patch");
+    std::sort(plan.localCrossPatchPairs.begin(),
+              plan.localCrossPatchPairs.end());
+    if(std::adjacent_find(plan.localCrossPatchPairs.begin(),
+                          plan.localCrossPatchPairs.end()) !=
+       plan.localCrossPatchPairs.end())
+        throw UniversalError(
+            "FmmProcessTraversal::build: duplicate local cross-patch pair");
+    std::sort(plan.remoteLetPairs.begin(), plan.remoteLetPairs.end());
+    if(std::adjacent_find(plan.remoteLetPairs.begin(),
+                          plan.remoteLetPairs.end()) !=
+       plan.remoteLetPairs.end())
+        throw UniversalError(
+            "FmmProcessTraversal::build: duplicate remote LET patch pair");
     return plan;
 }
 

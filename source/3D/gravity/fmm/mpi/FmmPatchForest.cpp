@@ -213,6 +213,9 @@ FmmPatchForestChange FmmPatchForest::prepare(
     FmmPatchForestChange change = compareWithPrevious();
     change.overfullPatches = overfullPatches;
     updateDiagnostics(change, fixedLevelPatchCount);
+    // The previous forest is needed only for the change summary. Retaining its
+    // particle arrays and trees would double persistent patch-forest memory.
+    std::vector<FmmLocalPatch>().swap(previousPatches_);
     return change;
 }
 

@@ -37,7 +37,8 @@ struct FmmDistributedOptions
     std::size_t maxLetWaveBytes =
         static_cast<std::size_t>(256) * 1024 * 1024;
 
-    // Patch-forest options (Phase 2: local forest validation only).
+    // Patch-forest options. Phases 3-4 rebuild the forest topology each solve;
+    // persistent patch reuse is introduced separately.
     bool enablePatchForest = false;
     int minimumPatchLevel = 0;
     int maximumPatchLevel = FMM_MAX_TREE_DEPTH;
@@ -45,6 +46,12 @@ struct FmmDistributedOptions
     std::size_t maxLocalPatchCount = 65536;
     std::size_t maxTargetPatchesPerWave = 64;
     bool useLocalPatchLet = true;
+
+    // The patch-root directory is replicated on every rank in Phases 3-4.
+    // Crossing this guard requires a distributed directory rather than an
+    // unbounded MPI_Allgatherv allocation.
+    std::size_t maxReplicatedDescriptorBytes =
+        static_cast<std::size_t>(512) * 1024 * 1024;
 };
 
 #endif // FMM_DISTRIBUTED_OPTIONS_HPP

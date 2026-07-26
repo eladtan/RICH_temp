@@ -7,8 +7,10 @@
 #include <cfloat>
 #include <cstring>
 #include <limits>
+#include <set>
 #include <unordered_map>
 
+#include "3D/gravity/fmm/mpi/FmmGlobalDyadicLattice.hpp"
 #include "misc/universal_error.hpp"
 
 namespace
@@ -49,6 +51,14 @@ std::size_t saturatingMultiply(std::size_t first, std::size_t second)
     return first != 0 && second > std::numeric_limits<std::size_t>::max() / first ?
         std::numeric_limits<std::size_t>::max() : first * second;
 }
+
+double centerDistance(const FmmProcessNode& first,
+                      const FmmProcessNode& second)
+{
+    const Vector3D delta = first.center - second.center;
+    return std::sqrt(delta.x * delta.x + delta.y * delta.y +
+                     delta.z * delta.z);
+}
 }
 
 void FmmProcessTree::build(const std::vector<FmmPatchRootDescriptor>& descriptors)
@@ -59,27 +69,19 @@ void FmmProcessTree::build(const std::vector<FmmPatchRootDescriptor>& descriptor
     nodes_.clear();
     levels_.clear();
     leafByPatch_.clear();
+    compatLeafByRank_.clear();
 
     bool haveEpoch = false;
     std::uint64_t epoch = 0;
-    std::unordered_map<int, int> activePatchesPerOwner;
+    std::set<int> activeRankSet;
+    FmmPatchKey previousKey;
+    bool havePreviousKey = false;
     for(std::size_t i = 0; i < descriptorsByIndex_.size(); ++i)
     {
         const FmmPatchRootDescriptor& descriptor = descriptorsByIndex_[i];
         if(descriptor.magic != FMM_MPI_PACKET_MAGIC ||
            descriptor.version != FMM_MPI_PACKET_VERSION)
             throw UniversalError("FmmProcessTree::build: incompatible root descriptor protocol");
-        // Compatibility mode: MPI_Allgather still delivers one descriptor per rank
-        // at gather index i. Reject multiple patches per owner until Phase 3.
-        if(descriptor.active != 0)
-        {
-            if(descriptor.ownerRank != static_cast<int>(i))
-                throw UniversalError(
-                    "FmmProcessTree::build: descriptor owner/index mismatch in compat gather layout");
-            if(++activePatchesPerOwner[descriptor.ownerRank] > 1)
-                throw UniversalError(
-                    "FmmProcessTree::build: multiple patches per rank require Phase 3 descriptor gather");
-        }
         if(!haveEpoch)
         {
             epoch = descriptor.epoch;
@@ -92,22 +94,42 @@ void FmmProcessTree::build(const std::vector<FmmPatchRootDescriptor>& descriptor
 
         if(descriptor.active == 0)
         {
-            if(descriptor.particleCount != 0)
-                throw UniversalError("FmmProcessTree::build: inactive rank reports particles");
+            if(descriptor.particleCount != 0 || descriptor.ownerRank < 0)
+                throw UniversalError(
+                    "FmmProcessTree::build: invalid inactive patch descriptor");
             continue;
         }
-        if(descriptor.active != 1 || descriptor.particleCount == 0 ||
-           descriptor.patchId == 0 ||
+        if(descriptor.active != 1 || descriptor.ownerRank < 0 ||
+           descriptor.particleCount == 0 ||
+           !FmmGlobalDyadicLattice::isValidPatchId(descriptor.patchId) ||
            !finiteCube(descriptor.centerVector(), descriptor.halfSize))
-            throw UniversalError("FmmProcessTree::build: invalid active root descriptor");
+            throw UniversalError(
+                "FmmProcessTree::build: invalid active patch descriptor");
         if((descriptor.rootLeaf != 0 && descriptor.rootLeaf != 1) ||
            descriptor.childMask < 0 || descriptor.childMask > 255 ||
            (descriptor.rootLeaf != 0 && descriptor.childMask != 0) ||
            (descriptor.rootLeaf == 0 && descriptor.childMask == 0))
             throw UniversalError("FmmProcessTree::build: inconsistent root topology descriptor");
+        const double cubeRadius = std::sqrt(3.0) * descriptor.halfSize;
+        const double radiusTolerance =
+            64.0 * std::numeric_limits<double>::epsilon() *
+            std::max(1.0, cubeRadius);
+        if(!std::isfinite(descriptor.radius) || descriptor.radius < 0.0 ||
+           descriptor.radius > cubeRadius + radiusTolerance)
+            throw UniversalError(
+                "FmmProcessTree::build: invalid tight patch radius");
+
+        const FmmPatchKey patchKey{
+            descriptor.ownerRank, descriptor.patchId};
+        if(havePreviousKey && !(previousKey < patchKey))
+            throw UniversalError(
+                "FmmProcessTree::build: descriptors must be sorted and unique");
+        previousKey = patchKey;
+        havePreviousKey = true;
         activeDescriptorIndices_.push_back(i);
-        activeRanks_.push_back(descriptor.ownerRank);
+        activeRankSet.insert(descriptor.ownerRank);
     }
+    activeRanks_.assign(activeRankSet.begin(), activeRankSet.end());
     if(activeDescriptorIndices_.empty())
     {
         topologyHash_ = 0;
@@ -118,6 +140,16 @@ void FmmProcessTree::build(const std::vector<FmmPatchRootDescriptor>& descriptor
     buildRange(0, activeDescriptorIndices_.size(), 0);
     buildLevels();
     computeHash();
+
+    std::unordered_map<int, std::size_t> patchCountByRank;
+    for(const auto& leaf : leafByPatch_)
+        ++patchCountByRank[leaf.first.ownerRank];
+    for(const auto& leaf : leafByPatch_)
+    {
+        if(patchCountByRank[leaf.first.ownerRank] == 1 &&
+           leaf.first.patchId == FMM_COMPAT_PATCH_ID)
+            compatLeafByRank_[leaf.first.ownerRank] = leaf.second;
+    }
     std::vector<FmmPatchRootDescriptor>().swap(descriptorsByIndex_);
 }
 
@@ -244,6 +276,14 @@ std::size_t FmmProcessTree::buildRange(std::size_t begin,
     nodes_[nodeIndex].right = right;
     nodes_[left].parent = nodeIndex;
     nodes_[right].parent = nodeIndex;
+
+    FmmProcessNode& completed = nodes_[nodeIndex];
+    completed.radius = std::max(
+        centerDistance(completed, nodes_[left]) + nodes_[left].radius,
+        centerDistance(completed, nodes_[right]) + nodes_[right].radius);
+    if(!std::isfinite(completed.radius) || completed.radius < 0.0)
+        throw UniversalError(
+            "FmmProcessTree::buildRange: invalid internal tight radius");
     return nodeIndex;
 }
 
@@ -271,7 +311,8 @@ void FmmProcessTree::computeHash()
             static_cast<std::uint64_t>(node.end),
             static_cast<std::uint64_t>(node.depth),
             doubleBits(node.center.x), doubleBits(node.center.y),
-            doubleBits(node.center.z), doubleBits(node.halfSize)};
+            doubleBits(node.center.z), doubleBits(node.halfSize),
+            doubleBits(node.radius)};
         for(std::uint64_t value : fields)
         {
             for(int byte = 0; byte < 8; ++byte)
@@ -304,6 +345,10 @@ std::size_t FmmProcessTree::bytesOwned() const
         sizeof(std::pair<const FmmPatchKey, std::size_t>) + 2 * sizeof(void*);
     result = saturatingAdd(result, saturatingMultiply(
         leafByPatch_.size(), mapEntryBytes));
+    const std::size_t rankMapEntryBytes =
+        sizeof(std::pair<const int, std::size_t>) + 2 * sizeof(void*);
+    result = saturatingAdd(result, saturatingMultiply(
+        compatLeafByRank_.size(), rankMapEntryBytes));
     return result;
 }
 
@@ -315,13 +360,8 @@ std::size_t FmmProcessTree::leafForPatch(const FmmPatchKey& patch) const
 
 std::size_t FmmProcessTree::leafForRank(int rank) const
 {
-    const std::size_t leaf = leafForPatch(fmmCompatPatchKey(rank));
-    if(leaf == invalidIndex())
-        return invalidIndex();
-    const FmmProcessNode& node = nodes_[leaf];
-    if(node.leafOwnerRank != rank)
-        throw UniversalError("FmmProcessTree::leafForRank: rank owns multiple patches");
-    return leaf;
+    const auto found = compatLeafByRank_.find(rank);
+    return found == compatLeafByRank_.end() ? invalidIndex() : found->second;
 }
 
 #endif // RICH_MPI
