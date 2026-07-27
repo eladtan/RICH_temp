@@ -832,6 +832,7 @@ for i in "${!ALL_TEST_IDS[@]}"; do
             sbatch_wrap_cmd="${SLURM_MODULE_SETUP} && ROOT_DIR=\"${ROOT_DIR}\" CONFIG=\"${CONFIG}\" MPI_NP=\"${MPI_NP}\" SLURM_NTASKS=\"${slurm_ntasks}\" RICH_BIN=\"${rich_bin}\" bash -c '${local_escaped_run_cmd}'"
             sbatch_args=(
                 sbatch
+                --export=ALL
                 --wait
                 --time="${slurm_time_limit}"
                 --job-name="$(slurm_job_name "${test_id}")"
