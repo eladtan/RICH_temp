@@ -1,5 +1,7 @@
 #include "3D/gravity/fmm/mpi/FmmPatchForest.hpp"
 
+#ifdef RICH_MPI
+
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -760,3 +762,5 @@ void FmmPatchForest::updateDiagnostics(const FmmPatchForestChange& change,
         diagnostics_.particlesPerPatchP95 = counts[p95Index];
     }
 }
+
+#endif // RICH_MPI
