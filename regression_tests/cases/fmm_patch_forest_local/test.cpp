@@ -198,8 +198,8 @@ std::vector<Vector3D> uniformCube(std::size_t count)
     {
         const double t = static_cast<double>(i) / static_cast<double>(count);
         result.emplace_back(-0.8 + 1.6 * (t - std::floor(t * 5.0) / 5.0),
-                            -0.7 + 1.4 * std::sin(0.31 * static_cast<double>(i)),
-                            -0.6 + 1.2 * std::cos(0.17 * static_cast<double>(i)));
+                            0.7 * std::sin(0.31 * static_cast<double>(i)),
+                            0.6 * std::cos(0.17 * static_cast<double>(i)));
     }
     return result;
 }
