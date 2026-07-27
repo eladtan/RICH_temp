@@ -1,11 +1,16 @@
 #include <algorithm>
 #include <cmath>
+#include <exception>
 #include <fstream>
 #include <iostream>
 #include <limits>
 #include <numeric>
 #include <random>
 #include <vector>
+
+#ifdef RICH_MPI
+#include <mpi.h>
+#endif
 
 #include "source/3D/gravity/fmm/DirectGravityReference.hpp"
 #include "source/3D/gravity/fmm/FmmTaylorExpansion.hpp"
@@ -487,45 +492,152 @@ bool testPersistentOptionValidation()
 }
 }
 
-int main()
+int main(int argc, char** argv)
 {
+#ifdef RICH_MPI
+    int mpiInitialized = 0;
+    MPI_Initialized(&mpiInitialized);
+    const bool ownsMpi = mpiInitialized == 0;
+    if(ownsMpi)
+    {
+        const int initResult = MPI_Init(&argc, &argv);
+        if(initResult != MPI_SUCCESS)
+        {
+            std::cerr << "fmm_patch_forest_local: MPI_Init failed with code "
+                      << initResult << std::endl;
+            return 2;
+        }
+    }
+
+    int worldSize = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &worldSize);
+    if(worldSize != 1)
+    {
+        std::cerr << "fmm_patch_forest_local requires exactly one MPI rank; got "
+                  << worldSize << std::endl;
+        if(ownsMpi)
+            MPI_Finalize();
+        return 2;
+    }
+#endif
+
     FmmDistributedOptions distributedOptions;
     distributedOptions.minimumPatchLevel = 2;
     distributedOptions.maximumPatchLevel = 6;
     distributedOptions.targetParticlesPerPatch = 12;
 
-    const std::vector<Vector3D> uniform = uniformCube(64);
-    const std::vector<Vector3D> clumps = twoClumps();
-    const std::vector<Vector3D> shell = thinShell();
-    const std::vector<Vector3D> boundaries = boundaryPoints();
+    bool pass = true;
+    try
+    {
+        const std::vector<Vector3D> uniform = uniformCube(64);
+        const std::vector<Vector3D> clumps = twoClumps();
+        const std::vector<Vector3D> shell = thinShell();
+        const std::vector<Vector3D> boundaries = boundaryPoints();
 
-    std::vector<double> uniformMasses(uniform.size());
-    for(std::size_t i = 0; i < uniform.size(); ++i)
-        uniformMasses[i] = 0.75 + 0.05 * static_cast<double>(i % 9);
+        std::vector<double> uniformMasses(uniform.size());
+        for(std::size_t i = 0; i < uniform.size(); ++i)
+            uniformMasses[i] = 0.75 + 0.05 * static_cast<double>(i % 9);
 
-    const bool pass =
-        testLatticeBoundaries() &&
-        testAnalyticalChildGeometry() &&
-        testDeepPatchLookup() &&
-        testPartitionCoverage(uniform, distributedOptions) &&
-        testPartitionCoverage(clumps, distributedOptions) &&
-        testAccuracyCase(uniform, uniformMasses, distributedOptions, 0.08, true) &&
-        testAccuracyCase(clumps, std::vector<double>(clumps.size(), 1.0),
-                         distributedOptions, 0.08, false) &&
-        testAccuracyCase(shell, std::vector<double>(shell.size(), 1.0),
-                         distributedOptions, 0.10, false) &&
-        testAccuracyCase(boundaries, std::vector<double>(boundaries.size(), 1.0),
-                         distributedOptions, 0.12, false) &&
-        testPermutationDeterminism() &&
-        testAdaptiveSplitAndCap() &&
-        testScatterAccumulation() &&
-        testCountOnlyChangeClassification() &&
-        testPhysicalDomainValidation() &&
-        testPersistentOptionValidation();
+        auto runCase = [&pass](const char* name, const auto& function) {
+            std::cerr << "[ RUN      ] " << name << std::endl;
+            try
+            {
+                const bool result = function();
+                std::cerr << (result ? "[       OK ] " : "[  FAILED  ] ")
+                          << name << std::endl;
+                pass = result && pass;
+            }
+            catch(const UniversalError& error)
+            {
+                std::cerr << "[ EXCEPTION ] " << name << std::endl;
+                reportError(error, std::cerr);
+                pass = false;
+            }
+            catch(const std::exception& error)
+            {
+                std::cerr << "[ STD EXC   ] " << name << ": "
+                          << error.what() << std::endl;
+                pass = false;
+            }
+            catch(...)
+            {
+                std::cerr << "[ UNKNOWN   ] " << name << std::endl;
+                pass = false;
+            }
+        };
+
+        runCase("testLatticeBoundaries",
+                [&] { return testLatticeBoundaries(); });
+        runCase("testAnalyticalChildGeometry",
+                [&] { return testAnalyticalChildGeometry(); });
+        runCase("testDeepPatchLookup",
+                [&] { return testDeepPatchLookup(); });
+        runCase("testPartitionCoverage_uniform",
+                [&] { return testPartitionCoverage(uniform, distributedOptions); });
+        runCase("testPartitionCoverage_clumps",
+                [&] { return testPartitionCoverage(clumps, distributedOptions); });
+        runCase("testAccuracyCase_uniform",
+                [&] {
+                    return testAccuracyCase(uniform, uniformMasses,
+                                            distributedOptions, 0.08, true);
+                });
+        runCase("testAccuracyCase_clumps",
+                [&] {
+                    return testAccuracyCase(
+                        clumps, std::vector<double>(clumps.size(), 1.0),
+                        distributedOptions, 0.08, false);
+                });
+        runCase("testAccuracyCase_shell",
+                [&] {
+                    return testAccuracyCase(
+                        shell, std::vector<double>(shell.size(), 1.0),
+                        distributedOptions, 0.10, false);
+                });
+        runCase("testAccuracyCase_boundaries",
+                [&] {
+                    return testAccuracyCase(
+                        boundaries, std::vector<double>(boundaries.size(), 1.0),
+                        distributedOptions, 0.12, false);
+                });
+        runCase("testPermutationDeterminism",
+                [&] { return testPermutationDeterminism(); });
+        runCase("testAdaptiveSplitAndCap",
+                [&] { return testAdaptiveSplitAndCap(); });
+        runCase("testScatterAccumulation",
+                [&] { return testScatterAccumulation(); });
+        runCase("testCountOnlyChangeClassification",
+                [&] { return testCountOnlyChangeClassification(); });
+        runCase("testPhysicalDomainValidation",
+                [&] { return testPhysicalDomainValidation(); });
+        runCase("testPersistentOptionValidation",
+                [&] { return testPersistentOptionValidation(); });
+    }
+    catch(const UniversalError& error)
+    {
+        std::cerr << "[ EXCEPTION ] test setup" << std::endl;
+        reportError(error, std::cerr);
+        pass = false;
+    }
+    catch(const std::exception& error)
+    {
+        std::cerr << "[ STD EXC   ] test setup: " << error.what() << std::endl;
+        pass = false;
+    }
+    catch(...)
+    {
+        std::cerr << "[ UNKNOWN   ] test setup" << std::endl;
+        pass = false;
+    }
 
     std::ofstream output("fmm_patch_forest_local_metrics.txt");
     output << "pass " << (pass ? 1 : 0) << "\n";
     output << "cases 15\n";
     std::cout << "fmm_patch_forest_local pass=" << pass << std::endl;
+
+#ifdef RICH_MPI
+    if(ownsMpi)
+        MPI_Finalize();
+#endif
+
     return pass ? 0 : 1;
 }
