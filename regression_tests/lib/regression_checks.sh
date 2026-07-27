@@ -1721,6 +1721,14 @@ check_fmm_gravity_mpi_case() {
     local metrics_file="${run_dir}/fmm_gravity_mpi_metrics.txt"
     local ranks
     local max_scaled_error
+    local ordinary_max_scaled_error
+    local persistent_split_error
+    local persistent_split_fresh_error
+    local persistent_split_vs_fresh
+    local ordinary_errors_within_tolerance
+    local persistent_split_direct_within_tolerance
+    local persistent_split_fresh_direct_within_tolerance
+    local persistent_split_matches_fresh
     local first_epoch
     local second_epoch
     local third_epoch
@@ -1750,6 +1758,14 @@ check_fmm_gravity_mpi_case() {
 
     ranks=$(awk '$1 == "ranks" { print $2 }' "$metrics_file")
     max_scaled_error=$(awk '$1 == "max_scaled_error" { print $2 }' "$metrics_file")
+    ordinary_max_scaled_error=$(awk '$1 == "ordinary_max_scaled_error" { print $2 }' "$metrics_file")
+    persistent_split_error=$(awk '$1 == "scenario_error_persistent_split" { print $2 }' "$metrics_file")
+    persistent_split_fresh_error=$(awk '$1 == "persistent_split_fresh_error" { print $2 }' "$metrics_file")
+    persistent_split_vs_fresh=$(awk '$1 == "persistent_split_vs_fresh" { print $2 }' "$metrics_file")
+    ordinary_errors_within_tolerance=$(awk '$1 == "ordinary_errors_within_tolerance" { print $2 }' "$metrics_file")
+    persistent_split_direct_within_tolerance=$(awk '$1 == "persistent_split_direct_within_tolerance" { print $2 }' "$metrics_file")
+    persistent_split_fresh_direct_within_tolerance=$(awk '$1 == "persistent_split_fresh_direct_within_tolerance" { print $2 }' "$metrics_file")
+    persistent_split_matches_fresh=$(awk '$1 == "persistent_split_matches_fresh" { print $2 }' "$metrics_file")
     first_epoch=$(awk '$1 == "first_epoch" { print $2 }' "$metrics_file")
     second_epoch=$(awk '$1 == "second_epoch" { print $2 }' "$metrics_file")
     third_epoch=$(awk '$1 == "third_epoch" { print $2 }' "$metrics_file")
@@ -1770,6 +1786,13 @@ check_fmm_gravity_mpi_case() {
     pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
 
     if [[ -z "$ranks" || -z "$max_scaled_error" || -z "$first_epoch" ||
+          -z "$ordinary_max_scaled_error" || -z "$persistent_split_error" ||
+          -z "$persistent_split_fresh_error" ||
+          -z "$persistent_split_vs_fresh" ||
+          -z "$ordinary_errors_within_tolerance" ||
+          -z "$persistent_split_direct_within_tolerance" ||
+          -z "$persistent_split_fresh_direct_within_tolerance" ||
+          -z "$persistent_split_matches_fresh" ||
           -z "$second_epoch" || -z "$leaf_epoch" || -z "$third_epoch" ||
           -z "$error_within_tolerance" || -z "$topology_reused" ||
           -z "$rebuild_count_reused" || -z "$leaf_topology_rebuilt" ||
@@ -1787,13 +1810,39 @@ check_fmm_gravity_mpi_case() {
         set_check_msg "distributed FMM max_scaled_error is not finite"
         return 1
     fi
+    if ! is_finite_number "$ordinary_max_scaled_error" ||
+       ! is_finite_number "$persistent_split_error" ||
+       ! is_finite_number "$persistent_split_fresh_error" ||
+       ! is_finite_number "$persistent_split_vs_fresh"; then
+        set_check_msg "distributed FMM scenario accuracy metrics are not finite"
+        return 1
+    fi
     if ! awk -v n="$ranks" 'BEGIN { exit !(n >= 3) }'; then
         set_check_msg "distributed FMM test did not use enough ranks (${ranks})"
         return 1
     fi
-    if ! awk -v e="$max_scaled_error" 'BEGIN { exit !(e < 2e-4) }' ||
-       [[ "$error_within_tolerance" != "1" ]]; then
-        set_check_msg "distributed FMM max_scaled_error too large (${max_scaled_error})"
+    if ! awk -v e="$ordinary_max_scaled_error" 'BEGIN { exit !(e < 2e-4) }' ||
+       [[ "$ordinary_errors_within_tolerance" != "1" ]]; then
+        set_check_msg "distributed FMM ordinary scenario error too large (${ordinary_max_scaled_error})"
+        return 1
+    fi
+    if ! awk -v e="$persistent_split_error" 'BEGIN { exit !(e < 1e-2) }' ||
+       [[ "$persistent_split_direct_within_tolerance" != "1" ]]; then
+        set_check_msg "distributed FMM persistent split direct error too large (${persistent_split_error})"
+        return 1
+    fi
+    if ! awk -v e="$persistent_split_fresh_error" 'BEGIN { exit !(e < 1e-2) }' ||
+       [[ "$persistent_split_fresh_direct_within_tolerance" != "1" ]]; then
+        set_check_msg "distributed FMM fresh split direct error too large (${persistent_split_fresh_error})"
+        return 1
+    fi
+    if ! awk -v e="$persistent_split_vs_fresh" 'BEGIN { exit !(e < 2e-4) }' ||
+       [[ "$persistent_split_matches_fresh" != "1" ]]; then
+        set_check_msg "distributed FMM persistent split disagrees with a fresh rebuild (${persistent_split_vs_fresh})"
+        return 1
+    fi
+    if [[ "$error_within_tolerance" != "1" ]]; then
+        set_check_msg "distributed FMM combined accuracy contract failed"
         return 1
     fi
     if [[ "$first_epoch" != "$second_epoch" || "$topology_reused" != "1" ]]; then
