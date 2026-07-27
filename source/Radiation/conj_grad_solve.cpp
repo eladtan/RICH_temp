@@ -217,6 +217,28 @@ namespace CG
                 }
             }
         }
+        // Per-cell renormalization: rescale clamped groups so the total
+        // radiation energy density per cell matches the unclamped total.
+        // This prevents the clamping from injecting energy.
+        size_t const Ncells = Nlocal / slice;
+        for(size_t c = 0; c < Ncells; ++c)
+        {
+            double const cell_volume = tess.GetVolume(c) * pow<3>(lengthscale);
+            double sum_unclamped = 0, sum_clamped = 0;
+            for(size_t g = 0; g < slice; ++g)
+            {
+                size_t const k = c * slice + g;
+                sum_unclamped += sub_x[k] + sub_r[k] / cell_volume;
+                sum_clamped += sub_x_solution[k];
+            }
+            if(sum_clamped > 0 && sum_unclamped > 0)
+            {
+                double const ratio = sum_unclamped / sum_clamped;
+                for(size_t g = 0; g < slice; ++g)
+                    sub_x_solution[c * slice + g] *= ratio;
+            }
+        }
+
         dx_vec.push_back(sum_dx);
         dx_vec.push_back(sum_dx_sign);
         dx_vec.push_back(negative_x);

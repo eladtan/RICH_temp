@@ -922,17 +922,13 @@ void MultigroupDiffusion::PostCG(Tessellation3D const& tess,
                 dE_compton -= get_implicit_compton_contribution_to_b(tess, cells[i], i, g, dt_cgs);
 
                 for (std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt) {
-                    double const CG_res_i = std::max(CG_result[i * ENERGY_GROUPS_NUM + gt], std::numeric_limits<double>::min()*1e100);
-
-                    dE_compton += get_implicit_compton_contribution(tess, cells[i], i, g, gt, dt_cgs) * CG_res_i;
+                    dE_compton += get_implicit_compton_contribution(tess, cells[i], i, g, gt, dt_cgs) * CG_result[i * ENERGY_GROUPS_NUM + gt];
                 }
             }
         }
         double const Gamma_1 = 1.0 / Gammas[i];
 
         for (size_t group = 0; group < ENERGY_GROUPS_NUM; ++group) {
-
-            double const CG_res = std::max(CG_result[i * ENERGY_GROUPS_NUM + group], std::numeric_limits<double>::min()*1e100);
 
             double const full_CG_res_i = std::max(
                 full_CG_result[i * ENERGY_GROUPS_NUM + group],
@@ -943,14 +939,13 @@ void MultigroupDiffusion::PostCG(Tessellation3D const& tess,
 
             cells[i].Eg[group] =  extensives[i].Eg[group] / extensives[i].mass;
             Erad_tot += extensives[i].Eg[group];
-            // absorption + emission must use raw sub_x (CG_result)
-            dE_absorption_emission += volume * cdt * CG_res * sigma_absorption_group[i][group];
+            dE_absorption_emission += volume * cdt * CG_result[i * ENERGY_GROUPS_NUM + group] * sigma_absorption_group[i][group];
             auto const bg = planck_integal_group[i][group];
             for (std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt) {
 
                 double const implicit_conribution_group_j = -volume*bg * (1 - f) * sigma_absorption_group[i][gt] * sigma_absorption_group[i][group] * cdt * Gamma_1;
 
-                dE_absorption_emission += implicit_conribution_group_j * std::max(CG_result[i * ENERGY_GROUPS_NUM + gt], std::numeric_limits<double>::min()*1e100);
+                dE_absorption_emission += implicit_conribution_group_j * CG_result[i * ENERGY_GROUPS_NUM + gt];
             }
         }
 

@@ -66,16 +66,43 @@ Case get_case(std::string_view const case_num_sv){
 	switch(case_num){
 		case 0:
 			return {"Winslow (TOPS)", 20.0*kev_kelvin, 1.0*kev_kelvin, true, true};
+		case 1:
+			return {"Winslow, no absorption", 20.0*kev_kelvin, 1.0*kev_kelvin, true, false};
 		case 2:
 			return {"Winslow, no compton (TOPS)", 20.0*kev_kelvin, 1.0*kev_kelvin, false, true};
 		case 3: 
 			return {"Till (TOPS)", 1.0*kev_kelvin, 10.0*kev_kelvin, true, true};
 		case 4:
 			return {"Till, no compton (TOPS)", 1.0*kev_kelvin, 10.0*kev_kelvin, false, true};
+		case 5:
+			return {"Tmat=50 keV, Trad=1 keV", 50.0*kev_kelvin, 1.0*kev_kelvin, true, true};
+		case 6:
+			return {"Tmat=20 keV, Trad=5 keV", 20.0*kev_kelvin, 5.0*kev_kelvin, true, true};
+		case 7:
+			return {"Tmat=1 keV, Trad=50 keV", 1.0*kev_kelvin, 50.0*kev_kelvin, true, true};
+		case 8:
+			return {"Tmat=5 keV, Trad=20 keV", 5.0*kev_kelvin, 20.0*kev_kelvin, true, true};
 		default:
-			std::cout << "Error! Only cases 0, 2, 3, 4 are supported for TOPS." << std::endl;
+			std::cout << "Error! Supported cases are 0 through 8." << std::endl;
 			exit(1);
 	}
+}
+
+enum class OpacityMode {
+	TOPS,
+	FreeFree
+};
+
+OpacityMode get_opacity_mode()
+{
+	char const* env = std::getenv("EQUILIBRATION_OPACITY_MODE");
+	if (!env || std::string(env).empty() || std::string(env) == "tops")
+		return OpacityMode::TOPS;
+	if (std::string(env) == "freefree")
+		return OpacityMode::FreeFree;
+
+	std::cerr << "Error: EQUILIBRATION_OPACITY_MODE must be 'tops' or 'freefree'" << std::endl;
+	std::exit(1);
 }
 
 class TOPSopacity : public MultigroupDiffusionCoefficientCalculator
@@ -83,12 +110,14 @@ class TOPSopacity : public MultigroupDiffusionCoefficientCalculator
 private:
 	std::vector<double> rho_, T_;
 	std::vector<std::vector<std::vector<double>>> rossland_, planck_, scatter_;
+	bool const absorption_on_;
 public:
-	TOPSopacity(std::string const& file_directory)
+	TOPSopacity(std::string const& file_directory, bool const absorption_on) :
+		absorption_on_(absorption_on)
 	{
 		energy_groups_boundary = read_vector(file_directory + "frequency_edges.txt");
 		for(double& Egb : energy_groups_boundary)
-			Egb *= 11604.5 * CG::boltzmann_constant;
+			Egb *= 1e-3 * kev;
 		energy_groups_center.resize(energy_groups_boundary.size() - 1, std::numeric_limits<double>::quiet_NaN());
 		for(size_t i = 0; i < energy_groups_boundary.size() - 1; ++i)
 			energy_groups_center[i] = std::sqrt(energy_groups_boundary[i] * energy_groups_boundary[i + 1]);
@@ -96,7 +125,7 @@ public:
 		T_ = read_vector(file_directory + "T.txt");
 		for(size_t i = 0; i < T_.size(); ++i)
 		{
-			T_[i] *= 11604.5;
+			T_[i] *= ev_kelvin;
 			T_[i] = std::log(T_[i]);
 		}
 		size_t const Nt = T_.size();
@@ -145,6 +174,8 @@ public:
 
 	double CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, size_t group) const override
 	{
+		if (!absorption_on_)
+			return 1e-80;
 		double T = std::log(cell.temperature);
 		double d = std::log(cell.density);
 		if(T < T_[0]) T = T_[0];
@@ -187,8 +218,12 @@ int main(int argc, char *argv[])
 	}
 
 	auto const current_case = get_case(argv[1]);
+	auto const opacity_mode = get_opacity_mode();
 	std::cout << "Running case: " << current_case.description << std::endl;
 	std::cout << "T_mat = " << current_case.T_mat/kev_kelvin << " KeV, T_rad = " << current_case.T_rad/kev_kelvin << " KeV" << std::endl;
+	std::cout << "Opacity mode: "
+	          << (opacity_mode == OpacityMode::TOPS ? "TOPS" : "free-free")
+	          << std::endl;
 
 	std::optional<double> force_time_step{};
 	std::optional<double> custom_init_dt{};
@@ -241,16 +276,24 @@ int main(int argc, char *argv[])
 		if (opacity_dir.back() != '/') opacity_dir += '/';
 	}
 
-	TOPSopacity opacity(opacity_dir);
+	TOPSopacity tops_opacity(opacity_dir, current_case.absorption_on);
 
-	std::size_t const G = opacity.energy_groups_boundary.size() - 1;
+	std::size_t const G = tops_opacity.energy_groups_boundary.size() - 1;
 	if(G != ENERGY_GROUPS_NUM){
 		std::cerr << "Error: TOPS opacity has " << G << " groups but compiled with ENERGY_GROUPS_NUM=" << ENERGY_GROUPS_NUM << std::endl;
 		return 1;
 	}
 
-	auto const& energy_groups_center = opacity.energy_groups_center;
-	auto const& energy_groups_boundary = opacity.energy_groups_boundary;
+	auto const& energy_groups_center = tops_opacity.energy_groups_center;
+	auto const& energy_groups_boundary = tops_opacity.energy_groups_boundary;
+	FreeFreeAbsorptionOpacityMultigroup freefree_opacity(
+		current_case.absorption_on ? 1.0 : 1e-80,
+		energy_groups_center,
+		energy_groups_boundary);
+	MultigroupDiffusionCoefficientCalculator const& opacity =
+		opacity_mode == OpacityMode::TOPS
+			? static_cast<MultigroupDiffusionCoefficientCalculator const&>(tops_opacity)
+			: static_cast<MultigroupDiffusionCoefficientCalculator const&>(freefree_opacity);
 
 	double const lscale = 1.;
 	double const mscale = 1.;
