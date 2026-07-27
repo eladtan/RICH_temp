@@ -222,6 +222,12 @@ int main(int argc, char** argv)
     // production behavior is covered by fmm_patch_moving_mesh.
     distributed.enablePatchForest = false;
     distributed.maxRemoteBytes = 64u * 1024u * 1024u;
+    // This regression validates the legacy count-only interaction-plan reuse
+    // path. Bounded LET waves intentionally rebuild when leaf occupancy changes
+    // because wave membership and payload sizing depend on current counts.
+    // Dedicated wave regressions cover that execution mode.
+    distributed.maxLetWaveBytes = 0;
+
     // Preserve the legacy sparse-tree rebuild checks below. Persistent-tree
     // execution, plan reuse, splitting, and automatic merging are exercised
     // independently in the dedicated block below.
