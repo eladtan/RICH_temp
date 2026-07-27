@@ -200,6 +200,24 @@ double checkSolve(const std::vector<Body>& localBodies,
     }
     return maximum;
 }
+
+double compareSolutions(const std::vector<Vector3D>& firstAcceleration,
+                        const std::vector<double>& firstPotential,
+                        const std::vector<Vector3D>& secondAcceleration,
+                        const std::vector<double>& secondPotential)
+{
+    double maximum = 0.0;
+    for(std::size_t i = 0; i < firstAcceleration.size(); ++i)
+    {
+        maximum = std::max(maximum,
+            norm(firstAcceleration[i] - secondAcceleration[i]) /
+            std::max(1.0, norm(secondAcceleration[i])));
+        maximum = std::max(maximum,
+            std::abs(firstPotential[i] - secondPotential[i]) /
+            std::max(1.0, std::abs(secondPotential[i])));
+    }
+    return maximum;
+}
 }
 
 int main(int argc, char** argv)
@@ -248,6 +266,8 @@ int main(int argc, char** argv)
         "legacy_leaf_change",
         "legacy_root_breach"};
     std::array<double, scenarioCount> localScenarioErrors = {};
+    double localFreshPersistentSplitError = 0.0;
+    double localPersistentSplitVsFresh = 0.0;
 
     std::uint64_t firstEpoch = 0;
     std::uint64_t secondEpoch = 0;
@@ -414,6 +434,26 @@ int main(int argc, char** argv)
             splitRebuilds == persistentRebuilds + 1 &&
             splitLetRebuilds == persistentLetRebuilds + 1;
 
+        const std::vector<Vector3D> persistentSplitAcceleration = acceleration;
+        const std::vector<double> persistentSplitPotential = potential;
+        FmmDistributedOptions freshDistributed = distributed;
+        freshDistributed.persistentLocalTreeTopology = false;
+        DistributedFmmGravityCalculator freshSplitSolver(
+            options, freshDistributed);
+        std::vector<Vector3D> freshSplitAcceleration;
+        std::vector<double> freshSplitPotential;
+        freshSplitSolver.solve(
+            positions, masses, ids, Vector3D(-1, -1, -1),
+            Vector3D(1, 1, 1), freshSplitAcceleration,
+            &freshSplitPotential);
+        localFreshPersistentSplitError = checkSolve(
+            localBodies,
+            allBodies(size, 1.02, BodyLayout::PersistentSplit),
+            freshSplitAcceleration, freshSplitPotential);
+        localPersistentSplitVsFresh = compareSolutions(
+            persistentSplitAcceleration, persistentSplitPotential,
+            freshSplitAcceleration, freshSplitPotential);
+
         localBodies = bodiesForRank(
             rank, size, 1.02, BodyLayout::Baseline);
         unpack(localBodies, positions, masses, ids);
@@ -564,6 +604,14 @@ int main(int argc, char** argv)
     MPI_Allreduce(localScenarioErrors.data(), globalScenarioErrors.data(),
                   static_cast<int>(scenarioCount), MPI_DOUBLE, MPI_MAX,
                   MPI_COMM_WORLD);
+    double globalFreshPersistentSplitError = 0.0;
+    double globalPersistentSplitVsFresh = 0.0;
+    MPI_Allreduce(&localFreshPersistentSplitError,
+                  &globalFreshPersistentSplitError, 1, MPI_DOUBLE, MPI_MAX,
+                  MPI_COMM_WORLD);
+    MPI_Allreduce(&localPersistentSplitVsFresh,
+                  &globalPersistentSplitVsFresh, 1, MPI_DOUBLE, MPI_MAX,
+                  MPI_COMM_WORLD);
     const int errorWithinTolerance = globalMaximumError < 2e-4 ? 1 : 0;
     const int localChecks[16] = {
         firstEpoch == secondEpoch ? 1 : 0,
@@ -605,6 +653,10 @@ int main(int argc, char** argv)
         for(std::size_t i = 0; i < scenarioCount; ++i)
             output << "scenario_error_" << scenarioNames[i] << " "
                    << globalScenarioErrors[i] << "\n";
+        output << "persistent_split_fresh_error "
+               << globalFreshPersistentSplitError << "\n";
+        output << "persistent_split_vs_fresh "
+               << globalPersistentSplitVsFresh << "\n";
         output << "error_within_tolerance " << errorWithinTolerance << "\n";
         output << "first_epoch " << firstEpoch << "\n";
         output << "second_epoch " << secondEpoch << "\n";
@@ -637,6 +689,10 @@ int main(int argc, char** argv)
                   << " max_scaled_error=" << globalMaximumError
                   << " worst_scenario=" << scenarioNames[worstScenario]
                   << " worst_scenario_error=" << globalScenarioErrors[worstScenario]
+                  << " fresh_split_error="
+                  << globalFreshPersistentSplitError
+                  << " split_vs_fresh="
+                  << globalPersistentSplitVsFresh
                   << " topology_reused=" << globalChecks[0]
                   << " leaf_only_rebuild=" << globalChecks[4]
                   << " root_process_rebuild=" << globalChecks[5]
