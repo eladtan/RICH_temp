@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <fstream>
@@ -234,6 +235,20 @@ int main(int argc, char** argv)
     distributed.persistentLocalTreeTopology = false;
 
     double localMaximumError = 0.0;
+    constexpr std::size_t scenarioCount = 10;
+    const char* scenarioNames[scenarioCount] = {
+        "count_baseline",
+        "count_only_change",
+        "persistent_baseline",
+        "persistent_refit",
+        "persistent_split",
+        "persistent_merge",
+        "legacy_baseline",
+        "legacy_mass_update",
+        "legacy_leaf_change",
+        "legacy_root_breach"};
+    std::array<double, scenarioCount> localScenarioErrors = {};
+
     std::uint64_t firstEpoch = 0;
     std::uint64_t secondEpoch = 0;
     std::uint64_t thirdEpoch = 0;
@@ -270,9 +285,10 @@ int main(int argc, char** argv)
         unpack(localBodies, positions, masses, ids);
         countSolver.solve(positions, masses, ids, Vector3D(-1, -1, -1),
                           Vector3D(1, 1, 1), acceleration, &potential);
-        localMaximumError = std::max(localMaximumError,
-            checkSolve(localBodies, allBodies(size, 1.0, BodyLayout::Baseline),
-                       acceleration, potential));
+        localScenarioErrors[0] = checkSolve(
+            localBodies, allBodies(size, 1.0, BodyLayout::Baseline),
+            acceleration, potential);
+        localMaximumError = std::max(localMaximumError, localScenarioErrors[0]);
         const std::uint64_t countEpoch = countSolver.stats().topologyEpoch;
         const std::uint64_t countRebuilds =
             countSolver.stats().topologyRebuildCount;
@@ -284,10 +300,11 @@ int main(int argc, char** argv)
         unpack(localBodies, positions, masses, ids);
         countSolver.solve(positions, masses, ids, Vector3D(-1, -1, -1),
                           Vector3D(1, 1, 1), acceleration, &potential);
-        localMaximumError = std::max(localMaximumError,
-            checkSolve(localBodies,
-                       allBodies(size, 1.0, BodyLayout::CountOnlyLeafChange),
-                       acceleration, potential));
+        localScenarioErrors[1] = checkSolve(
+            localBodies,
+            allBodies(size, 1.0, BodyLayout::CountOnlyLeafChange),
+            acceleration, potential);
+        localMaximumError = std::max(localMaximumError, localScenarioErrors[1]);
         countOnlyTopologyReused =
             countSolver.stats().ranksWithRootGeometryChange == 0 &&
             countSolver.stats().ranksWithLeafTopologyChange == 0 &&
@@ -322,9 +339,10 @@ int main(int argc, char** argv)
         persistentSolver.solve(
             positions, masses, ids, Vector3D(-1, -1, -1),
             Vector3D(1, 1, 1), acceleration, &potential);
-        localMaximumError = std::max(localMaximumError,
-            checkSolve(localBodies, allBodies(size, 1.0, BodyLayout::Baseline),
-                       acceleration, potential));
+        localScenarioErrors[2] = checkSolve(
+            localBodies, allBodies(size, 1.0, BodyLayout::Baseline),
+            acceleration, potential);
+        localMaximumError = std::max(localMaximumError, localScenarioErrors[2]);
         const std::uint64_t persistentEpoch =
             persistentSolver.stats().topologyEpoch;
         const std::uint64_t persistentRebuilds =
@@ -344,10 +362,11 @@ int main(int argc, char** argv)
         persistentSolver.solve(
             positions, masses, ids, Vector3D(-1, -1, -1),
             Vector3D(1, 1, 1), acceleration, &potential);
-        localMaximumError = std::max(localMaximumError,
-            checkSolve(localBodies,
-                       allBodies(size, 1.02, BodyLayout::Baseline),
-                       acceleration, potential));
+        localScenarioErrors[3] = checkSolve(
+            localBodies,
+            allBodies(size, 1.02, BodyLayout::Baseline),
+            acceleration, potential);
+        localMaximumError = std::max(localMaximumError, localScenarioErrors[3]);
         const std::size_t expectedActiveRanks =
             static_cast<std::size_t>(size >= 3 ? size - 1 : size);
         persistentTopologyReused =
@@ -372,10 +391,11 @@ int main(int argc, char** argv)
         persistentSolver.solve(
             positions, masses, ids, Vector3D(-1, -1, -1),
             Vector3D(1, 1, 1), acceleration, &potential);
-        localMaximumError = std::max(localMaximumError,
-            checkSolve(localBodies,
-                       allBodies(size, 1.02, BodyLayout::PersistentSplit),
-                       acceleration, potential));
+        localScenarioErrors[4] = checkSolve(
+            localBodies,
+            allBodies(size, 1.02, BodyLayout::PersistentSplit),
+            acceleration, potential);
+        localMaximumError = std::max(localMaximumError, localScenarioErrors[4]);
         const std::uint64_t splitEpoch =
             persistentSolver.stats().topologyEpoch;
         const std::uint64_t splitRebuilds =
@@ -400,10 +420,11 @@ int main(int argc, char** argv)
         persistentSolver.solve(
             positions, masses, ids, Vector3D(-1, -1, -1),
             Vector3D(1, 1, 1), acceleration, &potential);
-        localMaximumError = std::max(localMaximumError,
-            checkSolve(localBodies,
-                       allBodies(size, 1.02, BodyLayout::Baseline),
-                       acceleration, potential));
+        localScenarioErrors[5] = checkSolve(
+            localBodies,
+            allBodies(size, 1.02, BodyLayout::Baseline),
+            acceleration, potential);
+        localMaximumError = std::max(localMaximumError, localScenarioErrors[5]);
         persistentMergeRebuilt =
             persistentSolver.stats().persistentSubtreeMergeCount > 0 &&
             persistentSolver.stats().persistentLeafSplitCount == 0 &&
@@ -432,9 +453,10 @@ int main(int argc, char** argv)
         unpack(localBodies, positions, masses, ids);
         solver.solve(positions, masses, ids, Vector3D(-1, -1, -1),
                      Vector3D(1, 1, 1), acceleration, &potential);
-        localMaximumError = std::max(localMaximumError,
-            checkSolve(localBodies, allBodies(size, 1.0, BodyLayout::Baseline),
-                       acceleration, potential));
+        localScenarioErrors[6] = checkSolve(
+            localBodies, allBodies(size, 1.0, BodyLayout::Baseline),
+            acceleration, potential);
+        localMaximumError = std::max(localMaximumError, localScenarioErrors[6]);
         firstEpoch = solver.stats().topologyEpoch;
         firstRebuildCount = solver.stats().topologyRebuildCount;
 
@@ -443,10 +465,11 @@ int main(int argc, char** argv)
         unpack(localBodies, positions, masses, ids);
         solver.solve(positions, masses, ids, Vector3D(-1, -1, -1),
                      Vector3D(1, 1, 1), acceleration, &potential);
-        localMaximumError = std::max(localMaximumError,
-            checkSolve(localBodies,
-                       allBodies(size, 1.01, BodyLayout::Baseline),
-                       acceleration, potential));
+        localScenarioErrors[7] = checkSolve(
+            localBodies,
+            allBodies(size, 1.01, BodyLayout::Baseline),
+            acceleration, potential);
+        localMaximumError = std::max(localMaximumError, localScenarioErrors[7]);
         secondEpoch = solver.stats().topologyEpoch;
         secondRebuildCount = solver.stats().topologyRebuildCount;
         secondProcessRebuildCount =
@@ -458,10 +481,11 @@ int main(int argc, char** argv)
         unpack(localBodies, positions, masses, ids);
         solver.solve(positions, masses, ids, Vector3D(-1, -1, -1),
                      Vector3D(1, 1, 1), acceleration, &potential);
-        localMaximumError = std::max(localMaximumError,
-            checkSolve(localBodies,
-                       allBodies(size, 1.01, BodyLayout::LocalLeafChange),
-                       acceleration, potential));
+        localScenarioErrors[8] = checkSolve(
+            localBodies,
+            allBodies(size, 1.01, BodyLayout::LocalLeafChange),
+            acceleration, potential);
+        localMaximumError = std::max(localMaximumError, localScenarioErrors[8]);
         leafEpoch = solver.stats().topologyEpoch;
         leafStorageReused = solver.stats().letBuildStorageReused;
         leafOnlyRebuild =
@@ -482,10 +506,11 @@ int main(int argc, char** argv)
         unpack(localBodies, positions, masses, ids);
         solver.solve(positions, masses, ids, Vector3D(-1, -1, -1),
                      Vector3D(1, 1, 1), acceleration, &potential);
-        localMaximumError = std::max(localMaximumError,
-            checkSolve(localBodies,
-                       allBodies(size, 1.01, BodyLayout::RootBreach),
-                       acceleration, potential));
+        localScenarioErrors[9] = checkSolve(
+            localBodies,
+            allBodies(size, 1.01, BodyLayout::RootBreach),
+            acceleration, potential);
+        localMaximumError = std::max(localMaximumError, localScenarioErrors[9]);
         thirdEpoch = solver.stats().topologyEpoch;
         rootStorageReset = !solver.stats().letBuildStorageReused;
         rootProcessRebuild =
@@ -535,6 +560,10 @@ int main(int argc, char** argv)
     double globalMaximumError = 0.0;
     MPI_Allreduce(&localMaximumError, &globalMaximumError, 1, MPI_DOUBLE,
                   MPI_MAX, MPI_COMM_WORLD);
+    std::array<double, scenarioCount> globalScenarioErrors = {};
+    MPI_Allreduce(localScenarioErrors.data(), globalScenarioErrors.data(),
+                  static_cast<int>(scenarioCount), MPI_DOUBLE, MPI_MAX,
+                  MPI_COMM_WORLD);
     const int errorWithinTolerance = globalMaximumError < 2e-4 ? 1 : 0;
     const int localChecks[16] = {
         firstEpoch == secondEpoch ? 1 : 0,
@@ -573,6 +602,9 @@ int main(int argc, char** argv)
         output.precision(16);
         output << "ranks " << size << "\n";
         output << "max_scaled_error " << globalMaximumError << "\n";
+        for(std::size_t i = 0; i < scenarioCount; ++i)
+            output << "scenario_error_" << scenarioNames[i] << " "
+                   << globalScenarioErrors[i] << "\n";
         output << "error_within_tolerance " << errorWithinTolerance << "\n";
         output << "first_epoch " << firstEpoch << "\n";
         output << "second_epoch " << secondEpoch << "\n";
@@ -597,8 +629,14 @@ int main(int argc, char** argv)
         output << "persistent_split_rebuilt " << globalChecks[14] << "\n";
         output << "persistent_merge_rebuilt " << globalChecks[15] << "\n";
         output << "pass " << globalPass << "\n";
+        const std::size_t worstScenario = static_cast<std::size_t>(
+            std::max_element(globalScenarioErrors.begin(),
+                             globalScenarioErrors.end()) -
+            globalScenarioErrors.begin());
         std::cout << "fmm_gravity_mpi ranks=" << size
                   << " max_scaled_error=" << globalMaximumError
+                  << " worst_scenario=" << scenarioNames[worstScenario]
+                  << " worst_scenario_error=" << globalScenarioErrors[worstScenario]
                   << " topology_reused=" << globalChecks[0]
                   << " leaf_only_rebuild=" << globalChecks[4]
                   << " root_process_rebuild=" << globalChecks[5]
