@@ -244,14 +244,21 @@ std::vector<Vector3D> boundaryPoints()
     const FmmGlobalDyadicLattice lattice =
         FmmGlobalDyadicLattice::fromDomain(kDomainLower, kDomainUpper);
     std::vector<Vector3D> result;
+    result.reserve(9);
     for(int level = 2; level <= 4; ++level)
     {
         const std::uint64_t patchId =
             lattice.patchIdAtLevel(Vector3D(0.0, 0.0, 0.0), level);
         const FmmRootGeometry root = lattice.patchRootGeometry(patchId);
-        result.push_back(root.lower());
-        result.push_back(root.upper());
-        result.push_back(Vector3D(root.center.x, root.lower().y, root.center.z));
+        const Vector3D lower = root.lower();
+        const Vector3D upper = root.upper();
+
+        // Exercise exact dyadic faces without placing distinct particles at
+        // coincident positions. The nested patches all share their lower
+        // corner, while the face centres below remain unique across levels.
+        result.push_back(Vector3D(lower.x, root.center.y, root.center.z));
+        result.push_back(Vector3D(root.center.x, upper.y, root.center.z));
+        result.push_back(Vector3D(root.center.x, root.center.y, lower.z));
     }
     return result;
 }
