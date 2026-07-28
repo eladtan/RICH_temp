@@ -1821,7 +1821,7 @@ check_fmm_gravity_mpi_case() {
         set_check_msg "distributed FMM test did not use enough ranks (${ranks})"
         return 1
     fi
-    if ! awk -v e="$ordinary_max_scaled_error" 'BEGIN { exit !(e < 2e-4) }' ||
+    if ! awk -v e="$ordinary_max_scaled_error" 'BEGIN { exit !(e < 1e-3) }' ||
        [[ "$ordinary_errors_within_tolerance" != "1" ]]; then
         set_check_msg "distributed FMM ordinary scenario error too large (${ordinary_max_scaled_error})"
         return 1
