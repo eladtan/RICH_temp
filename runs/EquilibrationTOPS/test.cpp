@@ -117,7 +117,7 @@ public:
 	{
 		energy_groups_boundary = read_vector(file_directory + "frequency_edges.txt");
 		for(double& Egb : energy_groups_boundary)
-			Egb *= 1e-3 * kev;
+			Egb *= kev;
 		energy_groups_center.resize(energy_groups_boundary.size() - 1, std::numeric_limits<double>::quiet_NaN());
 		for(size_t i = 0; i < energy_groups_boundary.size() - 1; ++i)
 			energy_groups_center[i] = std::sqrt(energy_groups_boundary[i] * energy_groups_boundary[i + 1]);
@@ -125,7 +125,7 @@ public:
 		T_ = read_vector(file_directory + "T.txt");
 		for(size_t i = 0; i < T_.size(); ++i)
 		{
-			T_[i] *= ev_kelvin;
+			T_[i] *= kev_kelvin;
 			T_[i] = std::log(T_[i]);
 		}
 		size_t const Nt = T_.size();
