@@ -257,14 +257,9 @@ void ComptonTableReader::get_S_and_dSdUm(
         n_eq_buf[g] = fac * B_eq_buf[g] / (pow<3>(nu) * dnu);
     }
 
-    double constexpr dT_frac = 1e-5;
-    double const dT = T * dT_frac;
     for (std::size_t g = 0; g < num_energy_groups; ++g) {
-        double const Bp = planck_integral::planck_energy_density_group_integral(
-            energy_groups_boundaries[g], energy_groups_boundaries[g + 1], T + dT);
-        double const Bm = planck_integral::planck_energy_density_group_integral(
-            energy_groups_boundaries[g], energy_groups_boundaries[g + 1], T - dT);
-        dBdT_buf[g] = (Bp - Bm) / (2.0 * dT);
+        dBdT_buf[g] = planck_integral::planck_energy_density_dBdT_group(
+            energy_groups_boundaries[g], energy_groups_boundaries[g + 1], T);
     }
 
     // 4. Compute nonequilibrium occupation numbers from E_g
@@ -279,8 +274,15 @@ void ComptonTableReader::get_S_and_dSdUm(
         }
     }
 
-    // 5. Always-shrink DB enforcement
+    // 5. Always-shrink DB enforcement + analytical derivatives
     double constexpr tiny_thresh = std::numeric_limits<double>::min() * 1e40;
+
+    // Pre-compute alpha[g] = dBdT[g] / ((1+n_eq[g])*B[g]) for derivative formulas
+    Vector alpha(num_energy_groups, 0.0);
+    for (std::size_t g = 0; g < num_energy_groups; ++g) {
+        double const denom = (1.0 + n_eq_buf[g]) * B_eq_buf[g];
+        alpha[g] = (denom > tiny_thresh) ? dBdT_buf[g] / denom : 0.0;
+    }
 
     for (std::size_t g = 0; g < num_energy_groups; ++g) {
         for (std::size_t gp = 0; gp < num_energy_groups; ++gp) {
@@ -295,12 +297,22 @@ void ComptonTableReader::get_S_and_dSdUm(
 
             if (std::isnan(F) || std::isinf(F)) continue;
 
+            double const denom_Q = (1.0 + n_eq_buf[g]) * B_eq_buf[gp];
+            double const Q = (denom_Q > tiny_thresh)
+                ? (1.0 + n_eq_buf[gp]) * B_eq_buf[g] / denom_Q : 0.0;
+            double const dlnQ = alpha[g] - alpha[gp];
+
             if (F > 1.0) {
-                sigma_in_buf[gp][g]  /= F;
-                dsigma_in_buf[gp][g] /= F;
+                sigma_in_buf[gp][g] /= F;
+                // dsigma_in from raw dsigma_out (sigma_out unchanged for F>1)
+                dsigma_in_buf[gp][g] = Q * (dsigma_out_buf[g][gp]
+                                            + sigma_out_buf[g][gp] * dlnQ);
             } else if (F < 1.0) {
-                sigma_out_buf[g][gp]  *= F;
-                dsigma_out_buf[g][gp] *= F;
+                sigma_out_buf[g][gp] *= F;
+                // dsigma_out from raw dsigma_in (sigma_in unchanged for F<1)
+                double const invQ = (Q > tiny_thresh) ? 1.0 / Q : 0.0;
+                dsigma_out_buf[g][gp] = invQ * (dsigma_in_buf[gp][g]
+                                                - sigma_in_buf[gp][g] * dlnQ);
             }
         }
     }
