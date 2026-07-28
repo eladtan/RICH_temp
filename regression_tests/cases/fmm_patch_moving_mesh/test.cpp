@@ -61,44 +61,73 @@ std::vector<Body> bodiesForRank(int rank, int size, int step)
 
     std::vector<Body> result;
     const double patchOffset = 0.08;
-    appendPair(result, rank, 0, patchOffset, 100, step);
-    appendPair(result, rank, 1, patchOffset, 200, step);
 
-    if(rank == 0 && step == 1)
-    {
-        // Grow a retained leaf from two to three bodies without crossing the
-        // persistent split threshold. This must reuse the LET and refresh only
-        // the particle payload count.
+    auto appendBody = [&](const Vector3D& position,
+                          double mass,
+                          std::uint64_t token) {
         Body body;
-        body.position = patchCenter(rank, 0);
-        body.mass = 0.47;
-        body.token = 250;
+        body.position = position;
+        body.mass = mass;
+        body.token = token;
         body.owner = rank;
         result.push_back(body);
-    }
+    };
 
-    if(rank == 0 && step == 2)
+    if(rank == 0)
     {
-        const Vector3D center = patchCenter(rank, 0);
-        for(int i = 0; i < 2; ++i)
+        // Keep patch 0's root internal throughout the persistent split/merge
+        // sequence.  The unchanged upper branch dominates the patch-root
+        // radius, so splitting the lower leaf does not invalidate the process
+        // topology merely because the hierarchical radius bound changes.
+        const Vector3D rootCenter = patchCenter(rank, 0);
+        const Vector3D lowerChildCenter(rootCenter.x - 0.125,
+                                        rootCenter.y - 0.125,
+                                        rootCenter.z - 0.125);
+
+        appendBody(Vector3D(rootCenter.x + 0.195,
+                            rootCenter.y + 0.195,
+                            rootCenter.z + 0.195),
+                   0.63 + 0.01 * step, 100);
+
+        appendBody(Vector3D(lowerChildCenter.x - 0.060,
+                            lowerChildCenter.y - 0.060,
+                            lowerChildCenter.z - 0.060),
+                   0.57 + 0.005 * step, 101);
+
+        if(step != 3)
         {
-            Body body;
-            const double sign = i == 0 ? -1.0 : 1.0;
-            body.position = Vector3D(center.x + 0.018 * sign,
-                                     center.y - 0.011 * sign,
-                                     center.z + 0.007 * sign);
-            body.mass = 0.43 + 0.02 * i;
-            body.token = 300 + static_cast<std::uint64_t>(i);
-            body.owner = rank;
-            result.push_back(body);
+            appendBody(Vector3D(lowerChildCenter.x + 0.060,
+                                lowerChildCenter.y + 0.060,
+                                lowerChildCenter.z + 0.060),
+                       0.59 + 0.005 * step, 102);
+        }
+
+        if(step == 1 || step == 2)
+        {
+            // Grow the retained lower leaf from two to three bodies without
+            // expanding its radius or crossing the split threshold.
+            appendBody(Vector3D(lowerChildCenter.x - 0.060,
+                                lowerChildCenter.y + 0.060,
+                                lowerChildCenter.z - 0.060),
+                       0.47, 103);
+        }
+
+        if(step == 2)
+        {
+            // The fourth body crosses the persistent split threshold in the
+            // lower leaf while the patch root remains structurally internal.
+            appendBody(Vector3D(lowerChildCenter.x + 0.060,
+                                lowerChildCenter.y - 0.060,
+                                lowerChildCenter.z + 0.060),
+                       0.45, 104);
         }
     }
-    else if(rank == 0 && step == 3)
+    else
     {
-        // Leave one body in patch 0.  The retained subtree is now below the
-        // merge threshold but the patch itself remains active.
-        result.erase(result.begin() + 1);
+        appendPair(result, rank, 0, patchOffset, 100, step);
     }
+
+    appendPair(result, rank, 1, patchOffset, 200, step);
 
     if(rank == 1 && step == 4)
     {
@@ -265,6 +294,17 @@ int main(int argc, char** argv)
     MPI_Allreduce(localIncremental, globalIncremental, 4,
                   MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
 
+    const unsigned long long localSplitForest[4] = {
+        static_cast<unsigned long long>(stepStats[2].localPatchCount),
+        static_cast<unsigned long long>(stepStats[2].reusedPatchCount),
+        static_cast<unsigned long long>(
+            stepStats[2].reusedLocalPatchPlanCount),
+        static_cast<unsigned long long>(
+            stepStats[2].patchNodeGeometryExpansionCount)};
+    unsigned long long globalSplitForest[4] = {};
+    MPI_Allreduce(localSplitForest, globalSplitForest, 4,
+                  MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+
     double localImbalance = 0.0;
     std::size_t maximumWaves = 0;
     std::size_t maximumDescriptorBytes = 0;
@@ -358,6 +398,27 @@ int main(int argc, char** argv)
         output << "max_wave_count " << globalWaves << "\n";
         output << "max_owner_imbalance " << maximumImbalance << "\n";
         output << "max_descriptor_bytes " << globalDescriptorBytes << "\n";
+        output << "split_ranks_with_root_geometry_change "
+               << stepStats[2].ranksWithRootGeometryChange << "\n";
+        output << "split_ranks_with_leaf_topology_change "
+               << stepStats[2].ranksWithLeafTopologyChange << "\n";
+        output << "split_ranks_with_leaf_occupancy_change "
+               << stepStats[2].ranksWithLeafOccupancyChange << "\n";
+        output << "split_global_patch_count "
+               << stepStats[2].globalPatchCount << "\n";
+        output << "split_global_local_patch_count "
+               << globalSplitForest[0] << "\n";
+        output << "split_global_reused_patch_count "
+               << globalSplitForest[1] << "\n";
+        output << "split_global_reused_local_plan_count "
+               << globalSplitForest[2] << "\n";
+        output << "split_global_node_geometry_expansion_count "
+               << globalSplitForest[3] << "\n";
+        output << "split_payload_shape_rebuilt "
+               << (stepStats[2].letPayloadShapeTriggeredRebuild ? 1 : 0)
+               << "\n";
+        output << "split_topology_forced "
+               << (stepStats[2].topologyRebuildForced ? 1 : 0) << "\n";
         std::cout << "fmm_patch_moving_mesh pass=" << pass
                   << " error=" << maximumError
                   << " reused_targets=" << globalIncremental[0]
