@@ -57,6 +57,8 @@ public:
                std::size_t maxTargetPatchesPerWave,
                std::size_t multipoleCoefficientCount,
                std::size_t maxParticlePayloadCount,
+               double particlePayloadSlackFactor,
+               std::size_t particlePayloadSlackCount,
                bool enableLeafM2P,
                const MPI_Comm& comm,
                FmmSolveStats& stats,
@@ -156,6 +158,14 @@ private:
         std::vector<CachedTerminal> m2p;
     };
 
+    struct SubscriptionReference
+    {
+        int peer = -1;
+        std::size_t subscriptionIndex = 0;
+        std::size_t patchIndex = 0;
+        std::size_t nodeIndex = 0;
+    };
+
     struct PayloadView
     {
         const char* data = nullptr;
@@ -178,6 +188,7 @@ private:
         const FmmRemoteNodeDescriptor& descriptor,
         const RemoteRootGeometry& root);
 
+    std::size_t particlePayloadCapacity(std::size_t currentCount) const;
     std::size_t sourceRecordBytes(const SourceIdentity& source) const;
     std::size_t ensureSourceRecord(
         std::size_t wave,
@@ -208,6 +219,8 @@ private:
     std::vector<std::pair<std::size_t, std::size_t>> m2pWaveRanges_;
 
     std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsReceived_;
+    std::vector<std::vector<SubscriptionReference>>
+        subscriptionsByWave_;
     std::map<std::pair<std::uint64_t, std::uint64_t>, std::size_t>
         localParticlePayloadCaps_;
     std::map<FmmPatchKey, CachedTargetSubplan> targetSubplans_;
@@ -216,8 +229,11 @@ private:
     std::size_t waveCount_;
     std::size_t localWaveCount_;
     std::size_t maxLetWaveBytes_;
+    double thetaCritical_;
     std::size_t multipoleCoefficientCount_;
     std::size_t maxParticlePayloadCount_;
+    double particlePayloadSlackFactor_;
+    std::size_t particlePayloadSlackCount_;
     std::uint64_t topologyEpoch_;
     MPI_Comm comm_;
     int rank_;

@@ -104,9 +104,10 @@ std::vector<Body> bodiesForRank(int rank, int size, int step)
 
         if(step == 1 || step == 2)
         {
-            // Grow the retained lower leaf from two to three bodies without
-            // expanding its radius or crossing the split threshold.
-            appendBody(Vector3D(lowerChildCenter.x - 0.060,
+            // Grow the retained leaf and expand its exact radius slightly.  A
+            // 2% conservative radius envelope must absorb this motion without
+            // invalidating the process tree or LET.
+            appendBody(Vector3D(lowerChildCenter.x - 0.061,
                                 lowerChildCenter.y + 0.060,
                                 lowerChildCenter.z - 0.060),
                        0.47, 103);
@@ -254,6 +255,7 @@ int main(int argc, char** argv)
     numerical.expansionOrder = 5;
     numerical.thetaCritical = 0.35;
     numerical.leafCapacity = 2;
+    numerical.persistentRadiusSlackFactor = 1.02;
     numerical.computePotential = true;
     numerical.validateFinite = true;
 
@@ -339,7 +341,9 @@ int main(int argc, char** argv)
         !stepStats[1].letPayloadShapeTriggeredRebuild &&
         stepStats[1].reusedPatchCount == stepStats[1].localPatchCount &&
         stepStats[1].reusedLocalPatchPlanCount ==
-            stepStats[1].localPatchCount;
+            stepStats[1].localPatchCount &&
+        stepStats[1].patchNodeGeometryExpansionCount == 0 &&
+        stepStats[1].ranksWithLeafTopologyChange == 0;
     const bool splitIncremental =
         !stepStats[2].processTopologyRebuilt &&
         stepStats[2].letTopologyRebuilt &&
@@ -379,6 +383,8 @@ int main(int argc, char** argv)
         output << "warm_payload_shape_rebuilt "
                << (stepStats[1].letPayloadShapeTriggeredRebuild ? 1 : 0)
                << "\n";
+        output << "warm_radius_envelope_reused "
+               << (stepStats[1].patchNodeGeometryExpansionCount == 0 ? 1 : 0) << "\n";
         output << "split_process_reused "
                << (!stepStats[2].processTopologyRebuilt ? 1 : 0) << "\n";
         output << "split_let_rebuilt "

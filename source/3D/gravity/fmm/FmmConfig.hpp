@@ -18,6 +18,13 @@ struct FmmGravityOptions
     bool computePotential = false;
     bool validateFinite = true;
 
+    // Persistent moving-mesh trees retain a conservative radius envelope.
+    // Values above one reserve geometric headroom so small particle motion does
+    // not invalidate every local/LET interaction plan.  The retained radius is
+    // always at least the actual radius and never exceeds the node cube radius.
+    // One disables the envelope and preserves the previous behaviour.
+    double persistentRadiusSlackFactor = 1.0;
+
     // Total persistent M2L operator-cache budget. Scale-free canonical
     // direction keys are retained up to this cap; misses beyond it are
     // computed in reusable scratch storage. Keep this field last for aggregate

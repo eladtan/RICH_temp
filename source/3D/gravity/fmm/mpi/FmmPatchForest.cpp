@@ -192,6 +192,11 @@ void FmmPatchForest::validatePrepareInputs(
         !(distributedOptions.persistentLeafMergeFactor < 1.0) ||
         !std::isfinite(distributedOptions.persistentLeafMergeFactor)))
         throw UniversalError("FmmPatchForest::prepare: invalid persistent merge factor");
+    if(distributedOptions.persistentLocalTreeTopology &&
+       (!(gravityOptions.persistentRadiusSlackFactor >= 1.0) ||
+        !std::isfinite(gravityOptions.persistentRadiusSlackFactor)))
+        throw UniversalError(
+            "FmmPatchForest::prepare: invalid persistent radius slack factor");
     if(distributedOptions.minimumPatchLevel < 0 ||
        distributedOptions.minimumPatchLevel > FMM_MAX_TREE_DEPTH ||
        distributedOptions.maximumPatchLevel <

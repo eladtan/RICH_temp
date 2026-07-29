@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 #include "misc/universal_error.hpp"
 
@@ -177,6 +178,11 @@ void FmmTree::buildPersistent(
     bool initializeFromScratch,
     FmmPersistentTreeStats& stats)
 {
+    if(!(options.persistentRadiusSlackFactor >= 1.0) ||
+       !std::isfinite(options.persistentRadiusSlackFactor))
+        throw UniversalError(
+            "FmmTree::buildPersistent: invalid persistent radius slack factor");
+
     if(splitCapacity <= options.leafCapacity ||
        mergeCapacity >= options.leafCapacity ||
        mergeCapacity >= splitCapacity)
@@ -194,6 +200,19 @@ void FmmTree::buildPersistent(
                 throw UniversalError(
                     "FmmTree::buildPersistent: retained topology is not full-octant");
         }
+    }
+
+    // Radius is part of the conservative interaction contract, but not of the
+    // dyadic node identity.  Keep the previous envelope by spatial key while
+    // rebuilding particle ranges.  This prevents tiny moving-mesh excursions
+    // from forcing a global LET rebuild on every source evaluation.
+    std::vector<std::pair<std::uint64_t, double>> previousRadiusByKey;
+    if(!initializeFromScratch)
+    {
+        previousRadiusByKey.reserve(nodes_.size());
+        for(const FmmNode& node : nodes_)
+            previousRadiusByKey.emplace_back(node.spatialKey, node.radius);
+        std::sort(previousRadiusByKey.begin(), previousRadiusByKey.end());
     }
 
     std::vector<std::uint64_t> previousInternalKeys;
@@ -215,6 +234,43 @@ void FmmTree::buildPersistent(
     buildPersistentNode(0, positions, options, splitCapacity, mergeCapacity,
                         initializeFromScratch, previousInternalKeys, stats);
     finishMetadata(positions);
+
+    // Grow an envelope only when the actual radius breaches the previous one.
+    // Contraction keeps the previous radius, which is conservative.  When a
+    // breach occurs, reserve fresh multiplicative headroom.  The node's cube
+    // radius is an absolute geometric upper bound required by the wire checks.
+    for(FmmNode& node : nodes_)
+    {
+        const double actualRadius = node.radius;
+        const double cubeRadius = std::sqrt(3.0) * node.halfSize;
+        double retainedRadius = std::min(
+            cubeRadius, actualRadius * options.persistentRadiusSlackFactor);
+
+        if(!initializeFromScratch)
+        {
+            const auto previous = std::lower_bound(
+                previousRadiusByKey.begin(), previousRadiusByKey.end(),
+                node.spatialKey,
+                [](const std::pair<std::uint64_t, double>& value,
+                   std::uint64_t key) { return value.first < key; });
+            if(previous != previousRadiusByKey.end() &&
+               previous->first == node.spatialKey)
+            {
+                const double tolerance =
+                    64.0 * std::numeric_limits<double>::epsilon() *
+                    std::max(1.0, std::max(actualRadius, previous->second));
+                if(actualRadius <= previous->second + tolerance)
+                    retainedRadius = std::max(actualRadius, previous->second);
+            }
+        }
+
+        if(!std::isfinite(retainedRadius) || retainedRadius < actualRadius ||
+           retainedRadius > cubeRadius)
+            throw UniversalError(
+                "FmmTree::buildPersistent: invalid retained radius envelope");
+        node.radius = retainedRadius;
+    }
+
     collectOrders(0);
     validateInvariants(positions.size());
 

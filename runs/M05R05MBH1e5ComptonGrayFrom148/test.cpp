@@ -1144,8 +1144,16 @@ int main(void)
 	FmmGravityOptions fmmOptions;
 	fmmOptions.expansionOrder = 2;
 	fmmOptions.thetaCritical = 1.0;
-	fmmOptions.leafCapacity = 64;
+	// The level-7 TDE patches contain far more bodies than the uniform 30M
+	// benchmark.  A smaller local leaf gives the remote traversal useful source
+	// hierarchy instead of terminating in hundreds of millions of P2P blocks.
+	fmmOptions.leafCapacity = 16;
+	fmmOptions.persistentRadiusSlackFactor = 1.02;
 	FmmDistributedOptions fmmDistributed;
+	fmmDistributed.persistentLeafSplitFactor = 1.5;
+	fmmDistributed.persistentLeafMergeFactor = 0.5;
+	fmmDistributed.letParticlePayloadSlackFactor = 1.10;
+	fmmDistributed.letParticlePayloadSlackCount = 8;
 	// Patch M2P evaluates a remote multipole at each target particle when the
 	// target leaf extent alone prevents M2L. This avoids pulling remote leaf
 	// particles while preserving the pointwise theta acceptance test.

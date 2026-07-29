@@ -19,6 +19,14 @@ struct FmmDistributedOptions
     double persistentLeafSplitFactor = 1.5;
     double persistentLeafMergeFactor = 0.5;
 
+    // Retained particle subscriptions reserve more than the current leaf
+    // occupancy.  This keeps count-only moving-mesh changes from rebuilding the
+    // complete LET merely because a max-depth or hysteretic leaf gained a few
+    // particles.  Capacity is max(stable leaf occupancy, multiplicative slack,
+    // additive slack).  The actual packet still carries only current particles.
+    double letParticlePayloadSlackFactor = 1.10;
+    std::size_t letParticlePayloadSlackCount = 8;
+
     // Bounds non-empty leaves to globalRootHalfSize / 2^level, so that ranks
     // owning a spatially large sparse domain cannot end up with leaves whose
     // own radius exceeds thetaCritical * distance to every remote source.

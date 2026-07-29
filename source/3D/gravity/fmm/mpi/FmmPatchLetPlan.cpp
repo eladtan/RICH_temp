@@ -259,8 +259,9 @@ void addDirectRemoteParticles(FmmLocalPatch& targetPatch,
 
 FmmPatchLetPlan::FmmPatchLetPlan():
     waveCount_(1), localWaveCount_(1), maxLetWaveBytes_(0),
-    multipoleCoefficientCount_(0),
-    maxParticlePayloadCount_(0), topologyEpoch_(0), comm_(MPI_COMM_NULL),
+    thetaCritical_(0.0), multipoleCoefficientCount_(0),
+    maxParticlePayloadCount_(0), particlePayloadSlackFactor_(1.0),
+    particlePayloadSlackCount_(0), topologyEpoch_(0), comm_(MPI_COMM_NULL),
     rank_(0), initialized_(false)
 {
 }
@@ -338,6 +339,34 @@ FmmNode FmmPatchLetPlan::sourceNodeFromDescriptor(
     return node;
 }
 
+std::size_t FmmPatchLetPlan::particlePayloadCapacity(
+    std::size_t currentCount) const
+{
+    if(!(particlePayloadSlackFactor_ >= 1.0) ||
+       !std::isfinite(particlePayloadSlackFactor_))
+        throw UniversalError(
+            "FmmPatchLetPlan: invalid particle payload slack factor");
+
+    const long double scaled = std::ceil(
+        static_cast<long double>(currentCount) *
+        static_cast<long double>(particlePayloadSlackFactor_));
+    if(!std::isfinite(static_cast<double>(scaled)) ||
+       scaled > static_cast<long double>(
+           std::numeric_limits<std::size_t>::max()))
+        throw UniversalError(
+            "FmmPatchLetPlan: particle payload capacity overflow");
+
+    std::size_t result = std::max(
+        maxParticlePayloadCount_, static_cast<std::size_t>(scaled));
+    result = std::max(result, currentCount);
+    if(particlePayloadSlackCount_ >
+       std::numeric_limits<std::size_t>::max() - currentCount)
+        throw UniversalError(
+            "FmmPatchLetPlan: particle payload additive slack overflow");
+    result = std::max(result, currentCount + particlePayloadSlackCount_);
+    return result;
+}
+
 std::size_t FmmPatchLetPlan::sourceRecordBytes(
     const SourceIdentity& source) const
 {
@@ -367,8 +396,7 @@ std::size_t FmmPatchLetPlan::sourceRecordBytes(
                 "FmmPatchLetPlan: particle count exceeds size_t");
         const std::size_t currentCount =
             static_cast<std::size_t>(nodeIt->second.particleCount);
-        const std::size_t plannedCount =
-            std::max(currentCount, maxParticlePayloadCount_);
+        const std::size_t plannedCount = particlePayloadCapacity(currentCount);
         payload = checkedMultiply(
             plannedCount, sizeof(FmmPatchWireParticle),
             "FmmPatchLetPlan: particle byte overflow");
@@ -508,6 +536,8 @@ void FmmPatchLetPlan::build(
     std::size_t maxTargetPatchesPerWave,
     std::size_t multipoleCoefficientCount,
     std::size_t maxParticlePayloadCount,
+    double particlePayloadSlackFactor,
+    std::size_t particlePayloadSlackCount,
     bool enableLeafM2P,
     const MPI_Comm& comm,
     FmmSolveStats& stats,
@@ -518,7 +548,9 @@ void FmmPatchLetPlan::build(
        !std::isfinite(thetaCritical))
         throw UniversalError("FmmPatchLetPlan::build: invalid theta");
     if(maxTargetPatchesPerWave == 0 || multipoleCoefficientCount == 0 ||
-       maxParticlePayloadCount == 0)
+       maxParticlePayloadCount == 0 ||
+       !(particlePayloadSlackFactor >= 1.0) ||
+       !std::isfinite(particlePayloadSlackFactor))
         throw UniversalError("FmmPatchLetPlan::build: invalid wave configuration");
 
     // Kept in the API for configuration compatibility. Patch waves are now
@@ -544,8 +576,11 @@ void FmmPatchLetPlan::build(
     comm_ = comm;
     topologyEpoch_ = topologyEpoch;
     maxLetWaveBytes_ = maxLetWaveBytes;
+    thetaCritical_ = thetaCritical;
     multipoleCoefficientCount_ = multipoleCoefficientCount;
     maxParticlePayloadCount_ = maxParticlePayloadCount;
+    particlePayloadSlackFactor_ = particlePayloadSlackFactor;
+    particlePayloadSlackCount_ = particlePayloadSlackCount;
     MPI_Comm_rank(comm_, &rank_);
 
     localNodeByPatch_.clear();
@@ -560,6 +595,7 @@ void FmmPatchLetPlan::build(
     p2pWaveRanges_.clear();
     m2pWaveRanges_.clear();
     subscriptionsReceived_.clear();
+    subscriptionsByWave_.clear();
     localParticlePayloadCaps_.clear();
     waveCount_ = 1;
     localWaveCount_ = 1;
@@ -1438,8 +1474,7 @@ void FmmPatchLetPlan::build(
                         "FmmPatchLetPlan::build: particle subscription references non-leaf");
                 const auto payloadKey = std::make_pair(
                     subscription.patchId, subscription.spatialKey);
-                const std::size_t plannedCount = std::max(
-                    node.particleCount(), maxParticlePayloadCount_);
+                const std::size_t plannedCount = particlePayloadCapacity(node.particleCount());
                 const auto inserted = localParticlePayloadCaps_.emplace(
                     payloadKey, plannedCount);
                 if(!inserted.second && inserted.first->second != plannedCount)
@@ -1461,6 +1496,46 @@ void FmmPatchLetPlan::build(
         }
     }
     receivedSubscriptions.releaseStorage();
+
+    // Resolve subscription ownership and local node indices once at build time.
+    // Warm execution then touches only the subscriptions belonging to one wave,
+    // avoiding a full scan plus patch/hash lookups for every payload wave.
+    subscriptionsByWave_.assign(waveCount_,
+        std::vector<SubscriptionReference>());
+    std::vector<std::size_t> subscriptionsPerWave(waveCount_, 0);
+    for(const auto& peerEntry : subscriptionsReceived_)
+        for(const FmmSubscription& subscription : peerEntry.second)
+            ++subscriptionsPerWave[static_cast<std::size_t>(
+                subscription.waveIndex)];
+    for(std::size_t waveIndex = 0; waveIndex < waveCount_; ++waveIndex)
+        subscriptionsByWave_[waveIndex].reserve(
+            subscriptionsPerWave[waveIndex]);
+
+    for(const auto& peerEntry : subscriptionsReceived_)
+    {
+        for(std::size_t subscriptionIndex = 0;
+            subscriptionIndex < peerEntry.second.size(); ++subscriptionIndex)
+        {
+            const FmmSubscription& subscription =
+                peerEntry.second[subscriptionIndex];
+            const std::size_t patchIndex = forest.findPatch(
+                subscription.patchId);
+            if(patchIndex == std::numeric_limits<std::size_t>::max() ||
+               patchIndex >= localNodeByPatch_.size())
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: indexed subscription patch disappeared");
+            const auto nodeIt = localNodeByPatch_[patchIndex].find(
+                subscription.spatialKey);
+            if(nodeIt == localNodeByPatch_[patchIndex].end())
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: indexed subscription node disappeared");
+            subscriptionsByWave_[static_cast<std::size_t>(
+                subscription.waveIndex)].push_back(SubscriptionReference{
+                    peerEntry.first, subscriptionIndex, patchIndex,
+                    nodeIt->second});
+        }
+    }
+
     stats.letSubscriptionSeconds += elapsed(subscriptionStart);
     stats.letWaveCount = waveCount_;
     stats.letLocalWaveCount = localWaveCount_;
@@ -1503,6 +1578,29 @@ bool FmmPatchLetPlan::localPayloadShapeReusable(
                node.particleCount() > capacity->second)
                 return false;
         }
+    }
+
+    // M2P admissibility is pointwise rather than node-radius based.  A retained
+    // radius envelope makes M2L/P2P topology conservative, but target particles
+    // may still move closer to an M2P source.  Revalidate those interactions
+    // before deciding to reuse the plan.
+    for(const FmmPatchLetM2PInteraction& interaction : m2pInteractions_)
+    {
+        if(interaction.targetPatchIndex >= forest.patches().size() ||
+           interaction.sourceIndex >= sources_.size())
+            return false;
+        const FmmLocalPatch& targetPatch =
+            forest.patches()[interaction.targetPatchIndex];
+        if(interaction.targetNode >= targetPatch.tree.nodes().size())
+            return false;
+        const FmmNode& targetNode =
+            targetPatch.tree.nodes()[interaction.targetNode];
+        if(targetNode.particleCount() != 0 &&
+           !m2pAdmissible(targetNode,
+                          sources_[interaction.sourceIndex].descriptor,
+                          targetPatch.tree.particleOrder(),
+                          targetPatch.positions, thetaCritical_))
+            return false;
     }
     return true;
 }
@@ -1610,134 +1708,119 @@ void FmmPatchLetPlan::executeWave(
         throw UniversalError("FmmPatchLetPlan::executeWave: wave out of range");
     const Clock::time_point exchangeStart = Clock::now();
 
-    bool localPayloadShapeOk = true;
-    std::string localPayloadShapeError;
-    for(const auto& peerEntry : subscriptionsReceived_)
+    if(wave >= subscriptionsByWave_.size())
+        throw UniversalError(
+            "FmmPatchLetPlan::executeWave: missing indexed subscriptions");
+    const std::vector<SubscriptionReference>& waveSubscriptions =
+        subscriptionsByWave_[wave];
+
+    // Exact pre-reservation avoids repeated growth/copying of large peer
+    // buffers.  The solver already performed one collective payload-shape check
+    // before entering execution, so repeating it for every wave was redundant.
+    std::unordered_map<int, std::size_t> peerReserveBytes;
+    for(const SubscriptionReference& reference : waveSubscriptions)
     {
-        for(const FmmSubscription& subscription : peerEntry.second)
-        {
-            if(subscription.waveIndex < 0 ||
-               static_cast<std::size_t>(subscription.waveIndex) != wave)
-                continue;
-            const std::size_t patchIndex =
-                forest.findPatch(subscription.patchId);
-            if(patchIndex == std::numeric_limits<std::size_t>::max())
-            {
-                localPayloadShapeOk = false;
-                localPayloadShapeError =
-                    "FmmPatchLetPlan::executeWave: source patch disappeared";
-                break;
-            }
-            const auto nodeIt = localNodeByPatch_[patchIndex].find(
-                subscription.spatialKey);
-            if(nodeIt == localNodeByPatch_[patchIndex].end())
-            {
-                localPayloadShapeOk = false;
-                localPayloadShapeError =
-                    "FmmPatchLetPlan::executeWave: source node disappeared";
-                break;
-            }
-            const FmmNode& node = forest.patches()[patchIndex].tree.nodes()[
-                nodeIt->second];
-            if(subscription.kind ==
-               static_cast<int>(FmmSubscriptionKind::Particles))
-            {
-                const auto capacity = localParticlePayloadCaps_.find(
-                    std::make_pair(subscription.patchId,
-                                   subscription.spatialKey));
-                if(!node.isLeaf() ||
-                   capacity == localParticlePayloadCaps_.end() ||
-                   node.particleCount() > capacity->second)
-                {
-                    localPayloadShapeOk = false;
-                    localPayloadShapeError =
-                        "FmmPatchLetPlan::executeWave: retained particle leaf exceeds planned capacity";
-                    break;
-                }
-            }
-        }
-        if(!localPayloadShapeOk)
-            break;
+        const auto peer = subscriptionsReceived_.find(reference.peer);
+        if(peer == subscriptionsReceived_.end() ||
+           reference.subscriptionIndex >= peer->second.size() ||
+           reference.patchIndex >= forest.patches().size())
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: invalid indexed subscription");
+        const FmmSubscription& subscription =
+            peer->second[reference.subscriptionIndex];
+        const FmmLocalPatch& patch = forest.patches()[reference.patchIndex];
+        if(reference.nodeIndex >= patch.tree.nodes().size())
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: indexed source node disappeared");
+        const FmmNode& node = patch.tree.nodes()[reference.nodeIndex];
+        std::size_t recordBytes = sizeof(FmmPayloadRecordHeader);
+        if(subscription.kind ==
+           static_cast<int>(FmmSubscriptionKind::Multipole))
+            recordBytes = checkedAdd(recordBytes,
+                checkedMultiply(layout.coefficientCount(), sizeof(double),
+                    "FmmPatchLetPlan::executeWave: multipole reserve overflow"),
+                "FmmPatchLetPlan::executeWave: multipole record overflow");
+        else if(subscription.kind ==
+                static_cast<int>(FmmSubscriptionKind::Particles))
+            recordBytes = checkedAdd(recordBytes,
+                checkedMultiply(node.particleCount(),
+                    sizeof(FmmPatchWireParticle),
+                    "FmmPatchLetPlan::executeWave: particle reserve overflow"),
+                "FmmPatchLetPlan::executeWave: particle record overflow");
+        else
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: invalid indexed subscription kind");
+        peerReserveBytes[reference.peer] = checkedAdd(
+            peerReserveBytes[reference.peer], recordBytes,
+            "FmmPatchLetPlan::executeWave: peer reserve overflow");
     }
-    collectiveRequire(localPayloadShapeOk, localPayloadShapeError,
-                      "FmmPatchLetPlan::executeWave payload shape preflight",
-                      comm_);
 
     std::unordered_map<int, std::vector<char>> sendBuffers;
-    std::size_t totalSendBytes = 0;
-    for(const auto& peerEntry : subscriptionsReceived_)
-    {
-        std::vector<char>& buffer = sendBuffers[peerEntry.first];
-        for(const FmmSubscription& subscription : peerEntry.second)
-        {
-            if(subscription.waveIndex < 0 ||
-               static_cast<std::size_t>(subscription.waveIndex) != wave)
-                continue;
-            const std::size_t patchIndex =
-                forest.findPatch(subscription.patchId);
-            if(patchIndex == std::numeric_limits<std::size_t>::max())
-                throw UniversalError(
-                    "FmmPatchLetPlan::executeWave: source patch disappeared");
-            FmmLocalPatch& patch = forest.patches()[patchIndex];
-            if(patch.key.ownerRank != rank_ ||
-               patch.key.patchId != subscription.patchId)
-                throw UniversalError(
-                    "FmmPatchLetPlan::executeWave: source patch identity mismatch");
-            const auto nodeIt = localNodeByPatch_[patchIndex].find(
-                subscription.spatialKey);
-            if(nodeIt == localNodeByPatch_[patchIndex].end())
-                throw UniversalError(
-                    "FmmPatchLetPlan::executeWave: source node disappeared");
-            const FmmNode& node = patch.tree.nodes()[nodeIt->second];
+    for(const auto& peerBytes : peerReserveBytes)
+        sendBuffers[peerBytes.first].reserve(peerBytes.second);
 
-            FmmPayloadRecordHeader header;
-            header.stamp = fmmPacketStamp(FmmPacketKind::LetPayload,
-                                          topologyEpoch_);
-            header.patchId = subscription.patchId;
-            header.spatialKey = subscription.spatialKey;
-            header.kind = subscription.kind;
-            header.waveIndex = subscription.waveIndex;
-            if(subscription.kind ==
-               static_cast<int>(FmmSubscriptionKind::Multipole))
-            {
-                header.count = static_cast<std::uint64_t>(
-                    layout.coefficientCount());
-                FmmPacketIO::appendPod(buffer, header);
-                FmmPacketIO::appendDoubles(
-                    buffer,
-                    patch.multipoles.data() + node.multipoleOffset,
-                    layout.coefficientCount());
-            }
-            else if(subscription.kind ==
-                    static_cast<int>(FmmSubscriptionKind::Particles))
-            {
-                if(!node.isLeaf())
-                    throw UniversalError(
-                        "FmmPatchLetPlan::executeWave: particle source is not a leaf");
-                header.count = static_cast<std::uint64_t>(node.particleCount());
-                FmmPacketIO::appendPod(buffer, header);
-                for(std::size_t k = node.particleBegin;
-                    k < node.particleEnd; ++k)
-                {
-                    const std::size_t body = patch.tree.particleOrder()[k];
-                    FmmPatchWireParticle particle;
-                    particle.position[0] = patch.positions[body].x;
-                    particle.position[1] = patch.positions[body].y;
-                    particle.position[2] = patch.positions[body].z;
-                    particle.mass = patch.masses[body];
-                    FmmPacketIO::appendPod(buffer, particle);
-                }
-            }
-            else
-            {
+    for(const SubscriptionReference& reference : waveSubscriptions)
+    {
+        const auto peer = subscriptionsReceived_.find(reference.peer);
+        const FmmSubscription& subscription =
+            peer->second[reference.subscriptionIndex];
+        std::vector<char>& buffer = sendBuffers[reference.peer];
+        FmmLocalPatch& patch = forest.patches()[reference.patchIndex];
+        if(patch.key.ownerRank != rank_ ||
+           patch.key.patchId != subscription.patchId)
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: source patch identity mismatch");
+        const FmmNode& node = patch.tree.nodes()[reference.nodeIndex];
+
+        FmmPayloadRecordHeader header;
+        header.stamp = fmmPacketStamp(FmmPacketKind::LetPayload,
+                                      topologyEpoch_);
+        header.patchId = subscription.patchId;
+        header.spatialKey = subscription.spatialKey;
+        header.kind = subscription.kind;
+        header.waveIndex = subscription.waveIndex;
+        if(subscription.kind ==
+           static_cast<int>(FmmSubscriptionKind::Multipole))
+        {
+            header.count = static_cast<std::uint64_t>(
+                layout.coefficientCount());
+            FmmPacketIO::appendPod(buffer, header);
+            FmmPacketIO::appendDoubles(
+                buffer,
+                patch.multipoles.data() + node.multipoleOffset,
+                layout.coefficientCount());
+        }
+        else if(subscription.kind ==
+                static_cast<int>(FmmSubscriptionKind::Particles))
+        {
+            if(!node.isLeaf())
                 throw UniversalError(
-                    "FmmPatchLetPlan::executeWave: invalid subscription kind");
+                    "FmmPatchLetPlan::executeWave: particle source is not a leaf");
+            header.count = static_cast<std::uint64_t>(node.particleCount());
+            FmmPacketIO::appendPod(buffer, header);
+            for(std::size_t k = node.particleBegin;
+                k < node.particleEnd; ++k)
+            {
+                const std::size_t body = patch.tree.particleOrder()[k];
+                FmmPatchWireParticle particle;
+                particle.position[0] = patch.positions[body].x;
+                particle.position[1] = patch.positions[body].y;
+                particle.position[2] = patch.positions[body].z;
+                particle.mass = patch.masses[body];
+                FmmPacketIO::appendPod(buffer, particle);
             }
         }
-        totalSendBytes = checkedAdd(
-            totalSendBytes, buffer.size(),
-            "FmmPatchLetPlan::executeWave: total send byte overflow");
+        else
+        {
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: invalid subscription kind");
+        }
     }
+
+    std::size_t totalSendBytes = 0;
+    for(const auto& peerEntry : sendBuffers)
+        totalSendBytes = checkedAdd(totalSendBytes, peerEntry.second.size(),
+            "FmmPatchLetPlan::executeWave: total send byte overflow");
 
     std::size_t sendCapacityBytes = 0;
     for(const auto& peerEntry : sendBuffers)
@@ -2256,6 +2339,12 @@ std::size_t FmmPatchLetPlan::bytesOwned() const
     for(const auto& subscriptions : subscriptionsReceived_)
         add(multiply(subscriptions.second.capacity(),
                      sizeof(FmmSubscription)));
+
+    add(multiply(subscriptionsByWave_.capacity(),
+                 sizeof(std::vector<SubscriptionReference>)));
+    for(const auto& wave : subscriptionsByWave_)
+        add(multiply(wave.capacity(), sizeof(SubscriptionReference)));
+
     return result;
 }
 
