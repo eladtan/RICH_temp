@@ -147,6 +147,11 @@ void traceFmmSolve(const FmmSolveStats& stats)
         localActiveCounts[0], localActiveCounts[1]};
     const unsigned long long localBytesOwned =
         static_cast<unsigned long long>(stats.bytesOwned);
+    const unsigned long long localM2PCount =
+        static_cast<unsigned long long>(stats.letM2PCount);
+    unsigned long long globalM2PCount = localM2PCount;
+    const double localM2PSeconds = stats.letM2PSeconds;
+    double maximumM2PSeconds = localM2PSeconds;
     const unsigned long long localPeakRemoteBytes =
         static_cast<unsigned long long>(stats.peakRemoteBytes);
     unsigned long long maximumBytesOwned = localBytesOwned;
@@ -213,6 +218,10 @@ void traceFmmSolve(const FmmSolveStats& stats)
                MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&localBytesOwned, &maximumBytesOwned, 1,
                MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&localM2PCount, &globalM2PCount, 1,
+               MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&localM2PSeconds, &maximumM2PSeconds, 1, MPI_DOUBLE, MPI_MAX, 0,
+               MPI_COMM_WORLD);
     MPI_Reduce(&localPeakRemoteBytes, &maximumPeakRemoteBytes, 1,
                MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(localCacheCounts, globalCacheCounts, 8,
@@ -241,6 +250,8 @@ void traceFmmSolve(const FmmSolveStats& stats)
         globalPatchSums[i] = localPatchSums[i];
     for(int i = 0; i < 7; ++i)
         globalPatchMaxima[i] = localPatchMaxima[i];
+    globalM2PCount = localM2PCount;
+    maximumM2PSeconds = localM2PSeconds;
 #endif
     if(rank != 0)
         return;
@@ -325,6 +336,8 @@ void traceFmmSolve(const FmmSolveStats& stats)
          << " let_planned_p2p_blocks_sum=" << globalPlanCounts[3]
          << " let_active_m2l_sum=" << globalActiveCounts[0]
          << " let_active_p2p_blocks_sum=" << globalActiveCounts[1]
+         << " let_active_m2p_sum=" << globalM2PCount
+         << " let_m2p_max=" << maximumM2PSeconds
          << " local_inactive_m2l_sum=" << globalInactiveCounts[0]
          << " local_inactive_p2p_blocks_sum=" << globalInactiveCounts[1]
          << " let_inactive_m2l_sum=" << globalInactiveCounts[2]

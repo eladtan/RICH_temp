@@ -183,6 +183,7 @@ int main(int argc, char** argv)
     distributed.maxLetWaveBytes = 512;
     distributed.maxRemoteBytes = 64u * 1024u * 1024u;
     distributed.maxReplicatedDescriptorBytes = 16u * 1024u * 1024u;
+    distributed.enableLeafM2P = true;
     distributed.persistentLocalTreeTopology = false;
 
     DistributedFmmGravityCalculator solver(options, distributed);

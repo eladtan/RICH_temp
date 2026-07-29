@@ -15,7 +15,7 @@
 #include "misc/universal_error.hpp"
 
 static constexpr std::uint32_t FMM_MPI_PACKET_MAGIC = 0x52464d4du; // "RFMM"
-static constexpr std::uint16_t FMM_MPI_PACKET_VERSION = 5u;
+static constexpr std::uint16_t FMM_MPI_PACKET_VERSION = 6u;
 
 enum class FmmPacketKind : std::uint16_t
 {
@@ -191,6 +191,20 @@ struct FmmWireParticle
     }
 };
 
+// Patch LET P2P traffic never needs body identity: source and target patches
+// are owned by different MPI ranks, and the patch interaction plan already
+// identifies the source leaf.  Keep only the values used by the force kernel.
+struct FmmPatchWireParticle
+{
+    double position[3] = {0.0, 0.0, 0.0};
+    double mass = 0.0;
+
+    Vector3D positionVector() const
+    {
+        return Vector3D(position[0], position[1], position[2]);
+    }
+};
+
 static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559,
               "Distributed FMM wire protocol requires IEEE-754 binary64 doubles");
 static_assert(sizeof(int) == 4,
@@ -221,6 +235,8 @@ static_assert(sizeof(FmmPayloadRecordHeader) == 48,
               "Distributed FMM payload header has unsupported padding");
 static_assert(sizeof(FmmWireParticle) == 56,
               "Distributed FMM wire particle has unsupported padding");
+static_assert(sizeof(FmmPatchWireParticle) == 32,
+              "Distributed patch FMM wire particle has unsupported padding");
 static_assert(std::is_trivially_copyable<FmmPacketStamp>::value,
               "FMM packet stamp must be trivially copyable");
 static_assert(std::is_trivially_copyable<FmmPatchRootDescriptor>::value,
@@ -243,6 +259,8 @@ static_assert(std::is_trivially_copyable<FmmPayloadRecordHeader>::value,
               "FMM payload header must be trivially copyable");
 static_assert(std::is_trivially_copyable<FmmWireParticle>::value,
               "FMM wire particle must be trivially copyable");
+static_assert(std::is_trivially_copyable<FmmPatchWireParticle>::value,
+              "FMM patch wire particle must be trivially copyable");
 
 namespace FmmPacketIO
 {

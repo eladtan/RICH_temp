@@ -1146,11 +1146,16 @@ int main(void)
 	fmmOptions.thetaCritical = 1.0;
 	fmmOptions.leafCapacity = 64;
 	FmmDistributedOptions fmmDistributed;
-	// The leaf half-size bound was measured not to reduce the LET payload at
-	// levels 7, 8 or 9, while costing the sparse ranks ~14x more tree nodes.
-	// Bounded LET waves address the payload instead, so leave the bound off.
+	// Patch M2P evaluates a remote multipole at each target particle when the
+	// target leaf extent alone prevents M2L. This avoids pulling remote leaf
+	// particles while preserving the pointwise theta acceptance test.
 	fmmDistributed.maxLeafHalfSizeLevel = 0;
-	fmmDistributed.enableLeafM2P = false;
+	fmmDistributed.enableLeafM2P = true;
+	// The patched source-centric wave planner no longer duplicates one source
+	// for every group of 64 targets. Keep the legacy cap effectively disabled
+	// as a safeguard if this run is compared with an intermediate build.
+	fmmDistributed.maxTargetPatchesPerWave =
+		fmmDistributed.maxLocalPatchCount;
 	fmmDistributed.maxLetWaveBytes =
 		static_cast<std::size_t>(128) * 1024u * 1024u;
 	fmmDistributed.persistentLocalTreeTopology = true;

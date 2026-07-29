@@ -36,6 +36,13 @@ struct FmmPatchLetP2PInteraction
     std::uint32_t sourceIndex = 0;
 };
 
+struct FmmPatchLetM2PInteraction
+{
+    std::uint32_t targetPatchIndex = 0;
+    std::uint32_t targetNode = 0;
+    std::uint32_t sourceIndex = 0;
+};
+
 class FmmPatchLetPlan
 {
 public:
@@ -50,6 +57,7 @@ public:
                std::size_t maxTargetPatchesPerWave,
                std::size_t multipoleCoefficientCount,
                std::size_t maxParticlePayloadCount,
+               bool enableLeafM2P,
                const MPI_Comm& comm,
                FmmSolveStats& stats,
                bool reuseUnaffectedTargetSubplans = false);
@@ -82,6 +90,10 @@ public:
     {
         return p2pInteractions_;
     }
+    const std::vector<FmmPatchLetM2PInteraction>& m2pInteractions() const
+    {
+        return m2pInteractions_;
+    }
     std::size_t bytesOwned() const;
 
 private:
@@ -111,7 +123,6 @@ private:
 
     typedef std::tuple<FmmPatchKey, std::uint64_t, int> SourceIdentity;
     typedef std::tuple<std::size_t, SourceIdentity> WaveSourceIdentity;
-    typedef std::tuple<std::size_t, SourceIdentity> TargetDependencyKey;
 
     struct SourceRecord
     {
@@ -142,6 +153,7 @@ private:
         std::map<SourceIdentity, CachedSource> sources;
         std::vector<CachedTerminal> m2l;
         std::vector<CachedTerminal> p2p;
+        std::vector<CachedTerminal> m2p;
     };
 
     struct PayloadView
@@ -157,6 +169,11 @@ private:
     static bool admissible(const FmmNode& target,
                            const FmmRemoteNodeDescriptor& source,
                            double thetaCritical);
+    static bool m2pAdmissible(const FmmNode& target,
+                              const FmmRemoteNodeDescriptor& source,
+                              const std::vector<std::size_t>& particleOrder,
+                              const std::vector<Vector3D>& positions,
+                              double thetaCritical);
     static FmmNode sourceNodeFromDescriptor(
         const FmmRemoteNodeDescriptor& descriptor,
         const RemoteRootGeometry& root);
@@ -184,9 +201,11 @@ private:
     std::vector<SourceRecord> sources_;
     std::vector<FmmPatchLetM2LInteraction> m2lInteractions_;
     std::vector<FmmPatchLetP2PInteraction> p2pInteractions_;
+    std::vector<FmmPatchLetM2PInteraction> m2pInteractions_;
     std::vector<FmmM2LOperatorCache::PreparedGeometry> m2lGeometries_;
     std::vector<std::pair<std::size_t, std::size_t>> m2lWaveRanges_;
     std::vector<std::pair<std::size_t, std::size_t>> p2pWaveRanges_;
+    std::vector<std::pair<std::size_t, std::size_t>> m2pWaveRanges_;
 
     std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsReceived_;
     std::map<std::pair<std::uint64_t, std::uint64_t>, std::size_t>
@@ -197,7 +216,6 @@ private:
     std::size_t waveCount_;
     std::size_t localWaveCount_;
     std::size_t maxLetWaveBytes_;
-    std::size_t maxTargetPatchesPerWave_;
     std::size_t multipoleCoefficientCount_;
     std::size_t maxParticlePayloadCount_;
     std::uint64_t topologyEpoch_;

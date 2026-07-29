@@ -192,7 +192,6 @@ void addDirectRemoteParticles(FmmLocalPatch& targetPatch,
                               const FmmNode& targetNode,
                               const char* payload,
                               std::size_t sourceCount,
-                              int sourceRank,
                               FmmSolveStats& stats)
 {
     const std::vector<std::size_t>& targetOrder =
@@ -209,12 +208,11 @@ void addDirectRemoteParticles(FmmLocalPatch& targetPatch,
         for(std::size_t sourceIndex = 0; sourceIndex < sourceCount;
             ++sourceIndex)
         {
-            FmmWireParticle source;
+            FmmPatchWireParticle source;
             std::memcpy(&source,
-                        payload + sourceIndex * sizeof(FmmWireParticle),
-                        sizeof(FmmWireParticle));
-            if(source.ownerRank != sourceRank ||
-               !finiteVector(source.positionVector()) ||
+                        payload + sourceIndex * sizeof(FmmPatchWireParticle),
+                        sizeof(FmmPatchWireParticle));
+            if(!finiteVector(source.positionVector()) ||
                !std::isfinite(source.mass))
                 throw UniversalError(
                     "FmmPatchLetPlan::execute: malformed remote particle");
@@ -261,7 +259,7 @@ void addDirectRemoteParticles(FmmLocalPatch& targetPatch,
 
 FmmPatchLetPlan::FmmPatchLetPlan():
     waveCount_(1), localWaveCount_(1), maxLetWaveBytes_(0),
-    maxTargetPatchesPerWave_(0), multipoleCoefficientCount_(0),
+    multipoleCoefficientCount_(0),
     maxParticlePayloadCount_(0), topologyEpoch_(0), comm_(MPI_COMM_NULL),
     rank_(0), initialized_(false)
 {
@@ -301,6 +299,29 @@ bool FmmPatchLetPlan::admissible(const FmmNode& target,
         return false;
     const double distance = std::sqrt(distanceSquared);
     return distance > 0.0 && radiusSum <= thetaCritical * distance;
+}
+
+bool FmmPatchLetPlan::m2pAdmissible(
+    const FmmNode& target,
+    const FmmRemoteNodeDescriptor& source,
+    const std::vector<std::size_t>& particleOrder,
+    const std::vector<Vector3D>& positions,
+    double thetaCritical)
+{
+    if(!target.isLeaf() || target.particleCount() == 0)
+        return false;
+    const Vector3D sourceCenter = source.centerVector();
+    const double sourceRadius = descriptorRadius(source);
+    for(std::size_t k = target.particleBegin; k < target.particleEnd; ++k)
+    {
+        const Vector3D delta = positions[particleOrder[k]] - sourceCenter;
+        const double distanceSquared =
+            delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
+        if(!(distanceSquared > 0.0) ||
+           sourceRadius > thetaCritical * std::sqrt(distanceSquared))
+            return false;
+    }
+    return true;
 }
 
 FmmNode FmmPatchLetPlan::sourceNodeFromDescriptor(
@@ -349,7 +370,7 @@ std::size_t FmmPatchLetPlan::sourceRecordBytes(
         const std::size_t plannedCount =
             std::max(currentCount, maxParticlePayloadCount_);
         payload = checkedMultiply(
-            plannedCount, sizeof(FmmWireParticle),
+            plannedCount, sizeof(FmmPatchWireParticle),
             "FmmPatchLetPlan: particle byte overflow");
     }
     else
@@ -406,6 +427,8 @@ void FmmPatchLetPlan::buildWaveRanges()
                                                      std::size_t(0)));
     p2pWaveRanges_.assign(waveCount_, std::make_pair(std::size_t(0),
                                                      std::size_t(0)));
+    m2pWaveRanges_.assign(waveCount_, std::make_pair(std::size_t(0),
+                                                     std::size_t(0)));
 
     std::stable_sort(m2lInteractions_.begin(), m2lInteractions_.end(),
         [&](const FmmPatchLetM2LInteraction& first,
@@ -426,6 +449,16 @@ void FmmPatchLetPlan::buildWaveRanges()
                             first.targetNode, first.sourceIndex) <
                    std::tie(secondWave, second.targetPatchIndex,
                             second.targetNode, second.sourceIndex);
+        });
+    std::stable_sort(m2pInteractions_.begin(), m2pInteractions_.end(),
+        [&](const FmmPatchLetM2PInteraction& first,
+            const FmmPatchLetM2PInteraction& second) {
+            const std::size_t firstWave = sources_[first.sourceIndex].wave;
+            const std::size_t secondWave = sources_[second.sourceIndex].wave;
+            return std::tie(firstWave, first.sourceIndex,
+                            first.targetPatchIndex, first.targetNode) <
+                   std::tie(secondWave, second.sourceIndex,
+                            second.targetPatchIndex, second.targetNode);
         });
 
     std::size_t cursor = 0;
@@ -451,6 +484,18 @@ void FmmPatchLetPlan::buildWaveRanges()
     }
     if(cursor != p2pInteractions_.size())
         throw UniversalError("FmmPatchLetPlan: invalid P2P wave ranges");
+
+    cursor = 0;
+    for(std::size_t wave = 0; wave < waveCount_; ++wave)
+    {
+        const std::size_t begin = cursor;
+        while(cursor < m2pInteractions_.size() &&
+              sources_[m2pInteractions_[cursor].sourceIndex].wave == wave)
+            ++cursor;
+        m2pWaveRanges_[wave] = std::make_pair(begin, cursor);
+    }
+    if(cursor != m2pInteractions_.size())
+        throw UniversalError("FmmPatchLetPlan: invalid M2P wave ranges");
 }
 
 void FmmPatchLetPlan::build(
@@ -463,6 +508,7 @@ void FmmPatchLetPlan::build(
     std::size_t maxTargetPatchesPerWave,
     std::size_t multipoleCoefficientCount,
     std::size_t maxParticlePayloadCount,
+    bool enableLeafM2P,
     const MPI_Comm& comm,
     FmmSolveStats& stats,
     bool reuseUnaffectedTargetSubplans)
@@ -474,6 +520,11 @@ void FmmPatchLetPlan::build(
     if(maxTargetPatchesPerWave == 0 || multipoleCoefficientCount == 0 ||
        maxParticlePayloadCount == 0)
         throw UniversalError("FmmPatchLetPlan::build: invalid wave configuration");
+
+    // Kept in the API for configuration compatibility. Patch waves are now
+    // source-centric: a remote payload is assigned to exactly one wave and may
+    // feed any number of target patches without retransmission.
+    (void) maxTargetPatchesPerWave;
 
     std::map<FmmPatchKey, CachedTargetSubplan> previousTargetSubplans;
     std::map<FmmPatchKey, std::uint64_t> previousSourceTopologyHashes;
@@ -493,7 +544,6 @@ void FmmPatchLetPlan::build(
     comm_ = comm;
     topologyEpoch_ = topologyEpoch;
     maxLetWaveBytes_ = maxLetWaveBytes;
-    maxTargetPatchesPerWave_ = maxTargetPatchesPerWave;
     multipoleCoefficientCount_ = multipoleCoefficientCount;
     maxParticlePayloadCount_ = maxParticlePayloadCount;
     MPI_Comm_rank(comm_, &rank_);
@@ -504,9 +554,11 @@ void FmmPatchLetPlan::build(
     sources_.clear();
     m2lInteractions_.clear();
     p2pInteractions_.clear();
+    m2pInteractions_.clear();
     m2lGeometries_.clear();
     m2lWaveRanges_.clear();
     p2pWaveRanges_.clear();
+    m2pWaveRanges_.clear();
     subscriptionsReceived_.clear();
     localParticlePayloadCaps_.clear();
     waveCount_ = 1;
@@ -580,6 +632,7 @@ void FmmPatchLetPlan::build(
     std::set<FmmPatchKey> reusableTargets;
     std::vector<PendingInteraction> terminalM2L;
     std::vector<PendingInteraction> terminalP2P;
+    std::vector<PendingInteraction> terminalM2P;
     for(std::size_t targetPatchIndex = 0;
         targetPatchIndex < forest.patches().size(); ++targetPatchIndex)
     {
@@ -653,6 +706,8 @@ void FmmPatchLetPlan::build(
             appendCached(cached, terminalM2L);
         for(const CachedTerminal& cached : previous->second.p2p)
             appendCached(cached, terminalP2P);
+        for(const CachedTerminal& cached : previous->second.m2p)
+            appendCached(cached, terminalM2P);
     }
     ++stats.letWavePlanRebuildCount;
 
@@ -754,6 +809,17 @@ void FmmPatchLetPlan::build(
             if(admissible(target, source, thetaCritical))
             {
                 terminalM2L.push_back(PendingInteraction{
+                    pair.targetPatchIndex, pair.targetNode, pair.sourcePatch,
+                    pair.sourceKey,
+                    static_cast<int>(FmmSubscriptionKind::Multipole)});
+                continue;
+            }
+            if(enableLeafM2P && target.isLeaf() &&
+               m2pAdmissible(target, source,
+                             targetPatch.tree.particleOrder(),
+                             targetPatch.positions, thetaCritical))
+            {
+                terminalM2P.push_back(PendingInteraction{
                     pair.targetPatchIndex, pair.targetNode, pair.sourcePatch,
                     pair.sourceKey,
                     static_cast<int>(FmmSubscriptionKind::Multipole)});
@@ -1026,6 +1092,7 @@ void FmmPatchLetPlan::build(
     };
     std::sort(terminalM2L.begin(), terminalM2L.end(), interactionLess);
     std::sort(terminalP2P.begin(), terminalP2P.end(), interactionLess);
+    std::sort(terminalM2P.begin(), terminalM2P.end(), interactionLess);
     if(std::adjacent_find(terminalM2L.begin(), terminalM2L.end(),
         [&](const PendingInteraction& first,
             const PendingInteraction& second) {
@@ -1042,6 +1109,14 @@ void FmmPatchLetPlan::build(
         }) != terminalP2P.end())
         throw UniversalError(
             "FmmPatchLetPlan::build: duplicate P2P interaction");
+    if(std::adjacent_find(terminalM2P.begin(), terminalM2P.end(),
+        [&](const PendingInteraction& first,
+            const PendingInteraction& second) {
+            return !interactionLess(first, second) &&
+                   !interactionLess(second, first);
+        }) != terminalM2P.end())
+        throw UniversalError(
+            "FmmPatchLetPlan::build: duplicate M2P interaction");
 
     const Clock::time_point compactionStart = Clock::now();
     std::set<FmmRemoteNodeKey> retainedDescriptors;
@@ -1049,6 +1124,9 @@ void FmmPatchLetPlan::build(
         retainedDescriptors.insert(FmmRemoteNodeKey{
             interaction.sourcePatch, interaction.sourceKey});
     for(const PendingInteraction& interaction : terminalP2P)
+        retainedDescriptors.insert(FmmRemoteNodeKey{
+            interaction.sourcePatch, interaction.sourceKey});
+    for(const PendingInteraction& interaction : terminalM2P)
         retainedDescriptors.insert(FmmRemoteNodeKey{
             interaction.sourcePatch, interaction.sourceKey});
     for(auto patchIt = remoteDescriptors_.begin();
@@ -1089,8 +1167,9 @@ void FmmPatchLetPlan::build(
             subplan.sourcePatches = currentSources->second;
         targetSubplans_.emplace(patch.key, std::move(subplan));
     }
+    enum class CachedInteractionKind { M2L, P2P, M2P };
     const auto cacheTerminal = [&](const PendingInteraction& interaction,
-                                   bool multipole) {
+                                   CachedInteractionKind kind) {
         if(interaction.targetPatchIndex >= forest.patches().size())
             throw UniversalError(
                 "FmmPatchLetPlan::build: cached target index out of range");
@@ -1120,83 +1199,63 @@ void FmmPatchLetPlan::build(
         terminal.targetSpatialKey =
             targetPatch.tree.nodes()[interaction.targetNode].spatialKey;
         terminal.source = identity;
-        if(multipole)
+        if(kind == CachedInteractionKind::M2L)
             subplan.m2l.push_back(terminal);
-        else
+        else if(kind == CachedInteractionKind::P2P)
             subplan.p2p.push_back(terminal);
+        else
+            subplan.m2p.push_back(terminal);
     };
     for(const PendingInteraction& interaction : terminalM2L)
-        cacheTerminal(interaction, true);
+        cacheTerminal(interaction, CachedInteractionKind::M2L);
     for(const PendingInteraction& interaction : terminalP2P)
-        cacheTerminal(interaction, false);
+        cacheTerminal(interaction, CachedInteractionKind::P2P);
+    for(const PendingInteraction& interaction : terminalM2P)
+        cacheTerminal(interaction, CachedInteractionKind::M2P);
     sourceTopologyHashes_.swap(currentSourceTopologyHashes);
     std::map<FmmPatchKey, CachedTargetSubplan>().swap(
         previousTargetSubplans);
     std::map<FmmPatchKey, std::uint64_t>().swap(
         previousSourceTopologyHashes);
 
-    std::map<std::size_t, std::set<SourceIdentity>> dependenciesByTarget;
+    std::set<SourceIdentity> uniqueSources;
     for(const PendingInteraction& interaction : terminalM2L)
-    {
-        dependenciesByTarget[interaction.targetPatchIndex].insert(
-            SourceIdentity(interaction.sourcePatch,
-                           interaction.sourceKey, interaction.kind));
-    }
+        uniqueSources.insert(SourceIdentity(interaction.sourcePatch,
+                                            interaction.sourceKey,
+                                            interaction.kind));
     for(const PendingInteraction& interaction : terminalP2P)
-    {
-        dependenciesByTarget[interaction.targetPatchIndex].insert(
-            SourceIdentity(interaction.sourcePatch,
-                           interaction.sourceKey, interaction.kind));
-    }
+        uniqueSources.insert(SourceIdentity(interaction.sourcePatch,
+                                            interaction.sourceKey,
+                                            interaction.kind));
+    for(const PendingInteraction& interaction : terminalM2P)
+        uniqueSources.insert(SourceIdentity(interaction.sourcePatch,
+                                            interaction.sourceKey,
+                                            interaction.kind));
 
-    std::map<TargetDependencyKey, std::size_t> waveByTargetDependency;
+    std::map<SourceIdentity, std::size_t> waveBySource;
     std::size_t wave = 0;
     std::size_t waveBytes = 0;
-    std::set<SourceIdentity> waveSources;
-    std::set<std::size_t> waveTargets;
-    const auto startNewWave = [&]() {
-        ++wave;
-        waveBytes = 0;
-        waveSources.clear();
-        waveTargets.clear();
-    };
 
     bool localWavePlanOk = true;
     std::string localWavePlanError;
     try
     {
-        for(const auto& targetEntry : dependenciesByTarget)
+        for(const SourceIdentity& source : uniqueSources)
         {
-            const std::size_t targetPatchIndex = targetEntry.first;
-            for(const SourceIdentity& source : targetEntry.second)
+            const std::size_t recordBytes = sourceRecordBytes(source);
+            if(maxLetWaveBytes_ != 0 && recordBytes > maxLetWaveBytes_)
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: one payload record exceeds maxLetWaveBytes");
+            if(maxLetWaveBytes_ != 0 && waveBytes != 0 &&
+               recordBytes > maxLetWaveBytes_ - waveBytes)
             {
-                const std::size_t recordBytes = sourceRecordBytes(source);
-                if(maxLetWaveBytes_ != 0 &&
-                   recordBytes > maxLetWaveBytes_)
-                    throw UniversalError(
-                        "FmmPatchLetPlan::build: one payload record exceeds maxLetWaveBytes");
-
-                const bool newTarget =
-                    waveTargets.find(targetPatchIndex) == waveTargets.end();
-                if(newTarget && !waveTargets.empty() &&
-                   waveTargets.size() >= maxTargetPatchesPerWave_)
-                    startNewWave();
-
-                const bool newSource =
-                    waveSources.find(source) == waveSources.end();
-                if(newSource && maxLetWaveBytes_ != 0 &&
-                   waveBytes != 0 &&
-                   recordBytes > maxLetWaveBytes_ - waveBytes)
-                    startNewWave();
-
-                waveTargets.insert(targetPatchIndex);
-                if(waveSources.insert(source).second)
-                    waveBytes = checkedAdd(
-                        waveBytes, recordBytes,
-                        "FmmPatchLetPlan::build: wave byte overflow");
-                waveByTargetDependency.emplace(
-                    TargetDependencyKey(targetPatchIndex, source), wave);
+                ++wave;
+                waveBytes = 0;
             }
+            waveBySource.emplace(source, wave);
+            waveBytes = checkedAdd(
+                waveBytes, recordBytes,
+                "FmmPatchLetPlan::build: wave byte overflow");
         }
     }
     catch(const UniversalError& error)
@@ -1206,7 +1265,7 @@ void FmmPatchLetPlan::build(
     }
     collectiveRequire(localWavePlanOk, localWavePlanError,
                       "FmmPatchLetPlan::build wave planning", comm_);
-    localWaveCount_ = dependenciesByTarget.empty() ? 1 : wave + 1;
+    localWaveCount_ = uniqueSources.empty() ? 1 : wave + 1;
     unsigned long long localWaves =
         static_cast<unsigned long long>(localWaveCount_);
     unsigned long long globalWaves = 0;
@@ -1229,9 +1288,8 @@ void FmmPatchLetPlan::build(
         const SourceIdentity source(interaction.sourcePatch,
                                     interaction.sourceKey,
                                     interaction.kind);
-        const auto waveIt = waveByTargetDependency.find(
-            TargetDependencyKey(interaction.targetPatchIndex, source));
-        if(waveIt == waveByTargetDependency.end())
+        const auto waveIt = waveBySource.find(source);
+        if(waveIt == waveBySource.end())
             throw UniversalError(
                 "FmmPatchLetPlan::build: M2L dependency has no wave");
         const std::size_t sourceIndex = ensureSourceRecord(
@@ -1276,14 +1334,35 @@ void FmmPatchLetPlan::build(
             static_cast<std::uint32_t>(sourceIndex),
             inserted.first->second});
     }
+    for(const PendingInteraction& interaction : terminalM2P)
+    {
+        const SourceIdentity source(interaction.sourcePatch,
+                                    interaction.sourceKey,
+                                    interaction.kind);
+        const auto waveIt = waveBySource.find(source);
+        if(waveIt == waveBySource.end())
+            throw UniversalError(
+                "FmmPatchLetPlan::build: M2P dependency has no wave");
+        const std::size_t sourceIndex = ensureSourceRecord(
+            waveIt->second, source, sourceIndexByWave);
+        if(interaction.targetPatchIndex >
+               std::numeric_limits<std::uint32_t>::max() ||
+           interaction.targetNode >
+               std::numeric_limits<std::uint32_t>::max())
+            throw UniversalError(
+                "FmmPatchLetPlan::build: M2P compact index overflow");
+        m2pInteractions_.push_back(FmmPatchLetM2PInteraction{
+            static_cast<std::uint32_t>(interaction.targetPatchIndex),
+            static_cast<std::uint32_t>(interaction.targetNode),
+            static_cast<std::uint32_t>(sourceIndex)});
+    }
     for(const PendingInteraction& interaction : terminalP2P)
     {
         const SourceIdentity source(interaction.sourcePatch,
                                     interaction.sourceKey,
                                     interaction.kind);
-        const auto waveIt = waveByTargetDependency.find(
-            TargetDependencyKey(interaction.targetPatchIndex, source));
-        if(waveIt == waveByTargetDependency.end())
+        const auto waveIt = waveBySource.find(source);
+        if(waveIt == waveBySource.end())
             throw UniversalError(
                 "FmmPatchLetPlan::build: P2P dependency has no wave");
         const std::size_t sourceIndex = ensureSourceRecord(
@@ -1481,6 +1560,15 @@ void FmmPatchLetPlan::reuse(
             throw UniversalError(
                 "FmmPatchLetPlan::reuse: invalid retained P2P interaction");
     }
+    for(const FmmPatchLetM2PInteraction& interaction : m2pInteractions_)
+    {
+        if(interaction.targetPatchIndex >= forest.patches().size() ||
+           interaction.targetNode >= forest.patches()[
+               interaction.targetPatchIndex].tree.nodes().size() ||
+           interaction.sourceIndex >= sources_.size())
+            throw UniversalError(
+                "FmmPatchLetPlan::reuse: invalid retained M2P interaction");
+    }
     for(const auto& peer : subscriptionsReceived_)
     {
         for(const FmmSubscription& subscription : peer.second)
@@ -1632,15 +1720,11 @@ void FmmPatchLetPlan::executeWave(
                     k < node.particleEnd; ++k)
                 {
                     const std::size_t body = patch.tree.particleOrder()[k];
-                    FmmWireParticle particle;
+                    FmmPatchWireParticle particle;
                     particle.position[0] = patch.positions[body].x;
                     particle.position[1] = patch.positions[body].y;
                     particle.position[2] = patch.positions[body].z;
                     particle.mass = patch.masses[body];
-                    particle.cellId = patch.cellIds[body];
-                    particle.ownerLocalIndex = static_cast<std::uint64_t>(
-                        patch.inputIndices[body]);
-                    particle.ownerRank = rank_;
                     FmmPacketIO::appendPod(buffer, particle);
                 }
             }
@@ -1826,7 +1910,7 @@ void FmmPatchLetPlan::executeWave(
                 // Particle occupancy is payload state, not topology.  A reused
                 // LET subscription is keyed by (patch, spatialKey); the current
                 // count is carried by this header and may legitimately change.
-                elementBytes = sizeof(FmmWireParticle);
+                elementBytes = sizeof(FmmPatchWireParticle);
             }
             else
             {
@@ -1934,6 +2018,78 @@ void FmmPatchLetPlan::executeWave(
     }
     stats.letM2LSeconds += elapsed(m2lStart);
 
+    const Clock::time_point m2pStart = Clock::now();
+    const std::pair<std::size_t, std::size_t> m2pRange =
+        m2pWaveRanges_[wave];
+    std::uint32_t currentM2PSource =
+        std::numeric_limits<std::uint32_t>::max();
+    const ReceivedPayload* currentM2PPayload = nullptr;
+    std::vector<double> m2pLocals(layout.coefficientCount(), 0.0);
+    for(std::size_t interactionIndex = m2pRange.first;
+        interactionIndex < m2pRange.second; ++interactionIndex)
+    {
+        const FmmPatchLetM2PInteraction& interaction =
+            m2pInteractions_[interactionIndex];
+        if(interaction.targetPatchIndex >= forest.patches().size() ||
+           interaction.sourceIndex >= sources_.size())
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: invalid M2P interaction");
+        FmmLocalPatch& targetPatch =
+            forest.patches()[interaction.targetPatchIndex];
+        if(interaction.targetNode >= targetPatch.tree.nodes().size())
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: invalid M2P target node");
+        const FmmNode& targetNode =
+            targetPatch.tree.nodes()[interaction.targetNode];
+        if(!targetNode.isLeaf())
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: M2P target is not a leaf");
+        const SourceRecord& source = sources_[interaction.sourceIndex];
+        if(source.wave != wave || source.kind !=
+           static_cast<int>(FmmSubscriptionKind::Multipole))
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: M2P source assigned to wrong wave");
+        if(currentM2PSource != interaction.sourceIndex)
+        {
+            currentM2PSource = interaction.sourceIndex;
+            currentM2PPayload = findPayload(PayloadKey(
+                source.key.patch, source.key.spatialKey, source.kind));
+            if(currentM2PPayload == nullptr ||
+               currentM2PPayload->view.count != layout.coefficientCount())
+                throw UniversalError(
+                    "FmmPatchLetPlan::executeWave: missing M2P payload");
+            std::memcpy(coefficientScratch.data(),
+                        currentM2PPayload->view.data,
+                        layout.coefficientCount() * sizeof(double));
+        }
+        std::vector<double>* potential =
+            targetPatch.potential.empty() ? nullptr : &targetPatch.potential;
+        for(std::size_t k = targetNode.particleBegin;
+            k < targetNode.particleEnd; ++k)
+        {
+            const std::size_t body = targetPatch.tree.particleOrder()[k];
+            FmmNode pointTarget;
+            pointTarget.center = targetPatch.positions[body];
+            pointTarget.particleBegin = k;
+            pointTarget.particleEnd = k + 1;
+            pointTarget.localOffset = 0;
+            const Vector3D displacement =
+                pointTarget.center - source.sourceNode.center;
+            FmmKernels::computeM2LOperator(
+                displacement, layout, derivativeScratch, operatorScratch);
+            std::fill(m2pLocals.begin(), m2pLocals.end(), 0.0);
+            FmmKernels::translateM2LRaw(
+                source.sourceNode, pointTarget, layout,
+                coefficientScratch.data(), m2pLocals, operatorScratch, 1.0);
+            FmmKernels::evaluateL2P(
+                pointTarget, targetPatch.positions,
+                targetPatch.tree.particleOrder(), layout, m2pLocals,
+                targetPatch.acceleration, potential);
+            ++stats.letM2PCount;
+        }
+    }
+    stats.letM2PSeconds += elapsed(m2pStart);
+
     const Clock::time_point p2pStart = Clock::now();
     const std::pair<std::size_t, std::size_t> p2pRange =
         p2pWaveRanges_[wave];
@@ -1970,7 +2126,7 @@ void FmmPatchLetPlan::executeWave(
         addDirectRemoteParticles(targetPatch, targetNode,
                                  payload->view.data,
                                  payload->view.count,
-                                 source.key.patch.ownerRank, stats);
+                                 stats);
     }
     stats.letP2PSeconds += elapsed(p2pStart);
     received.releaseStorage();
@@ -2024,11 +2180,15 @@ std::size_t FmmPatchLetPlan::bytesOwned() const
                  sizeof(FmmPatchLetM2LInteraction)));
     add(multiply(p2pInteractions_.capacity(),
                  sizeof(FmmPatchLetP2PInteraction)));
+    add(multiply(m2pInteractions_.capacity(),
+                 sizeof(FmmPatchLetM2PInteraction)));
     add(multiply(m2lGeometries_.capacity(),
                  sizeof(FmmM2LOperatorCache::PreparedGeometry)));
     add(multiply(m2lWaveRanges_.capacity(),
                  sizeof(std::pair<std::size_t, std::size_t>)));
     add(multiply(p2pWaveRanges_.capacity(),
+                 sizeof(std::pair<std::size_t, std::size_t>)));
+    add(multiply(m2pWaveRanges_.capacity(),
                  sizeof(std::pair<std::size_t, std::size_t>)));
 
     add(multiply(localNodeByPatch_.capacity(),
@@ -2076,6 +2236,7 @@ std::size_t FmmPatchLetPlan::bytesOwned() const
         add(multiply(target.second.sources.size(), cachedSourceEntryBytes));
         add(multiply(target.second.m2l.capacity(), sizeof(CachedTerminal)));
         add(multiply(target.second.p2p.capacity(), sizeof(CachedTerminal)));
+        add(multiply(target.second.m2p.capacity(), sizeof(CachedTerminal)));
     }
     const std::size_t sourceHashEntryBytes =
         sizeof(std::pair<const FmmPatchKey, std::uint64_t>) +

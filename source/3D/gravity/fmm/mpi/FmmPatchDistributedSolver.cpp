@@ -566,6 +566,7 @@ void FmmPatchDistributedSolver::solve(
             distributedOptions_.maxTargetPatchesPerWave,
             layout.coefficientCount(),
             maximumStableLeafOccupancy(options_, distributedOptions_),
+            distributedOptions_.enableLeafM2P,
             comm_, stats,
             topologyInitialized_ && !rebuildProcessTopology &&
                 !payloadShapeRequiresRebuild);
