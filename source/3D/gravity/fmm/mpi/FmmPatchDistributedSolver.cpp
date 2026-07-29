@@ -570,8 +570,12 @@ void FmmPatchDistributedSolver::solve(
             distributedOptions_.letParticlePayloadSlackCount,
             distributedOptions_.enableLeafM2P,
             comm_, stats,
-            topologyInitialized_ && !rebuildProcessTopology &&
-                !payloadShapeRequiresRebuild);
+            // A payload-capacity miss requires rebuilding wave packing and
+            // subscriptions, but it does not invalidate cached interaction
+            // topology. Source topology hashes below invalidate only targets
+            // that actually depend on a split, merged, or otherwise changed
+            // source patch.
+            topologyInitialized_ && !rebuildProcessTopology);
         std::vector<FmmPatchRootDescriptor>().swap(rootDescriptors_);
     }
     else
