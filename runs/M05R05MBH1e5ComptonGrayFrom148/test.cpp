@@ -1144,12 +1144,20 @@ int main(void)
 	FmmGravityOptions fmmOptions;
 	fmmOptions.expansionOrder = 2;
 	fmmOptions.thetaCritical = 1.0;
-	// The level-7 TDE patches contain far more bodies than the uniform 30M
-	// benchmark.  A smaller local leaf gives the remote traversal useful source
-	// hierarchy instead of terminating in hundreds of millions of P2P blocks.
-	fmmOptions.leafCapacity = 16;
+	// Leaf 16 made the persistent full-octant local trees exceed node memory on
+	// this restart.  Leaf 64 is the measured memory-safe operating point; remote
+	// near-field reduction is handled by M2P and the adaptive patch hierarchy.
+	fmmOptions.leafCapacity = 64;
 	fmmOptions.persistentRadiusSlackFactor = 1.02;
 	FmmDistributedOptions fmmDistributed;
+	// A fixed level-7 forest creates about 169k global process leaves for this
+	// snapshot.  Start one level coarser and split only patches containing more
+	// than 2048 particles.  Dense regions may still reach level 7, while sparse
+	// outer material no longer pays one process leaf and one set of LET metadata
+	// for every occupied level-7 cube.
+	fmmDistributed.minimumPatchLevel = 6;
+	fmmDistributed.maximumPatchLevel = 7;
+	fmmDistributed.targetParticlesPerPatch = 2048;
 	fmmDistributed.persistentLeafSplitFactor = 1.5;
 	fmmDistributed.persistentLeafMergeFactor = 0.5;
 	fmmDistributed.letParticlePayloadSlackFactor = 1.10;

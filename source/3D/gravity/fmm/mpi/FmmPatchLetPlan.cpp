@@ -583,6 +583,10 @@ void FmmPatchLetPlan::build(
     particlePayloadSlackCount_ = particlePayloadSlackCount;
     MPI_Comm_rank(comm_, &rank_);
 
+    const std::size_t previousM2LInteractionCount = m2lInteractions_.size();
+    const std::size_t previousP2PInteractionCount = p2pInteractions_.size();
+    const std::size_t previousM2PInteractionCount = m2pInteractions_.size();
+
     localNodeByPatch_.clear();
     remoteRoots_.clear();
     remoteDescriptors_.clear();
@@ -669,6 +673,9 @@ void FmmPatchLetPlan::build(
     std::vector<PendingInteraction> terminalM2L;
     std::vector<PendingInteraction> terminalP2P;
     std::vector<PendingInteraction> terminalM2P;
+    terminalM2L.reserve(previousM2LInteractionCount);
+    terminalP2P.reserve(previousP2PInteractionCount);
+    terminalM2P.reserve(previousM2PInteractionCount);
     for(std::size_t targetPatchIndex = 0;
         targetPatchIndex < forest.patches().size(); ++targetPatchIndex)
     {
@@ -1236,6 +1243,39 @@ void FmmPatchLetPlan::build(
     targetSubplans_.clear();
     for(const FmmLocalPatch& patch : forest.patches())
     {
+        if(reusableTargets.count(patch.key) != 0)
+        {
+            const auto previous = previousTargetSubplans.find(patch.key);
+            if(previous == previousTargetSubplans.end())
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: reusable target cache disappeared");
+            CachedTargetSubplan subplan = std::move(previous->second);
+            subplan.targetPatch = patch.key;
+            subplan.targetTopologyHash = patch.topologyHash;
+            for(auto& source : subplan.sources)
+            {
+                const FmmPatchKey sourcePatch = std::get<0>(source.first);
+                const std::uint64_t sourceKey = std::get<1>(source.first);
+                const auto descriptorPatch = remoteDescriptors_.find(sourcePatch);
+                const auto root = remoteRoots_.find(sourcePatch);
+                if(descriptorPatch == remoteDescriptors_.end() ||
+                   root == remoteRoots_.end())
+                    throw UniversalError(
+                        "FmmPatchLetPlan::build: retained source geometry disappeared");
+                const auto descriptor = descriptorPatch->second.find(sourceKey);
+                if(descriptor == descriptorPatch->second.end())
+                    throw UniversalError(
+                        "FmmPatchLetPlan::build: retained source descriptor disappeared");
+                source.second.descriptor = descriptor->second;
+                source.second.root = root->second;
+            }
+            if(!targetSubplans_.emplace(
+                    patch.key, std::move(subplan)).second)
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: duplicate retained target cache");
+            continue;
+        }
+
         CachedTargetSubplan subplan;
         subplan.targetPatch = patch.key;
         subplan.targetTopologyHash = patch.topologyHash;
@@ -1255,6 +1295,8 @@ void FmmPatchLetPlan::build(
         if(interaction.targetNode >= targetPatch.tree.nodes().size())
             throw UniversalError(
                 "FmmPatchLetPlan::build: cached target node out of range");
+        if(reusableTargets.count(targetPatch.key) != 0)
+            return;
         const SourceIdentity identity(
             interaction.sourcePatch, interaction.sourceKey, interaction.kind);
         const auto descriptorPatch =
@@ -1295,19 +1337,29 @@ void FmmPatchLetPlan::build(
     std::map<FmmPatchKey, std::uint64_t>().swap(
         previousSourceTopologyHashes);
 
-    std::set<SourceIdentity> uniqueSources;
+    std::vector<SourceIdentity> uniqueSources;
+    const std::size_t terminalCount = checkedAdd(
+        checkedAdd(terminalM2L.size(), terminalP2P.size(),
+                   "FmmPatchLetPlan::build: terminal count overflow"),
+        terminalM2P.size(),
+        "FmmPatchLetPlan::build: terminal count overflow");
+    uniqueSources.reserve(terminalCount);
     for(const PendingInteraction& interaction : terminalM2L)
-        uniqueSources.insert(SourceIdentity(interaction.sourcePatch,
-                                            interaction.sourceKey,
-                                            interaction.kind));
+        uniqueSources.push_back(SourceIdentity(interaction.sourcePatch,
+                                               interaction.sourceKey,
+                                               interaction.kind));
     for(const PendingInteraction& interaction : terminalP2P)
-        uniqueSources.insert(SourceIdentity(interaction.sourcePatch,
-                                            interaction.sourceKey,
-                                            interaction.kind));
+        uniqueSources.push_back(SourceIdentity(interaction.sourcePatch,
+                                               interaction.sourceKey,
+                                               interaction.kind));
     for(const PendingInteraction& interaction : terminalM2P)
-        uniqueSources.insert(SourceIdentity(interaction.sourcePatch,
-                                            interaction.sourceKey,
-                                            interaction.kind));
+        uniqueSources.push_back(SourceIdentity(interaction.sourcePatch,
+                                               interaction.sourceKey,
+                                               interaction.kind));
+    std::sort(uniqueSources.begin(), uniqueSources.end());
+    uniqueSources.erase(
+        std::unique(uniqueSources.begin(), uniqueSources.end()),
+        uniqueSources.end());
 
     std::map<SourceIdentity, std::size_t> waveBySource;
     std::size_t wave = 0;
