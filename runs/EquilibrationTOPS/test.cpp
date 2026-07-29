@@ -82,8 +82,16 @@ Case get_case(std::string_view const case_num_sv){
 			return {"Tmat=1 keV, Trad=50 keV", 1.0*kev_kelvin, 50.0*kev_kelvin, true, true};
 		case 8:
 			return {"Tmat=5 keV, Trad=20 keV", 5.0*kev_kelvin, 20.0*kev_kelvin, true, true};
+		case 9:
+			return {
+				"Pathological DB-cap case, Tmat=Trad=80 keV, no absorption",
+				80.0*kev_kelvin,
+				80.0*kev_kelvin,
+				true,
+				false
+			};
 		default:
-			std::cout << "Error! Supported cases are 0 through 8." << std::endl;
+			std::cout << "Error! Supported cases are 0 through 9." << std::endl;
 			exit(1);
 	}
 }

@@ -276,12 +276,33 @@ void ComptonTableReader::get_S_and_dSdUm(
 
     // 5. Always-shrink DB enforcement + analytical derivatives
     double constexpr tiny_thresh = std::numeric_limits<double>::min() * 1e40;
+    double constexpr occupation_cap = 100.0;
 
-    // Pre-compute alpha[g] = dBdT[g] / ((1+n_eq[g])*B[g]) for derivative formulas
-    Vector alpha(num_energy_groups, 0.0);
+    // Use capped equilibrium occupancies in detailed-balance factors:
+    //   n_eq_db = min(occupation_cap, n_eq_raw)
+    // and piecewise-consistent derivatives:
+    //   dn_eq_db/dT = dn_eq_raw/dT when uncapped, else 0.
+    //
+    // For DB derivative formulas we need:
+    //   d/dT ln(B/(1+n_eq_db)) = dlnB - dln(1+n_eq_db)
+    Vector n_eq_db(num_energy_groups, 0.0);
+    Vector log_db_factor_deriv(num_energy_groups, 0.0);
     for (std::size_t g = 0; g < num_energy_groups; ++g) {
-        double const denom = (1.0 + n_eq_buf[g]) * B_eq_buf[g];
-        alpha[g] = (denom > tiny_thresh) ? dBdT_buf[g] / denom : 0.0;
+        n_eq_db[g] = std::min(occupation_cap, n_eq_buf[g]);
+
+        double dn_eq_raw_dT = 0.0;
+        if (B_eq_buf[g] > tiny_thresh) {
+            dn_eq_raw_dT = n_eq_buf[g] * dBdT_buf[g] / B_eq_buf[g];
+        }
+        double const dn_eq_db_dT = (n_eq_buf[g] < occupation_cap) ? dn_eq_raw_dT : 0.0;
+
+        if (B_eq_buf[g] > tiny_thresh) {
+            double const dlnB = dBdT_buf[g] / B_eq_buf[g];
+            double const dln_n1 = dn_eq_db_dT / (1.0 + n_eq_db[g]);
+            log_db_factor_deriv[g] = dlnB - dln_n1;
+        } else {
+            log_db_factor_deriv[g] = 0.0;
+        }
     }
 
     for (std::size_t g = 0; g < num_energy_groups; ++g) {
@@ -289,18 +310,18 @@ void ComptonTableReader::get_S_and_dSdUm(
             if (B_eq_buf[g] < tiny_thresh || B_eq_buf[gp] < tiny_thresh) continue;
             if (sigma_out_buf[g][gp] < tiny_thresh && sigma_in_buf[gp][g] < tiny_thresh) continue;
 
-            double const rhs = sigma_out_buf[g][gp] * (1.0 + n_eq_buf[gp]) * B_eq_buf[g];
+            double const rhs = sigma_out_buf[g][gp] * (1.0 + n_eq_db[gp]) * B_eq_buf[g];
             if (rhs < tiny_thresh) continue;
 
-            double const lhs = sigma_in_buf[gp][g] * (1.0 + n_eq_buf[g]) * B_eq_buf[gp];
+            double const lhs = sigma_in_buf[gp][g] * (1.0 + n_eq_db[g]) * B_eq_buf[gp];
             double const F = lhs / rhs;
 
             if (std::isnan(F) || std::isinf(F)) continue;
 
-            double const denom_Q = (1.0 + n_eq_buf[g]) * B_eq_buf[gp];
+            double const denom_Q = (1.0 + n_eq_db[g]) * B_eq_buf[gp];
             double const Q = (denom_Q > tiny_thresh)
-                ? (1.0 + n_eq_buf[gp]) * B_eq_buf[g] / denom_Q : 0.0;
-            double const dlnQ = alpha[g] - alpha[gp];
+                ? (1.0 + n_eq_db[gp]) * B_eq_buf[g] / denom_Q : 0.0;
+            double const dlnQ = log_db_factor_deriv[g] - log_db_factor_deriv[gp];
 
             if (F > 1.0) {
                 sigma_in_buf[gp][g] /= F;
