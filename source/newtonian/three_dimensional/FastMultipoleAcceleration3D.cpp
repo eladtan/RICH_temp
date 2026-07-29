@@ -91,9 +91,9 @@ bool fmmTraceEnabled()
 #endif
 }
 
-void traceFmmSolve(const FmmSolveStats& stats)
+void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
 {
-    if(!fmmTraceEnabled())
+    if(!explicitlyEnabled && !fmmTraceEnabled())
         return;
 
     static std::uint64_t call = 0;
@@ -366,6 +366,7 @@ FastMultipoleAcceleration3D::FastMultipoleAcceleration3D(FmmGravityOptions optio
 #else
     G_(G),
 #endif
+    traceEnabled_(false),
     calculator_(validateAccelerationOptions(options))
 {
 #ifndef RICH_MPI
@@ -380,6 +381,7 @@ FastMultipoleAcceleration3D::FastMultipoleAcceleration3D(
     FmmDistributedOptions distributedOptions,
     double G):
     G_(validateDistributedGravityConstant(G)),
+    traceEnabled_(distributedOptions.emitSolveTrace),
     calculator_(validateAccelerationOptions(options), distributedOptions)
 {}
 #endif
@@ -430,7 +432,7 @@ void FastMultipoleAcceleration3D::operator()(const Tessellation3D& tess,
 #else
     calculator_.solve(points_, masses_, boundaries.first, boundaries.second, acc);
 #endif
-    traceFmmSolve(calculator_.stats());
+    traceFmmSolve(calculator_.stats(), traceEnabled_);
 
     bool finiteAcceleration = true;
 #ifndef RICH_MPI

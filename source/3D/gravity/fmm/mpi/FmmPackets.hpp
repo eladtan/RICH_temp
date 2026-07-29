@@ -193,7 +193,7 @@ struct FmmWireParticle
 
 // Patch LET P2P traffic never needs body identity: source and target patches
 // are owned by different MPI ranks, and the patch interaction plan already
-// identifies the source leaf.  Keep only the values used by the force kernel.
+// identifies the source leaf. Keep only the values used by the force kernel.
 struct FmmPatchWireParticle
 {
     double position[3] = {0.0, 0.0, 0.0};

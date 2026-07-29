@@ -96,6 +96,12 @@ public:
     {
         return m2pInteractions_;
     }
+    // Emits exact source-fanout and payload-duplication diagnostics.
+    // The method is collective on the LET communicator and is a no-op unless
+    // RICH_FMM_NONUNIFORM_DIAGNOSTICS is enabled.
+    void emitNonuniformityDiagnostics(const FmmPatchForest& forest,
+                                      std::uint64_t call) const;
+
     std::size_t bytesOwned() const;
 
 private:

@@ -1146,22 +1146,21 @@ int main(void)
 	fmmOptions.thetaCritical = 1.0;
 	// Leaf 16 made the persistent full-octant local trees exceed node memory on
 	// this restart.  Leaf 64 is the measured memory-safe operating point; remote
-	// near-field reduction is handled by M2P and the adaptive patch hierarchy.
+	// near-field reduction is handled by M2P with the fixed level-7 hierarchy.
 	fmmOptions.leafCapacity = 64;
 	fmmOptions.persistentRadiusSlackFactor = 1.02;
 	FmmDistributedOptions fmmDistributed;
-	// A fixed level-7 forest creates about 169k global process leaves for this
-	// snapshot.  Start one level coarser and split only patches containing more
-	// than 2048 particles.  Dense regions may still reach level 7, while sparse
-	// outer material no longer pays one process leaf and one set of LET metadata
-	// for every occupied level-7 cube.
-	fmmDistributed.minimumPatchLevel = 6;
+	// V5's adaptive level-6/7 forest reduced patch count but increased remote
+	// P2P blocks, traffic, waves, LET-plan storage, and total solve time. Restore
+	// the measured-better fixed level-7 geometry before changing the wire format.
+	fmmDistributed.minimumPatchLevel = 7;
 	fmmDistributed.maximumPatchLevel = 7;
-	fmmDistributed.targetParticlesPerPatch = 2048;
+	fmmDistributed.targetParticlesPerPatch = 0;
 	fmmDistributed.persistentLeafSplitFactor = 1.5;
 	fmmDistributed.persistentLeafMergeFactor = 0.5;
 	fmmDistributed.letParticlePayloadSlackFactor = 1.10;
 	fmmDistributed.letParticlePayloadSlackCount = 8;
+	fmmDistributed.emitSolveTrace = true;
 	// Patch M2P evaluates a remote multipole at each target particle when the
 	// target leaf extent alone prevents M2L. This avoids pulling remote leaf
 	// particles while preserving the pointwise theta acceptance test.
@@ -1172,8 +1171,11 @@ int main(void)
 	// as a safeguard if this run is compared with an intermediate build.
 	fmmDistributed.maxTargetPatchesPerWave =
 		fmmDistributed.maxLocalPatchCount;
+	// Compact 16-byte particles reduce the fixed-level-7 payload enough to use
+	// fewer, larger waves while remaining below the measured leaf-64 memory
+	// envelope.
 	fmmDistributed.maxLetWaveBytes =
-		static_cast<std::size_t>(128) * 1024u * 1024u;
+		static_cast<std::size_t>(256) * 1024u * 1024u;
 	fmmDistributed.persistentLocalTreeTopology = true;
 	fmmDistributed.maxRemoteBytes =
 		static_cast<std::size_t>(32) * 1024u * 1024u * 1024u;
@@ -1231,7 +1233,7 @@ int main(void)
 	double old_t = simulation.GetTime();
 	double old_dt = init_dt;
 	double step_time = 0;
-	size_t const end_cycle = snap.cycle + 55;
+size_t const end_cycle = snap.cycle + 55;
 	
 	while (simulation.GetTime() < tf && simulation.GetCycle() < end_cycle)
 	{

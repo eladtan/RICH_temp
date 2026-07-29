@@ -6,6 +6,8 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <limits>
 #include <set>
@@ -21,6 +23,13 @@ typedef std::chrono::steady_clock Clock;
 double elapsed(const Clock::time_point& start)
 {
     return std::chrono::duration<double>(Clock::now() - start).count();
+}
+
+bool nonuniformDiagnosticsEnabled()
+{
+    const char* value = std::getenv("RICH_FMM_NONUNIFORM_DIAGNOSTICS");
+    return value != nullptr && value[0] != '\0' &&
+        !(value[0] == '0' && value[1] == '\0');
 }
 
 double nodeRadius(const FmmNode& node)
@@ -1203,24 +1212,35 @@ void FmmPatchLetPlan::build(
             "FmmPatchLetPlan::build: duplicate M2P interaction");
 
     const Clock::time_point compactionStart = Clock::now();
-    std::set<FmmRemoteNodeKey> retainedDescriptors;
+    const std::size_t terminalCount = checkedAdd(
+        checkedAdd(terminalM2L.size(), terminalP2P.size(),
+                   "FmmPatchLetPlan::build: terminal count overflow"),
+        terminalM2P.size(),
+        "FmmPatchLetPlan::build: terminal count overflow");
+    std::vector<FmmRemoteNodeKey> retainedDescriptors;
+    retainedDescriptors.reserve(terminalCount);
     for(const PendingInteraction& interaction : terminalM2L)
-        retainedDescriptors.insert(FmmRemoteNodeKey{
+        retainedDescriptors.push_back(FmmRemoteNodeKey{
             interaction.sourcePatch, interaction.sourceKey});
     for(const PendingInteraction& interaction : terminalP2P)
-        retainedDescriptors.insert(FmmRemoteNodeKey{
+        retainedDescriptors.push_back(FmmRemoteNodeKey{
             interaction.sourcePatch, interaction.sourceKey});
     for(const PendingInteraction& interaction : terminalM2P)
-        retainedDescriptors.insert(FmmRemoteNodeKey{
+        retainedDescriptors.push_back(FmmRemoteNodeKey{
             interaction.sourcePatch, interaction.sourceKey});
+    std::sort(retainedDescriptors.begin(), retainedDescriptors.end());
+    retainedDescriptors.erase(
+        std::unique(retainedDescriptors.begin(), retainedDescriptors.end()),
+        retainedDescriptors.end());
     for(auto patchIt = remoteDescriptors_.begin();
         patchIt != remoteDescriptors_.end();)
     {
         auto& descriptors = patchIt->second;
         for(auto nodeIt = descriptors.begin(); nodeIt != descriptors.end();)
         {
-            if(retainedDescriptors.count(FmmRemoteNodeKey{
-                   patchIt->first, nodeIt->first}) == 0)
+            if(!std::binary_search(
+                   retainedDescriptors.begin(), retainedDescriptors.end(),
+                   FmmRemoteNodeKey{patchIt->first, nodeIt->first}))
                 nodeIt = descriptors.erase(nodeIt);
             else
                 ++nodeIt;
@@ -1338,11 +1358,6 @@ void FmmPatchLetPlan::build(
         previousSourceTopologyHashes);
 
     std::vector<SourceIdentity> uniqueSources;
-    const std::size_t terminalCount = checkedAdd(
-        checkedAdd(terminalM2L.size(), terminalP2P.size(),
-                   "FmmPatchLetPlan::build: terminal count overflow"),
-        terminalM2P.size(),
-        "FmmPatchLetPlan::build: terminal count overflow");
     uniqueSources.reserve(terminalCount);
     for(const PendingInteraction& interaction : terminalM2L)
         uniqueSources.push_back(SourceIdentity(interaction.sourcePatch,
@@ -2334,6 +2349,173 @@ void FmmPatchLetPlan::execute(
     stats.letOperatorIntegerKeyHits = operatorCache.integerKeyHits();
     stats.letOperatorIntegerKeyMisses = operatorCache.integerKeyMisses();
     stats.letExecuteSeconds += elapsed(start);
+}
+
+void FmmPatchLetPlan::emitNonuniformityDiagnostics(
+    const FmmPatchForest& forest,
+    std::uint64_t call) const
+{
+    if(!nonuniformDiagnosticsEnabled())
+        return;
+
+    int rank = 0;
+    int size = 1;
+    MPI_Comm_rank(comm_, &rank);
+    MPI_Comm_size(comm_, &size);
+
+    typedef std::tuple<std::uint64_t, std::uint64_t, int> DiagnosticSource;
+    std::map<DiagnosticSource, std::size_t> fanoutBySource;
+
+    unsigned long long localTotals[10] = {};
+    // 0 all subscriptions, 1 particle subscriptions, 2 multipole subscriptions,
+    // 3 source records, 4 particle source records, 5 multipole source records,
+    // 6 record-header bytes, 7 particle payload bytes,
+    // 8 multipole payload bytes, 9 complete estimated payload bytes.
+    for(const auto& peerEntry : subscriptionsReceived_)
+    {
+        for(const FmmSubscription& subscription : peerEntry.second)
+        {
+            ++localTotals[0];
+            if(subscription.kind ==
+               static_cast<int>(FmmSubscriptionKind::Particles))
+                ++localTotals[1];
+            else
+                ++localTotals[2];
+
+            ++fanoutBySource[DiagnosticSource(
+                subscription.patchId, subscription.spatialKey,
+                subscription.kind)];
+
+            const std::size_t patchIndex = forest.findPatch(
+                subscription.patchId);
+            if(patchIndex == std::numeric_limits<std::size_t>::max() ||
+               patchIndex >= localNodeByPatch_.size())
+                throw UniversalError(
+                    "FmmPatchLetPlan diagnostics: missing subscribed patch");
+            const auto nodeIt = localNodeByPatch_[patchIndex].find(
+                subscription.spatialKey);
+            if(nodeIt == localNodeByPatch_[patchIndex].end() ||
+               nodeIt->second >= forest.patches()[patchIndex].tree.nodes().size())
+                throw UniversalError(
+                    "FmmPatchLetPlan diagnostics: missing subscribed node");
+            const FmmNode& node = forest.patches()[patchIndex].tree.nodes()[
+                nodeIt->second];
+
+            const unsigned long long headerBytes =
+                static_cast<unsigned long long>(sizeof(FmmPayloadRecordHeader));
+            localTotals[6] += headerBytes;
+            unsigned long long payloadBytes = 0;
+            if(subscription.kind ==
+               static_cast<int>(FmmSubscriptionKind::Particles))
+            {
+                payloadBytes = static_cast<unsigned long long>(
+                    node.particleCount()) * static_cast<unsigned long long>(
+                        sizeof(FmmPatchWireParticle));
+                localTotals[7] += payloadBytes;
+            }
+            else if(subscription.kind ==
+                    static_cast<int>(FmmSubscriptionKind::Multipole))
+            {
+                payloadBytes = static_cast<unsigned long long>(
+                    multipoleCoefficientCount_) *
+                    static_cast<unsigned long long>(sizeof(double));
+                localTotals[8] += payloadBytes;
+            }
+            else
+            {
+                throw UniversalError(
+                    "FmmPatchLetPlan diagnostics: invalid subscription kind");
+            }
+            localTotals[9] += headerBytes + payloadBytes;
+        }
+    }
+
+    std::vector<unsigned long long> localHistogram(
+        static_cast<std::size_t>(size) + 1, 0);
+    for(const auto& entry : fanoutBySource)
+    {
+        const std::size_t fanout = entry.second;
+        if(fanout == 0 || fanout > static_cast<std::size_t>(size))
+            throw UniversalError(
+                "FmmPatchLetPlan diagnostics: invalid source fanout");
+        ++localHistogram[fanout];
+        ++localTotals[3];
+        if(std::get<2>(entry.first) ==
+           static_cast<int>(FmmSubscriptionKind::Particles))
+            ++localTotals[4];
+        else
+            ++localTotals[5];
+    }
+
+    unsigned long long globalTotals[10] = {};
+    std::vector<unsigned long long> globalHistogram(
+        static_cast<std::size_t>(size) + 1, 0);
+    MPI_Reduce(localTotals, globalTotals, 10, MPI_UNSIGNED_LONG_LONG,
+               MPI_SUM, 0, comm_);
+    MPI_Reduce(localHistogram.data(), globalHistogram.data(), size + 1,
+               MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, comm_);
+
+    const unsigned long long localRankValues[4] = {
+        static_cast<unsigned long long>(subscriptionsReceived_.size()),
+        localTotals[0], localTotals[7], localTotals[8]};
+    std::vector<unsigned long long> gatheredRankValues;
+    if(rank == 0)
+        gatheredRankValues.resize(static_cast<std::size_t>(size) * 4);
+    MPI_Gather(localRankValues, 4, MPI_UNSIGNED_LONG_LONG,
+               rank == 0 ? gatheredRankValues.data() : nullptr, 4,
+               MPI_UNSIGNED_LONG_LONG, 0, comm_);
+
+    if(rank != 0)
+        return;
+
+    const auto histogramPercentile = [&](double fraction) {
+        unsigned long long total = 0;
+        for(unsigned long long value : globalHistogram)
+            total += value;
+        if(total == 0)
+            return std::size_t(0);
+        const unsigned long long threshold = static_cast<unsigned long long>(
+            std::ceil(fraction * static_cast<double>(total)));
+        unsigned long long running = 0;
+        for(std::size_t i = 0; i < globalHistogram.size(); ++i)
+        {
+            running += globalHistogram[i];
+            if(running >= std::max<unsigned long long>(1, threshold))
+                return i;
+        }
+        return globalHistogram.size() - 1;
+    };
+    const auto gatheredPercentile = [&](int column, double fraction) {
+        std::vector<unsigned long long> values;
+        values.reserve(static_cast<std::size_t>(size));
+        for(int r = 0; r < size; ++r)
+            values.push_back(gatheredRankValues[
+                static_cast<std::size_t>(4 * r + column)]);
+        std::sort(values.begin(), values.end());
+        const std::size_t index = std::min(
+            values.size() - 1, static_cast<std::size_t>(
+                std::ceil(fraction * static_cast<double>(values.size()))) - 1);
+        return values[index];
+    };
+
+    std::fprintf(stdout,
+        "fmm_nonuniform_let call=%llu source_records=%llu "
+        "particle_sources=%llu multipole_sources=%llu subscriptions=%llu "
+        "particle_subscriptions=%llu multipole_subscriptions=%llu "
+        "fanout_p50=%zu fanout_p95=%zu fanout_p99=%zu fanout_max=%zu "
+        "requester_peers_p50=%llu requester_peers_p95=%llu "
+        "requester_peers_p99=%llu requester_peers_max=%llu "
+        "header_bytes=%llu particle_payload_bytes=%llu "
+        "multipole_payload_bytes=%llu estimated_payload_bytes=%llu\n",
+        static_cast<unsigned long long>(call),
+        globalTotals[3], globalTotals[4], globalTotals[5], globalTotals[0],
+        globalTotals[1], globalTotals[2],
+        histogramPercentile(0.50), histogramPercentile(0.95),
+        histogramPercentile(0.99), histogramPercentile(1.0),
+        gatheredPercentile(0, 0.50), gatheredPercentile(0, 0.95),
+        gatheredPercentile(0, 0.99), gatheredPercentile(0, 1.0),
+        globalTotals[6], globalTotals[7], globalTotals[8], globalTotals[9]);
+    std::fflush(stdout);
 }
 
 std::size_t FmmPatchLetPlan::bytesOwned() const

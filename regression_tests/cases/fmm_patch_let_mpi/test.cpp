@@ -126,7 +126,9 @@ void unpack(const std::vector<Body>& bodies,
 double solveError(DistributedFmmGravityCalculator& solver,
                   const std::vector<Body>& localBodies,
                   const std::vector<Body>& globalBodies,
-                  FmmSolveStats& stats)
+                  FmmSolveStats& stats,
+                  double& relativeAccelerationErrorSum,
+                  unsigned long long& relativeAccelerationErrorCount)
 {
     std::vector<Vector3D> positions;
     std::vector<double> masses;
@@ -145,9 +147,12 @@ double solveError(DistributedFmmGravityCalculator& solver,
     {
         const Vector3D reference =
             directAcceleration(localBodies[i], globalBodies);
-        maximum = std::max(maximum,
+        const double relativeAccelerationError =
             norm(acceleration[i] - reference) /
-            std::max(1.0, norm(reference)));
+            std::max(1.0, norm(reference));
+        maximum = std::max(maximum, relativeAccelerationError);
+        relativeAccelerationErrorSum += relativeAccelerationError;
+        ++relativeAccelerationErrorCount;
         const double referencePotential =
             directPotential(localBodies[i], globalBodies);
         maximum = std::max(maximum,
@@ -188,6 +193,8 @@ int main(int argc, char** argv)
 
     DistributedFmmGravityCalculator solver(options, distributed);
     double localMaximumError = 0.0;
+    double localRelativeAccelerationErrorSum = 0.0;
+    unsigned long long localRelativeAccelerationErrorCount = 0;
     std::size_t maximumWaveCount = 0;
     std::size_t maximumProcessNodes = 0;
     bool rootMassValid = true;
@@ -197,7 +204,10 @@ int main(int argc, char** argv)
         const std::vector<Body> global = allBodies(size, step);
         FmmSolveStats stats;
         localMaximumError = std::max(
-            localMaximumError, solveError(solver, local, global, stats));
+            localMaximumError, solveError(
+                solver, local, global, stats,
+                localRelativeAccelerationErrorSum,
+                localRelativeAccelerationErrorCount));
         maximumWaveCount = std::max(maximumWaveCount, stats.letWaveCount);
         maximumProcessNodes = std::max(maximumProcessNodes,
                                        stats.processNodeCount);
@@ -210,6 +220,18 @@ int main(int argc, char** argv)
     double globalMaximumError = 0.0;
     MPI_Allreduce(&localMaximumError, &globalMaximumError, 1,
                   MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    double globalRelativeAccelerationErrorSum = 0.0;
+    unsigned long long globalRelativeAccelerationErrorCount = 0;
+    MPI_Allreduce(&localRelativeAccelerationErrorSum,
+                  &globalRelativeAccelerationErrorSum, 1,
+                  MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(&localRelativeAccelerationErrorCount,
+                  &globalRelativeAccelerationErrorCount, 1,
+                  MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    const double globalMeanRelativeAccelerationError =
+        globalRelativeAccelerationErrorCount == 0 ? 0.0 :
+        globalRelativeAccelerationErrorSum /
+            static_cast<double>(globalRelativeAccelerationErrorCount);
     unsigned long long localWaves =
         static_cast<unsigned long long>(maximumWaveCount);
     unsigned long long globalWaves = 0;
@@ -226,6 +248,7 @@ int main(int argc, char** argv)
                   MPI_INT, MPI_LAND, MPI_COMM_WORLD);
 
     const bool pass = globalMaximumError < 0.08 && globalMassPass != 0 &&
+                      globalMeanRelativeAccelerationError < 0.01 &&
                       globalWaves > 1 &&
                       globalNodes > static_cast<unsigned long long>(2 * size);
     if(rank == 0)
@@ -233,11 +256,15 @@ int main(int argc, char** argv)
         std::ofstream output("fmm_patch_let_mpi_metrics.txt");
         output << "pass " << (pass ? 1 : 0) << "\n";
         output << "max_relative_error " << globalMaximumError << "\n";
+        output << "mean_relative_acceleration_error "
+               << globalMeanRelativeAccelerationError << "\n";
         output << "max_wave_count " << globalWaves << "\n";
         output << "max_process_nodes " << globalNodes << "\n";
         output << "root_mass_pass " << globalMassPass << "\n";
         std::cout << "fmm_patch_let_mpi pass=" << pass
                   << " error=" << globalMaximumError
+                  << " mean_acceleration_error="
+                  << globalMeanRelativeAccelerationError
                   << " waves=" << globalWaves << std::endl;
     }
 

@@ -12,6 +12,10 @@ struct FmmDistributedOptions
     // transient storage of one payload wave.
     std::size_t maxRemoteBytes = static_cast<std::size_t>(2) * 1024 * 1024 * 1024;
     bool rebuildTopologyEverySolve = false;
+    // Emit the detailed fmm_solve_trace line without relying on a process
+    // environment variable. The legacy RICH_FMM_TRACE switch remains supported
+    // for existing runs.
+    bool emitSolveTrace = false;
     bool reuseInteractionPlansAcrossLeafCountChanges = true;
 
     // Keep persistent-tree controls last for aggregate compatibility.
