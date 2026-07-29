@@ -707,6 +707,38 @@ void FmmPatchLetPlan::build(
                 }
             }
         }
+        // M2L and P2P terminals remain conservative while the retained target
+        // node geometry stays inside its persistent envelope. M2P is different:
+        // its acceptance test is pointwise at the current target particles.
+        // A moving mesh can therefore invalidate an M2P terminal without
+        // changing the target tree topology or its conservative node radius.
+        // Recheck every cached M2P terminal before accepting the target subplan.
+        if(reusable && !previous->second.m2p.empty())
+        {
+            for(const CachedTerminal& cached : previous->second.m2p)
+            {
+                const auto targetNode =
+                    localNodeByPatch_[targetPatchIndex].find(
+                        cached.targetSpatialKey);
+                const auto cachedSource =
+                    previous->second.sources.find(cached.source);
+                const bool multipoleSource =
+                    std::get<2>(cached.source) ==
+                    static_cast<int>(FmmSubscriptionKind::Multipole);
+                if(targetNode == localNodeByPatch_[targetPatchIndex].end() ||
+                   cachedSource == previous->second.sources.end() ||
+                   !multipoleSource ||
+                   !m2pAdmissible(
+                       targetPatch.tree.nodes()[targetNode->second],
+                       cachedSource->second.descriptor,
+                       targetPatch.tree.particleOrder(),
+                       targetPatch.positions, thetaCritical))
+                {
+                    reusable = false;
+                    break;
+                }
+            }
+        }
         if(!reusable)
         {
             ++stats.letTargetSubplansRebuilt;

@@ -296,6 +296,15 @@ int main(int argc, char** argv)
     MPI_Allreduce(localIncremental, globalIncremental, 4,
                   MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
 
+    const unsigned long long localPatchSetIncremental[4] = {
+        stepStats[4].letTargetSubplansReused,
+        stepStats[4].letTargetSubplansRebuilt,
+        stepStats[4].letSourceTriggeredInvalidations,
+        stepStats[4].letBuildStorageReused ? 1ull : 0ull};
+    unsigned long long globalPatchSetIncremental[4] = {};
+    MPI_Allreduce(localPatchSetIncremental, globalPatchSetIncremental, 4,
+                  MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+
     const unsigned long long localSplitForest[4] = {
         static_cast<unsigned long long>(stepStats[2].localPatchCount),
         static_cast<unsigned long long>(stepStats[2].reusedPatchCount),
@@ -355,7 +364,10 @@ int main(int argc, char** argv)
     const bool emptyPersistentLeavesExercised =
         stepStats[2].persistentEmptyLeafCount > 0;
     const bool patchSetRebuild = stepStats[4].processTopologyRebuilt &&
-        stepStats[4].letTopologyRebuilt;
+        stepStats[4].letTopologyRebuilt &&
+        globalPatchSetIncremental[0] > 0 &&
+        globalPatchSetIncremental[1] > 0 &&
+        globalPatchSetIncremental[3] > 0;
     const bool incrementalCoverage = globalIncremental[0] > 0 &&
         globalIncremental[1] > 0 && globalIncremental[2] > 0 &&
         globalIncremental[3] > 0;
@@ -397,6 +409,14 @@ int main(int argc, char** argv)
                << (emptyPersistentLeavesExercised ? 1 : 0) << "\n";
         output << "patch_set_process_rebuilt "
                << (stepStats[4].processTopologyRebuilt ? 1 : 0) << "\n";
+        output << "patch_set_target_subplans_reused "
+               << globalPatchSetIncremental[0] << "\n";
+        output << "patch_set_target_subplans_rebuilt "
+               << globalPatchSetIncremental[1] << "\n";
+        output << "patch_set_source_invalidations "
+               << globalPatchSetIncremental[2] << "\n";
+        output << "patch_set_storage_reused_ranks "
+               << globalPatchSetIncremental[3] << "\n";
         output << "target_subplans_reused " << globalIncremental[0] << "\n";
         output << "target_subplans_rebuilt " << globalIncremental[1] << "\n";
         output << "source_invalidations " << globalIncremental[2] << "\n";
