@@ -1113,8 +1113,17 @@ void FmmPatchLetPlan::build(
                         reply.child.spatialKey, reply.child);
                 if(!inserted.second)
                 {
-                    const FmmRemoteNodeDescriptor& old =
+                    FmmRemoteNodeDescriptor& old =
                         inserted.first->second;
+                    // Cached descriptors can legitimately carry the previous
+                    // solve's subtree occupancy. Particle count is payload
+                    // metadata, not descriptor topology: persistent leaves may
+                    // gain or lose particles while their spatial key, geometry,
+                    // child mask and topology generation remain unchanged.
+                    // Validate the immutable descriptor contract, then replace
+                    // the cached record with the current owner's authoritative
+                    // descriptor so later wave sizing and cache refresh use the
+                    // current occupancy.
                     if(old.center[0] != reply.child.center[0] ||
                        old.center[1] != reply.child.center[1] ||
                        old.center[2] != reply.child.center[2] ||
@@ -1122,13 +1131,13 @@ void FmmPatchLetPlan::build(
                        old.radius != reply.child.radius ||
                        old.spatialKey != reply.child.spatialKey ||
                        old.patchId != reply.child.patchId ||
-                       old.particleCount != reply.child.particleCount ||
                        old.topologyEpoch != reply.child.topologyEpoch ||
                        old.sourceRank != reply.child.sourceRank ||
                        old.isLeaf != reply.child.isLeaf ||
                        old.childMask != reply.child.childMask)
                         throw UniversalError(
                             "FmmPatchLetPlan::build: inconsistent duplicate descriptor");
+                    old = reply.child;
                 }
             }
         }
