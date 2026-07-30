@@ -414,8 +414,7 @@ int main(int argc, char** argv)
     bool persistentSplitRebuilt = false;
     bool persistentMergeRebuilt = false;
 
-    const PatchForestLifecycleObservation patchForestLifecycle =
-        exercisePatchForestLifecycle(rank);
+    PatchForestLifecycleObservation patchForestLifecycle;
 
     {
         FmmGravityOptions countOptions = options;
@@ -723,6 +722,8 @@ int main(int argc, char** argv)
             }
         }
     }
+
+    patchForestLifecycle = exercisePatchForestLifecycle(rank);
 
     double globalMaximumError = 0.0;
     MPI_Allreduce(&localMaximumError, &globalMaximumError, 1, MPI_DOUBLE,
