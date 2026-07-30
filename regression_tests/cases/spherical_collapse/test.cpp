@@ -61,10 +61,14 @@ struct DiagResult {
     double shock_r;
     double rho_scatter;
     double vr_scatter;
+    double tangential_velocity_rms;
+    double first_postshock_added_shock_weight;
+    double first_postshock_base_scalar_limiter;
 };
 
 DiagResult compute_diagnostics(HDSim3D const& sim,
-    std::vector<double> const& bin_edges)
+    std::vector<double> const& bin_edges,
+    SphericalLinearGauss3D const& interp)
 {
     size_t const nbins = bin_edges.size() - 1;
     size_t const N = sim.getTessellation().GetPointNo();
@@ -73,6 +77,8 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
     std::vector<double> rho_vol(nbins, 0.0);
     std::vector<double> vr_vol(nbins, 0.0);
     std::vector<double> ie_vol(nbins, 0.0);
+    double tangential_v2_vol = 0.0;
+    double tangential_vol = 0.0;
 
     std::vector<size_t> cell_bin(N, nbins);
     std::vector<double> cell_rho(N);
@@ -96,9 +102,12 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
         double const rho = sim.getCells()[i].density;
         double const ie = sim.getCells()[i].internal_energy;
         double vr = 0.0;
+        double vt2 = 0.0;
         if (r > 1e-12) {
             Vector3D const v = sim.getCells()[i].velocity;
             vr = (v.x * cm.x + v.y * cm.y + v.z * cm.z) / r;
+            Vector3D const vt = v - cm * (vr / r);
+            vt2 = ScalarProd(vt, vt);
         }
 
         cell_bin[i] = bin;
@@ -110,6 +119,8 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
         rho_vol[bin] += rho * vol;
         vr_vol[bin] += vr * vol;
         ie_vol[bin] += ie * vol;
+        tangential_v2_vol += vt2 * vol;
+        tangential_vol += vol;
     }
 
 #ifdef RICH_MPI
@@ -124,6 +135,11 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
         vr_vol = g;
         MPI_Allreduce(ie_vol.data(), g.data(), n, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         ie_vol = g;
+        double gt = 0.0;
+        MPI_Allreduce(&tangential_v2_vol, &gt, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        tangential_v2_vol = gt;
+        MPI_Allreduce(&tangential_vol, &gt, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        tangential_vol = gt;
     }
 #endif
 
@@ -164,6 +180,7 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
     double total_rho_mad = 0.0;
     double total_vr_mad = 0.0;
     double total_vol = 0.0;
+    size_t shock_bin = nbins;
 
     for (size_t b = 0; b < nbins; ++b) {
         if (vol_sum[b] <= 0.0)
@@ -177,13 +194,47 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
         }
 
         if (ie_mean[b] > 0.2 && bin_center < shock_r)
+        {
             shock_r = bin_center;
+            shock_bin = b;
+        }
     }
+
+    double first_postshock_weight = 0.0;
+    double first_postshock_base = 1.0;
+    std::vector<double> const& shock_weights = interp.GetAppliedShockWeights();
+    std::vector<unsigned char> const& downstream = interp.GetDownstreamProtectionFlags();
+    std::vector<double> const& base_limiter = interp.GetBaseScalarLimiterFactors();
+    if (shock_bin < nbins)
+    {
+        for (size_t i = 0; i < N; ++i)
+        {
+            if (cell_bin[i] != shock_bin || i >= downstream.size() || !downstream[i])
+                continue;
+            if (i < shock_weights.size())
+                first_postshock_weight = std::max(first_postshock_weight, shock_weights[i]);
+            if (i < base_limiter.size())
+                first_postshock_base = std::min(first_postshock_base, base_limiter[i]);
+        }
+    }
+#ifdef RICH_MPI
+    {
+        double g = 0.0;
+        MPI_Allreduce(&first_postshock_weight, &g, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        first_postshock_weight = g;
+        MPI_Allreduce(&first_postshock_base, &g, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+        first_postshock_base = g;
+    }
+#endif
 
     DiagResult res;
     res.shock_r = shock_r;
     res.rho_scatter = (total_vol > 0.0) ? total_rho_mad / total_vol : 0.0;
     res.vr_scatter = (total_vol > 0.0) ? total_vr_mad / total_vol : 0.0;
+    res.tangential_velocity_rms = (tangential_vol > 0.0)
+        ? std::sqrt(tangential_v2_vol / tangential_vol) : 0.0;
+    res.first_postshock_added_shock_weight = first_postshock_weight;
+    res.first_postshock_base_scalar_limiter = first_postshock_base;
     return res;
 }
 
@@ -332,6 +383,9 @@ int main(void)
     double next_snapshot_r = R_OUTER - 0.1;
     double max_rho_scatter = 0.0;
     double max_vr_scatter = 0.0;
+    double max_tangential_velocity_rms = 0.0;
+    double max_first_postshock_added_shock_weight = 0.0;
+    double min_first_postshock_base_scalar_limiter = 1.0;
 
     while (true) {
         try {
@@ -341,9 +395,17 @@ int main(void)
             throw;
         }
 
-        DiagResult diag = compute_diagnostics(sim, bin_edges);
+        DiagResult diag = compute_diagnostics(sim, bin_edges, interp);
         max_rho_scatter = std::max(max_rho_scatter, diag.rho_scatter);
         max_vr_scatter = std::max(max_vr_scatter, diag.vr_scatter);
+        max_tangential_velocity_rms = std::max(max_tangential_velocity_rms,
+                                               diag.tangential_velocity_rms);
+        max_first_postshock_added_shock_weight = std::max(
+            max_first_postshock_added_shock_weight,
+            diag.first_postshock_added_shock_weight);
+        min_first_postshock_base_scalar_limiter = std::min(
+            min_first_postshock_base_scalar_limiter,
+            diag.first_postshock_base_scalar_limiter);
 
         if (rank == 0) {
             std::cout << "Cycle " << simulation.GetCycle()
@@ -351,7 +413,10 @@ int main(void)
                       << " dt=" << simulation.GetTimeStep()
                       << " shock_r=" << diag.shock_r
                       << " rho_scatter=" << diag.rho_scatter
-                      << " vr_scatter=" << diag.vr_scatter << std::endl;
+                      << " vr_scatter=" << diag.vr_scatter
+                      << " tangential_velocity_rms=" << diag.tangential_velocity_rms
+                      << " first_postshock_added_shock_weight="
+                      << diag.first_postshock_added_shock_weight << std::endl;
         }
 
         if (diag.shock_r <= next_snapshot_r) {
@@ -417,16 +482,26 @@ int main(void)
     }
 
     if (rank == 0) {
-        int pass = (max_rho_scatter < 0.1 && max_vr_scatter < 0.1) ? 1 : 0;
+        int pass = (max_rho_scatter <= 1e-4 && max_vr_scatter <= 1e-4
+                    && max_tangential_velocity_rms <= 1e-4
+                    && max_first_postshock_added_shock_weight <= 1e-12) ? 1 : 0;
         std::ofstream mf("collapse_metrics.txt");
         mf << std::scientific << std::setprecision(12);
         mf << "max_density_scatter " << max_rho_scatter << "\n";
         mf << "max_velocity_scatter " << max_vr_scatter << "\n";
+        mf << "max_tangential_velocity_rms " << max_tangential_velocity_rms << "\n";
+        mf << "max_first_postshock_added_shock_weight "
+           << max_first_postshock_added_shock_weight << "\n";
+        mf << "min_first_postshock_base_scalar_limiter "
+           << min_first_postshock_base_scalar_limiter << "\n";
         mf << "pass " << pass << "\n";
         mf.close();
         std::cout << "Wrote collapse_metrics.txt"
                   << " (max_density_scatter=" << max_rho_scatter
                   << ", max_velocity_scatter=" << max_vr_scatter
+                  << ", max_tangential_velocity_rms=" << max_tangential_velocity_rms
+                  << ", max_first_postshock_added_shock_weight="
+                  << max_first_postshock_added_shock_weight
                   << ", pass=" << pass << ")" << std::endl;
     }
 
