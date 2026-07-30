@@ -874,6 +874,9 @@ void FmmPatchDistributedSolver::solve(
     stats.localRootGeometryChanged =
         forestChange.patchSetChanged || forestChange.patchGeometryChanged;
     stats.localLeafTopologyChanged = forestChange.structuralTopologyChanged;
+    stats.localNodeGeometryChanged = forestChange.nodeGeometryChanged;
+    stats.localGeometryEnvelopeChanged =
+        forestChange.geometryEnvelopeChanged;
     stats.localLeafOccupancyChanged = forestChange.occupancyChanged;
     stats.localCountOnlyLeafChange = forestChange.countOnlyChanged;
     stats.localPatchCount = forest_.patches().size();
@@ -894,10 +897,11 @@ void FmmPatchDistributedSolver::solve(
     for(const FmmLocalPatch& patch : forest_.patches())
         localPersistentRefit = localPersistentRefit || patch.persistentTreeRefit;
 
-    const unsigned long long localTopologyTerms[10] = {
+    const unsigned long long localTopologyTerms[11] = {
         stats.localRootGeometryChanged ? 1ull : 0ull,
         stats.localLeafTopologyChanged ? 1ull : 0ull,
-        forestChange.nodeGeometryChanged ? 1ull : 0ull,
+        stats.localNodeGeometryChanged ? 1ull : 0ull,
+        stats.localGeometryEnvelopeChanged ? 1ull : 0ull,
         stats.localLeafOccupancyChanged ? 1ull : 0ull,
         stats.localCountOnlyLeafChange ? 1ull : 0ull,
         localPersistentRefit ? 1ull : 0ull,
@@ -905,27 +909,31 @@ void FmmPatchDistributedSolver::solve(
         static_cast<unsigned long long>(forestChange.persistentSubtreeMerges),
         static_cast<unsigned long long>(forestChange.persistentEmptyLeaves),
         static_cast<unsigned long long>(forest_.patches().size())};
-    unsigned long long globalTopologyTerms[10] = {};
-    MPI_Allreduce(localTopologyTerms, globalTopologyTerms, 10,
+    unsigned long long globalTopologyTerms[11] = {};
+    MPI_Allreduce(localTopologyTerms, globalTopologyTerms, 11,
                   MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm_);
     stats.ranksWithRootGeometryChange =
         static_cast<std::size_t>(globalTopologyTerms[0]);
     stats.ranksWithLeafTopologyChange =
         static_cast<std::size_t>(globalTopologyTerms[1]);
-    stats.ranksWithLeafOccupancyChange =
+    stats.ranksWithNodeGeometryChange =
+        static_cast<std::size_t>(globalTopologyTerms[2]);
+    stats.ranksWithGeometryEnvelopeChange =
         static_cast<std::size_t>(globalTopologyTerms[3]);
-    stats.ranksWithCountOnlyLeafChange =
+    stats.ranksWithLeafOccupancyChange =
         static_cast<std::size_t>(globalTopologyTerms[4]);
-    stats.persistentTreeRefitRankCount =
+    stats.ranksWithCountOnlyLeafChange =
         static_cast<std::size_t>(globalTopologyTerms[5]);
-    stats.persistentLeafSplitCount = globalTopologyTerms[6];
-    stats.persistentSubtreeMergeCount = globalTopologyTerms[7];
-    stats.persistentEmptyLeafCount = globalTopologyTerms[8];
-    if(globalTopologyTerms[9] > static_cast<unsigned long long>(
+    stats.persistentTreeRefitRankCount =
+        static_cast<std::size_t>(globalTopologyTerms[6]);
+    stats.persistentLeafSplitCount = globalTopologyTerms[7];
+    stats.persistentSubtreeMergeCount = globalTopologyTerms[8];
+    stats.persistentEmptyLeafCount = globalTopologyTerms[9];
+    if(globalTopologyTerms[10] > static_cast<unsigned long long>(
            std::numeric_limits<std::size_t>::max()))
         throw UniversalError(
             "FmmPatchDistributedSolver::solve: global patch count exceeds size_t");
-    stats.globalPatchCount = static_cast<std::size_t>(globalTopologyTerms[9]);
+    stats.globalPatchCount = static_cast<std::size_t>(globalTopologyTerms[10]);
     stats.replicatedDescriptorBytes = saturatingMultiply(
         stats.globalPatchCount, sizeof(FmmPatchRootDescriptor));
 
@@ -961,13 +969,13 @@ void FmmPatchDistributedSolver::solve(
     const bool rebuildProcessTopology = !topologyInitialized_ ||
         forcedRebuild || globalTopologyTerms[0] != 0;
     const bool rebuildLetTopology = rebuildProcessTopology ||
-        globalTopologyTerms[1] != 0 || globalTopologyTerms[2] != 0 ||
+        globalTopologyTerms[1] != 0 || globalTopologyTerms[3] != 0 ||
         payloadShapeRequiresRebuild;
     stats.topologyRebuildForced = forcedRebuild;
     stats.letPayloadShapeTriggeredRebuild = payloadShapeRequiresRebuild;
     stats.processTopologyRebuilt = rebuildProcessTopology;
     stats.letTopologyRebuilt = rebuildLetTopology;
-    stats.countOnlyTopologyReused = globalTopologyTerms[4] != 0 &&
+    stats.countOnlyTopologyReused = globalTopologyTerms[5] != 0 &&
         !rebuildLetTopology;
 
     const Clock::time_point topologyStart = Clock::now();

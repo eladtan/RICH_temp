@@ -50,6 +50,21 @@ std::uint64_t nodeGeometryHash(const FmmTree& tree)
         hash = hashCombine(hash, hashDouble(node.center.y));
         hash = hashCombine(hash, hashDouble(node.center.z));
         hash = hashCombine(hash, hashDouble(node.halfSize));
+        hash = hashCombine(hash, hashDouble(node.currentRadius));
+    }
+    return hash;
+}
+
+std::uint64_t geometryEnvelopeHash(const FmmTree& tree)
+{
+    std::uint64_t hash = 1469598103934665603ull;
+    for(const FmmNode& node : tree.nodes())
+    {
+        hash = hashCombine(hash, node.spatialKey);
+        hash = hashCombine(hash, hashDouble(node.center.x));
+        hash = hashCombine(hash, hashDouble(node.center.y));
+        hash = hashCombine(hash, hashDouble(node.center.z));
+        hash = hashCombine(hash, hashDouble(node.halfSize));
         hash = hashCombine(hash, hashDouble(node.radius));
     }
     return hash;
@@ -451,8 +466,10 @@ void FmmPatchForest::buildPatchObjects(
             structuralSignatureHash(patch.structuralSignature);
         patch.occupancySignature = leafOccupancySignature(patch.tree);
         patch.nodeGeometryHash = nodeGeometryHash(patch.tree);
+        patch.geometryEnvelopeHash = geometryEnvelopeHash(patch.tree);
+        patch.geometryEnvelopeGeneration = 1;
         // The nonpersistent path has no retained geometry envelope.
-        patch.topologyHash = patch.nodeGeometryHash;
+        patch.topologyHash = patch.geometryEnvelopeHash;
         FmmDualTreeTraversal::buildLocalPlan(
             patch.tree, gravityOptions_.thetaCritical, patch.localPlan);
 
@@ -695,6 +712,8 @@ FmmPatchForestChange FmmPatchForest::compareWithPrevious() const
             current.structuralSignature == prior.structuralSignature;
         const bool nodeGeometrySame =
             current.nodeGeometryHash == prior.nodeGeometryHash;
+        const bool geometryEnvelopeSame =
+            current.geometryEnvelopeHash == prior.geometryEnvelopeHash;
         const bool occupancyDiff =
             current.occupancySignature != prior.occupancySignature;
 
@@ -707,6 +726,8 @@ FmmPatchForestChange FmmPatchForest::compareWithPrevious() const
             change.structuralTopologyChanged = true;
         if(!nodeGeometrySame)
             change.nodeGeometryChanged = true;
+        if(!geometryEnvelopeSame)
+            change.geometryEnvelopeChanged = true;
         if(occupancyDiff)
             change.occupancyChanged = true;
     }
@@ -724,7 +745,8 @@ FmmPatchForestChange FmmPatchForest::compareWithPrevious() const
         change.patchSetChanged = true;
     change.countOnlyChanged = change.occupancyChanged &&
         !change.patchSetChanged && !change.patchGeometryChanged &&
-        !change.structuralTopologyChanged && !change.nodeGeometryChanged;
+        !change.structuralTopologyChanged && !change.nodeGeometryChanged &&
+        !change.geometryEnvelopeChanged;
     return change;
 }
 

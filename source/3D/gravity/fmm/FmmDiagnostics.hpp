@@ -72,6 +72,8 @@ struct FmmSolveStats
     std::uint64_t letTopologyRebuildCount = 0;
     std::size_t ranksWithRootGeometryChange = 0;
     std::size_t ranksWithLeafTopologyChange = 0;
+    std::size_t ranksWithNodeGeometryChange = 0;
+    std::size_t ranksWithGeometryEnvelopeChange = 0;
     std::size_t ranksWithLeafOccupancyChange = 0;
     std::size_t ranksWithCountOnlyLeafChange = 0;
     std::size_t persistentTreeRefitRankCount = 0;
@@ -92,6 +94,8 @@ struct FmmSolveStats
     std::uint64_t letOmittedParticlePayloadCount = 0;
     bool localRootGeometryChanged = false;
     bool localLeafTopologyChanged = false;
+    bool localNodeGeometryChanged = false;
+    bool localGeometryEnvelopeChanged = false;
     bool localLeafOccupancyChanged = false;
     bool localCountOnlyLeafChange = false;
     bool processTopologyRebuilt = false;

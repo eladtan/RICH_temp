@@ -352,6 +352,8 @@ int main(int argc, char** argv)
         stepStats[1].reusedLocalPatchPlanCount ==
             stepStats[1].localPatchCount &&
         stepStats[1].patchNodeGeometryExpansionCount == 0 &&
+        stepStats[1].ranksWithNodeGeometryChange > 0 &&
+        stepStats[1].ranksWithGeometryEnvelopeChange == 0 &&
         stepStats[1].ranksWithLeafTopologyChange == 0;
     const bool splitIncremental =
         !stepStats[2].processTopologyRebuilt &&
@@ -397,6 +399,12 @@ int main(int argc, char** argv)
                << "\n";
         output << "warm_radius_envelope_reused "
                << (stepStats[1].patchNodeGeometryExpansionCount == 0 ? 1 : 0) << "\n";
+        output << "warm_exact_node_geometry_changed "
+               << (stepStats[1].ranksWithNodeGeometryChange > 0 ? 1 : 0)
+               << "\n";
+        output << "warm_geometry_envelope_stable "
+               << (stepStats[1].ranksWithGeometryEnvelopeChange == 0 ? 1 : 0)
+               << "\n";
         output << "split_process_reused "
                << (!stepStats[2].processTopologyRebuilt ? 1 : 0) << "\n";
         output << "split_let_rebuilt "

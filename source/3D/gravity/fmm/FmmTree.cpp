@@ -202,10 +202,11 @@ void FmmTree::buildPersistent(
         }
     }
 
-    // Radius is part of the conservative interaction contract, but not of the
-    // dyadic node identity.  Keep the previous envelope by spatial key while
-    // rebuilding particle ranges.  This prevents tiny moving-mesh excursions
-    // from forcing a global LET rebuild on every source evaluation.
+    // The planning radius is part of the conservative interaction contract,
+    // but not of the dyadic node identity. Keep the previous envelope by
+    // spatial key while rebuilding particle ranges. currentRadius remains the
+    // tight geometry of this solve, while radius becomes the retained planning
+    // envelope used by local and remote traversal.
     std::vector<std::pair<std::uint64_t, double>> previousRadiusByKey;
     if(!initializeFromScratch)
     {
@@ -241,7 +242,7 @@ void FmmTree::buildPersistent(
     // radius is an absolute geometric upper bound required by the wire checks.
     for(FmmNode& node : nodes_)
     {
-        const double actualRadius = node.radius;
+        const double actualRadius = node.currentRadius;
         const double cubeRadius = std::sqrt(3.0) * node.halfSize;
         double retainedRadius = std::min(
             cubeRadius, actualRadius * options.persistentRadiusSlackFactor);
@@ -454,9 +455,11 @@ void FmmTree::finishMetadata(const std::vector<Vector3D>& positions)
                 if(childNode.particleCount() == 0)
                     continue;
                 radius = std::max(radius,
-                    nodeDistance(childNode.center, node.center) + childNode.radius);
+                    nodeDistance(childNode.center, node.center) +
+                    childNode.currentRadius);
             }
         }
+        node.currentRadius = radius;
         node.radius = radius;
     }
 }
@@ -518,7 +521,8 @@ void FmmTree::validateInvariants(std::size_t particleCount) const
         if(node.particleBegin > node.particleEnd ||
            node.particleEnd > particleCount ||
            !finiteVector(node.center) || !std::isfinite(node.radius) ||
-           node.radius < 0)
+           node.radius < 0 || !std::isfinite(node.currentRadius) ||
+           node.currentRadius < 0 || node.currentRadius > node.radius)
             throw UniversalError("FmmTree::build: invalid node metadata");
         if(node.isLeaf())
         {

@@ -59,6 +59,21 @@ std::uint64_t nodeGeometryHash(const FmmTree& tree)
         hash = hashCombine(hash, hashDouble(node.center.y));
         hash = hashCombine(hash, hashDouble(node.center.z));
         hash = hashCombine(hash, hashDouble(node.halfSize));
+        hash = hashCombine(hash, hashDouble(node.currentRadius));
+    }
+    return hash;
+}
+
+std::uint64_t geometryEnvelopeHash(const FmmTree& tree)
+{
+    std::uint64_t hash = 1469598103934665603ull;
+    for(const FmmNode& node : tree.nodes())
+    {
+        hash = hashCombine(hash, node.spatialKey);
+        hash = hashCombine(hash, hashDouble(node.center.x));
+        hash = hashCombine(hash, hashDouble(node.center.y));
+        hash = hashCombine(hash, hashDouble(node.center.z));
+        hash = hashCombine(hash, hashDouble(node.halfSize));
         hash = hashCombine(hash, hashDouble(node.radius));
     }
     return hash;
@@ -158,7 +173,7 @@ bool radiusExpanded(double current, double previous)
     return current > previous + tolerance;
 }
 
-bool anyNodeRadiusExpanded(
+bool anyGeometryEnvelopeExpanded(
     const FmmTree& tree,
     const FmmLocalInteractionPlan& previousPlan)
 {
@@ -273,6 +288,9 @@ FmmPatchForestChange FmmPatchForest::preparePersistent(
         FmmRootGeometry previousRoot;
         double previousRootRadius = 0.0;
         std::uint64_t previousStructuralTreeHash = 0;
+        std::uint64_t previousNodeGeometryHash = 0;
+        std::uint64_t previousGeometryEnvelopeHash = 0;
+        std::uint64_t previousGeometryEnvelopeGeneration = 0;
         std::uint64_t previousTopologyGeneration = 0;
         if(matched)
         {
@@ -281,6 +299,10 @@ FmmPatchForestChange FmmPatchForest::preparePersistent(
             patch = std::move(previousPatches_[previousIndex]);
             previousRoot = patch.root;
             previousStructuralTreeHash = patch.structuralTreeHash;
+            previousNodeGeometryHash = patch.nodeGeometryHash;
+            previousGeometryEnvelopeHash = patch.geometryEnvelopeHash;
+            previousGeometryEnvelopeGeneration =
+                patch.geometryEnvelopeGeneration;
             previousTopologyGeneration = patch.topologyHash;
             if(!patch.tree.nodes().empty())
                 previousRootRadius = patch.tree.nodes()[0].radius;
@@ -351,18 +373,32 @@ FmmPatchForestChange FmmPatchForest::preparePersistent(
             patch.structuralSignature == currentStructural;
         const bool occupancySame = matched &&
             patch.occupancySignature == currentOccupancy;
-        const bool nodeGeometryExpanded = matched && structureSame &&
-            anyNodeRadiusExpanded(patch.tree, patch.localPlan);
+        const std::uint64_t currentNodeGeometryHash =
+            nodeGeometryHash(patch.tree);
+        const std::uint64_t currentGeometryEnvelopeHash =
+            geometryEnvelopeHash(patch.tree);
+        const bool nodeGeometryChanged = matched && structureSame &&
+            previousNodeGeometryHash != currentNodeGeometryHash;
+        const bool geometryEnvelopeChanged = matched && structureSame &&
+            anyGeometryEnvelopeExpanded(patch.tree, patch.localPlan);
         const bool rootRadiusExpanded = matched && rootUnchanged &&
             !patch.tree.nodes().empty() &&
             radiusExpanded(patch.tree.nodes()[0].radius, previousRootRadius);
 
         patch.rootGeometryChanged = !rootUnchanged || rootRadiusExpanded;
         patch.leafTopologyChanged = !structureSame;
-        patch.nodeGeometryChanged = nodeGeometryExpanded;
+        patch.nodeGeometryChanged = nodeGeometryChanged;
+        patch.geometryEnvelopeChanged = geometryEnvelopeChanged;
         patch.leafOccupancyChanged = !occupancySame;
-        patch.nodeGeometryHash = nodeGeometryHash(patch.tree);
-        if(nodeGeometryExpanded)
+        patch.nodeGeometryHash = currentNodeGeometryHash;
+        // In nonpersistent mode a contraction can reuse the previous, larger
+        // local/remote planning geometry even though the freshly built tree is
+        // tighter. Preserve the retained envelope identity until an expansion
+        // or structural/root change replaces it.
+        patch.geometryEnvelopeHash = matched && structureSame &&
+            !geometryEnvelopeChanged ? previousGeometryEnvelopeHash :
+                                       currentGeometryEnvelopeHash;
+        if(geometryEnvelopeChanged)
             ++change.nodeGeometryExpansionPatches;
 
         patch.structuralTreeHash = currentStructuralTreeHash;
@@ -371,7 +407,15 @@ FmmPatchForestChange FmmPatchForest::preparePersistent(
         // previous generation; any structural/root change or radius expansion
         // advances it and invalidates dependent cached target subplans.
         const bool descriptorTopologyChanged = !rootUnchanged ||
-            !structureSame || nodeGeometryExpanded;
+            !structureSame || geometryEnvelopeChanged;
+        if(!matched)
+            patch.geometryEnvelopeGeneration = 1;
+        else if(descriptorTopologyChanged)
+            patch.geometryEnvelopeGeneration = nextTopologyGeneration(
+                previousGeometryEnvelopeGeneration);
+        else
+            patch.geometryEnvelopeGeneration =
+                previousGeometryEnvelopeGeneration;
         if(!matched)
             patch.topologyHash = 1;
         else if(descriptorTopologyChanged)
@@ -407,6 +451,8 @@ FmmPatchForestChange FmmPatchForest::preparePersistent(
             change.structuralTopologyChanged || patch.leafTopologyChanged;
         change.nodeGeometryChanged =
             change.nodeGeometryChanged || patch.nodeGeometryChanged;
+        change.geometryEnvelopeChanged =
+            change.geometryEnvelopeChanged || patch.geometryEnvelopeChanged;
         change.occupancyChanged =
             change.occupancyChanged || patch.leafOccupancyChanged;
         patches_.push_back(std::move(patch));
@@ -429,7 +475,10 @@ FmmPatchForestChange FmmPatchForest::preparePersistent(
     }
     change.countOnlyChanged = change.occupancyChanged &&
         !change.patchSetChanged && !change.patchGeometryChanged &&
-        !change.structuralTopologyChanged && !change.nodeGeometryChanged;
+        !change.structuralTopologyChanged && !change.geometryEnvelopeChanged;
+    // Tight current geometry may move while remaining inside the retained
+    // planning envelope. Such motion is deliberately compatible with
+    // count-only topology reuse.
 
     std::vector<FmmLocalPatch>().swap(previousPatches_);
     fixedLevelPatchCount_ = fixedLevelPatchCount;

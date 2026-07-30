@@ -30,19 +30,24 @@ struct FmmLocalPatch
 
     // topologyHash is the wire-visible invalidation token. Persistent patch
     // mode uses a monotonic generation; the nonpersistent builder uses the
-    // exact node-geometry hash so communication remains conservative.
+    // planning-envelope hash so communication remains conservative.
     // structuralTreeHash and structuralSignature describe only spatial keys,
-    // child masks, leaf state, and depth. nodeGeometryHash separately records
-    // exact centers, half sizes, and radii. None includes leaf occupancy.
+    // child masks, leaf state, and depth. nodeGeometryHash records tight current
+    // geometry, while geometryEnvelopeHash and geometryEnvelopeGeneration
+    // describe the retained conservative planning geometry. None includes leaf
+    // occupancy.
     std::uint64_t topologyHash = 0;
     std::uint64_t structuralTreeHash = 0;
     std::uint64_t nodeGeometryHash = 0;
+    std::uint64_t geometryEnvelopeHash = 0;
+    std::uint64_t geometryEnvelopeGeneration = 0;
     std::vector<std::uint64_t> structuralSignature;
     std::vector<std::uint64_t> occupancySignature;
 
     bool rootGeometryChanged = false;
     bool leafTopologyChanged = false;
     bool nodeGeometryChanged = false;
+    bool geometryEnvelopeChanged = false;
     bool leafOccupancyChanged = false;
     bool localPlanReused = false;
     bool persistentTreeRefit = false;
