@@ -956,23 +956,30 @@ void FmmPatchDistributedSolver::solve(
         throw UniversalError(
             "FmmPatchDistributedSolver::solve: non-finite global mass sum");
 
-    int localPayloadShapeReusable =
-        topologyInitialized_ && letPlan_.localPayloadShapeReusable(forest_) ?
-        1 : 0;
-    int globalPayloadShapeReusable = 0;
-    MPI_Allreduce(&localPayloadShapeReusable, &globalPayloadShapeReusable, 1,
+    const int localLetReuse[2] = {
+        topologyInitialized_ &&
+            letPlan_.localPayloadCapacityReusable(forest_) ? 1 : 0,
+        topologyInitialized_ &&
+            letPlan_.localM2PTopologyReusable(forest_) ? 1 : 0};
+    int globalLetReuse[2] = {};
+    MPI_Allreduce(localLetReuse, globalLetReuse, 2,
                   MPI_INT, MPI_LAND, comm_);
-    const bool payloadShapeRequiresRebuild = topologyInitialized_ &&
-        globalPayloadShapeReusable == 0;
+    const bool payloadCapacityRequiresRefresh = topologyInitialized_ &&
+        globalLetReuse[0] == 0;
+    const bool m2pTopologyRequiresRebuild = topologyInitialized_ &&
+        globalLetReuse[1] == 0;
 
     const bool forcedRebuild = distributedOptions_.rebuildTopologyEverySolve;
     const bool rebuildProcessTopology = !topologyInitialized_ ||
         forcedRebuild || globalTopologyTerms[0] != 0;
     const bool rebuildLetTopology = rebuildProcessTopology ||
         globalTopologyTerms[1] != 0 || globalTopologyTerms[3] != 0 ||
-        payloadShapeRequiresRebuild;
+        m2pTopologyRequiresRebuild;
     stats.topologyRebuildForced = forcedRebuild;
-    stats.letPayloadShapeTriggeredRebuild = payloadShapeRequiresRebuild;
+    stats.letPayloadCapacityRefreshRequired =
+        payloadCapacityRequiresRefresh;
+    stats.letPayloadShapeTriggeredRebuild =
+        payloadCapacityRequiresRefresh && rebuildLetTopology;
     stats.processTopologyRebuilt = rebuildProcessTopology;
     stats.letTopologyRebuilt = rebuildLetTopology;
     stats.countOnlyTopologyReused = globalTopologyTerms[5] != 0 &&
@@ -1073,6 +1080,12 @@ void FmmPatchDistributedSolver::solve(
             // An explicitly forced rebuild remains a true cold rebuild.
             topologyInitialized_ && !forcedRebuild);
         std::vector<FmmPatchRootDescriptor>().swap(rootDescriptors_);
+    }
+    else if(payloadCapacityRequiresRefresh)
+    {
+        stats.processCommunicatorsReused = true;
+        letPlan_.refreshPayloadLayout(
+            forest_, topologyEpoch_, stats);
     }
     else
     {

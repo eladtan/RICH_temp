@@ -71,10 +71,21 @@ public:
                std::uint64_t topologyEpoch,
                FmmSolveStats& stats);
 
-    // True when every retained particle subscription still fits the payload
-    // capacity used to construct its wave. A false result requires a LET
-    // rebuild before any payload exchange is started.
-    bool localPayloadShapeReusable(const FmmPatchForest& forest) const;
+    // Payload capacity is execution state, not interaction topology.  A false
+    // result requires a capacity refresh and wave repack, but does not by itself
+    // invalidate descriptor traversal or target/source terminal decisions.
+    bool localPayloadCapacityReusable(const FmmPatchForest& forest) const;
+
+    // M2P acceptance is pointwise at the current target particles and therefore
+    // remains a true interaction-topology validity check.
+    bool localM2PTopologyReusable(const FmmPatchForest& forest) const;
+
+    // Refresh enlarged particle capacities, repack the affected wave suffix,
+    // and exchange new subscriptions while preserving all LET terminals,
+    // descriptors, process topology, and the topology epoch.
+    void refreshPayloadLayout(const FmmPatchForest& forest,
+                              std::uint64_t topologyEpoch,
+                              FmmSolveStats& stats);
 
     void execute(FmmPatchForest& forest,
                  const FmmTaylorExpansion& layout,
@@ -137,6 +148,7 @@ private:
         FmmRemoteNodeKey key;
         int kind = 0;
         std::size_t wave = 0;
+        std::size_t particlePayloadCapacity = 0;
         FmmRemoteNodeDescriptor descriptor;
         FmmNode sourceNode;
     };
@@ -145,6 +157,7 @@ private:
     {
         FmmRemoteNodeDescriptor descriptor;
         RemoteRootGeometry root;
+        std::size_t particlePayloadCapacity = 0;
     };
 
     struct CachedTerminal
@@ -196,6 +209,7 @@ private:
 
     std::size_t particlePayloadCapacity(std::size_t currentCount) const;
     std::size_t sourceRecordBytes(const SourceIdentity& source) const;
+    std::size_t sourceRecordBytes(const SourceRecord& source) const;
     std::size_t ensureSourceRecord(
         std::size_t wave,
         const SourceIdentity& identity,
@@ -229,6 +243,7 @@ private:
         subscriptionsByWave_;
     std::map<std::pair<std::uint64_t, std::uint64_t>, std::size_t>
         localParticlePayloadCaps_;
+    std::map<SourceIdentity, std::size_t> sourceParticlePayloadCaps_;
     std::map<FmmPatchKey, CachedTargetSubplan> targetSubplans_;
     std::map<FmmPatchKey, std::uint64_t> sourceTopologyHashes_;
     FmmPeerExchange exchange_;

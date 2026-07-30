@@ -273,6 +273,51 @@ int main(int argc, char** argv)
     distributed.persistentLeafMergeFactor = 0.5;
 
     DistributedFmmGravityCalculator solver(numerical, distributed);
+    FmmSolveStats payloadBaselineStats;
+    FmmSolveStats payloadRefreshStats;
+    bool payloadRefreshSemantics = false;
+    double localPayloadRefreshError = 0.0;
+    {
+        // Force a stable max-depth leaf to outgrow its retained particle payload
+        // capacity.  Interaction topology and the radius envelope stay valid,
+        // so only the payload layout may change.
+        FmmGravityOptions payloadNumerical = numerical;
+        payloadNumerical.maxDepth = 1;
+        FmmDistributedOptions payloadDistributed = distributed;
+        payloadDistributed.letParticlePayloadSlackFactor = 1.0;
+        payloadDistributed.letParticlePayloadSlackCount = 0;
+        DistributedFmmGravityCalculator payloadSolver(
+            payloadNumerical, payloadDistributed);
+
+        const std::vector<Body> baselineLocal = bodiesForRank(rank, size, 0);
+        localPayloadRefreshError = std::max(localPayloadRefreshError,
+            solveAndCompare(payloadSolver, baselineLocal, allBodies(size, 0),
+                            payloadBaselineStats));
+        const std::uint64_t baselineEpoch = payloadBaselineStats.topologyEpoch;
+        const std::uint64_t baselineRebuilds =
+            payloadBaselineStats.topologyRebuildCount;
+        const std::uint64_t baselineLetRebuilds =
+            payloadBaselineStats.letTopologyRebuildCount;
+
+        const std::vector<Body> grownLocal = bodiesForRank(rank, size, 2);
+        localPayloadRefreshError = std::max(localPayloadRefreshError,
+            solveAndCompare(payloadSolver, grownLocal, allBodies(size, 2),
+                            payloadRefreshStats));
+        payloadRefreshSemantics =
+            payloadRefreshStats.letPayloadCapacityRefreshRequired &&
+            payloadRefreshStats.letPayloadLayoutRefreshed &&
+            !payloadRefreshStats.letPayloadShapeTriggeredRebuild &&
+            !payloadRefreshStats.processTopologyRebuilt &&
+            !payloadRefreshStats.letTopologyRebuilt &&
+            payloadRefreshStats.countOnlyTopologyReused &&
+            payloadRefreshStats.ranksWithLeafTopologyChange == 0 &&
+            payloadRefreshStats.ranksWithGeometryEnvelopeChange == 0 &&
+            payloadRefreshStats.topologyEpoch == baselineEpoch &&
+            payloadRefreshStats.topologyRebuildCount == baselineRebuilds &&
+            payloadRefreshStats.letTopologyRebuildCount == baselineLetRebuilds &&
+            payloadRefreshStats.rootDescriptorExchangeSeconds == 0.0 &&
+            payloadRefreshStats.letDescriptorTraversalSeconds == 0.0;
+    }
     FmmSolveStats stepStats[5];
     double localMaximumError = 0.0;
     for(int step = 0; step < 5; ++step)
@@ -282,10 +327,24 @@ int main(int argc, char** argv)
         localMaximumError = std::max(localMaximumError,
             solveAndCompare(solver, local, global, stepStats[step]));
     }
+    localMaximumError = std::max(
+        localMaximumError, localPayloadRefreshError);
 
     double maximumError = 0.0;
     MPI_Allreduce(&localMaximumError, &maximumError, 1,
                   MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+
+    const int localPayloadRefreshPass = payloadRefreshSemantics ? 1 : 0;
+    int globalPayloadRefreshPass = 0;
+    MPI_Allreduce(&localPayloadRefreshPass, &globalPayloadRefreshPass, 1,
+                  MPI_INT, MPI_LAND, MPI_COMM_WORLD);
+    const unsigned long long localPayloadRefreshCounts[3] = {
+        payloadRefreshStats.letPayloadCapacityUpdateCount,
+        payloadRefreshStats.letPayloadSourceRepackCount,
+        payloadRefreshStats.letWavePlanRebuildCount};
+    unsigned long long globalPayloadRefreshCounts[3] = {};
+    MPI_Allreduce(localPayloadRefreshCounts, globalPayloadRefreshCounts, 3,
+                  MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
 
     const unsigned long long localIncremental[4] = {
         stepStats[2].letTargetSubplansReused,
@@ -375,12 +434,16 @@ int main(int argc, char** argv)
         globalIncremental[3] > 0;
     const bool memoryBound = globalDescriptorBytes <=
         distributed.maxReplicatedDescriptorBytes;
+    const bool payloadRefresh = globalPayloadRefreshPass != 0 &&
+        globalPayloadRefreshCounts[0] > 0 &&
+        globalPayloadRefreshCounts[1] > 0 &&
+        globalPayloadRefreshCounts[2] > 0;
     const bool pass = maximumError < 0.1 &&
         stepStats[0].processTopologyRebuilt &&
         stepStats[0].letTopologyRebuilt && warmReuse &&
         splitIncremental && mergeIncremental && patchSetRebuild &&
         incrementalCoverage && memoryBound && globalWaves > 1 &&
-        emptyPersistentLeavesExercised &&
+        emptyPersistentLeavesExercised && payloadRefresh &&
         std::isfinite(maximumImbalance) && maximumImbalance < 3.0;
 
     if(rank == 0)
@@ -405,6 +468,30 @@ int main(int argc, char** argv)
         output << "warm_geometry_envelope_stable "
                << (stepStats[1].ranksWithGeometryEnvelopeChange == 0 ? 1 : 0)
                << "\n";
+        output << "payload_refresh_semantics "
+               << globalPayloadRefreshPass << "\n";
+        output << "payload_refresh_required "
+               << (payloadRefreshStats.letPayloadCapacityRefreshRequired ? 1 : 0)
+               << "\n";
+        output << "payload_layout_refreshed "
+               << (payloadRefreshStats.letPayloadLayoutRefreshed ? 1 : 0)
+               << "\n";
+        output << "payload_process_reused "
+               << (!payloadRefreshStats.processTopologyRebuilt ? 1 : 0) << "\n";
+        output << "payload_let_topology_reused "
+               << (!payloadRefreshStats.letTopologyRebuilt ? 1 : 0) << "\n";
+        output << "payload_descriptor_exchange_skipped "
+               << (payloadRefreshStats.rootDescriptorExchangeSeconds == 0.0 ? 1 : 0)
+               << "\n";
+        output << "payload_descriptor_traversal_skipped "
+               << (payloadRefreshStats.letDescriptorTraversalSeconds == 0.0 ? 1 : 0)
+               << "\n";
+        output << "payload_capacity_updates "
+               << globalPayloadRefreshCounts[0] << "\n";
+        output << "payload_sources_repacked "
+               << globalPayloadRefreshCounts[1] << "\n";
+        output << "payload_wave_plan_rebuilds "
+               << globalPayloadRefreshCounts[2] << "\n";
         output << "split_process_reused "
                << (!stepStats[2].processTopologyRebuilt ? 1 : 0) << "\n";
         output << "split_let_rebuilt "
@@ -455,6 +542,7 @@ int main(int argc, char** argv)
                << (stepStats[2].topologyRebuildForced ? 1 : 0) << "\n";
         std::cout << "fmm_patch_moving_mesh pass=" << pass
                   << " error=" << maximumError
+                  << " payload_refresh=" << payloadRefresh
                   << " reused_targets=" << globalIncremental[0]
                   << " rebuilt_targets=" << globalIncremental[1]
                   << std::endl;

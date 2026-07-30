@@ -15,7 +15,7 @@
 #include "misc/universal_error.hpp"
 
 static constexpr std::uint32_t FMM_MPI_PACKET_MAGIC = 0x52464d4du; // "RFMM"
-static constexpr std::uint16_t FMM_MPI_PACKET_VERSION = 6u;
+static constexpr std::uint16_t FMM_MPI_PACKET_VERSION = 7u;
 
 enum class FmmPacketKind : std::uint16_t
 {
@@ -25,7 +25,8 @@ enum class FmmPacketKind : std::uint16_t
     DescriptorReply = 4,
     Subscription = 5,
     ProcessCoefficient = 6,
-    LetPayload = 7
+    LetPayload = 7,
+    PayloadCapacity = 8
 };
 
 struct FmmPacketStamp
@@ -176,6 +177,14 @@ struct FmmPayloadRecordHeader
     int waveIndex = 0;
 };
 
+struct FmmPayloadCapacity
+{
+    FmmPacketStamp stamp;
+    std::uint64_t patchId = 0;
+    std::uint64_t spatialKey = 0;
+    std::uint64_t particleCount = 0;
+};
+
 struct FmmWireParticle
 {
     double position[3] = {0.0, 0.0, 0.0};
@@ -233,6 +242,8 @@ static_assert(sizeof(FmmProcessCoefficientHeader) == 24,
               "Distributed FMM coefficient header has unsupported padding");
 static_assert(sizeof(FmmPayloadRecordHeader) == 48,
               "Distributed FMM payload header has unsupported padding");
+static_assert(sizeof(FmmPayloadCapacity) == 40,
+              "Distributed FMM payload capacity has unsupported padding");
 static_assert(sizeof(FmmWireParticle) == 56,
               "Distributed FMM wire particle has unsupported padding");
 static_assert(sizeof(FmmPatchWireParticle) == 32,
@@ -257,6 +268,8 @@ static_assert(std::is_trivially_copyable<FmmProcessCoefficientHeader>::value,
               "FMM coefficient header must be trivially copyable");
 static_assert(std::is_trivially_copyable<FmmPayloadRecordHeader>::value,
               "FMM payload header must be trivially copyable");
+static_assert(std::is_trivially_copyable<FmmPayloadCapacity>::value,
+              "FMM payload capacity must be trivially copyable");
 static_assert(std::is_trivially_copyable<FmmWireParticle>::value,
               "FMM wire particle must be trivially copyable");
 static_assert(std::is_trivially_copyable<FmmPatchWireParticle>::value,

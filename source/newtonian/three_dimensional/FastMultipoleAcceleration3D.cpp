@@ -166,7 +166,7 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
         static_cast<unsigned long long>(stats.processOperatorCacheMisses),
         static_cast<unsigned long long>(stats.processOperatorCacheBypasses)};
     unsigned long long globalCacheCounts[8] = {};
-    const unsigned long long localPatchSums[13] = {
+    const unsigned long long localPatchSums[17] = {
         static_cast<unsigned long long>(stats.localPatchCount),
         static_cast<unsigned long long>(stats.reusedPatchCount),
         static_cast<unsigned long long>(stats.reusedLocalPatchPlanCount),
@@ -179,8 +179,12 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
         static_cast<unsigned long long>(stats.letSourceTriggeredInvalidations),
         static_cast<unsigned long long>(stats.letWavePlanRebuildCount),
         static_cast<unsigned long long>(stats.letDescriptorTraversalSkippedCount),
-        stats.letPayloadShapeTriggeredRebuild ? 1ull : 0ull};
-    unsigned long long globalPatchSums[13] = {};
+        stats.letPayloadShapeTriggeredRebuild ? 1ull : 0ull,
+        stats.letPayloadCapacityRefreshRequired ? 1ull : 0ull,
+        stats.letPayloadLayoutRefreshed ? 1ull : 0ull,
+        static_cast<unsigned long long>(stats.letPayloadCapacityUpdateCount),
+        static_cast<unsigned long long>(stats.letPayloadSourceRepackCount)};
+    unsigned long long globalPatchSums[17] = {};
     const unsigned long long localPatchMaxima[7] = {
         static_cast<unsigned long long>(stats.globalPatchCount),
         static_cast<unsigned long long>(stats.replicatedDescriptorBytes),
@@ -226,7 +230,7 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
                MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(localCacheCounts, globalCacheCounts, 8,
                MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
-    MPI_Reduce(localPatchSums, globalPatchSums, 13,
+    MPI_Reduce(localPatchSums, globalPatchSums, 17,
                MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(localPatchMaxima, globalPatchMaxima, 7,
                MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
@@ -246,7 +250,7 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
     }
     for(int i = 0; i < 8; ++i)
         globalCacheCounts[i] = localCacheCounts[i];
-    for(int i = 0; i < 13; ++i)
+    for(int i = 0; i < 17; ++i)
         globalPatchSums[i] = localPatchSums[i];
     for(int i = 0; i < 7; ++i)
         globalPatchMaxima[i] = localPatchMaxima[i];
@@ -327,6 +331,12 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
          << " let_wave_plan_rebuilds_sum=" << globalPatchSums[10]
          << " let_descriptor_traversal_skipped_sum=" << globalPatchSums[11]
          << " let_payload_shape_rebuild_ranks=" << globalPatchSums[12]
+         << " let_payload_refresh_required_ranks=" << globalPatchSums[13]
+         << " let_payload_layout_refreshed_ranks=" << globalPatchSums[14]
+         << " let_payload_capacity_updates_sum=" << globalPatchSums[15]
+         << " let_payload_sources_repacked_sum=" << globalPatchSums[16]
+         << " let_payload_layout_refresh_local="
+         << stats.letPayloadLayoutRefreshSeconds
          << " let_wave_count_max=" << globalPatchMaxima[6]
          << " bytes_owned_max=" << maximumBytesOwned
          << " peak_remote_bytes_max=" << maximumPeakRemoteBytes
