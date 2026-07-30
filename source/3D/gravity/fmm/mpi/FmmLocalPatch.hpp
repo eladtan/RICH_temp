@@ -28,17 +28,21 @@ struct FmmLocalPatch
     std::vector<Vector3D> acceleration;
     std::vector<double> potential;
 
-    // In persistent patch mode topologyHash is a wire-visible monotonic
-    // topology generation. structuralTreeHash is a compact acceleration key;
-    // correctness decisions also compare the exact structuralSignature below.
-    // Neither value includes leaf occupancy.
+    // topologyHash is the wire-visible invalidation token. Persistent patch
+    // mode uses a monotonic generation; the nonpersistent builder uses the
+    // exact node-geometry hash so communication remains conservative.
+    // structuralTreeHash and structuralSignature describe only spatial keys,
+    // child masks, leaf state, and depth. nodeGeometryHash separately records
+    // exact centers, half sizes, and radii. None includes leaf occupancy.
     std::uint64_t topologyHash = 0;
     std::uint64_t structuralTreeHash = 0;
+    std::uint64_t nodeGeometryHash = 0;
     std::vector<std::uint64_t> structuralSignature;
     std::vector<std::uint64_t> occupancySignature;
 
     bool rootGeometryChanged = false;
     bool leafTopologyChanged = false;
+    bool nodeGeometryChanged = false;
     bool leafOccupancyChanged = false;
     bool localPlanReused = false;
     bool persistentTreeRefit = false;

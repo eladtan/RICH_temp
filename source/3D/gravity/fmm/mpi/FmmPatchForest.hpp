@@ -22,6 +22,7 @@ struct FmmPatchForestChange
     bool patchSetChanged = false;
     bool patchGeometryChanged = false;
     bool structuralTopologyChanged = false;
+    bool nodeGeometryChanged = false;
     bool occupancyChanged = false;
     bool countOnlyChanged = false;
     std::size_t createdPatches = 0;

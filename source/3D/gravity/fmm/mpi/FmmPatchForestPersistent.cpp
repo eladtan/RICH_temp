@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 #include <unordered_map>
 #include <utility>
@@ -32,12 +33,34 @@ std::uint64_t hashCombine(std::uint64_t seed, std::uint64_t value)
                    (seed << 6) + (seed >> 2));
 }
 
+std::uint64_t hashDouble(double value)
+{
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(double));
+    return bits;
+}
+
 std::uint64_t structuralSignatureHash(
     const std::vector<std::uint64_t>& signature)
 {
     std::uint64_t hash = 1469598103934665603ull;
     for(std::uint64_t value : signature)
         hash = hashCombine(hash, value);
+    return hash;
+}
+
+std::uint64_t nodeGeometryHash(const FmmTree& tree)
+{
+    std::uint64_t hash = 1469598103934665603ull;
+    for(const FmmNode& node : tree.nodes())
+    {
+        hash = hashCombine(hash, node.spatialKey);
+        hash = hashCombine(hash, hashDouble(node.center.x));
+        hash = hashCombine(hash, hashDouble(node.center.y));
+        hash = hashCombine(hash, hashDouble(node.center.z));
+        hash = hashCombine(hash, hashDouble(node.halfSize));
+        hash = hashCombine(hash, hashDouble(node.radius));
+    }
     return hash;
 }
 
@@ -335,8 +358,10 @@ FmmPatchForestChange FmmPatchForest::preparePersistent(
             radiusExpanded(patch.tree.nodes()[0].radius, previousRootRadius);
 
         patch.rootGeometryChanged = !rootUnchanged || rootRadiusExpanded;
-        patch.leafTopologyChanged = !structureSame || nodeGeometryExpanded;
+        patch.leafTopologyChanged = !structureSame;
+        patch.nodeGeometryChanged = nodeGeometryExpanded;
         patch.leafOccupancyChanged = !occupancySame;
+        patch.nodeGeometryHash = nodeGeometryHash(patch.tree);
         if(nodeGeometryExpanded)
             ++change.nodeGeometryExpansionPatches;
 
@@ -380,6 +405,8 @@ FmmPatchForestChange FmmPatchForest::preparePersistent(
             patch.rootGeometryChanged;
         change.structuralTopologyChanged =
             change.structuralTopologyChanged || patch.leafTopologyChanged;
+        change.nodeGeometryChanged =
+            change.nodeGeometryChanged || patch.nodeGeometryChanged;
         change.occupancyChanged =
             change.occupancyChanged || patch.leafOccupancyChanged;
         patches_.push_back(std::move(patch));
@@ -402,7 +429,7 @@ FmmPatchForestChange FmmPatchForest::preparePersistent(
     }
     change.countOnlyChanged = change.occupancyChanged &&
         !change.patchSetChanged && !change.patchGeometryChanged &&
-        !change.structuralTopologyChanged;
+        !change.structuralTopologyChanged && !change.nodeGeometryChanged;
 
     std::vector<FmmLocalPatch>().swap(previousPatches_);
     fixedLevelPatchCount_ = fixedLevelPatchCount;

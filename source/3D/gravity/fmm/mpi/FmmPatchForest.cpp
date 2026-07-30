@@ -40,15 +40,12 @@ std::uint64_t structuralSignatureHash(
     return hash;
 }
 
-std::uint64_t descriptorTopologyHash(const FmmTree& tree)
+std::uint64_t nodeGeometryHash(const FmmTree& tree)
 {
     std::uint64_t hash = 1469598103934665603ull;
     for(const FmmNode& node : tree.nodes())
     {
         hash = hashCombine(hash, node.spatialKey);
-        hash = hashCombine(hash, static_cast<std::uint64_t>(node.childMask));
-        hash = hashCombine(hash, static_cast<std::uint64_t>(node.isLeaf()));
-        hash = hashCombine(hash, static_cast<std::uint64_t>(node.depth));
         hash = hashCombine(hash, hashDouble(node.center.x));
         hash = hashCombine(hash, hashDouble(node.center.y));
         hash = hashCombine(hash, hashDouble(node.center.z));
@@ -453,7 +450,9 @@ void FmmPatchForest::buildPatchObjects(
         patch.structuralTreeHash =
             structuralSignatureHash(patch.structuralSignature);
         patch.occupancySignature = leafOccupancySignature(patch.tree);
-        patch.topologyHash = descriptorTopologyHash(patch.tree);
+        patch.nodeGeometryHash = nodeGeometryHash(patch.tree);
+        // The nonpersistent path has no retained geometry envelope.
+        patch.topologyHash = patch.nodeGeometryHash;
         FmmDualTreeTraversal::buildLocalPlan(
             patch.tree, gravityOptions_.thetaCritical, patch.localPlan);
 
@@ -653,9 +652,10 @@ void FmmPatchForest::updateHashes()
         geometryHash_ = hashCombine(geometryHash_, hashDouble(patch.root.center.y));
         geometryHash_ = hashCombine(geometryHash_, hashDouble(patch.root.center.z));
         geometryHash_ = hashCombine(geometryHash_, hashDouble(patch.root.halfSize));
+        geometryHash_ = hashCombine(geometryHash_, patch.nodeGeometryHash);
 
         structuralHash_ = hashCombine(structuralHash_, patch.key.patchId);
-        structuralHash_ = hashCombine(structuralHash_, patch.topologyHash);
+        structuralHash_ = hashCombine(structuralHash_, patch.structuralTreeHash);
         for(std::uint64_t value : patch.structuralSignature)
             structuralHash_ = hashCombine(structuralHash_, value);
 
@@ -691,9 +691,10 @@ FmmPatchForestChange FmmPatchForest::compareWithPrevious() const
         const FmmLocalPatch& current = *entry.second;
         const FmmLocalPatch& prior = *previous->second;
         const bool structureSame =
-            current.topologyHash == prior.topologyHash &&
             current.structuralTreeHash == prior.structuralTreeHash &&
             current.structuralSignature == prior.structuralSignature;
+        const bool nodeGeometrySame =
+            current.nodeGeometryHash == prior.nodeGeometryHash;
         const bool occupancyDiff =
             current.occupancySignature != prior.occupancySignature;
 
@@ -704,6 +705,8 @@ FmmPatchForestChange FmmPatchForest::compareWithPrevious() const
             change.patchGeometryChanged = true;
         if(!structureSame)
             change.structuralTopologyChanged = true;
+        if(!nodeGeometrySame)
+            change.nodeGeometryChanged = true;
         if(occupancyDiff)
             change.occupancyChanged = true;
     }
@@ -721,7 +724,7 @@ FmmPatchForestChange FmmPatchForest::compareWithPrevious() const
         change.patchSetChanged = true;
     change.countOnlyChanged = change.occupancyChanged &&
         !change.patchSetChanged && !change.patchGeometryChanged &&
-        !change.structuralTopologyChanged;
+        !change.structuralTopologyChanged && !change.nodeGeometryChanged;
     return change;
 }
 
