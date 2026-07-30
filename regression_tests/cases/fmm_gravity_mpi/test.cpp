@@ -9,6 +9,7 @@
 #include <mpi.h>
 
 #include "source/3D/gravity/fmm/mpi/DistributedFmmGravityCalculator.hpp"
+#include "source/3D/gravity/fmm/mpi/FmmPatchForest.hpp"
 
 namespace
 {
@@ -218,6 +219,128 @@ double compareSolutions(const std::vector<Vector3D>& firstAcceleration,
     }
     return maximum;
 }
+
+struct PatchForestLifecycleObservation
+{
+    bool initialPatchCreated = false;
+    bool identicalStateStable = false;
+    bool countOnlyClassified = false;
+    bool motionPatchSetStable = false;
+    bool motionPatchGeometryStable = false;
+    bool motionReportedStructuralChange = false;
+    bool patchCreationClassified = false;
+    bool patchRemovalClassified = false;
+};
+
+PatchForestLifecycleObservation exercisePatchForestLifecycle(int rank)
+{
+    FmmGravityOptions gravity;
+    gravity.expansionOrder = 3;
+    gravity.thetaCritical = 0.5;
+    gravity.leafCapacity = 8;
+    gravity.computePotential = false;
+    gravity.validateFinite = true;
+    gravity.persistentRadiusSlackFactor = 1.25;
+
+    FmmDistributedOptions distributed;
+    distributed.enablePatchForest = true;
+    distributed.minimumPatchLevel = 2;
+    distributed.maximumPatchLevel = 2;
+    distributed.targetParticlesPerPatch = 0;
+    distributed.maxLocalPatchCount = 64;
+    distributed.persistentLocalTreeTopology = true;
+    distributed.persistentLeafSplitFactor = 1.5;
+    distributed.persistentLeafMergeFactor = 0.5;
+
+    const Vector3D lower(-1.0, -1.0, -1.0);
+    const Vector3D upper(1.0, 1.0, 1.0);
+
+    std::vector<Vector3D> positions = {
+        Vector3D(-0.94, -0.82, -0.81),
+        Vector3D(-0.79, -0.80, -0.78),
+        Vector3D(-0.73, -0.76, -0.74)};
+    std::vector<double> masses = {0.7, 0.8, 0.9};
+    std::vector<std::uint64_t> ids = {101, 102, 103};
+
+    FmmPatchForest forest;
+    PatchForestLifecycleObservation result;
+
+    FmmPatchForestChange change = forest.prepare(
+        positions, masses, ids, lower, upper, gravity, distributed, rank);
+    result.initialPatchCreated =
+        change.patchSetChanged && change.createdPatches == 1 &&
+        change.removedPatches == 0 && change.matchedPatchIds == 0;
+
+    std::vector<double> scaledMasses = masses;
+    for(double& mass : scaledMasses)
+        mass *= 1.01;
+    change = forest.prepare(
+        positions, scaledMasses, ids, lower, upper, gravity, distributed, rank);
+    result.identicalStateStable =
+        !change.patchSetChanged && !change.patchGeometryChanged &&
+        !change.structuralTopologyChanged && !change.occupancyChanged &&
+        !change.countOnlyChanged && change.createdPatches == 0 &&
+        change.removedPatches == 0 && change.matchedPatchIds == 1;
+
+    std::vector<Vector3D> countPositions = positions;
+    std::vector<double> countMasses = scaledMasses;
+    std::vector<std::uint64_t> countIds = ids;
+    countPositions.push_back(Vector3D(-0.80, -0.79, -0.77));
+    countMasses.push_back(0.65);
+    countIds.push_back(104);
+    change = forest.prepare(
+        countPositions, countMasses, countIds, lower, upper,
+        gravity, distributed, rank);
+    result.countOnlyClassified =
+        !change.patchSetChanged && !change.patchGeometryChanged &&
+        !change.structuralTopologyChanged && change.occupancyChanged &&
+        change.countOnlyChanged && change.createdPatches == 0 &&
+        change.removedPatches == 0 && change.matchedPatchIds == 1;
+
+    std::vector<Vector3D> movedPositions = countPositions;
+    // Keep every particle in the same level-2 patch and preserve the leaf
+    // occupancy, but change the tight node radius. The V6 baseline includes
+    // that radius in descriptorTopologyHash(), so this is intentionally
+    // observed as a structural change until Patch 1B changes the semantics.
+    movedPositions[0].x = -0.98;
+    change = forest.prepare(
+        movedPositions, countMasses, countIds, lower, upper,
+        gravity, distributed, rank);
+    result.motionPatchSetStable =
+        !change.patchSetChanged && change.createdPatches == 0 &&
+        change.removedPatches == 0 && change.matchedPatchIds == 1;
+    result.motionPatchGeometryStable = !change.patchGeometryChanged;
+    result.motionReportedStructuralChange =
+        change.structuralTopologyChanged;
+
+    std::vector<Vector3D> createdPositions = movedPositions;
+    std::vector<double> createdMasses = countMasses;
+    std::vector<std::uint64_t> createdIds = countIds;
+    createdPositions.push_back(Vector3D(0.76, 0.77, 0.78));
+    createdMasses.push_back(0.55);
+    createdIds.push_back(105);
+    change = forest.prepare(
+        createdPositions, createdMasses, createdIds, lower, upper,
+        gravity, distributed, rank);
+    result.patchCreationClassified =
+        change.patchSetChanged && change.createdPatches == 1 &&
+        change.removedPatches == 0 && change.matchedPatchIds == 1;
+
+    std::vector<Vector3D> removedPositions = {
+        Vector3D(0.70, 0.71, 0.72),
+        Vector3D(0.73, 0.74, 0.75),
+        Vector3D(0.76, 0.77, 0.78),
+        Vector3D(0.79, 0.80, 0.81),
+        Vector3D(0.82, 0.83, 0.84)};
+    change = forest.prepare(
+        removedPositions, createdMasses, createdIds, lower, upper,
+        gravity, distributed, rank);
+    result.patchRemovalClassified =
+        change.patchSetChanged && change.createdPatches == 0 &&
+        change.removedPatches == 1 && change.matchedPatchIds == 1;
+
+    return result;
+}
 }
 
 int main(int argc, char** argv)
@@ -290,6 +413,9 @@ int main(int argc, char** argv)
     bool persistentTopologyReused = false;
     bool persistentSplitRebuilt = false;
     bool persistentMergeRebuilt = false;
+
+    const PatchForestLifecycleObservation patchForestLifecycle =
+        exercisePatchForestLifecycle(rank);
 
     {
         FmmGravityOptions countOptions = options;
@@ -638,6 +764,28 @@ int main(int argc, char** argv)
         persistentSplitDirectWithinTolerance &&
         persistentSplitFreshDirectWithinTolerance &&
         persistentSplitMatchesFresh;
+
+    const int localPatchForestChecks[7] = {
+        patchForestLifecycle.initialPatchCreated ? 1 : 0,
+        patchForestLifecycle.identicalStateStable ? 1 : 0,
+        patchForestLifecycle.countOnlyClassified ? 1 : 0,
+        patchForestLifecycle.motionPatchSetStable ? 1 : 0,
+        patchForestLifecycle.motionPatchGeometryStable ? 1 : 0,
+        patchForestLifecycle.patchCreationClassified ? 1 : 0,
+        patchForestLifecycle.patchRemovalClassified ? 1 : 0};
+    int globalPatchForestChecks[7] = {};
+    MPI_Allreduce(localPatchForestChecks, globalPatchForestChecks, 7,
+                  MPI_INT, MPI_LAND, MPI_COMM_WORLD);
+    const int localMotionReportedStructuralChange =
+        patchForestLifecycle.motionReportedStructuralChange ? 1 : 0;
+    int globalMotionReportedStructuralChange = 0;
+    MPI_Allreduce(&localMotionReportedStructuralChange,
+                  &globalMotionReportedStructuralChange, 1,
+                  MPI_INT, MPI_LAND, MPI_COMM_WORLD);
+    const int patchForestLifecyclePass =
+        std::all_of(globalPatchForestChecks, globalPatchForestChecks + 7,
+                    [](int value) { return value != 0; }) ? 1 : 0;
+
     const int localChecks[16] = {
         firstEpoch == secondEpoch ? 1 : 0,
         firstRebuildCount == secondRebuildCount ? 1 : 0,
@@ -666,7 +814,8 @@ int main(int argc, char** argv)
                            globalChecks[8] && globalChecks[9] &&
                            globalChecks[10] && globalChecks[11] &&
                            globalChecks[12] && globalChecks[13] &&
-                           globalChecks[14] && globalChecks[15];
+                           globalChecks[14] && globalChecks[15] &&
+                           patchForestLifecyclePass;
 
     if(rank == 0)
     {
@@ -714,6 +863,24 @@ int main(int argc, char** argv)
         output << "persistent_topology_reused " << globalChecks[13] << "\n";
         output << "persistent_split_rebuilt " << globalChecks[14] << "\n";
         output << "persistent_merge_rebuilt " << globalChecks[15] << "\n";
+        output << "patch_forest_initial_created "
+               << globalPatchForestChecks[0] << "\n";
+        output << "patch_forest_identical_stable "
+               << globalPatchForestChecks[1] << "\n";
+        output << "patch_forest_count_only_classified "
+               << globalPatchForestChecks[2] << "\n";
+        output << "patch_forest_motion_patch_set_stable "
+               << globalPatchForestChecks[3] << "\n";
+        output << "patch_forest_motion_patch_geometry_stable "
+               << globalPatchForestChecks[4] << "\n";
+        output << "patch_forest_patch_creation_classified "
+               << globalPatchForestChecks[5] << "\n";
+        output << "patch_forest_patch_removal_classified "
+               << globalPatchForestChecks[6] << "\n";
+        output << "patch_forest_motion_reported_structural_change "
+               << globalMotionReportedStructuralChange << "\n";
+        output << "patch_forest_lifecycle_pass "
+               << patchForestLifecyclePass << "\n";
         output << "pass " << globalPass << "\n";
         const std::size_t worstScenario = static_cast<std::size_t>(
             std::max_element(globalScenarioErrors.begin(),
@@ -736,6 +903,9 @@ int main(int argc, char** argv)
                   << " domain_rejected=" << globalChecks[9]
                   << " persistent_reused=" << globalChecks[13]
                   << " persistent_merge=" << globalChecks[15]
+                  << " patch_forest_lifecycle=" << patchForestLifecyclePass
+                  << " motion_structural="
+                  << globalMotionReportedStructuralChange
                   << " pass=" << globalPass << std::endl;
     }
 
