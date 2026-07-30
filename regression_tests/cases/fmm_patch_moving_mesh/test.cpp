@@ -283,9 +283,16 @@ int main(int argc, char** argv)
         // so only the payload layout may change.
         FmmGravityOptions payloadNumerical = numerical;
         payloadNumerical.maxDepth = 1;
+        // This fixture must exercise a remote particle subscription.  With the
+        // production opening angle the growing leaf can be represented by a
+        // multipole, in which case no particle-payload capacity can overflow.
+        // A tiny positive opening angle forces remote traversal to leaf/leaf
+        // P2P without relying on the particular rank geometry.
+        payloadNumerical.thetaCritical = 1.0e-6;
         FmmDistributedOptions payloadDistributed = distributed;
         payloadDistributed.letParticlePayloadSlackFactor = 1.0;
         payloadDistributed.letParticlePayloadSlackCount = 0;
+        payloadDistributed.enableLeafM2P = false;
         DistributedFmmGravityCalculator payloadSolver(
             payloadNumerical, payloadDistributed);
 
