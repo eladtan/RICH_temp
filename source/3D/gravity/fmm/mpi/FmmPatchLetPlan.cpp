@@ -593,7 +593,8 @@ void FmmPatchLetPlan::build(
     bool enableLeafM2P,
     const MPI_Comm& comm,
     FmmSolveStats& stats,
-    bool reuseUnaffectedTargetSubplans)
+    bool reuseUnaffectedTargetSubplans,
+    bool processTopologyRebuilt)
 {
     const Clock::time_point buildStart = Clock::now();
     if(!(thetaCritical > 0.0) || thetaCritical > 1.0 ||
@@ -612,16 +613,21 @@ void FmmPatchLetPlan::build(
 
     std::map<FmmPatchKey, CachedTargetSubplan> previousTargetSubplans;
     std::map<FmmPatchKey, std::uint64_t> previousSourceTopologyHashes;
+    std::map<FmmPatchKey, std::set<FmmPatchKey>>
+        previousTargetsDependingOnSourcePatch;
     if(reuseUnaffectedTargetSubplans && initialized_)
     {
         previousTargetSubplans.swap(targetSubplans_);
         previousSourceTopologyHashes.swap(sourceTopologyHashes_);
+        previousTargetsDependingOnSourcePatch.swap(
+            targetsDependingOnSourcePatch_);
         stats.letBuildStorageReused = true;
     }
     else
     {
         targetSubplans_.clear();
         sourceTopologyHashes_.clear();
+        targetsDependingOnSourcePatch_.clear();
         reuseUnaffectedTargetSubplans = false;
     }
 
@@ -674,7 +680,6 @@ void FmmPatchLetPlan::build(
         }
     }
 
-    std::map<FmmPatchKey, std::uint64_t> currentSourceTopologyHashes;
     FmmPatchKey previousGlobalPatch;
     bool havePreviousGlobalPatch = false;
     for(const FmmPatchRootDescriptor& descriptor : globalDescriptors)
@@ -691,7 +696,6 @@ void FmmPatchLetPlan::build(
                 "FmmPatchLetPlan::build: global descriptors are not sorted and unique");
         previousGlobalPatch = key;
         havePreviousGlobalPatch = true;
-        currentSourceTopologyHashes.emplace(key, descriptor.topologyHash);
     }
     const auto findGlobalDescriptor = [&](const FmmPatchKey& key)
         -> const FmmPatchRootDescriptor* {
@@ -715,12 +719,92 @@ void FmmPatchLetPlan::build(
     peers.erase(std::unique(peers.begin(), peers.end()), peers.end());
     stats.letCommunicatorReused = !exchange_.resetIfChanged(comm_, peers);
 
-    std::map<FmmPatchKey, std::set<FmmPatchKey>> currentSourcesByTarget;
-    for(const FmmPatchPair& patchPair : processPlan.remoteLetPairs)
+    bool targetPatchSetChanged =
+        previousTargetSubplans.size() != forest.patches().size();
+    if(!targetPatchSetChanged)
     {
-        if(patchPair.target.ownerRank == rank_)
-            currentSourcesByTarget[patchPair.target].insert(patchPair.source);
+        for(const FmmLocalPatch& patch : forest.patches())
+        {
+            if(previousTargetSubplans.find(patch.key) ==
+               previousTargetSubplans.end())
+            {
+                targetPatchSetChanged = true;
+                break;
+            }
+        }
     }
+    const bool sourceSetsMayHaveChanged =
+        !reuseUnaffectedTargetSubplans || processTopologyRebuilt ||
+        targetPatchSetChanged;
+    std::map<FmmPatchKey, std::set<FmmPatchKey>> currentSourcesByTarget;
+    if(sourceSetsMayHaveChanged)
+    {
+        for(const FmmPatchPair& patchPair : processPlan.remoteLetPairs)
+        {
+            if(patchPair.target.ownerRank == rank_)
+                currentSourcesByTarget[patchPair.target].insert(
+                    patchPair.source);
+        }
+    }
+
+    const Clock::time_point invalidationStart = Clock::now();
+    std::set<FmmPatchKey> relevantSourcePatches;
+    if(sourceSetsMayHaveChanged)
+    {
+        for(const auto& target : currentSourcesByTarget)
+            relevantSourcePatches.insert(
+                target.second.begin(), target.second.end());
+    }
+    else
+    {
+        for(const auto& source : previousTargetsDependingOnSourcePatch)
+            relevantSourcePatches.insert(source.first);
+    }
+
+    std::map<FmmPatchKey, std::uint64_t> currentSourceTopologyHashes;
+    for(const FmmPatchKey& sourcePatch : relevantSourcePatches)
+    {
+        const FmmPatchRootDescriptor* descriptor =
+            findGlobalDescriptor(sourcePatch);
+        if(descriptor != nullptr)
+            currentSourceTopologyHashes.emplace(
+                sourcePatch, descriptor->topologyHash);
+    }
+
+    std::set<FmmPatchKey> generationKeys = relevantSourcePatches;
+    for(const auto& previous : previousSourceTopologyHashes)
+        generationKeys.insert(previous.first);
+    std::set<FmmPatchKey> changedSourcePatches;
+    if(reuseUnaffectedTargetSubplans)
+    {
+        for(const FmmPatchKey& sourcePatch : generationKeys)
+        {
+            ++stats.letSourceGenerationCheckCount;
+            const auto currentHash =
+                currentSourceTopologyHashes.find(sourcePatch);
+            const auto previousHash =
+                previousSourceTopologyHashes.find(sourcePatch);
+            if(currentHash == currentSourceTopologyHashes.end() ||
+               previousHash == previousSourceTopologyHashes.end() ||
+               currentHash->second != previousHash->second)
+                changedSourcePatches.insert(sourcePatch);
+        }
+    }
+    stats.letChangedSourcePatchCount = static_cast<std::uint64_t>(
+        changedSourcePatches.size());
+
+    std::set<FmmPatchKey> sourceInvalidatedTargets;
+    for(const FmmPatchKey& sourcePatch : changedSourcePatches)
+    {
+        ++stats.letReverseDependencyLookupCount;
+        const auto dependents = previousTargetsDependingOnSourcePatch.find(
+            sourcePatch);
+        if(dependents != previousTargetsDependingOnSourcePatch.end())
+            sourceInvalidatedTargets.insert(
+                dependents->second.begin(), dependents->second.end());
+    }
+    stats.letReverseDependencyTargetCount = static_cast<std::uint64_t>(
+        sourceInvalidatedTargets.size());
 
     std::set<FmmPatchKey> reusableTargets;
     std::vector<PendingInteraction> terminalM2L;
@@ -734,39 +818,24 @@ void FmmPatchLetPlan::build(
     {
         const FmmLocalPatch& targetPatch = forest.patches()[targetPatchIndex];
         const auto previous = previousTargetSubplans.find(targetPatch.key);
-        const auto sources = currentSourcesByTarget.find(targetPatch.key);
         const std::set<FmmPatchKey> emptySources;
-        const std::set<FmmPatchKey>& currentSources =
-            sources == currentSourcesByTarget.end() ? emptySources :
-                                                     sources->second;
+        const auto sources = currentSourcesByTarget.find(targetPatch.key);
+        const std::set<FmmPatchKey>& currentSources = sourceSetsMayHaveChanged ?
+            (sources == currentSourcesByTarget.end() ? emptySources :
+                                                       sources->second) :
+            (previous == previousTargetSubplans.end() ? emptySources :
+                                                       previous->second.sourcePatches);
         const bool sourceSetChanged =
             previous != previousTargetSubplans.end() &&
             previous->second.sourcePatches != currentSources;
-        bool sourceChanged = sourceSetChanged;
+        const bool sourceChanged = sourceSetChanged ||
+            sourceInvalidatedTargets.count(targetPatch.key) != 0;
         bool reusable = reuseUnaffectedTargetSubplans &&
             previous != previousTargetSubplans.end() &&
             !targetPatch.rootGeometryChanged &&
             !targetPatch.leafTopologyChanged &&
             previous->second.targetTopologyHash == targetPatch.topologyHash &&
-            !sourceSetChanged;
-        if(reusable)
-        {
-            for(const FmmPatchKey& sourcePatch : currentSources)
-            {
-                const auto currentHash =
-                    currentSourceTopologyHashes.find(sourcePatch);
-                const auto previousHash =
-                    previousSourceTopologyHashes.find(sourcePatch);
-                if(currentHash == currentSourceTopologyHashes.end() ||
-                   previousHash == previousSourceTopologyHashes.end() ||
-                   currentHash->second != previousHash->second)
-                {
-                    sourceChanged = true;
-                    reusable = false;
-                    break;
-                }
-            }
-        }
+            !sourceChanged;
         // M2L and P2P terminals remain conservative while the retained target
         // node geometry stays inside its persistent envelope. M2P is different:
         // its acceptance test is pointwise at the current target particles.
@@ -837,6 +906,7 @@ void FmmPatchLetPlan::build(
         for(const CachedTerminal& cached : previous->second.m2p)
             appendCached(cached, terminalM2P);
     }
+    stats.letInvalidationSeconds += elapsed(invalidationStart);
     ++stats.letWavePlanRebuildCount;
 
     std::vector<PendingPair> pending;
@@ -1343,9 +1413,18 @@ void FmmPatchLetPlan::build(
         CachedTargetSubplan subplan;
         subplan.targetPatch = patch.key;
         subplan.targetTopologyHash = patch.topologyHash;
-        const auto currentSources = currentSourcesByTarget.find(patch.key);
-        if(currentSources != currentSourcesByTarget.end())
-            subplan.sourcePatches = currentSources->second;
+        if(sourceSetsMayHaveChanged)
+        {
+            const auto currentSources = currentSourcesByTarget.find(patch.key);
+            if(currentSources != currentSourcesByTarget.end())
+                subplan.sourcePatches = currentSources->second;
+        }
+        else
+        {
+            const auto previous = previousTargetSubplans.find(patch.key);
+            if(previous != previousTargetSubplans.end())
+                subplan.sourcePatches = previous->second.sourcePatches;
+        }
         targetSubplans_.emplace(patch.key, std::move(subplan));
     }
     enum class CachedInteractionKind { M2L, P2P, M2P };
@@ -1421,11 +1500,29 @@ void FmmPatchLetPlan::build(
                 retained, cached.second.particlePayloadCapacity);
         }
     }
+
+    targetsDependingOnSourcePatch_.clear();
+    std::uint64_t reverseDependencyEdges = 0;
+    for(const auto& target : targetSubplans_)
+    {
+        for(const FmmPatchKey& sourcePatch : target.second.sourcePatches)
+        {
+            if(reverseDependencyEdges ==
+               std::numeric_limits<std::uint64_t>::max())
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: reverse dependency edge overflow");
+            targetsDependingOnSourcePatch_[sourcePatch].insert(target.first);
+            ++reverseDependencyEdges;
+        }
+    }
+    stats.letReverseDependencyEdgeCount = reverseDependencyEdges;
     sourceTopologyHashes_.swap(currentSourceTopologyHashes);
     std::map<FmmPatchKey, CachedTargetSubplan>().swap(
         previousTargetSubplans);
     std::map<FmmPatchKey, std::uint64_t>().swap(
         previousSourceTopologyHashes);
+    std::map<FmmPatchKey, std::set<FmmPatchKey>>().swap(
+        previousTargetsDependingOnSourcePatch);
 
     std::vector<SourceIdentity> uniqueSources;
     uniqueSources.reserve(terminalCount);
@@ -3014,6 +3111,18 @@ std::size_t FmmPatchLetPlan::bytesOwned() const
         2 * sizeof(void*);
     add(multiply(sourceParticlePayloadCaps_.size(),
                  sourcePayloadCapEntryBytes));
+
+    const std::size_t reverseDependencyEntryBytes =
+        sizeof(std::pair<const FmmPatchKey, std::set<FmmPatchKey>>) +
+        2 * sizeof(void*);
+    const std::size_t reverseDependencyTargetEntryBytes =
+        sizeof(FmmPatchKey) + 3 * sizeof(void*);
+    add(multiply(targetsDependingOnSourcePatch_.size(),
+                 reverseDependencyEntryBytes));
+    for(const auto& dependency : targetsDependingOnSourcePatch_)
+        add(multiply(dependency.second.size(),
+                     reverseDependencyTargetEntryBytes));
+
     const std::size_t targetSubplanEntryBytes =
         sizeof(std::pair<const FmmPatchKey, CachedTargetSubplan>) +
         2 * sizeof(void*);

@@ -58,6 +58,11 @@ struct FmmSolveStats
     std::uint64_t letDescriptorTraversalSkippedCount = 0;
     std::uint64_t letPayloadCapacityUpdateCount = 0;
     std::uint64_t letPayloadSourceRepackCount = 0;
+    std::uint64_t letSourceGenerationCheckCount = 0;
+    std::uint64_t letChangedSourcePatchCount = 0;
+    std::uint64_t letReverseDependencyLookupCount = 0;
+    std::uint64_t letReverseDependencyTargetCount = 0;
+    std::uint64_t letReverseDependencyEdgeCount = 0;
     bool letPayloadShapeTriggeredRebuild = false;
     bool letPayloadCapacityRefreshRequired = false;
     bool letPayloadLayoutRefreshed = false;
@@ -132,6 +137,7 @@ struct FmmSolveStats
     double letSubscriptionSeconds = 0;
     double letPruneCompactSeconds = 0;
     double letPayloadLayoutRefreshSeconds = 0;
+    double letInvalidationSeconds = 0;
 
     // Persistent distributed-memory attribution.  bytesOwned remains the
     // aggregate value; these fields expose the dominant components.

@@ -1071,14 +1071,14 @@ void FmmPatchDistributedSolver::solve(
             distributedOptions_.letParticlePayloadSlackCount,
             distributedOptions_.enableLeafM2P,
             comm_, stats,
-            // Rebuilding the process tree changes process-node indices and
-            // routing, but patch LET subplans are keyed only by stable patch
-            // identities and patch-tree spatial keys. FmmPatchLetPlan::build
-            // compares the exact current source-patch set and source topology
-            // generation for every target before reusing it, so unaffected
-            // target traversals remain valid across a small patch-set change.
-            // An explicitly forced rebuild remains a true cold rebuild.
-            topologyInitialized_ && !forcedRebuild);
+            // Stable patch identities and spatial keys permit target-subplan
+            // reuse.  When process routing is unchanged, source sets are also
+            // unchanged and the LET can use its reverse dependency graph to
+            // visit only targets of changed source generations.  A process
+            // rebuild still compares exact source sets, while a forced rebuild
+            // remains a true cold rebuild.
+            topologyInitialized_ && !forcedRebuild,
+            rebuildProcessTopology);
         std::vector<FmmPatchRootDescriptor>().swap(rootDescriptors_);
     }
     else if(payloadCapacityRequiresRefresh)

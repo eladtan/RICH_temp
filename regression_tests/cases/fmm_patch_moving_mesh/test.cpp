@@ -151,6 +151,40 @@ std::vector<Body> allBodies(int size, int step)
     return result;
 }
 
+std::vector<Body> envelopeBodiesForRank(int rank, int size, bool expanded)
+{
+    std::vector<Body> result = bodiesForRank(rank, size, 0);
+    if(!expanded || rank != 0)
+        return result;
+
+    // Expand one two-particle leaf well beyond its retained 2% radius envelope
+    // without changing its patch, child mask, occupancy, or root cube.
+    const Vector3D center = patchCenter(rank, 1);
+    const double offset = 0.10;
+    for(Body& body : result)
+    {
+        if(body.token != 200 && body.token != 201)
+            continue;
+        const int side = body.token == 200 ? -1 : 1;
+        body.position = Vector3D(center.x + side * offset,
+                                 center.y + 0.25 * side * offset,
+                                 center.z - 0.15 * side * offset);
+    }
+    return result;
+}
+
+std::vector<Body> allEnvelopeBodies(int size, bool expanded)
+{
+    std::vector<Body> result;
+    for(int rank = 0; rank < size; ++rank)
+    {
+        const std::vector<Body> local =
+            envelopeBodiesForRank(rank, size, expanded);
+        result.insert(result.end(), local.begin(), local.end());
+    }
+    return result;
+}
+
 Vector3D directAcceleration(const Body& target,
                             const std::vector<Body>& sources)
 {
@@ -325,6 +359,48 @@ int main(int argc, char** argv)
             payloadRefreshStats.rootDescriptorExchangeSeconds == 0.0 &&
             payloadRefreshStats.letDescriptorTraversalSeconds == 0.0;
     }
+
+    FmmSolveStats envelopeBaselineStats;
+    FmmSolveStats envelopeExpansionStats;
+    bool localReverseDependencySemantics = false;
+    double localEnvelopeExpansionError = 0.0;
+    {
+        // Force the expanded patch to participate in remote LET dependencies
+        // instead of being absorbed by a process-level or M2P multipole.
+        FmmGravityOptions envelopeNumerical = numerical;
+        envelopeNumerical.thetaCritical = 1.0e-6;
+        FmmDistributedOptions envelopeDistributed = distributed;
+        envelopeDistributed.enableLeafM2P = false;
+        DistributedFmmGravityCalculator envelopeSolver(
+            envelopeNumerical, envelopeDistributed);
+        const std::vector<Body> baselineLocal =
+            envelopeBodiesForRank(rank, size, false);
+        localEnvelopeExpansionError = std::max(
+            localEnvelopeExpansionError,
+            solveAndCompare(envelopeSolver, baselineLocal,
+                            allEnvelopeBodies(size, false),
+                            envelopeBaselineStats));
+
+        const std::vector<Body> expandedLocal =
+            envelopeBodiesForRank(rank, size, true);
+        localEnvelopeExpansionError = std::max(
+            localEnvelopeExpansionError,
+            solveAndCompare(envelopeSolver, expandedLocal,
+                            allEnvelopeBodies(size, true),
+                            envelopeExpansionStats));
+
+        localReverseDependencySemantics =
+            envelopeExpansionStats.ranksWithGeometryEnvelopeChange > 0 &&
+            !envelopeExpansionStats.processTopologyRebuilt &&
+            envelopeExpansionStats.letTopologyRebuilt &&
+            envelopeExpansionStats.letSourceGenerationCheckCount >=
+                envelopeExpansionStats.letChangedSourcePatchCount &&
+            envelopeExpansionStats.letReverseDependencyLookupCount ==
+                envelopeExpansionStats.letChangedSourcePatchCount &&
+            envelopeExpansionStats.letSourceTriggeredInvalidations ==
+                envelopeExpansionStats.letReverseDependencyTargetCount;
+    }
+
     FmmSolveStats stepStats[5];
     double localMaximumError = 0.0;
     for(int step = 0; step < 5; ++step)
@@ -336,6 +412,8 @@ int main(int argc, char** argv)
     }
     localMaximumError = std::max(
         localMaximumError, localPayloadRefreshError);
+    localMaximumError = std::max(
+        localMaximumError, localEnvelopeExpansionError);
 
     double maximumError = 0.0;
     MPI_Allreduce(&localMaximumError, &maximumError, 1,
@@ -351,6 +429,25 @@ int main(int argc, char** argv)
         payloadRefreshStats.letWavePlanRebuildCount};
     unsigned long long globalPayloadRefreshCounts[3] = {};
     MPI_Allreduce(localPayloadRefreshCounts, globalPayloadRefreshCounts, 3,
+                  MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+
+    const int localReverseDependencyPass =
+        localReverseDependencySemantics ? 1 : 0;
+    int globalReverseDependencyPass = 0;
+    MPI_Allreduce(&localReverseDependencyPass, &globalReverseDependencyPass, 1,
+                  MPI_INT, MPI_LAND, MPI_COMM_WORLD);
+    const unsigned long long localReverseDependencyCounts[8] = {
+        envelopeExpansionStats.letSourceGenerationCheckCount,
+        envelopeExpansionStats.letChangedSourcePatchCount,
+        envelopeExpansionStats.letReverseDependencyLookupCount,
+        envelopeExpansionStats.letReverseDependencyTargetCount,
+        envelopeExpansionStats.letReverseDependencyEdgeCount,
+        envelopeExpansionStats.letSourceTriggeredInvalidations,
+        envelopeExpansionStats.letTargetSubplansReused,
+        envelopeExpansionStats.letTargetSubplansRebuilt};
+    unsigned long long globalReverseDependencyCounts[8] = {};
+    MPI_Allreduce(localReverseDependencyCounts,
+                  globalReverseDependencyCounts, 8,
                   MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
 
     const unsigned long long localIncremental[4] = {
@@ -445,12 +542,27 @@ int main(int argc, char** argv)
         globalPayloadRefreshCounts[0] > 0 &&
         globalPayloadRefreshCounts[1] > 0 &&
         globalPayloadRefreshCounts[2] > 0;
+    const bool reverseDependencyRefresh =
+        globalReverseDependencyPass != 0 &&
+        globalReverseDependencyCounts[0] >=
+            globalReverseDependencyCounts[1] &&
+        globalReverseDependencyCounts[1] > 0 &&
+        globalReverseDependencyCounts[2] ==
+            globalReverseDependencyCounts[1] &&
+        globalReverseDependencyCounts[3] > 0 &&
+        globalReverseDependencyCounts[3] ==
+            globalReverseDependencyCounts[5] &&
+        globalReverseDependencyCounts[4] >=
+            globalReverseDependencyCounts[3] &&
+        globalReverseDependencyCounts[6] > 0 &&
+        globalReverseDependencyCounts[7] > 0;
     const bool pass = maximumError < 0.1 &&
         stepStats[0].processTopologyRebuilt &&
         stepStats[0].letTopologyRebuilt && warmReuse &&
         splitIncremental && mergeIncremental && patchSetRebuild &&
         incrementalCoverage && memoryBound && globalWaves > 1 &&
         emptyPersistentLeavesExercised && payloadRefresh &&
+        reverseDependencyRefresh &&
         std::isfinite(maximumImbalance) && maximumImbalance < 3.0;
 
     if(rank == 0)
@@ -499,6 +611,34 @@ int main(int argc, char** argv)
                << globalPayloadRefreshCounts[1] << "\n";
         output << "payload_wave_plan_rebuilds "
                << globalPayloadRefreshCounts[2] << "\n";
+        output << "reverse_dependency_semantics "
+               << globalReverseDependencyPass << "\n";
+        output << "reverse_dependency_refresh "
+               << (reverseDependencyRefresh ? 1 : 0) << "\n";
+        output << "reverse_dependency_process_reused "
+               << (!envelopeExpansionStats.processTopologyRebuilt ? 1 : 0)
+               << "\n";
+        output << "reverse_dependency_let_rebuilt "
+               << (envelopeExpansionStats.letTopologyRebuilt ? 1 : 0) << "\n";
+        output << "reverse_dependency_geometry_expanded "
+               << (envelopeExpansionStats.ranksWithGeometryEnvelopeChange > 0 ? 1 : 0)
+               << "\n";
+        output << "source_generation_checks "
+               << globalReverseDependencyCounts[0] << "\n";
+        output << "changed_source_patches "
+               << globalReverseDependencyCounts[1] << "\n";
+        output << "reverse_dependency_lookups "
+               << globalReverseDependencyCounts[2] << "\n";
+        output << "reverse_dependency_targets "
+               << globalReverseDependencyCounts[3] << "\n";
+        output << "reverse_dependency_edges "
+               << globalReverseDependencyCounts[4] << "\n";
+        output << "reverse_dependency_source_invalidations "
+               << globalReverseDependencyCounts[5] << "\n";
+        output << "reverse_dependency_targets_reused "
+               << globalReverseDependencyCounts[6] << "\n";
+        output << "reverse_dependency_targets_rebuilt "
+               << globalReverseDependencyCounts[7] << "\n";
         output << "split_process_reused "
                << (!stepStats[2].processTopologyRebuilt ? 1 : 0) << "\n";
         output << "split_let_rebuilt "
@@ -550,6 +690,7 @@ int main(int argc, char** argv)
         std::cout << "fmm_patch_moving_mesh pass=" << pass
                   << " error=" << maximumError
                   << " payload_refresh=" << payloadRefresh
+                  << " reverse_dependencies=" << reverseDependencyRefresh
                   << " reused_targets=" << globalIncremental[0]
                   << " rebuilt_targets=" << globalIncremental[1]
                   << std::endl;

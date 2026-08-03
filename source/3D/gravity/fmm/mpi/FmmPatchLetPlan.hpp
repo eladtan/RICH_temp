@@ -62,7 +62,8 @@ public:
                bool enableLeafM2P,
                const MPI_Comm& comm,
                FmmSolveStats& stats,
-               bool reuseUnaffectedTargetSubplans = false);
+               bool reuseUnaffectedTargetSubplans = false,
+               bool processTopologyRebuilt = true);
 
     // Reuse a previously built patch LET when patch identities and node
     // structure are unchanged. Payload counts and coefficients are refreshed
@@ -246,6 +247,9 @@ private:
     std::map<SourceIdentity, std::size_t> sourceParticlePayloadCaps_;
     std::map<FmmPatchKey, CachedTargetSubplan> targetSubplans_;
     std::map<FmmPatchKey, std::uint64_t> sourceTopologyHashes_;
+    // Reverse patch dependency graph used to turn a changed source generation
+    // into the exact local target-subplan invalidation closure.
+    std::map<FmmPatchKey, std::set<FmmPatchKey>> targetsDependingOnSourcePatch_;
     FmmPeerExchange exchange_;
     std::size_t waveCount_;
     std::size_t localWaveCount_;
