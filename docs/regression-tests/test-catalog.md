@@ -285,7 +285,7 @@ Tests hydrostatic equilibrium of a polytropic star (Lane-Emden solution with ind
 | Solver | HLLC, LinearGauss3D |
 | Mesh motion | Lagrangian + RoundCells |
 | Gravity | DistributedGravityTree |
-| SLURM | 64 tasks, `bigrun` partition |
+| SLURM | 512 tasks, `bigrun` partition |
 
 **Source:** `regression_tests/cases/lane_self_gravity/test.cpp`
 
@@ -309,6 +309,47 @@ The bash checker `check_lane_self_gravity_case` verifies that the mean density d
 
 - Lane, J. H. (1870). "On the theoretical temperature of the Sun." *Am. J. Sci.* 50, 57-74.
 - Emden, R. (1907). *Gaskugeln*. Teubner.
+
+---
+
+## 7b. lane_self_gravity_fmm -- Lane-Emden with FMM Self-Gravity
+
+**Tags:** `mpi`
+
+### Physics
+
+Same Lane-Emden hydrostatic equilibrium benchmark as `lane_self_gravity`, but gravity is computed with the distributed FMM solver (`FastMultipoleAcceleration3D`) at expansion order $P = 3$ and $\theta = 0.9$ instead of the quadrupole Barnes-Hut tree.
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Polytrope index | n = 3/2 |
+| Lane-Emden tables | `data/xsi32.txt`, `data/theta32.txt` |
+| Domain | Sphere of radius R = 7e10 cm |
+| EOS | Ideal gas, gamma = 5/3 |
+| Solver | HLLC, LinearGauss3D |
+| Mesh motion | Lagrangian + RoundCells |
+| Gravity | Distributed FMM, P=3, theta=0.9 |
+| SLURM | 512 tasks, `bigrun` partition |
+
+**Source:** `regression_tests/cases/lane_self_gravity_fmm/test.cpp`
+
+### Output
+
+- `lane_gravity_metrics.txt` -- fields: `final_metric`, `pass`
+- `lane_profile.txt` -- radial density profile
+
+### Validation
+
+The bash checker `check_lane_self_gravity_fmm_case` verifies that the mean density deviation from the initial profile stays small.
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| \|final_metric\| | < 4e-2 | `LANE_GRAVITY_FMM_MAX_METRIC` (falls back to `LANE_GRAVITY_MAX_METRIC`) |
+| `pass` field | Must be `1` | -- |
 
 ---
 
@@ -719,6 +760,7 @@ from per-cell internal-rate and conductance diagnostics.
 | `amr_distributed_clip` | mpi | Distributed AMR clip conservation | Mass/energy sum | rel diff <= 1e-6 |
 | `voronoi_volume` | serial, mpi | Geometric accuracy | Volume sum | rel error < 1e-10 |
 | `lane_self_gravity` | mpi | Hydrostatic equilibrium | Density stability | metric < 4e-2 |
+| `lane_self_gravity_fmm` | mpi | Hydrostatic equilibrium (FMM) | Density stability | metric < 4e-2 |
 | `mach2_diffusion` | mpi | Radiative shock (grey) | NLTE solution | rel L1 <= 0.025 |
 | `mach2_multigroup` | mpi | Radiative shock (MG) | NLTE solution | rel L1 <= 0.025 |
 | `marshak_wave_1` | serial | Marshak wave (non-eq) | Self-similar ODE | rel L1 <= 1e-2 |

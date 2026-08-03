@@ -57,6 +57,7 @@ regression_tests/
 │   ├── amr_distributed_clip.sh
 │   ├── voronoi_volume.sh
 │   ├── lane_self_gravity.sh
+│   ├── lane_self_gravity_fmm.sh
 │   ├── mach2_diffusion.sh
 │   ├── mach2_multigroup.sh
 │   ├── marshak_wave_1.sh .. marshak_wave_4.sh
