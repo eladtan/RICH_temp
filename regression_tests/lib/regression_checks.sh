@@ -795,6 +795,9 @@ check_spherical_collapse_case() {
     local metrics_file="${run_dir}/collapse_metrics.txt"
     local max_density_scatter
     local max_velocity_scatter
+    local max_tangential_velocity_rms
+    local max_first_postshock_added_shock_weight
+    local min_first_postshock_base_scalar_limiter
     local pass_flag
 
     if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
@@ -808,9 +811,15 @@ check_spherical_collapse_case() {
 
     max_density_scatter=$(awk '$1 == "max_density_scatter" { print $2 }' "$metrics_file")
     max_velocity_scatter=$(awk '$1 == "max_velocity_scatter" { print $2 }' "$metrics_file")
+    max_tangential_velocity_rms=$(awk '$1 == "max_tangential_velocity_rms" { print $2 }' "$metrics_file")
+    max_first_postshock_added_shock_weight=$(awk '$1 == "max_first_postshock_added_shock_weight" { print $2 }' "$metrics_file")
+    min_first_postshock_base_scalar_limiter=$(awk '$1 == "min_first_postshock_base_scalar_limiter" { print $2 }' "$metrics_file")
     pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
 
-    if [[ -z "$max_density_scatter" || -z "$max_velocity_scatter" || -z "$pass_flag" ]]; then
+    if [[ -z "$max_density_scatter" || -z "$max_velocity_scatter" ||
+          -z "$max_tangential_velocity_rms" ||
+          -z "$max_first_postshock_added_shock_weight" ||
+          -z "$min_first_postshock_base_scalar_limiter" || -z "$pass_flag" ]]; then
         set_check_msg "failed to parse spherical collapse metrics"
         return 1
     fi
@@ -823,22 +832,40 @@ check_spherical_collapse_case() {
         set_check_msg "spherical_collapse max_velocity_scatter is not finite"
         return 1
     fi
+    if ! is_finite_number "$max_tangential_velocity_rms" ||
+       ! is_finite_number "$max_first_postshock_added_shock_weight" ||
+       ! is_finite_number "$min_first_postshock_base_scalar_limiter"; then
+        set_check_msg "spherical_collapse extended diagnostics are not finite"
+        return 1
+    fi
     if [[ "$pass_flag" != "0" && "$pass_flag" != "1" ]]; then
         set_check_msg "spherical_collapse pass flag must be 0 or 1"
         return 1
     fi
 
-    local max_scatter="${COLLAPSE_MAX_DENSITY_SCATTER:-0.1}"
+    local max_scatter="${COLLAPSE_MAX_DENSITY_SCATTER:-1e-4}"
 
-    if ! awk -v d="$max_density_scatter" -v t="$max_scatter" 'BEGIN { exit !(d < t) }'; then
-        set_check_msg "spherical_collapse max_density_scatter exceeds threshold (${max_density_scatter} >= ${max_scatter})"
+    if ! awk -v d="$max_density_scatter" -v t="$max_scatter" 'BEGIN { exit !(d <= t) }'; then
+        set_check_msg "spherical_collapse max_density_scatter exceeds threshold (${max_density_scatter} > ${max_scatter})"
         return 1
     fi
 
-    local max_vel_scatter="${COLLAPSE_MAX_VELOCITY_SCATTER:-0.1}"
+    local max_vel_scatter="${COLLAPSE_MAX_VELOCITY_SCATTER:-1e-4}"
 
-    if ! awk -v v="$max_velocity_scatter" -v t="$max_vel_scatter" 'BEGIN { exit !(v < t) }'; then
-        set_check_msg "spherical_collapse max_velocity_scatter exceeds threshold (${max_velocity_scatter} >= ${max_vel_scatter})"
+    if ! awk -v v="$max_velocity_scatter" -v t="$max_vel_scatter" 'BEGIN { exit !(v <= t) }'; then
+        set_check_msg "spherical_collapse max_velocity_scatter exceeds threshold (${max_velocity_scatter} > ${max_vel_scatter})"
+        return 1
+    fi
+
+    local max_tangential="${COLLAPSE_MAX_TANGENTIAL_VELOCITY_RMS:-1e-4}"
+    if ! awk -v v="$max_tangential_velocity_rms" -v t="$max_tangential" 'BEGIN { exit !(v <= t) }'; then
+        set_check_msg "spherical_collapse max_tangential_velocity_rms exceeds threshold (${max_tangential_velocity_rms} > ${max_tangential})"
+        return 1
+    fi
+
+    local max_postshock="${COLLAPSE_MAX_FIRST_POSTSHOCK_ADDED_SHOCK_WEIGHT:-1e-12}"
+    if ! awk -v v="$max_first_postshock_added_shock_weight" -v t="$max_postshock" 'BEGIN { exit !(v <= t) }'; then
+        set_check_msg "spherical_collapse first postshock added shock weight exceeds threshold (${max_first_postshock_added_shock_weight} > ${max_postshock})"
         return 1
     fi
 
@@ -847,7 +874,76 @@ check_spherical_collapse_case() {
         return 1
     fi
 
-    set_check_msg "Spherical collapse symmetry check passed (density_scatter=${max_density_scatter}, velocity_scatter=${max_velocity_scatter})"
+    set_check_msg "Spherical collapse symmetry check passed (density_scatter=${max_density_scatter}, velocity_scatter=${max_velocity_scatter}, tangential_rms=${max_tangential_velocity_rms}, postshock_added=${max_first_postshock_added_shock_weight}, postshock_base=${min_first_postshock_base_scalar_limiter})"
+    return 0
+}
+
+check_spherical_shock_sensor_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/spherical_shock_sensor_metrics.txt"
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale spherical_shock_sensor_metrics.txt"
+        return 1
+    fi
+
+    local upstream downstream scalar smooth closure_weight closure_error smooth_order pass_flag
+    upstream=$(awk '$1 == "max_upstream_shock_weight" { print $2 }' "$metrics_file")
+    downstream=$(awk '$1 == "max_downstream_added_shock_weight" { print $2 }' "$metrics_file")
+    scalar=$(awk '$1 == "max_downstream_scalar_reference_error" { print $2 }' "$metrics_file")
+    smooth=$(awk '$1 == "max_smooth_compression_added_shock_weight" { print $2 }' "$metrics_file")
+    closure_weight=$(awk '$1 == "max_eos_closure_added_shock_weight" { print $2 }' "$metrics_file")
+    closure_error=$(awk '$1 == "max_eos_closure_monotonicity_error" { print $2 }' "$metrics_file")
+    smooth_order=$(awk '$1 == "min_smooth_limited_order" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    if [[ -z "$upstream" || -z "$downstream" || -z "$scalar" || -z "$smooth" ||
+          -z "$closure_weight" ||
+          -z "$closure_error" || -z "$smooth_order" || -z "$pass_flag" ]] ||
+       ! is_finite_number "$upstream" || ! is_finite_number "$downstream" ||
+       ! is_finite_number "$scalar" || ! is_finite_number "$smooth" ||
+       ! is_finite_number "$closure_weight" ||
+       ! is_finite_number "$closure_error" || ! is_finite_number "$smooth_order"; then
+        set_check_msg "failed to parse spherical shock sensor metrics"
+        return 1
+    fi
+    if ! awk -v x="$upstream" 'BEGIN { exit !(x >= 0.99) }'; then
+        set_check_msg "upstream shock weight is below 0.99"
+        return 1
+    fi
+    if ! awk -v x="$downstream" 'BEGIN { exit !(x <= 1e-12) }'; then
+        set_check_msg "downstream added shock weight exceeds 1e-12"
+        return 1
+    fi
+    if ! awk -v x="$scalar" 'BEGIN { exit !(x <= 1e-12) }'; then
+        set_check_msg "downstream scalar states differ from base-limiter reference"
+        return 1
+    fi
+    if ! awk -v x="$smooth" 'BEGIN { exit !(x <= 1e-12) }'; then
+        set_check_msg "smooth compression activated added shock limiting"
+        return 1
+    fi
+    if ! awk -v x="$closure_weight" 'BEGIN { exit !(x <= 1e-12) }'; then
+        set_check_msg "EOS base-limiter case activated added shock limiting"
+        return 1
+    fi
+    if ! awk -v x="$closure_error" 'BEGIN { exit !(x <= 1e-12) }'; then
+        set_check_msg "EOS-derived face state violates local monotonicity"
+        return 1
+    fi
+    if ! awk -v x="$smooth_order" 'BEGIN { exit !(x >= 1.8) }'; then
+        set_check_msg "smooth limited spherical interpolation order is below 1.8"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "spherical shock sensor test reported pass=0"
+        return 1
+    fi
+    set_check_msg "Spherical shock sensor checks passed"
     return 0
 }
 

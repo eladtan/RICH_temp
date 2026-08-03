@@ -16,13 +16,14 @@
 #include "source/newtonian/three_dimensional/CourantFriedrichsLewy.hpp"
 #include "source/newtonian/three_dimensional/Ghost3D.hpp"
 #include "source/newtonian/three_dimensional/Hllc3D.hpp"
-#include "source/newtonian/three_dimensional/SphericalLinearGauss3D.hpp"
+#include "source/newtonian/three_dimensional/SphericalBackgroundLinearGauss3D.hpp"
 #include "source/newtonian/three_dimensional/eulerian_3d.hpp"
 #include "source/newtonian/three_dimensional/default_cell_updater.hpp"
 #include "source/newtonian/three_dimensional/default_extensive_updater.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
 #include "source/newtonian/three_dimensional/simulation/Simulation.hpp"
 #include "source/newtonian/three_dimensional/simulation/steps/HydroStep.hpp"
+#include "source/newtonian/three_dimensional/spherical_symmetry/SphericalShellProjector3D.hpp"
 
 #ifdef RICH_MPI
 #include <mpi.h>
@@ -46,9 +47,11 @@ SphericalShellMeshOptions build_shell_mesh_options()
     options.inner_radius = R_INNER;
     options.outer_radius = R_OUTER;
     options.angular_edge_count = N_CUBE_EDGE;
-    options.guard_shell_count = 0;
-    options.fill_inner_core = false;
-    options.fill_outer_box = false;
+    options.guard_shell_count = 2;
+    options.fill_inner_core = true;
+    options.fill_outer_box = true;
+    options.antipodal_directions = true;
+    options.centered_cartesian_fill = true;
     return options;
 }
 
@@ -62,13 +65,10 @@ struct DiagResult {
     double rho_scatter;
     double vr_scatter;
     double tangential_velocity_rms;
-    double first_postshock_added_shock_weight;
-    double first_postshock_base_scalar_limiter;
 };
 
 DiagResult compute_diagnostics(HDSim3D const& sim,
-    std::vector<double> const& bin_edges,
-    SphericalLinearGauss3D const& interp)
+    std::vector<double> const& bin_edges)
 {
     size_t const nbins = bin_edges.size() - 1;
     size_t const N = sim.getTessellation().GetPointNo();
@@ -180,8 +180,6 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
     double total_rho_mad = 0.0;
     double total_vr_mad = 0.0;
     double total_vol = 0.0;
-    size_t shock_bin = nbins;
-
     for (size_t b = 0; b < nbins; ++b) {
         if (vol_sum[b] <= 0.0)
             continue;
@@ -196,36 +194,8 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
         if (ie_mean[b] > 0.2 && bin_center < shock_r)
         {
             shock_r = bin_center;
-            shock_bin = b;
         }
     }
-
-    double first_postshock_weight = 0.0;
-    double first_postshock_base = 1.0;
-    std::vector<double> const& shock_weights = interp.GetAppliedShockWeights();
-    std::vector<unsigned char> const& downstream = interp.GetDownstreamProtectionFlags();
-    std::vector<double> const& base_limiter = interp.GetBaseScalarLimiterFactors();
-    if (shock_bin < nbins)
-    {
-        for (size_t i = 0; i < N; ++i)
-        {
-            if (cell_bin[i] != shock_bin || i >= downstream.size() || !downstream[i])
-                continue;
-            if (i < shock_weights.size())
-                first_postshock_weight = std::max(first_postshock_weight, shock_weights[i]);
-            if (i < base_limiter.size())
-                first_postshock_base = std::min(first_postshock_base, base_limiter[i]);
-        }
-    }
-#ifdef RICH_MPI
-    {
-        double g = 0.0;
-        MPI_Allreduce(&first_postshock_weight, &g, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-        first_postshock_weight = g;
-        MPI_Allreduce(&first_postshock_base, &g, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
-        first_postshock_base = g;
-    }
-#endif
 
     DiagResult res;
     res.shock_r = shock_r;
@@ -233,8 +203,6 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
     res.vr_scatter = (total_vol > 0.0) ? total_vr_mad / total_vol : 0.0;
     res.tangential_velocity_rms = (tangential_vol > 0.0)
         ? std::sqrt(tangential_v2_vol / tangential_vol) : 0.0;
-    res.first_postshock_added_shock_weight = first_postshock_weight;
-    res.first_postshock_base_scalar_limiter = first_postshock_base;
     return res;
 }
 
@@ -258,34 +226,13 @@ int main(void)
 
     Voronoi3D tess(ll, ur);
     std::vector<ComputationalCell3D> cells;
+    SphericalShellMeshOptions const shell_options = build_shell_mesh_options();
 
     {
         std::vector<Vector3D> points;
-        SphericalShellMeshOptions const shell_options = build_shell_mesh_options();
-        double const n_angular = 6.0 * static_cast<double>(N_CUBE_EDGE) *
-            static_cast<double>(N_CUBE_EDGE);
-        double const dR_over_R = std::sqrt(4.0 * M_PI / n_angular);
 
-        if (rank == 0) {
+        if (rank == 0)
             points = GenerateSphericalShellMesh3D(ll, ur, shell_options);
-            points.reserve(points.size() + 200000);
-            double innermost_dR = R_INNER * dR_over_R;
-            double inner_cell_vol = innermost_dR * innermost_dR * innermost_dR;
-            double inner_sphere_vol = (4.0 / 3.0) * M_PI * R_INNER * R_INNER * R_INNER;
-            size_t N_inner = std::max(static_cast<size_t>(100),
-                                      static_cast<size_t>(inner_sphere_vol / inner_cell_vol));
-            auto inner_pts = RandSphereR(N_inner, ll, ur, 0, R_INNER);
-            points.insert(points.end(), inner_pts.begin(), inner_pts.end());
-            double outer_cell_size = R_OUTER * dR_over_R;
-            double box_vol = std::pow(2.0 * box_half, 3);
-            double sphere_vol = (4.0 / 3.0) * M_PI * R_OUTER * R_OUTER * R_OUTER;
-            double outer_vol = box_vol - sphere_vol;
-            double outer_cell_vol = outer_cell_size * outer_cell_size * outer_cell_size * 8.0;
-            size_t N_outer = std::max(static_cast<size_t>(1000),
-                                      static_cast<size_t>(outer_vol / outer_cell_vol));
-            auto outer_pts = RandSphereR2(N_outer, ll, ur, R_OUTER, box_half * std::sqrt(3.0));
-            points.insert(points.end(), outer_pts.begin(), outer_pts.end());
-        }
 
 #ifdef RICH_MPI
         points = MPI_Spread(points, 0, MPI_COMM_WORLD);
@@ -325,8 +272,8 @@ int main(void)
 
     Hllc3D rs;
     RigidWallGenerator3D ghost;
-    SphericalLinearGauss3D interp(eos, ghost, Vector3D(0, 0, 0), true, 0.2, 0.5, 0.7, false, {}, "", true, false, false,
-        SphericalLinearGauss3D::FaceRadiusPolicy::SphericalShellGeneratorAverage);
+    SphericalBackgroundLinearGauss3D interp(eos, ghost, Vector3D(),
+        SphericalShellMeshRadii(shell_options), true, 0.2, 0.5, 0.7);
     Eulerian3D pm;
     ZeroForce3D force;
     DefaultCellUpdater cu;
@@ -352,10 +299,33 @@ int main(void)
     simulation.SetTimeStepFunction(tsf);
     HDSim3D sim(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, *tsf, fc, cu, eu, force,
                 std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
+    sim.SetSphericalShellProjector(
+        std::make_shared<SphericalShellProjector3D>(
+            shell_options.center, SphericalShellMeshRadii(shell_options)));
+    sim.SetSphericalPositivityPreservingStage();
 
     auto hydroStep = std::make_shared<HydroStep>(sim, HydroStep::TIMEADVANCE_2);
     simulation.addPhysics(hydroStep);
     simulation.SetTimeStep(1.0);
+
+    auto global_conserved_totals = [&sim]() {
+        double totals[2] = {0.0, 0.0};
+        size_t const owned_cell_count = sim.getTessellation().GetPointNo();
+        for (size_t i = 0; i < owned_cell_count; ++i) {
+            totals[0] += sim.getExtensives()[i].mass;
+            totals[1] += sim.getExtensives()[i].energy;
+        }
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, totals, 2, MPI_DOUBLE, MPI_SUM,
+                      MPI_COMM_WORLD);
+#endif
+        return std::make_pair(totals[0], totals[1]);
+    };
+    std::pair<double, double> const initial_totals =
+        global_conserved_totals();
+    std::pair<double, double> final_totals = initial_totals;
+    double max_mass_relative_drift = 0.0;
+    double max_energy_relative_drift = 0.0;
 
     WriteSnapshot3D(sim, "snap_initial.h5");
     if (rank == 0)
@@ -381,11 +351,11 @@ int main(void)
     }
 
     double next_snapshot_r = R_OUTER - 0.1;
+    double const innermost_shock_bin_center =
+        0.5 * (bin_edges[0] + bin_edges[1]);
     double max_rho_scatter = 0.0;
     double max_vr_scatter = 0.0;
     double max_tangential_velocity_rms = 0.0;
-    double max_first_postshock_added_shock_weight = 0.0;
-    double min_first_postshock_base_scalar_limiter = 1.0;
 
     while (true) {
         try {
@@ -395,17 +365,22 @@ int main(void)
             throw;
         }
 
-        DiagResult diag = compute_diagnostics(sim, bin_edges, interp);
+        DiagResult diag = compute_diagnostics(sim, bin_edges);
+        final_totals = global_conserved_totals();
+        double const mass_relative_drift =
+            std::abs(final_totals.first - initial_totals.first) /
+            std::abs(initial_totals.first);
+        double const energy_relative_drift =
+            std::abs(final_totals.second - initial_totals.second) /
+            std::abs(initial_totals.second);
+        max_mass_relative_drift = std::max(max_mass_relative_drift,
+            mass_relative_drift);
+        max_energy_relative_drift = std::max(max_energy_relative_drift,
+            energy_relative_drift);
         max_rho_scatter = std::max(max_rho_scatter, diag.rho_scatter);
         max_vr_scatter = std::max(max_vr_scatter, diag.vr_scatter);
         max_tangential_velocity_rms = std::max(max_tangential_velocity_rms,
                                                diag.tangential_velocity_rms);
-        max_first_postshock_added_shock_weight = std::max(
-            max_first_postshock_added_shock_weight,
-            diag.first_postshock_added_shock_weight);
-        min_first_postshock_base_scalar_limiter = std::min(
-            min_first_postshock_base_scalar_limiter,
-            diag.first_postshock_base_scalar_limiter);
 
         if (rank == 0) {
             std::cout << "Cycle " << simulation.GetCycle()
@@ -415,8 +390,9 @@ int main(void)
                       << " rho_scatter=" << diag.rho_scatter
                       << " vr_scatter=" << diag.vr_scatter
                       << " tangential_velocity_rms=" << diag.tangential_velocity_rms
-                      << " first_postshock_added_shock_weight="
-                      << diag.first_postshock_added_shock_weight << std::endl;
+                      << " mass_relative_drift=" << mass_relative_drift
+                      << " energy_relative_drift=" << energy_relative_drift
+                      << std::endl;
         }
 
         if (diag.shock_r <= next_snapshot_r) {
@@ -428,7 +404,7 @@ int main(void)
             next_snapshot_r -= 0.1;
         }
 
-        if (diag.shock_r <= R_INNER)
+        if (diag.shock_r <= innermost_shock_bin_center)
             break;
     }
 
@@ -437,11 +413,11 @@ int main(void)
         std::cout << "Wrote snap_final.h5" << std::endl;
 
     {
-        size_t const N = sim.getTessellation().GetPointNo();
+        size_t const owned_cell_count = sim.getTessellation().GetPointNo();
         double const box_half = R_OUTER * 1.5;
         double const z_tol = box_half / static_cast<double>(N_CUBE_EDGE);
         std::vector<double> local_x, local_y, local_rho, local_ie;
-        for (size_t i = 0; i < N; ++i) {
+        for (size_t i = 0; i < owned_cell_count; ++i) {
             Vector3D const cm = sim.getTessellation().GetCellCM(i);
             if (std::abs(cm.z) > z_tol)
                 continue;
@@ -481,32 +457,48 @@ int main(void)
         }
     }
 
+    int exit_code = 0;
     if (rank == 0) {
         int pass = (max_rho_scatter <= 1e-4 && max_vr_scatter <= 1e-4
                     && max_tangential_velocity_rms <= 1e-4
-                    && max_first_postshock_added_shock_weight <= 1e-12) ? 1 : 0;
+                    && max_mass_relative_drift <= 1e-10
+                    && max_energy_relative_drift <= 1e-10) ? 1 : 0;
         std::ofstream mf("collapse_metrics.txt");
         mf << std::scientific << std::setprecision(12);
         mf << "max_density_scatter " << max_rho_scatter << "\n";
         mf << "max_velocity_scatter " << max_vr_scatter << "\n";
         mf << "max_tangential_velocity_rms " << max_tangential_velocity_rms << "\n";
-        mf << "max_first_postshock_added_shock_weight "
-           << max_first_postshock_added_shock_weight << "\n";
-        mf << "min_first_postshock_base_scalar_limiter "
-           << min_first_postshock_base_scalar_limiter << "\n";
+        mf << "minimum_positivity_theta "
+           << sim.GetMinimumSphericalPositivityTheta() << "\n";
+        mf << "positivity_activation_count "
+           << sim.GetSphericalPositivityActivationCount() << "\n";
+        mf << "initial_mass " << initial_totals.first << "\n";
+        mf << "final_mass " << final_totals.first << "\n";
+        mf << "max_mass_relative_drift " << max_mass_relative_drift << "\n";
+        mf << "initial_energy " << initial_totals.second << "\n";
+        mf << "final_energy " << final_totals.second << "\n";
+        mf << "max_energy_relative_drift " << max_energy_relative_drift << "\n";
         mf << "pass " << pass << "\n";
         mf.close();
         std::cout << "Wrote collapse_metrics.txt"
                   << " (max_density_scatter=" << max_rho_scatter
-                  << ", max_velocity_scatter=" << max_vr_scatter
-                  << ", max_tangential_velocity_rms=" << max_tangential_velocity_rms
-                  << ", max_first_postshock_added_shock_weight="
-                  << max_first_postshock_added_shock_weight
-                  << ", pass=" << pass << ")" << std::endl;
+                   << ", max_velocity_scatter=" << max_vr_scatter
+                   << ", max_tangential_velocity_rms=" << max_tangential_velocity_rms
+                   << ", minimum_positivity_theta="
+                   << sim.GetMinimumSphericalPositivityTheta()
+                   << ", positivity_activation_count="
+                   << sim.GetSphericalPositivityActivationCount()
+                   << ", max_mass_relative_drift="
+                   << max_mass_relative_drift
+                   << ", max_energy_relative_drift="
+                   << max_energy_relative_drift
+                   << ", pass=" << pass << ")" << std::endl;
+        exit_code = pass ? 0 : 1;
     }
 
 #ifdef RICH_MPI
+    MPI_Bcast(&exit_code, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Finalize();
 #endif
-    return 0;
+    return exit_code;
 }

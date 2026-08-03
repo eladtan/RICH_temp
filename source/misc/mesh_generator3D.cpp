@@ -1,4 +1,5 @@
 #include "mesh_generator3D.hpp"
+#include "universal_error.hpp"
 #include <boost/random/normal_distribution.hpp>
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include <array>
@@ -24,9 +25,38 @@ namespace
 		return std::sqrt(4.0 * M_PI / static_cast<double>(n_angular));
 	}
 
+	std::vector<double> normalized_shell_radii(std::vector<double> const& input)
+	{
+		if (input.empty())
+			throw UniversalError("Spherical shell mesh requires at least one radius");
+
+		std::vector<double> radii;
+		radii.reserve(input.size());
+		for (double const radius : input) {
+			if (!std::isfinite(radius) || radius <= 0.0)
+				throw UniversalError("Spherical shell radii must be finite and positive");
+			radii.push_back(radius);
+		}
+
+		std::sort(radii.begin(), radii.end());
+		std::vector<double> unique_radii;
+		unique_radii.reserve(radii.size());
+		for (double const radius : radii) {
+			if (unique_radii.empty() ||
+				std::abs(radius - unique_radii.back()) >
+					1e-12 * std::max(1.0, std::abs(radius))) {
+				unique_radii.push_back(radius);
+			}
+		}
+		return unique_radii;
+	}
+
 	std::vector<double> spherical_shell_radii(SphericalShellMeshOptions const& options,
 		double spacing_fraction)
 	{
+		if (!options.shell_radii.empty())
+			return normalized_shell_radii(options.shell_radii);
+
 		std::vector<double> radii;
 		double R = options.outer_radius;
 		while (R > options.inner_radius) {
@@ -106,18 +136,36 @@ namespace
 	}
 }
 
-std::vector<Vector3D> fibonacci_sphere_directions(size_t n)
-{
-	std::vector<Vector3D> dirs;
-	dirs.reserve(n);
-	double const golden_angle = M_PI * (3.0 - std::sqrt(5.0));
-	for (size_t i = 0; i < n; ++i) {
-		double const z = 1.0 - (2.0 * static_cast<double>(i) + 1.0) / static_cast<double>(n);
-		double const r = std::sqrt(std::max(0.0, 1.0 - z * z));
+std::vector<Vector3D> fibonacci_sphere_directions(size_t n, bool antipodal)
+	{
+		std::vector<Vector3D> dirs;
+		dirs.reserve(n);
+		double const golden_angle = M_PI * (3.0 - std::sqrt(5.0));
+		if (antipodal && n >= 2 && n % 2 == 0) {
+			size_t const pair_count = n / 2;
+			for (size_t i = 0; i < pair_count; ++i) {
+				double const z = (static_cast<double>(i) + 0.5) /
+					static_cast<double>(pair_count);
+				double const r = std::sqrt(std::max(0.0, 1.0 - z * z));
+				double const phi = golden_angle * static_cast<double>(i);
+				Vector3D const direction(r * std::cos(phi), r * std::sin(phi), z);
+				dirs.push_back(direction);
+				dirs.push_back((-1.0) * direction);
+			}
+			return dirs;
+		}
+		for (size_t i = 0; i < n; ++i) {
+			double const z = 1.0 - (2.0 * static_cast<double>(i) + 1.0) / static_cast<double>(n);
+			double const r = std::sqrt(std::max(0.0, 1.0 - z * z));
 		double const phi = golden_angle * static_cast<double>(i);
 		dirs.push_back(Vector3D(r * std::cos(phi), r * std::sin(phi), z));
 	}
-	return dirs;
+		return dirs;
+	}
+
+std::vector<Vector3D> fibonacci_sphere_directions(size_t n)
+{
+	return fibonacci_sphere_directions(n, false);
 }
 
  vector<Vector3D> CartesianMesh(std::size_t nx, std::size_t ny, std::size_t nz, Vector3D const& lower_left, Vector3D const& upper_right)
@@ -440,15 +488,43 @@ std::vector<double> SphericalShellMeshActiveBinEdges(SphericalShellMeshOptions c
 {
 	size_t const n_angular = 6 * options.angular_edge_count * options.angular_edge_count;
 	double const dR_over_R = shell_spacing_fraction(options, n_angular);
+	std::vector<double> radii =
+		spherical_shell_radii(options, dR_over_R);
+	std::sort(radii.begin(), radii.end());
 	std::vector<double> edges;
-	double R = options.outer_radius;
-	while (R > options.inner_radius) {
-		edges.push_back(R);
-		R *= (1.0 - dR_over_R);
-	}
-	edges.push_back(R);
-	std::reverse(edges.begin(), edges.end());
+	if (radii.empty())
+		return edges;
+
+	double const inner_neighbor =
+		options.inner_radius * (1.0 - dR_over_R);
+	edges.push_back(0.5 * (inner_neighbor + radii.front()));
+	for (size_t i = 1; i < radii.size(); ++i)
+		edges.push_back(0.5 * (radii[i - 1] + radii[i]));
+	double const outer_neighbor =
+		options.outer_radius * (1.0 + dR_over_R);
+	edges.push_back(0.5 * (radii.back() + outer_neighbor));
 	return edges;
+}
+
+std::vector<double> SphericalShellMeshRadii(SphericalShellMeshOptions const& options,
+	bool include_guards)
+{
+	size_t const n_angular =
+		6 * options.angular_edge_count * options.angular_edge_count;
+	double const dR_over_R = shell_spacing_fraction(options, n_angular);
+	std::vector<double> radii = spherical_shell_radii(options, dR_over_R);
+	if (include_guards) {
+		for (size_t k = 1; k <= options.guard_shell_count; ++k) {
+			double const inner = options.inner_radius *
+				std::pow(1.0 - dR_over_R, static_cast<double>(k));
+			if (inner > 1e-12)
+				radii.push_back(inner);
+			radii.push_back(options.outer_radius *
+				std::pow(1.0 + dR_over_R, static_cast<double>(k)));
+		}
+	}
+	std::sort(radii.begin(), radii.end());
+	return radii;
 }
 
 std::vector<Vector3D> GenerateSphericalShellMesh3D(Vector3D const& ll, Vector3D const& ur,
@@ -456,7 +532,8 @@ std::vector<Vector3D> GenerateSphericalShellMesh3D(Vector3D const& ll, Vector3D 
 	SphericalShellMeshDiagnostics* diagnostics)
 {
 	size_t const n_angular = 6 * options.angular_edge_count * options.angular_edge_count;
-	std::vector<Vector3D> unit_dirs = fibonacci_sphere_directions(n_angular);
+	std::vector<Vector3D> unit_dirs =
+		fibonacci_sphere_directions(n_angular, options.antipodal_directions);
 
 	double const dR_over_R = shell_spacing_fraction(options, unit_dirs.size());
 	std::vector<double> active_radii = spherical_shell_radii(options, dR_over_R);
@@ -481,20 +558,37 @@ std::vector<Vector3D> GenerateSphericalShellMesh3D(Vector3D const& ll, Vector3D 
 	double const inner_guard_radius = options.inner_radius *
 		std::pow(1.0 - dR_over_R, static_cast<double>(options.guard_shell_count));
 	if (options.fill_inner_core && inner_guard_radius > 0.0) {
-		double const h = std::max(options.inner_radius * dR_over_R, inner_guard_radius / 8.0);
-		for (double x = options.center.x - inner_guard_radius + 0.5 * h;
-			 x < options.center.x + inner_guard_radius; x += h) {
-			for (double y = options.center.y - inner_guard_radius + 0.5 * h;
-				 y < options.center.y + inner_guard_radius; y += h) {
-				for (double z = options.center.z - inner_guard_radius + 0.5 * h;
-					 z < options.center.z + inner_guard_radius; z += h) {
-					Vector3D const p(x, y, z);
-					if (abs(p - options.center) < inner_guard_radius && inside_box(p, ll, ur))
-						points.push_back(p);
+		double const h = options.inner_radius * dR_over_R;
+		if (options.centered_cartesian_fill) {
+			long long const n = static_cast<long long>(std::ceil(inner_guard_radius / h));
+			for (long long ix = -n; ix <= n; ++ix) {
+				for (long long iy = -n; iy <= n; ++iy) {
+					for (long long iz = -n; iz <= n; ++iz) {
+						Vector3D const p = options.center +
+							Vector3D(static_cast<double>(ix) * h,
+								static_cast<double>(iy) * h,
+								static_cast<double>(iz) * h);
+						if (abs(p - options.center) < inner_guard_radius && inside_box(p, ll, ur))
+							points.push_back(p);
+					}
 				}
 			}
 		}
-		points.push_back(options.center);
+		else {
+			for (double x = options.center.x - inner_guard_radius + 0.5 * h;
+				 x < options.center.x + inner_guard_radius; x += h) {
+				for (double y = options.center.y - inner_guard_radius + 0.5 * h;
+					 y < options.center.y + inner_guard_radius; y += h) {
+					for (double z = options.center.z - inner_guard_radius + 0.5 * h;
+						 z < options.center.z + inner_guard_radius; z += h) {
+						Vector3D const p(x, y, z);
+						if (abs(p - options.center) < inner_guard_radius && inside_box(p, ll, ur))
+							points.push_back(p);
+					}
+				}
+			}
+			points.push_back(options.center);
+		}
 	}
 
 	double outer_fill_radius = options.outer_radius *
@@ -502,12 +596,37 @@ std::vector<Vector3D> GenerateSphericalShellMesh3D(Vector3D const& ll, Vector3D 
 	if (options.fill_outer_box) {
 		double const h = std::max(options.outer_radius * dR_over_R * options.exterior_spacing_factor,
 			options.outer_radius * dR_over_R);
-		for (double x = ll.x + 0.5 * h; x < ur.x; x += h) {
-			for (double y = ll.y + 0.5 * h; y < ur.y; y += h) {
-				for (double z = ll.z + 0.5 * h; z < ur.z; z += h) {
-					Vector3D const p(x, y, z);
-					if (abs(p - options.center) > outer_fill_radius && inside_box(p, ll, ur))
-						points.push_back(p);
+		if (options.centered_cartesian_fill) {
+			double const dx = std::max(std::abs(ll.x - options.center.x),
+				std::abs(ur.x - options.center.x));
+			double const dy = std::max(std::abs(ll.y - options.center.y),
+				std::abs(ur.y - options.center.y));
+			double const dz = std::max(std::abs(ll.z - options.center.z),
+				std::abs(ur.z - options.center.z));
+			long long const nx = static_cast<long long>(std::ceil(dx / h));
+			long long const ny = static_cast<long long>(std::ceil(dy / h));
+			long long const nz = static_cast<long long>(std::ceil(dz / h));
+			for (long long ix = -nx; ix <= nx; ++ix) {
+				for (long long iy = -ny; iy <= ny; ++iy) {
+					for (long long iz = -nz; iz <= nz; ++iz) {
+						Vector3D const p = options.center +
+							Vector3D(static_cast<double>(ix) * h,
+								static_cast<double>(iy) * h,
+								static_cast<double>(iz) * h);
+						if (abs(p - options.center) > outer_fill_radius && inside_box(p, ll, ur))
+							points.push_back(p);
+					}
+				}
+			}
+		}
+		else {
+			for (double x = ll.x + 0.5 * h; x < ur.x; x += h) {
+				for (double y = ll.y + 0.5 * h; y < ur.y; y += h) {
+					for (double z = ll.z + 0.5 * h; z < ur.z; z += h) {
+						Vector3D const p(x, y, z);
+						if (abs(p - options.center) > outer_fill_radius && inside_box(p, ll, ur))
+							points.push_back(p);
+					}
 				}
 			}
 		}
@@ -520,6 +639,28 @@ std::vector<Vector3D> GenerateSphericalShellMesh3D(Vector3D const& ll, Vector3D 
 	}
 
 	return points;
+}
+
+std::vector<Vector3D> GenerateSphericalShellMesh3D(Vector3D const& ll, Vector3D const& ur,
+	size_t angular_edge_count, std::vector<double> const& radii,
+	SphericalShellMeshDiagnostics* diagnostics)
+{
+	if (angular_edge_count == 0)
+		throw UniversalError("Spherical shell mesh angular_edge_count must be positive");
+
+	std::vector<double> const normalized_radii = normalized_shell_radii(radii);
+	SphericalShellMeshOptions options;
+	options.center = Vector3D();
+	options.inner_radius = normalized_radii.front();
+	options.outer_radius = normalized_radii.back();
+	options.shell_radii = normalized_radii;
+	options.angular_edge_count = angular_edge_count;
+	options.guard_shell_count = 2;
+	options.fill_inner_core = true;
+	options.fill_outer_box = true;
+	options.antipodal_directions = true;
+	options.centered_cartesian_fill = true;
+	return GenerateSphericalShellMesh3D(ll, ur, options, diagnostics);
 }
 
 SphericalShellMeshDiagnostics MeasureSphericalShellMesh3D(Tessellation3D const& tess,

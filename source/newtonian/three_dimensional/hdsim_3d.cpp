@@ -3,6 +3,8 @@
 #include "CFL1D.hpp"
 #include "misc/memory_debug.hpp"
 #include "misc/memory_profile.hpp"
+#include "Rusanov3D.hpp"
+#include "spherical_symmetry/SphericalShellProjector3D.hpp"
 
 
 namespace
@@ -31,6 +33,24 @@ namespace
 			std::cout<<msg<< std::chrono::duration_cast<std::chrono::milliseconds>(t2 - t1).count()<<" mseconds"<<std::endl;
 		#endif
 	}
+
+	bool HasPositiveThermalMargin(Conserved3D const& state,
+		double mass_threshold)
+	{
+		if (!(state.mass > 0.0) || !(state.mass > mass_threshold) ||
+			!std::isfinite(state.mass) ||
+			!std::isfinite(state.energy) ||
+			!std::isfinite(abs(state.momentum)))
+			return false;
+		double const kinetic_energy =
+			ScalarProd(state.momentum, state.momentum) /
+			(2.0 * state.mass);
+		double const internal_energy = state.energy - kinetic_energy;
+		double const energy_scale =
+			std::max(std::abs(state.energy), std::abs(kinetic_energy));
+		return internal_energy > 1e-12 * energy_scale &&
+			std::isfinite(internal_energy);
+	}
 }
 
 Tessellation3D& HDSim3D::getTessellation(void)
@@ -51,6 +71,328 @@ vector<Conserved3D>& HDSim3D::getExtensives(void)
 const vector<Conserved3D>& HDSim3D::getExtensives(void) const
 {
 	return extensive_;
+}
+
+void HDSim3D::SetSphericalShellProjector(
+	std::shared_ptr<SphericalShellProjector3D> projector)
+{
+	spherical_shell_projector_ = std::move(projector);
+}
+
+void HDSim3D::SetSphericalPositivityPreservingStage(bool enabled)
+{
+	spherical_positivity_preserving_ = enabled;
+}
+
+void HDSim3D::CalculateSphericalLowOrderFluxes(
+	vector<ComputationalCell3D> const& cells,
+	vector<Vector3D> const& face_velocities,
+	vector<Conserved3D>& fluxes) const
+{
+	size_t const face_count = tess_.GetTotalFacesNumber();
+	fluxes.resize(face_count);
+	Rusanov3D solver;
+	for (size_t face = 0; face < face_count; ++face) {
+		auto const neighbors = tess_.GetFaceNeighbors(face);
+		bool first_valid = neighbors.first < cells.size();
+		bool second_valid = neighbors.second < cells.size();
+		if (tess_.BoundaryFace(face)) {
+			// MPI halo entries extend cells beyond GetPointNo().  A physical
+			// boundary sentinel can therefore be numerically smaller than
+			// cells.size(); use the tessellation's boundary orientation instead.
+			first_valid = neighbors.first <= tess_.GetPointNo();
+			second_valid = !first_valid;
+		}
+		if (!(first_valid || second_valid))
+			throw UniversalError("Low-order face has no valid neighbor");
+
+		Vector3D const normal = normalize(tess_.Normal(face));
+		ComputationalCell3D left =
+			first_valid ? cells[neighbors.first] : cells[neighbors.second];
+		ComputationalCell3D right =
+			second_valid ? cells[neighbors.second] : cells[neighbors.first];
+		if (!first_valid) {
+			left = right;
+			left.velocity -= 2.0 *
+				ScalarProd(left.velocity, normal) * normal;
+		}
+		if (!second_valid) {
+			right = left;
+			right.velocity -= 2.0 *
+				ScalarProd(right.velocity, normal) * normal;
+		}
+		fluxes[face] = solver(left, right,
+			ScalarProd(normal, face_velocities[face]), eos_, normal);
+	}
+}
+
+void HDSim3D::ApplyFluxesWithoutValidation(
+	vector<Conserved3D> const& fluxes,
+	vector<ComputationalCell3D> const&,
+	double dt,
+	vector<Conserved3D>& candidate) const
+{
+	size_t const local_count = tess_.GetPointNo();
+	for (size_t face = 0; face < fluxes.size(); ++face) {
+		Conserved3D delta =
+			fluxes[face] * (dt * tess_.GetArea(face));
+		delta.internal_energy = 0;
+		auto const neighbors = tess_.GetFaceNeighbors(face);
+		if (neighbors.first < local_count)
+			candidate[neighbors.first] -= delta;
+		if (neighbors.second < local_count)
+			candidate[neighbors.second] += delta;
+	}
+	for (size_t i = 0; i < local_count; ++i) {
+		if (candidate[i].mass > 0)
+			candidate[i].internal_energy = candidate[i].energy -
+				ScalarProd(candidate[i].momentum,
+					candidate[i].momentum) /
+				(2.0 * candidate[i].mass);
+	}
+	candidate.resize(local_count);
+}
+
+void HDSim3D::ApplySphericalBackgroundCorrection(
+	vector<ComputationalCell3D> const& stage_input_cells,
+	vector<Conserved3D> const& stage_input_extensives,
+	vector<Vector3D> const& face_velocities,
+	vector<Vector3D> const& point_velocities,
+	double time,
+	double dt,
+	bool source_before_extensive_update,
+	vector<Conserved3D>& full_candidate,
+	bool low_order)
+{
+	if (!spherical_shell_projector_)
+		return;
+
+	size_t const local_count = tess_.GetPointNo();
+	vector<Conserved3D> background_extensives;
+	spherical_shell_projector_->ProjectExtensives(tess_,
+		stage_input_extensives, background_extensives);
+	double maximum_background_deviation = 0;
+	for (size_t i = 0; i < local_count; ++i) {
+		double scale =
+			std::abs(background_extensives[i].mass) +
+			abs(background_extensives[i].momentum) +
+			std::abs(background_extensives[i].energy) +
+			std::abs(background_extensives[i].internal_energy);
+		double deviation =
+			std::abs(stage_input_extensives[i].mass -
+				background_extensives[i].mass) +
+			abs(stage_input_extensives[i].momentum -
+				background_extensives[i].momentum) +
+			std::abs(stage_input_extensives[i].energy -
+				background_extensives[i].energy) +
+			std::abs(stage_input_extensives[i].internal_energy -
+				background_extensives[i].internal_energy);
+		for (size_t tracer = 0; tracer < MAX_TRACERS; ++tracer) {
+			scale += std::abs(background_extensives[i].tracers[tracer]);
+			deviation += std::abs(stage_input_extensives[i].tracers[tracer] -
+				background_extensives[i].tracers[tracer]);
+		}
+		maximum_background_deviation =
+			std::max(maximum_background_deviation,
+				deviation / std::max(scale, 1e-300));
+	}
+#ifdef RICH_MPI
+	MPI_Allreduce(MPI_IN_PLACE, &maximum_background_deviation, 1,
+		MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+	bool const symmetric_to_roundoff =
+		maximum_background_deviation <= 1e-12;
+	vector<ComputationalCell3D> background_cells = stage_input_cells;
+	background_extensives.resize(local_count);
+	background_cells.resize(local_count);
+	cu_(background_cells, eos_, tess_, background_extensives);
+#ifdef RICH_MPI
+	MPI_exchange_data(tess_, background_extensives, true);
+	MPI_exchange_data(tess_, background_cells, true);
+#endif
+
+	vector<Conserved3D> background_fluxes;
+	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> >
+		background_face_values;
+	if (low_order)
+		CalculateSphericalLowOrderFluxes(background_cells,
+			face_velocities, background_fluxes);
+	else
+		fc_.Calculate(background_fluxes, tess_, face_velocities,
+			background_cells, background_extensives, eos_, time, dt,
+			background_face_values);
+
+	vector<Conserved3D> background_candidate = background_extensives;
+	if (source_before_extensive_update) {
+		source_(tess_, background_cells, background_fluxes, point_velocities,
+			time, dt, background_candidate);
+		if (spherical_positivity_preserving_)
+			ApplyFluxesWithoutValidation(background_fluxes,
+				background_cells, dt, background_candidate);
+		else
+			eu_(background_fluxes, tess_, dt, background_cells,
+				background_candidate, time, face_velocities,
+				point_velocities, background_face_values);
+	}
+	else {
+		if (spherical_positivity_preserving_)
+			ApplyFluxesWithoutValidation(background_fluxes,
+				background_cells, dt, background_candidate);
+		else
+			eu_(background_fluxes, tess_, dt, background_cells,
+				background_candidate, time, face_velocities,
+				point_velocities, background_face_values);
+		source_(tess_, background_cells, background_fluxes, point_velocities,
+			time, dt, background_candidate);
+	}
+
+	vector<Conserved3D> background_rate = background_candidate;
+	for (size_t i = 0; i < local_count; ++i)
+		background_rate[i] -= background_extensives[i];
+	vector<Conserved3D> projected_background_rate;
+	spherical_shell_projector_->ProjectRates(tess_,
+		background_rate, projected_background_rate);
+
+	for (size_t i = 0; i < local_count; ++i) {
+		if (symmetric_to_roundoff) {
+			full_candidate[i] = background_extensives[i] +
+				projected_background_rate[i];
+		}
+		else {
+			Conserved3D const full_rate =
+				full_candidate[i] - stage_input_extensives[i];
+			full_candidate[i] = stage_input_extensives[i] +
+				projected_background_rate[i] +
+				(full_rate - background_rate[i]);
+		}
+		if (full_candidate[i].mass > 0)
+			full_candidate[i].internal_energy =
+				full_candidate[i].energy -
+				ScalarProd(full_candidate[i].momentum,
+					full_candidate[i].momentum) /
+				(2.0 * full_candidate[i].mass);
+	}
+}
+
+void HDSim3D::BuildSphericalStageCandidate(
+	vector<ComputationalCell3D> const& stage_input_cells,
+	vector<Conserved3D> const& stage_input_extensives,
+	vector<Vector3D> const& face_velocities,
+	vector<Vector3D> const& point_velocities,
+	double time,
+	double dt,
+	bool source_before_extensive_update,
+	bool low_order,
+	vector<Conserved3D>& candidate)
+{
+	vector<Conserved3D> fluxes;
+	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D>>
+		face_values;
+	if (low_order)
+		CalculateSphericalLowOrderFluxes(stage_input_cells,
+			face_velocities, fluxes);
+	else
+		fc_.Calculate(fluxes, tess_, face_velocities, stage_input_cells,
+			stage_input_extensives, eos_, time, dt, face_values);
+
+	candidate = stage_input_extensives;
+	if (source_before_extensive_update)
+		source_(tess_, stage_input_cells, fluxes, point_velocities,
+			time, dt, candidate);
+	ApplyFluxesWithoutValidation(fluxes, stage_input_cells, dt, candidate);
+	if (!source_before_extensive_update)
+		source_(tess_, stage_input_cells, fluxes, point_velocities,
+			time, dt, candidate);
+	ApplySphericalBackgroundCorrection(stage_input_cells,
+		stage_input_extensives, face_velocities, point_velocities,
+		time, dt, source_before_extensive_update, candidate, low_order);
+}
+
+void HDSim3D::BlendSphericalStageCandidates(
+	vector<Conserved3D> const& low_order,
+	vector<Conserved3D> const& high_order,
+	vector<Conserved3D>& result)
+{
+	size_t const local_count = tess_.GetPointNo();
+	vector<Conserved3D> projected_low_order;
+	vector<Conserved3D> projected_high_order;
+	spherical_shell_projector_->ProjectExtensives(tess_, low_order,
+		projected_low_order);
+	spherical_shell_projector_->ProjectExtensives(tess_, high_order,
+		projected_high_order);
+	bool low_order_is_admissible = true;
+	double local_theta = 1.0;
+	for (size_t i = 0; i < local_count; ++i) {
+		double const mass_threshold = 1e-12 * low_order[i].mass;
+		double const projected_mass_threshold =
+			1e-12 * projected_low_order[i].mass;
+		bool const low_good =
+			HasPositiveThermalMargin(low_order[i], mass_threshold) &&
+			HasPositiveThermalMargin(projected_low_order[i],
+				projected_mass_threshold);
+		low_order_is_admissible =
+			low_order_is_admissible && low_good;
+		if (!low_good)
+			continue;
+
+		auto admissible = [&](double theta) {
+			Conserved3D const state = low_order[i] +
+				theta * (high_order[i] - low_order[i]);
+			Conserved3D const projected_state = projected_low_order[i] +
+				theta *
+				(projected_high_order[i] - projected_low_order[i]);
+			return HasPositiveThermalMargin(state, mass_threshold) &&
+				HasPositiveThermalMargin(projected_state,
+					projected_mass_threshold);
+		};
+		if (admissible(1.0))
+			continue;
+		double lower = 0;
+		double upper = 1;
+		for (size_t iteration = 0; iteration < 60; ++iteration) {
+			double const middle = 0.5 * (lower + upper);
+			if (admissible(middle))
+				lower = middle;
+			else
+				upper = middle;
+		}
+		local_theta = std::min(local_theta, lower);
+	}
+
+#ifdef RICH_MPI
+	int low_good = low_order_is_admissible ? 1 : 0;
+	MPI_Allreduce(MPI_IN_PLACE, &low_good, 1, MPI_INT, MPI_MIN,
+		MPI_COMM_WORLD);
+	low_order_is_admissible = low_good == 1;
+	MPI_Allreduce(MPI_IN_PLACE, &local_theta, 1, MPI_DOUBLE, MPI_MIN,
+		MPI_COMM_WORLD);
+#endif
+	if (!low_order_is_admissible)
+		throw UniversalError(
+			"Spherical low-order stage candidate is not admissible");
+
+	last_spherical_positivity_theta_ = local_theta;
+	minimum_spherical_positivity_theta_ =
+		std::min(minimum_spherical_positivity_theta_, local_theta);
+	if (local_theta < 1.0 - 1e-14) {
+		++spherical_positivity_activation_count_;
+		int rank = 0;
+#ifdef RICH_MPI
+		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+		if (rank == 0)
+			std::cout << "Spherical positivity blend theta "
+				<< local_theta << std::endl;
+	}
+
+	result.resize(local_count);
+	for (size_t i = 0; i < local_count; ++i) {
+		result[i] = low_order[i] +
+			local_theta * (high_order[i] - low_order[i]);
+		result[i].internal_energy = result[i].energy -
+			ScalarProd(result[i].momentum, result[i].momentum) /
+			(2.0 * result[i].mass);
+	}
 }
 
 HDSim3D::HDSim3D(Tessellation3D& tess,
@@ -380,15 +722,36 @@ void HDSim3D::timeAdvance2(void)
 		cfl1d->SetPointVelocities(&point_vel);
 	dt = tsc_(tess_, cells_, eos_, face_vel, time);
 	MEMORY_DEBUG_PRINT("hydro: after CFL + face velocities");
-	fc_.Calculate(fluxes, tess_, face_vel, cells_, extensive_, eos_, time, dt, face_values);
-	MEMORY_DEBUG_PRINT("hydro: after flux calc");
-	mid_extensives = extensive_;
-	eu_(fluxes, tess_, dt, cells_, mid_extensives, time, face_vel, point_vel, face_values);
-	MEMORY_DEBUG_PRINT("hydro: after extensive update");
 	auto t1 = get_time();
-	source_(tess_, cells_, fluxes, point_vel, time, dt, mid_extensives);
-	auto t2 = get_time();
-	DisplayTime(t1, t2, "Source time ");
+	auto t2 = t1;
+	if (spherical_positivity_preserving_) {
+		vector<Conserved3D> high_order_candidate;
+		vector<Conserved3D> low_order_candidate;
+		BuildSphericalStageCandidate(cells_, extensive_, face_vel,
+			point_vel, time, dt, false, false,
+			high_order_candidate);
+		BuildSphericalStageCandidate(cells_, extensive_, face_vel,
+			point_vel, time, dt, false, true,
+			low_order_candidate);
+		BlendSphericalStageCandidates(low_order_candidate,
+			high_order_candidate, mid_extensives);
+	}
+	else {
+		fc_.Calculate(fluxes, tess_, face_vel, cells_, extensive_,
+			eos_, time, dt, face_values);
+		MEMORY_DEBUG_PRINT("hydro: after flux calc");
+		mid_extensives = extensive_;
+		eu_(fluxes, tess_, dt, cells_, mid_extensives, time,
+			face_vel, point_vel, face_values);
+		MEMORY_DEBUG_PRINT("hydro: after extensive update");
+		t1 = get_time();
+		source_(tess_, cells_, fluxes, point_vel, time, dt,
+			mid_extensives);
+		t2 = get_time();
+		DisplayTime(t1, t2, "Source time ");
+		ApplySphericalBackgroundCorrection(cells_, extensive_, face_vel,
+			point_vel, time, dt, false, mid_extensives, false);
+	}
 	MEMORY_DEBUG_PRINT("hydro: after source terms");
 	// if (pt_.getCycle() % 10 == 0 && pm_.MovedPoints())
 	// {
@@ -435,16 +798,39 @@ cu_(cells_, eos_, tess_, mid_extensives);
 #ifdef RICH_MPI
 MPI_exchange_data(tess_, cells_, true);
 #endif
-MEMORY_DEBUG_PRINT("hydro: after cell update (1st half)");
+	MEMORY_DEBUG_PRINT("hydro: after cell update (1st half)");
 
-CalcFaceVelocities(tess_, point_vel, face_vel);
-fc_.Calculate(fluxes, tess_, face_vel, cells_, mid_extensives, eos_, time + dt, dt, face_values);
-t1 = get_time();
-source_(tess_, cells_, fluxes, point_vel, time + dt, dt, mid_extensives);
-t2 = get_time();
-DisplayTime(t1, t2, "Second source time ");
-eu_(fluxes, tess_, dt, cells_, mid_extensives, time + dt, face_vel, point_vel, face_values);
-ExtensiveAvg(extensive_, mid_extensives);
+	CalcFaceVelocities(tess_, point_vel, face_vel);
+	vector<Conserved3D> const stage_two_input_extensives = mid_extensives;
+	if (spherical_positivity_preserving_) {
+		vector<Conserved3D> high_order_candidate;
+		vector<Conserved3D> low_order_candidate;
+		BuildSphericalStageCandidate(cells_,
+			stage_two_input_extensives, face_vel, point_vel,
+			time + dt, dt, true, false,
+			high_order_candidate);
+		BuildSphericalStageCandidate(cells_,
+			stage_two_input_extensives, face_vel, point_vel,
+			time + dt, dt, true, true,
+			low_order_candidate);
+		BlendSphericalStageCandidates(low_order_candidate,
+			high_order_candidate, mid_extensives);
+	}
+	else {
+		fc_.Calculate(fluxes, tess_, face_vel, cells_,
+			mid_extensives, eos_, time + dt, dt, face_values);
+		t1 = get_time();
+		source_(tess_, cells_, fluxes, point_vel, time + dt, dt,
+			mid_extensives);
+		t2 = get_time();
+		DisplayTime(t1, t2, "Second source time ");
+		eu_(fluxes, tess_, dt, cells_, mid_extensives, time + dt,
+			face_vel, point_vel, face_values);
+		ApplySphericalBackgroundCorrection(cells_,
+			stage_two_input_extensives, face_vel, point_vel,
+			time + dt, dt, true, mid_extensives, false);
+	}
+	ExtensiveAvg(extensive_, mid_extensives);
 cu_(cells_, eos_, tess_, extensive_);
 #ifdef RICH_MPI
 MPI_exchange_data(tess_, cells_, true);
