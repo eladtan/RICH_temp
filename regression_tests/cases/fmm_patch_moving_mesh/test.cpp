@@ -157,18 +157,25 @@ std::vector<Body> envelopeBodiesForRank(int rank, int size, bool expanded)
     if(!expanded || rank != 0)
         return result;
 
-    // Expand one two-particle leaf well beyond its retained 2% radius envelope
-    // without changing its patch, child mask, occupancy, or root cube.
-    const Vector3D center = patchCenter(rank, 1);
-    const double offset = 0.10;
+    // Expand the lower leaf of rank 0, patch 0 beyond its retained 2% radius
+    // envelope.  This patch has an internal root: token 100 in the opposite
+    // branch remains the root-radius extremum, so the patch-root descriptor and
+    // process topology stay valid while only a non-root source generation
+    // changes.  Keeping the two moved bodies in the same leaf also preserves
+    // occupancy, child masks, and structural topology.
+    const Vector3D rootCenter = patchCenter(rank, 0);
+    const Vector3D lowerChildCenter(rootCenter.x - 0.125,
+                                    rootCenter.y - 0.125,
+                                    rootCenter.z - 0.125);
+    const double offset = 0.065;
     for(Body& body : result)
     {
-        if(body.token != 200 && body.token != 201)
+        if(body.token != 101 && body.token != 102)
             continue;
-        const int side = body.token == 200 ? -1 : 1;
-        body.position = Vector3D(center.x + side * offset,
-                                 center.y + 0.25 * side * offset,
-                                 center.z - 0.15 * side * offset);
+        const int side = body.token == 101 ? -1 : 1;
+        body.position = Vector3D(lowerChildCenter.x + side * offset,
+                                 lowerChildCenter.y + side * offset,
+                                 lowerChildCenter.z + side * offset);
     }
     return result;
 }
