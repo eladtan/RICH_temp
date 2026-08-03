@@ -349,6 +349,7 @@ private:
     void initializeComptonGroups();
     void initializeComptonMatrixGenerator();
     void buildComptonMatricesForCell(const ComputationalCell3D &cell, size_t cellIndex, ComptonOccupationMode occupationMode, ComptonCellData &cd);
+    double computeLteTemperature(const ComputationalCell3D &cell) const;
     void recomputeComptonContractions(ComptonCellData &cd);
     void buildComptonEventData(size_t cellIndex, ComptonCellData &cd);
     void buildComptonSources(double fullDt, ComptonCellData &cd);

@@ -3639,7 +3639,35 @@ void RadiationIMC::buildComptonMatricesForCell(const ComputationalCell3D &cell, 
 {
     this->initializeComptonMatrixGenerator();
 
+    bool const use_planck_lte = (occupationMode == ComptonOccupationMode::PlanckFunction);
+    double T_lte = 0.0;
+    std::array<double, ENERGY_GROUPS_NUM> ltePlanckFractions{};
+    if(use_planck_lte)
+    {
+        T_lte = this->computeLteTemperature(cell);
+        double const kT = units::k_boltz * T_lte;
+        double planckIntegralTotal = 0.0;
+        if(kT > 0.0)
+        {
+            for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
+            {
+                double const a = ComputationalCell3D::energyBoundaries[g] / kT;
+                double const b = ComputationalCell3D::energyBoundaries[g + 1] / kT;
+                ltePlanckFractions[g] = planck_integral::planck_integral(a, b);
+                planckIntegralTotal += ltePlanckFractions[g];
+            }
+        }
+        for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
+        {
+            if(planckIntegralTotal > 0.0)
+                ltePlanckFractions[g] /= planckIntegralTotal;
+            else
+                ltePlanckFractions[g] = 0.0;
+        }
+    }
+
     double constexpr fac = boost::math::pow<3>(units::clight) / (8.0 * M_PI * units::planck_constant);
+    double const Um_lte = use_planck_lte ? units::arad * boost::math::pow<4>(T_lte) : 0.0;
     for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
     {
         if(occupationMode == ComptonOccupationMode::RadiationField)
@@ -3649,11 +3677,11 @@ void RadiationIMC::buildComptonMatricesForCell(const ComputationalCell3D &cell, 
             double const Eg = std::max(0.0, cell.Eg[g] * cell.density);
             cd.occupation[g] = std::min(100.0, fac * Eg / (boost::math::pow<3>(nu) * dnu));
         }
-        else if(occupationMode == ComptonOccupationMode::PlanckFunction)
+        else if(use_planck_lte)
         {
             double const dnu = this->comptonGroupWidths[g] / units::planck_constant;
             double const nu = this->comptonGroupCenters[g] / units::planck_constant;
-            double const Eg = std::max(0.0, cd.planckFraction[g] * cd.Um);
+            double const Eg = std::max(0.0, ltePlanckFractions[g] * Um_lte);
             double const occupation = fac * Eg / (boost::math::pow<3>(nu) * dnu);
             cd.occupation[g] = std::clamp(occupation, 0.0, 100.0);
         }
@@ -3667,7 +3695,9 @@ void RadiationIMC::buildComptonMatricesForCell(const ComputationalCell3D &cell, 
     Matrix dtau(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0));
     double const A = 1.0;
     double const Z = 1.0;
-    double const temperature = std::min(this->comptonMatrixGen->get_maximum_temperature_grid() * 0.9999, cell.temperature);
+    double const temperature = std::min(
+        this->comptonMatrixGen->get_maximum_temperature_grid() * 0.9999,
+        use_planck_lte ? T_lte : cell.temperature);
     this->comptonMatrixGen->get_tau_matrix(temperature, cell.density, A, Z, tau, dtau);
 
     for(size_t h = 0; h < ENERGY_GROUPS_NUM; h++)
@@ -3707,7 +3737,8 @@ void RadiationIMC::buildComptonMatricesForCell(const ComputationalCell3D &cell, 
         }
     }
 
-    double const UmFactor = 1.0 / (4.0 * units::arad * boost::math::pow<3>(cell.temperature));
+    double const T_for_um = use_planck_lte ? T_lte : cell.temperature;
+    double const UmFactor = 1.0 / (4.0 * units::arad * boost::math::pow<3>(T_for_um));
     for(size_t h = 0; h < ENERGY_GROUPS_NUM; h++)
     {
         for(size_t g = 0; g < ENERGY_GROUPS_NUM; g++)
@@ -3717,6 +3748,39 @@ void RadiationIMC::buildComptonMatricesForCell(const ComputationalCell3D &cell, 
     }
 
     (void) cellIndex;
+}
+
+double RadiationIMC::computeLteTemperature(const ComputationalCell3D &cell) const
+{
+    double const e_tot = cell.internal_energy + cell.Erad;
+    if(e_tot <= 0.0)
+        return cell.temperature;
+
+    double const T_max = this->comptonMatrixGen
+        ? this->comptonMatrixGen->get_maximum_temperature_grid() * 0.9999
+        : cell.temperature;
+    double const Trad = std::pow(
+        std::max(cell.Erad, 0.0) * cell.density / units::arad,
+        0.25);
+    double T = std::clamp(std::max(cell.temperature, Trad), 1e-30, T_max);
+
+    for(int iter = 0; iter < 50; ++iter)
+    {
+        double const e_matter = this->eos->dT2e(cell.density, T, cell.tracers, cell.tracerNames);
+        double const e_radiation = units::arad * boost::math::pow<4>(T) / cell.density;
+        double const residual = e_matter + e_radiation - e_tot;
+        if(std::abs(residual) <= 1e-10 * std::max(e_tot, 1e-30))
+            break;
+
+        double const derivative = this->eos->dT2cv(cell.density, T, cell.tracers, cell.tracerNames)
+            + 4.0 * units::arad * boost::math::pow<3>(T) / cell.density;
+        if(std::abs(derivative) <= 1e-30)
+            break;
+
+        T = std::clamp(T - residual / derivative, 1e-30, T_max);
+    }
+
+    return T;
 }
 
 void RadiationIMC::recomputeComptonContractions(ComptonCellData &cd)
@@ -4188,36 +4252,65 @@ void RadiationIMC::precomputeComptonData(double fullDt)
         data.planckCdf = RadiationIMC::buildSafeComptonCdf(data.planckFraction);
         data.baseSourceCdf = RadiationIMC::buildSafeComptonCdf(data.baseSourceFraction);
 
-        ComptonOccupationMode const initialOccupationMode = this->comptonUseInduced
+        ComptonOccupationMode const primaryOccupationMode = this->comptonUseInduced
             ? ComptonOccupationMode::RadiationField
             : ComptonOccupationMode::Zero;
-        this->buildComptonMatricesForCell(cell, i, initialOccupationMode, data);
+        this->buildComptonMatricesForCell(cell, i, primaryOccupationMode, data);
         this->recomputeComptonContractions(data);
+        data.useNZero = primaryOccupationMode == ComptonOccupationMode::Zero;
+        data.usePlanckInduced = false;
 
         double const gamma = (this->useTransportVelocities_ && !this->MMC)
             ? 1.0 / std::sqrt(1.0 - ScalarProd(cell.velocity, cell.velocity) * units::inv_clight2)
             : 1.0;
         double const cdtEff = units::clight * fullDt * gamma;
-        double denom = 1.0 + data.beta * cdtEff * data.Gamma;
-        bool const negativeUpsilon = data.Upsilon < 0.0;
-        if((denom <= 0.0 || negativeUpsilon) &&
+
+        if(data.Upsilon < 0.0 &&
+           data.Upsilon < -0.1 * data.planckOpacity &&
            this->comptonAllowNZeroFallback)
         {
-            ComptonOccupationMode fallbackOccupationMode = ComptonOccupationMode::Zero;
-            if(negativeUpsilon &&
-               this->comptonUseInduced &&
-               this->comptonInducedMode == ComptonInducedMode::AdaptivePlanckFallback &&
-               data.planckOpacity * units::clight * fullDt >= 1.0)
+            double const cdt_tau_planck = data.planckOpacity * units::clight * fullDt;
+            double const f_planck_only = 1.0 / (1.0 + data.beta * cdtEff * data.planckOpacity);
+
+            auto upsilon_for_mode = [&](ComptonOccupationMode const occupation_mode) {
+                this->buildComptonMatricesForCell(cell, i, occupation_mode, data);
+                this->recomputeComptonContractions(data);
+                return data.Upsilon;
+            };
+
+            ComptonOccupationMode mode =
+                (cdt_tau_planck > 0.5 || f_planck_only < 0.85)
+                    ? ComptonOccupationMode::PlanckFunction
+                    : ComptonOccupationMode::Zero;
+
+            double upsilon = upsilon_for_mode(mode);
+
+            if(upsilon < 0.0)
             {
-                fallbackOccupationMode = ComptonOccupationMode::PlanckFunction;
+                ComptonOccupationMode const alternate =
+                    (mode == ComptonOccupationMode::PlanckFunction)
+                        ? ComptonOccupationMode::Zero
+                        : ComptonOccupationMode::PlanckFunction;
+                double const upsilon_alternate = upsilon_for_mode(alternate);
+
+                if(upsilon_alternate < 0.0)
+                {
+                    if(upsilon_alternate > upsilon)
+                        mode = alternate;
+                    else
+                        upsilon_for_mode(mode);
+                }
+                else
+                {
+                    mode = alternate;
+                }
             }
 
-            this->buildComptonMatricesForCell(cell, i, fallbackOccupationMode, data);
-            data.useNZero = fallbackOccupationMode == ComptonOccupationMode::Zero;
-            data.usePlanckInduced = fallbackOccupationMode == ComptonOccupationMode::PlanckFunction;
-            this->recomputeComptonContractions(data);
-            denom = 1.0 + data.beta * cdtEff * data.Gamma;
+            data.useNZero = mode == ComptonOccupationMode::Zero;
+            data.usePlanckInduced = mode == ComptonOccupationMode::PlanckFunction;
         }
+
+        double const denom = 1.0 + data.beta * cdtEff * data.Gamma;
         if(denom <= 0.0)
         {
             UniversalError eo("Compton Fleck denominator is nonpositive in RadiationIMC::precomputeComptonData");

@@ -12,6 +12,14 @@ using namespace CG;
 
 class MultigroupDiffusion : public RadiationDriver {
 public:
+    enum class ComptonOccupationMode
+    {
+        Off,
+        Zero,
+        RadiationField,
+        PlanckFunction
+    };
+
     /**
      * @brief Constructor for the MultigroupDiffusion class.
      *
@@ -127,8 +135,22 @@ public:
     mutable std::size_t cell_id_of_compton_matrices; // for debugging make sure that the compton values are generated for the correct cell 
 
     mutable std::vector<double> Gammas; // fleck_factor = 1.0 / (1.0 + c*dt*beta*Gamma)
+    mutable std::vector<double> upsilon_;
+    mutable std::vector<double> upsilon_erad_;
+    mutable std::vector<double> upsilon_lte_;
+    mutable std::vector<double> upsilon_n0_;
+    mutable std::vector<ComptonOccupationMode> compton_occupation_mode_;
     mutable std::vector<bool> use_n_zero; // flag for cells that need to use n=0 due to negative fleck factor
+    mutable std::vector<bool> compton_jacobian_frozen_; // zero dSdUm when upsilon remains negative after occupation selection
     mutable std::vector<double> compton_limiter_scale_; // per-cell Compton coupling reduction factor from cooling-time limiter (1.0 = no reduction)
+    // Cells whose Compton source must be deferred to the local operator split.
+    mutable std::vector<bool> compton_deferred_;
+    mutable std::vector<bool> split_compton_cells_;
+    mutable bool matrix_unrecoverable_ = false;
+    mutable bool postcg_unrecoverable_ = false;
+    mutable std::size_t split_subcycle_count_ = 0;
+    mutable double split_suppressed_energy_ = 0.0;
+    mutable double split_injected_energy_ = 0.0;
     mutable CG::BiCGSTABWorkspace cg_workspace_;
 
 private:
@@ -149,7 +171,14 @@ private:
     // helper functions
     void calculate_fleck_factor(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, double dt_cgs) const;
 
-    void generate_S_and_dSdUm_matrices(ComputationalCell3D const& cell, std::size_t const cell_index, double const dt_cgs, bool const calculate_n = true) const;
+    void generate_S_and_dSdUm_matrices(ComputationalCell3D const& cell,
+                                       std::size_t const cell_index,
+                                       double const dt_cgs,
+                                       ComptonOccupationMode occupation_mode = ComptonOccupationMode::RadiationField) const;
+
+    static char const* comptonOccupationModeLabel(ComptonOccupationMode mode);
+
+    double compute_lte_temperature(ComputationalCell3D const& cell) const;
 
     double calculate_Upsilon(ComputationalCell3D const& cell) const;
 
@@ -188,6 +217,17 @@ private:
     double calcEffectiveDiffusionCoefficient(ComputationalCell3D const& cell,
                                              std::size_t cell_index,
                                              std::size_t group) const;
+
+    void apply_operator_split_compton(Tessellation3D const& tess,
+                                      std::vector<ComputationalCell3D>& cells,
+                                      std::vector<Conserved3D>& extensives,
+                                      double dt) const;
+
+    bool solve_local_compton_substep(Tessellation3D const& tess,
+                                     std::size_t cell_index,
+                                     ComputationalCell3D& cell,
+                                     Conserved3D& extensive,
+                                     double dt) const;
 
     void fillComptonScatteringRates(std::size_t cell_index,
                                     std::vector<std::vector<double>> const& tau_mat,

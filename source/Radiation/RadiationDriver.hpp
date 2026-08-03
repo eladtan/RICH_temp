@@ -1,6 +1,8 @@
 #ifndef RADIATION_DRIVER_HPP
 #define RADIATION_DRIVER_HPP
 
+#include <string>
+
 #include "conj_grad_solve.hpp"
 #include "newtonian/common/equation_of_state.hpp"
 #include "boost/math/special_functions/pow.hpp"
@@ -99,6 +101,24 @@ public:
         virtual double calculate_dt(double const dt,
                                     Tessellation3D& tess, 
                                     std::vector<ComputationalCell3D>& cells) const = 0;
+
+        void clearStepFailure() const
+        {
+            last_step_failure_reason_.clear();
+            last_step_failure_cell_id_ = 0;
+        }
+
+        void setStepFailure(std::string const& reason, size_t cell_id = 0) const
+        {
+            if (!reason.empty() && last_step_failure_reason_.empty()) {
+                last_step_failure_reason_ = reason;
+                last_step_failure_cell_id_ = cell_id;
+            }
+        }
+
+        std::string const& getLastStepFailureReason() const { return last_step_failure_reason_; }
+        size_t getLastStepFailureCellId() const { return last_step_failure_cell_id_; }
+
     bool const flux_limiter_;
     bool const hydro_on_;
     bool const compton_on_;
@@ -109,6 +129,8 @@ public:
 
 protected:
     EquationOfState const& eos_;
+    mutable std::string last_step_failure_reason_;
+    mutable size_t last_step_failure_cell_id_ = 0;
 };
 
 using boost::math::pow;
