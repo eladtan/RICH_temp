@@ -185,7 +185,6 @@ based.
 \quad Marshak Wave 4 & Serial & 1 & Eulerian & Yes \\
 \quad Mach 2 Gray & MPI & 8 & Eulerian & Yes \\
 \quad Mach 2 Multigroup & MPI & 8 & Eulerian & Yes \\
-\quad Mach 2 DDMC & MPI & 8 & Eulerian & Yes \\
 \quad Gray Free--Free Suite & MPI & 4--16 & Eulerian & Yes \\
 \quad Multigroup Free--Free Suite & MPI & 4--16 & Eulerian & Yes \\
 \addlinespace
@@ -199,6 +198,7 @@ based.
 \addlinespace
 \multicolumn{5}{l}{\textit{Self-Gravity}} \\
 \quad Lane--Emden & MPI & 64 & Lagrangian & Yes \\
+\quad Lane--Emden FMM & MPI & 64 & Lagrangian & Yes \\
 \addlinespace
 \multicolumn{5}{l}{\textit{Mesh and Infrastructure}} \\
 \quad AMR Random & Serial + MPI & 1 / 64 & Lagrangian + AMR & No \\
@@ -257,25 +257,10 @@ The numerical density and pressure profiles are compared to the exact Riemann so
 \end{itemize}
 
 \subsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Density GOF & 1.14136222e-02 & 2.00000000e-02 & {\color{green!60!black}PASS} \\
-Pressure GOF & 1.07895027e-02 & 2.00000000e-02 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.95\textwidth]{plots/sod_1d.pdf}
-  \caption{Sod shock tube at $t = 0.2$: numerical results (black dots) vs.\ exact Riemann solution (red line) for density (left) and pressure (right).}
-  \label{fig:sod_1d}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -322,26 +307,10 @@ Radially binned profiles of density, pressure, and velocity are compared to the 
 \end{itemize}
 
 \subsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Density rel. $L_1$ & 1.69095678e-01 & 5.00000000e-01 & {\color{green!60!black}PASS} \\
-Pressure rel. $L_1$ & 4.80133209e-02 & 3.00000000e-01 & {\color{green!60!black}PASS} \\
-Velocity rel. $L_1$ & 1.49391541e-02 & 6.00000000e-01 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.95\textwidth]{plots/sedov_3d_mpi.pdf}
-  \caption{Sedov--Taylor blast wave: radially binned numerical profiles (black dots) vs.\ the ODE self-similar solution (red line) for density (left), pressure (center), and radial velocity (right).}
-  \label{fig:sedov_3d_mpi}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -378,28 +347,10 @@ Serial, 1~CPU, direct execution.
 Relative $L_1$ error for the azimuthal velocity profile (volume-averaged, radially binned) at $t=5$ compared to the initial condition must be $\le 0.1$.
 
 \subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-$v_\theta$ rel. $L_1$ & 3.226233e-02 & 0.1 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsubsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.48\textwidth]{plots/gresho_euler_pressure.pdf}
-  \hfill
-  \includegraphics[width=0.48\textwidth]{plots/gresho_euler_vtheta_2d.pdf}
-  \\[6pt]
-  \includegraphics[width=0.48\textwidth]{plots/gresho_euler_vtheta_r.pdf}
-  \caption{Gresho vortex (Eulerian) at $t=5$: pressure field (top left), azimuthal velocity field (top right), and radially binned azimuthal velocity profile vs.\ initial condition (bottom).}
-  \label{fig:gresho_euler}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -434,28 +385,10 @@ MPI, 8~CPUs, submitted via SLURM (partition \texttt{bigrun}, exclusive).
 Relative $L_1$ error for the azimuthal velocity profile must be $\le 0.05$.
 
 \subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-$v_\theta$ rel. $L_1$ & 3.064026e-02 & 0.05 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsubsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.48\textwidth]{plots/gresho_lagrangian_pressure.pdf}
-  \hfill
-  \includegraphics[width=0.48\textwidth]{plots/gresho_lagrangian_vtheta_2d.pdf}
-  \\[6pt]
-  \includegraphics[width=0.48\textwidth]{plots/gresho_lagrangian_vtheta_r.pdf}
-  \caption{Gresho vortex (Lagrangian + RoundCells) at $t=5$: pressure, azimuthal velocity field, and radially binned azimuthal velocity vs.\ initial condition.}
-  \label{fig:gresho_lagrangian}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -493,28 +426,10 @@ MPI, 8~CPUs, submitted via SLURM (partition \texttt{bigrun}, exclusive).
 Volume-weighted $L_1$ density error at $t=10$ compared to the analytical initial condition must be $\le 0.05$.
 
 \subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Density $L_1$ & 5.796316e-04 & 0.05 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsubsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.48\textwidth]{plots/yee_vortex_density_2d.pdf}
-  \hfill
-  \includegraphics[width=0.48\textwidth]{plots/yee_vortex_pressure_2d.pdf}
-  \\[6pt]
-  \includegraphics[width=0.48\textwidth]{plots/yee_vortex_density_r.pdf}
-  \caption{Yee isentropic vortex at $t=10$: density field (top left), pressure field (top right), radially binned density profile vs.\ analytical IC for both resolutions (bottom left), and $L_1$ density error convergence with second-order reference (bottom right).}
-  \label{fig:yee_vortex_64}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -540,16 +455,7 @@ MPI, 16~CPUs, submitted via SLURM (partition \texttt{bigrun}, exclusive).
 Volume-weighted $L_1$ density error at $t=10$ must be $\le 0.05$.
 
 \subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Density $L_1$ & 9.888759e-05 & 0.05 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsubsection*{Plots}
 \textit{This test does not produce comparison plots.}
@@ -587,28 +493,10 @@ MPI, 64~CPUs, submitted via SLURM (partition \texttt{bigrun}, exclusive).
 Maximum angular density scatter $< 0.1$ and maximum angular velocity scatter $< 0.1$ across all radial bins with significant density ($\rho > 0.01$) or velocity ($|v_r| > 0.01$).
 
 \subsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Max density scatter & 2.823584631338e-04 & 0.1 & {\color{green!60!black}PASS} \\
-Max velocity scatter & 8.740975808703e-04 & 0.1 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.48\textwidth]{plots/collapse_xy_density.pdf}
-  \hfill
-  \includegraphics[width=0.48\textwidth]{plots/collapse_xy_internal_energy.pdf}
-  \hfill
-  \caption{Spherical collapse at termination ($z \approx 0$ slice): density and internal energy scatter in the $xy$-plane.}
-  \label{fig:spherical_collapse}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -643,17 +531,7 @@ MPI, 128~CPUs, submitted via SLURM (partition \texttt{bigrun}, exclusive).
 Fitted linear growth rate $\sigma_{\mathrm{fit}}$ (from $t=2$ to $t=3$) within 25\% of analytical $\sigma = \sqrt{A\,g\,k}$ where $A=1/3$, $g=0.5$, $k=2\pi$.
 
 \subsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Growth rate rel. error & 9.47753856e-02 & 2.50000000e-01 & {\color{green!60!black}PASS} \\
-Fitted $\sigma$ & 9.26340525e-01 & (analytical: 1.02332671e+00) & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsection*{Plots}
 \textit{Plots not available --- run the test suite and the plot generator first.}
@@ -697,25 +575,10 @@ Serial, 1~CPU, direct execution.
 Relative $L_1$ error for both $T_{\mathrm{gas}}$ and $T_{\mathrm{rad}}$ must be $\le 10^{-2}$, compared to the self-similar analytical solution.
 
 \subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-$T_{\mathrm{gas}}$ rel. $L_1$ & 6.243701e-03 & 1e-2 & {\color{green!60!black}PASS} \\
-$T_{\mathrm{rad}}$ rel. $L_1$ & 6.279132e-03 & 1e-2 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsubsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.95\textwidth]{plots/marshak_wave_1.pdf}
-  \caption{Marshak wave Problem~1 at $t=1$~ns: gas and radiation temperature profiles (RICH vs.\ analytical self-similar solution).}
-  \label{fig:marshak_wave_1}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -747,25 +610,10 @@ Serial, 1~CPU, direct execution.
 Relative $L_1$ error for both $T_{\mathrm{gas}}$ and $T_{\mathrm{rad}}$ must be $\le 10^{-2}$.
 
 \subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-$T_{\mathrm{gas}}$ rel. $L_1$ & 5.051884e-03 & 1e-2 & {\color{green!60!black}PASS} \\
-$T_{\mathrm{rad}}$ rel. $L_1$ & 6.998704e-03 & 1e-2 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsubsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.95\textwidth]{plots/marshak_wave_2.pdf}
-  \caption{Marshak wave Problem~2 (equilibrium) at $t=1$~ns: gas and radiation temperature profiles (RICH vs.\ analytical).}
-  \label{fig:marshak_wave_2}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -797,25 +645,10 @@ Serial, 1~CPU, direct execution.
 Relative $L_1$ error for both $T_{\mathrm{gas}}$ and $T_{\mathrm{rad}}$ must be $\le 10^{-2}$.
 
 \subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-$T_{\mathrm{gas}}$ rel. $L_1$ & 8.431952e-03 & 1e-2 & {\color{green!60!black}PASS} \\
-$T_{\mathrm{rad}}$ rel. $L_1$ & 7.447259e-03 & 1e-2 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsubsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.95\textwidth]{plots/marshak_wave_3.pdf}
-  \caption{Marshak wave Problem~3 (non-uniform density) at $t=1$~ns.}
-  \label{fig:marshak_wave_3}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -847,25 +680,10 @@ Serial, 1~CPU, direct execution.
 Relative $L_1$ error for both $T_{\mathrm{gas}}$ and $T_{\mathrm{rad}}$ must be $\le 10^{-2}$.
 
 \subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-$T_{\mathrm{gas}}$ rel. $L_1$ & 5.554977e-03 & 1e-2 & {\color{green!60!black}PASS} \\
-$T_{\mathrm{rad}}$ rel. $L_1$ & 4.386704e-03 & 1e-2 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsubsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.95\textwidth]{plots/marshak_wave_4.pdf}
-  \caption{Marshak wave Problem~4 (divergent density, stretched grid) at $t=1$~ns.}
-  \label{fig:marshak_wave_4}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -914,26 +732,10 @@ Profiles are compared to the NLTE analytical solution. The relative $L_1$ error 
 \end{itemize}
 
 \subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Density rel. $L_1$ & 3.17238376e-03 & 2.50000000e-02 & {\color{green!60!black}PASS} \\
-Temperature rel. $L_1$ & 6.21621608e-03 & 2.50000000e-02 & {\color{green!60!black}PASS} \\
-$T_{\mathrm{rad}}$ rel. $L_1$ & 6.00303441e-03 & 2.50000000e-02 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsubsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.95\textwidth]{plots/mach2_diffusion.pdf}
-  \caption{Mach~2 gray radiative shock: numerical profiles (black dots) vs.\ NLTE analytical solution (colored lines) for density, gas temperature, and radiation temperature.}
-  \label{fig:mach2_diffusion}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -970,69 +772,6 @@ Same spatial profile thresholds as the gray case:
 \begin{itemize}
   \item Density: relative $L_1 \le 0.025$.
   \item Temperature: relative $L_1 \le 0.025$.
-\end{itemize}
-
-\subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Density rel. $L_1$ & 3.13920596e-03 & 2.50000000e-02 & {\color{green!60!black}PASS} \\
-Temperature rel. $L_1$ & 6.26461240e-03 & 2.50000000e-02 & {\color{green!60!black}PASS} \\
-$T_{\mathrm{rad}}$ rel. $L_1$ & 6.02240204e-03 & 2.50000000e-02 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
-
-\subsubsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.48\textwidth]{plots/mach2_multigroup.pdf}
-  \hfill
-  \includegraphics[width=0.48\textwidth]{plots/mach2_multigroup_spectrum.pdf}
-  \hfill
-  \caption{Mach~2 multigroup radiative shock. Top: spatial profiles of density, gas temperature, and radiation temperature (numerical vs.\ NLTE analytical). Bottom: radiation energy spectrum at the hottest cell (numerical vs.\ Planck distribution at $T_{\mathrm{gas}}$).}
-  \label{fig:mach2_multigroup}
-\end{figure}
-
-\newpage
-
-\subsection{Mach~2 Radiative Shock -- Multigroup IMC+DDMC}
-\label{sec:mach2_multigroup_ddmc}
-
-\subsubsection*{Description}
-The same Mach~2 radiative shock as the multigroup diffusion test \cite{lowrie2008,lowrie1999}, but solved with Implicit Monte Carlo (IMC) transport accelerated by Discrete Diffusion Monte Carlo (DDMC). The 32 logarithmically spaced energy groups, mesh, and initial/boundary conditions are identical to the deterministic multigroup test.
-
-\textbf{Code and physics aspects verified:}
-\begin{itemize}
-  \item \textbf{IMC transport with hydro coupling:} Radiation energy and momentum are deposited into the hydrodynamic conserved quantities via the Fleck factor implicit treatment.
-  \item \textbf{DDMC acceleration:} In optically thick regions the transport automatically switches to DDMC residence/leak steps. The test reports DDMC usage statistics confirming that acceleration is active.
-  \item \textbf{Multigroup PGRW:} The partially grey random walk cutoff ensures DDMC is applied only to groups below the PGRW threshold.
-  \item \textbf{Consistency with diffusion solution:} Spatial profiles of density, $T_{\mathrm{gas}}$, and $T_{\mathrm{rad}}$ are compared against the same NLTE analytical solution used by the deterministic test, with slightly relaxed tolerances to account for MC noise.
-\end{itemize}
-
-\textbf{Importance:} This test validates the stochastic radiation transport path (IMC+DDMC) on a well-understood benchmark where an analytical solution is available. It complements the deterministic multigroup diffusion test by exercising the Monte Carlo particle transport, load-balanced MPI communication, and DDMC acceleration on the same physics problem.
-
-\subsubsection*{Initial Conditions}
-Identical to the multigroup diffusion case (1024-cell Cartesian mesh, same left/right states and opacities). Energy groups span $E_{\min} = 10^{-3}\,k_B\!\cdot\!200\;\mathrm{K}$ to $E_{\max} = 10^{3}\,k_B\!\cdot\!200\;\mathrm{K}$, logarithmically spaced.
-
-\subsubsection*{Boundary Conditions}
-Two-sided temperature boundary emitting photons at $T_L = 100$~K (left) and $T_R = 207.757$~K (right). Rigid reflecting walls on $y/z$ faces.
-
-\subsubsection*{Mesh Movement}
-Eulerian (fixed mesh).
-
-\subsubsection*{Execution}
-MPI, 8~CPUs, submitted via SLURM (partition \texttt{bigrun}, exclusive). Built with \texttt{--energy\_groups\_num=32}. Time limit 4~hours (MC transport is more expensive than diffusion).
-
-\subsubsection*{Pass Criteria}
-Relaxed spatial profile thresholds for stochastic MC noise:
-\begin{itemize}
-  \item Density: relative $L_1 \le 0.05$.
-  \item Temperature: relative $L_1 \le 0.05$.
-  \item DDMC fraction $> 0$ (confirms acceleration was active).
 \end{itemize}
 
 \subsubsection*{Achieved Results}
@@ -1107,31 +846,16 @@ Each of the four sub-runs must complete without fatal errors and produce a valid
 \toprule
 \textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
 \midrule
-512: points & 512 & $\ge 2$ & {\color{green!60!black}PASS} \\
-512: peak $T_{\mathrm{gas}}$ & 1.9536 keV & finite & {\color{green!60!black}PASS} \\
-512 limited: points & 512 & $\ge 2$ & {\color{green!60!black}PASS} \\
-512 limited: peak $T_{\mathrm{gas}}$ & 1.9309 keV & finite & {\color{green!60!black}PASS} \\
-32: points & 32 & $\ge 2$ & {\color{green!60!black}PASS} \\
-32: peak $T_{\mathrm{gas}}$ & 0.0142 keV & finite & {\color{green!60!black}PASS} \\
-32 limited: points & 32 & $\ge 2$ & {\color{green!60!black}PASS} \\
-32 limited: peak $T_{\mathrm{gas}}$ & 1.3010 keV & finite & {\color{green!60!black}PASS} \\
+512 & profile not found & --- & {\color{red}FAIL} \\
+512 limited & profile not found & --- & {\color{red}FAIL} \\
+32 & profile not found & --- & {\color{red}FAIL} \\
+32 limited & profile not found & --- & {\color{red}FAIL} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsubsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.48\textwidth]{cases/eulerian_diffusion_freefree_compare/temperature_vs_x_compare_512_512_limited_32_32_limited.pdf}
-  \hfill
-  \includegraphics[width=0.48\textwidth]{cases/eulerian_diffusion_freefree_compare/trad_vs_x_compare_512_512_limited_32_32_limited.pdf}
-  \\[6pt]
-  \includegraphics[width=0.48\textwidth]{cases/eulerian_diffusion_freefree_compare/density_vs_x_compare_512_512_limited_32_32_limited.pdf}
-  \hfill
-  \includegraphics[width=0.48\textwidth]{cases/eulerian_diffusion_freefree_compare/velocity_vs_x_compare_512_512_limited_32_32_limited.pdf}
-  \caption{Gray free--free diffusion suite: four-way comparison of 512-cell (solid), 512-limited (dash-dot), 32-cell (dashed), and 32-limited (dotted) runs. Top row: gas temperature (left) and radiation temperature (right). Bottom row: density (left) and $x$-velocity (right). The cooling limiter brings the low-resolution peak $T_{\mathrm{gas}}$ closer to the high-resolution reference.}
-  \label{fig:eulerian_diffusion_freefree_suite}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -1187,31 +911,16 @@ Same structural criteria as the gray suite: all four sub-runs must complete and 
 \toprule
 \textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
 \midrule
-512: points & 512 & $\ge 2$ & {\color{green!60!black}PASS} \\
-512: peak $T_{\mathrm{gas}}$ & 0.5548 keV & finite & {\color{green!60!black}PASS} \\
-512 limited: points & 512 & $\ge 2$ & {\color{green!60!black}PASS} \\
-512 limited: peak $T_{\mathrm{gas}}$ & 0.8057 keV & finite & {\color{green!60!black}PASS} \\
-32: points & 32 & $\ge 2$ & {\color{green!60!black}PASS} \\
-32: peak $T_{\mathrm{gas}}$ & 0.0122 keV & finite & {\color{green!60!black}PASS} \\
-32 limited: points & 32 & $\ge 2$ & {\color{green!60!black}PASS} \\
-32 limited: peak $T_{\mathrm{gas}}$ & 0.1185 keV & finite & {\color{green!60!black}PASS} \\
+512 & profile not found & --- & {\color{red}FAIL} \\
+512 limited & profile not found & --- & {\color{red}FAIL} \\
+32 & profile not found & --- & {\color{red}FAIL} \\
+32 limited & profile not found & --- & {\color{red}FAIL} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
 \subsubsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.48\textwidth]{cases/eulerian_diffusion_freefree_multigroup_compare/temperature_vs_x_compare_mg32_512_512_limited_32_32_limited.pdf}
-  \hfill
-  \includegraphics[width=0.48\textwidth]{cases/eulerian_diffusion_freefree_multigroup_compare/trad_vs_x_compare_mg32_512_512_limited_32_32_limited.pdf}
-  \\[6pt]
-  \includegraphics[width=0.48\textwidth]{cases/eulerian_diffusion_freefree_multigroup_compare/density_vs_x_compare_mg32_512_512_limited_32_32_limited.pdf}
-  \hfill
-  \includegraphics[width=0.48\textwidth]{cases/eulerian_diffusion_freefree_multigroup_compare/velocity_vs_x_compare_mg32_512_512_limited_32_32_limited.pdf}
-  \caption{Multigroup free--free diffusion suite (32~energy groups): four-way comparison analogous to the gray suite. Top row: gas temperature (left) and radiation temperature (right). Bottom row: density (left) and $x$-velocity (right). The cooling limiter reduces the low-resolution temperature excess as in the gray case, while the multigroup Compton coupling introduces modest quantitative differences.}
-  \label{fig:eulerian_diffusion_freefree_multigroup_suite}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -1269,27 +978,10 @@ The simulation produces time histories of $T_{\mathrm{gas}}(t)$, $T_{\mathrm{rad
 \end{itemize}
 
 \subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Final $T_{\mathrm{gas}}$ & 1.154130e+08 & --- & {\color{green!60!black}PASS} \\
-Final $T_{\mathrm{rad}}$ & 1.154980e+08 & --- & {\color{green!60!black}PASS} \\
-Relative difference & 7.359435e-04 & $ < 10^{-2}$ & {\color{green!60!black}PASS} \\
-Energy conservation (rel.) & 0.000000e+00 & $ < 10^{-8}$ & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsubsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.95\textwidth]{plots/till_compton.pdf}
-  \caption{Till Compton equilibration: gas temperature (red) and radiation temperature (blue) vs.\ time, converging to thermal equilibrium. Black markers show the IN-FBC reference data digitized from McGraw, Till \& Warsa, JCP 478 (2023) 111980, Figure~2(a).}
-  \label{fig:till_compton}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -1327,27 +1019,10 @@ Serial, 1~CPU. Built with \texttt{--energy\_groups\_num=32}.
 \end{itemize}
 
 \subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Final $T_{\mathrm{gas}}$ & 1.134570e+08 & --- & {\color{green!60!black}PASS} \\
-Final $T_{\mathrm{rad}}$ & 1.153460e+08 & --- & {\color{green!60!black}PASS} \\
-Relative difference & 1.637681e-02 & $ < 2\times10^{-1}$ & {\color{green!60!black}PASS} \\
-Energy conservation (rel.) & 0.000000e+00 & $ < 5\times10^{-2}$ & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsubsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.95\textwidth]{plots/till_compton_mc.pdf}
-  \caption{Till Compton IMC equilibration: gas temperature (red) and radiation temperature (blue) vs.\ time. Black markers show the IN-FBC reference from McGraw et al.}
-  \label{fig:till_compton_mc}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -1394,24 +1069,10 @@ The gas temperature profile $T_{\mathrm{gas}}(x)$ is compared to the Monte Carlo
 \end{itemize}
 
 \subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-$T_{\mathrm{gas}}$ $L_1$ [keV] & 1.56553561e-02 & 0.05 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsubsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.95\textwidth]{plots/desmore2012_mc.pdf}
-  \caption{Densmore 2012 heterogeneous step-opacity at $t = 1$~ns: RICH MPI MC without random walk (black circles), RICH serial MC with random walk (red crosses), and digitized reference from Figure~4 of Densmore et al.\ (2012) (blue line).}
-  \label{fig:desmore2012_mc}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -1443,16 +1104,7 @@ Serial (single core).
 Same as \texttt{desmore2012\_mc}: $L_1 = \mathrm{mean}(|T_{\mathrm{sim}} - T_{\mathrm{ref}}|) \le 0.05$~keV.
 
 \subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-$T_{\mathrm{gas}}$ $L_1$ [keV] & 1.61268311e-02 & 0.05 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsubsection*{Plots}
 \textit{This test does not produce comparison plots.}
@@ -1492,25 +1144,10 @@ Serial (local).
 Energy-weighted fractional error (Eq.~20 of the 2026 paper) must be $\le 0.30$.
 
 \subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Energy-weighted $f$-error & 2.05642300e-02 & 0.30 & {\color{green!60!black}PASS} \\
-Rel. $L_1$ & 2.08800798e-02 & -- & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsubsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.95\textwidth]{cases/moving_slab_mc/moving_slab_mc_comparison.pdf}
-  \caption{Moving slab MC benchmark: MC simulation (circles) vs.\ semi-analytic solution (solid line). Log-log plot of per-group radiation energy density.}
-  \label{fig:moving_slab_mc}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -1591,24 +1228,45 @@ The volume-weighted average density error vs.\ the analytical Lane--Emden profil
 \end{itemize}
 
 \subsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-|final\_metric| & 1.755110e-02 & 4.00e-02 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsection*{Plots}
-\begin{figure}[htbp]
-  \centering
-  \includegraphics[width=0.95\textwidth]{plots/lane_self_gravity.pdf}
-  \caption{Lane--Emden self-gravity: numerical density profile (black dots) vs.\ the analytical Lane--Emden solution (red line) as a function of radius.}
-  \label{fig:lane_self_gravity}
-\end{figure}
+\textit{Plots not available --- run the test suite and the plot generator first.}
+
+\newpage
+
+\section{Lane--Emden Self-Gravity Equilibrium (FMM)}
+\label{sec:lane_self_gravity_fmm}
+
+\subsection*{Description}
+This test is identical to the Lane--Emden self-gravity benchmark, but uses the distributed fast multipole method (FMM) gravity solver instead of the quadrupole Barnes--Hut tree. The expansion order is $P = 3$ and the multipole acceptance criterion is $\theta = 0.9$.
+
+\textbf{Code and physics aspects verified:}
+\begin{itemize}
+  \item \textbf{FMM gravity in hydro:} The \texttt{FastMultipoleAcceleration3D} adapter must compute consistent gravitational accelerations on the Voronoi mesh and couple correctly to the conservative force module.
+  \item \textbf{Hydrostatic balance with approximate gravity:} The star should remain near the analytical Lane--Emden profile despite using an approximate FMM solver rather than the direct quadrupole tree.
+\end{itemize}
+
+\subsection*{Initial Conditions}
+Same as \\texttt{lane\\_self\\_gravity}: a polytropic star with $M = 2\times10^{33}\;\mathrm{g}$, $R = 7\times10^{10}\;\mathrm{cm}$, and Lane--Emden tables \\texttt{data/xsi32.txt} and \\texttt{data/theta32.txt}.
+
+\subsection*{Boundary Conditions}
+Rigid walls at the outer boundary.
+
+\subsection*{Mesh Movement}
+Lagrangian with cell rounding. Gravity via FMM conservative force.
+
+\subsection*{Execution}
+MPI, 64~CPUs, submitted via SLURM (partition \texttt{bigrun}, exclusive).
+
+\subsection*{Pass Criteria}
+The volume-weighted average density error vs.\ the analytical Lane--Emden profile must satisfy $|\texttt{final\_metric}| < 4\times10^{-2}$.
+
+\subsection*{Achieved Results}
+\textit{No metric output files found --- run the test suite first.}
+
+\subsection*{Plots}
+\textit{Plots not available --- run the test suite and the plot generator first.}
 
 \newpage
 
@@ -1653,17 +1311,7 @@ After AMR operations, the maximum relative drift in density, internal energy, pr
 \end{itemize}
 
 \subsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Mode & mpi & --- & {\color{green!60!black}PASS} \\
-Max drift & 7.1034029325289779e-09 & 9.9999999999999995e-07 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsection*{Plots}
 \textit{This test does not produce comparison plots.}
@@ -1704,16 +1352,7 @@ The relative volume error must be negligible:
 \end{itemize}
 
 \subsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Relative volume error & 2.2204460492503131e-16 & $ < 10^{-10}$ & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsection*{Plots}
 \textit{This test does not produce comparison plots.}
@@ -1756,18 +1395,7 @@ For interior faces (both cell CMs in $1.1 < r < 1.9$):
 \end{itemize}
 
 \subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Scalar max rel. error & 3.950005867276e-16 & 1e-08 & {\color{green!60!black}PASS} \\
-Velocity max rel. error & 4.495398789938e-12 & 1e-01 & {\color{green!60!black}PASS} \\
-Faces checked & 87600 & > 0 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsubsection*{Plots}
 \textit{This test does not produce comparison plots.}
@@ -1809,19 +1437,7 @@ For interior faces (both cell CMs in $1.1 < r < 1.9$):
 \end{itemize}
 
 \subsubsection*{Achieved Results}
-\begin{table}[htbp]
-\centering
-\begin{tabular}{l r r c}
-\toprule
-\textbf{Metric} & \textbf{Achieved} & \textbf{Threshold} & \textbf{Status} \\
-\midrule
-Cart. scalar max rel. error & 1.243243699388e-07 & 1e-06 & {\color{green!60!black}PASS} \\
-Cart. velocity max rel. error & 1.526288535391e-04 & 1e-01 & {\color{green!60!black}PASS} \\
-Faces checked & 87600 & > 0 & {\color{green!60!black}PASS} \\
-Cart < Sph scalar error & 1.243243699388e-07 & 3.135192554437e-02 & {\color{green!60!black}PASS} \\
-\bottomrule
-\end{tabular}
-\end{table}
+\textit{No metric output files found --- run the test suite first.}
 
 \subsubsection*{Plots}
 \textit{This test does not produce comparison plots.}
