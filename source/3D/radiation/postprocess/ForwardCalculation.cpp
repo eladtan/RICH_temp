@@ -1,4 +1,4 @@
-#include "forward_calculation.hpp"
+#include "ForwardCalculation.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -17,8 +17,8 @@
 #include "source/mpi/mpi_commands.hpp"
 #endif
 
-#include "adaptive_statistics.hpp"
-#include "flux_source_calculation.hpp"
+#include "AdaptiveStatistics.hpp"
+#include "FluxSourceCalculation.hpp"
 #include "source/3D/radiation/IMCMeasuredLoadBalance.hpp"
 #include "source/3D/radiation/IMCStepCounterCostCalculator.hpp"
 
@@ -141,8 +141,10 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                                              mgBurninGenerations,
                                              adaptiveActiveThisGen, rank);
 
+                IMCPostProcessControl postProcessControl;
                 if (adaptiveActiveThisGen) {
-                    auto combinedSourceScores =
+                    postProcessControl.adaptiveCells.enabled = true;
+                    postProcessControl.adaptiveCells.scores =
                         BuildCombinedSourceScoresForIMC(mgAdaptive, mgGroupSourceState);
                     double const learnedMinFactorThisGen =
                         learnedProbeThisGen ? 1.0 : cfg.adaptiveSourceLearnedMinFactor;
@@ -152,29 +154,43 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                         finalThisGen ? cfg.adaptiveSourceLearnedMaxPhotons : 0;
                     double const scorePowerThisGen =
                         finalThisGen ? cfg.adaptiveSourceScorePower : 1.0;
-                    physics->setAdaptiveSourceCellScores(
-                        std::move(combinedSourceScores),
-                        cfg.adaptiveSourceStrength,
-                        cfg.adaptiveSourceMaxFactor,
-                        cfg.adaptiveSourceLearnedReserveFrac,
-                        learnedMinFactorThisGen,
-                        mgAdaptive.observerBudgetMultiplier,
-                        learnedMinPhotonsThisGen,
-                        learnedMaxPhotonsThisGen,
-                        scorePowerThisGen);
-                } else {
-                    physics->clearAdaptiveSourceCellScores();
+                    postProcessControl.adaptiveCells.strength =
+                        cfg.adaptiveSourceStrength;
+                    postProcessControl.adaptiveCells.maxFactor =
+                        cfg.adaptiveSourceMaxFactor;
+                    postProcessControl.adaptiveCells.learnedReserveFraction =
+                        cfg.adaptiveSourceLearnedReserveFrac;
+                    postProcessControl.adaptiveCells.learnedMinFactor =
+                        learnedMinFactorThisGen;
+                    postProcessControl.adaptiveCells.observerBudgetMultiplier =
+                        mgAdaptive.observerBudgetMultiplier;
+                    postProcessControl.adaptiveCells.learnedMinPhotons =
+                        learnedMinPhotonsThisGen;
+                    postProcessControl.adaptiveCells.learnedMaxPhotons =
+                        learnedMaxPhotonsThisGen;
+                    postProcessControl.adaptiveCells.scorePower =
+                        scorePowerThisGen;
                 }
-                if (firstBurninThisGen)
-                    physics->setSourceEmissionControl(false, true, 1);
-                else if (uniformBurninThisGen)
-                    physics->setSourceEmissionControl(false, true, 3);
-                else if (learnedProbeThisGen)
-                    physics->setSourceEmissionControl(true, false, 1, 1);
-                else if (cfg.adaptiveSourceCells && finalThisGen)
-                    physics->setSourceEmissionControl(true, false, 1, 1, 0);
-                else
-                    physics->clearSourceEmissionControl();
+                if (firstBurninThisGen) {
+                    postProcessControl.emission.enabled = true;
+                    postProcessControl.emission.includeUniformBase = true;
+                    postProcessControl.emission.baseMultiplier = 1;
+                } else if (uniformBurninThisGen) {
+                    postProcessControl.emission.enabled = true;
+                    postProcessControl.emission.includeUniformBase = true;
+                    postProcessControl.emission.baseMultiplier = 3;
+                } else if (learnedProbeThisGen) {
+                    postProcessControl.emission.enabled = true;
+                    postProcessControl.emission.useLearnedScores = true;
+                    postProcessControl.emission.includeUniformBase = false;
+                    postProcessControl.emission.learnedBoostFactor = 1;
+                } else if (cfg.adaptiveSourceCells && finalThisGen) {
+                    postProcessControl.emission.enabled = true;
+                    postProcessControl.emission.useLearnedScores = true;
+                    postProcessControl.emission.includeUniformBase = false;
+                    postProcessControl.emission.learnedBoostFactor = 1;
+                    postProcessControl.emission.learnedExtraBudget = 0;
+                }
                 observer->resetGenerationSourceCellEscapeStats();
                 observer->resetGenerationSourceCellGroupEscapeStats();
                 observer->setGenerationSourceCellGroupStatsEnabled(
@@ -183,26 +199,34 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
 
                 if (adaptiveActiveThisGen && cfg.adaptiveGroupFrequencySampling &&
                     !mgGroupSourceState.scoreByCellGroup.empty()) {
-                    auto groupScoresForIMC = BuildGroupScoresForIMC(
+                    postProcessControl.adaptiveGroups.enabled = true;
+                    postProcessControl.adaptiveGroups.scores = BuildGroupScoresForIMC(
                         mgGroupSourceState, cells, static_cast<size_t>(ENERGY_GROUPS_NUM));
-                    physics->setAdaptiveSourceCellGroupScores(
-                        std::move(groupScoresForIMC),
-                        cfg.adaptiveGroupStrength,
-                        cfg.adaptiveGroupPdfFloor,
-                        cfg.adaptiveGroupMaxBias,
-                        cfg.adaptiveGroupMaxWeightCorrection);
-                } else {
-                    physics->clearAdaptiveSourceCellGroupScores();
+                    postProcessControl.adaptiveGroups.strength =
+                        cfg.adaptiveGroupStrength;
+                    postProcessControl.adaptiveGroups.pdfFloor =
+                        cfg.adaptiveGroupPdfFloor;
+                    postProcessControl.adaptiveGroups.maxBias =
+                        cfg.adaptiveGroupMaxBias;
+                    postProcessControl.adaptiveGroups.maxWeightCorrection =
+                        cfg.adaptiveGroupMaxWeightCorrection;
                 }
+                physics->configurePostProcessControl(
+                    std::move(postProcessControl));
+                if (cfg.fluxSourceCompare)
+                    ConfigureFluxSourceForCurrentDecomposition(
+                        cfg, runtime, *physics);
 
                 physics->reseedRNG(static_cast<uint64_t>(rank+12345678) * mgTotalGenerations + gen);
 
                 std::vector<Particle3D> empty;
                 auto remaining = manager->step(std::move(empty), cells, cfg.transportTime);
                 (void)remaining;
+                IMCPostProcessGenerationDiagnostics const generationDiagnostics =
+                    physics->getPostProcessGenerationDiagnostics();
 
                 auto mgAllocation = ReduceSourceAllocationSummary(
-                    physics->getLastSourceAllocationSummary());
+                    generationDiagnostics.sourceAllocation);
                 size_t const photonHistMin = finalThisGen
                     ? cfg.adaptiveSourceLearnedMinPhotons
                     : 1;
@@ -210,13 +234,13 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     ? cfg.adaptiveSourceLearnedMaxPhotons
                     : std::max(photonHistMin, photonsThisGen * 20);
                 auto mgPhotonDistribution = ReduceSourcePhotonDistribution(
-                    physics->getLastSourcePhotonsPerCell(),
+                    generationDiagnostics.sourcePhotonsPerCell,
                     photonHistMin,
                     photonHistMax,
                     rank,
                     mpiSize);
                 auto mgGroupSamplingDiag = ReduceGroupSamplingDiagnostics(
-                    physics->getLastGroupSamplingDiagnostics());
+                    generationDiagnostics.groupSampling);
                 mgLastGroupSamplingDiag = mgGroupSamplingDiag;
                 auto mgSourceStats = observer->getGenerationSourceCellEscapeStats();
                 observer->resetGenerationSourceCellEscapeStats();
@@ -356,7 +380,8 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                             cellIDs[i] = cells[i].ID;
 
                         auto localMeasurements = imc_measured_lb::BuildLocalMeasurements(
-                            cellIDs, localSteps, physics->getLastSourcePhotonsPerCell());
+                            cellIDs, localSteps,
+                            generationDiagnostics.sourcePhotonsPerCell);
 
                         uint64_t localTotalSteps = 0;
                         uint64_t localTotalSourceParticles = 0;
@@ -498,7 +523,10 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                             // The alpha table is local and ID-keyed, so refresh it
                             // before rebuilding physics and before the next transport step.
                             RecomputeOpacityScaleFactors(
-                                *opacity, *greyOpacity, cells, Ncells, rank, cfg.opacityScaleMode, "after measured LB repartition");
+                                *opacity, *greyOpacity, cells, Ncells, rank,
+                                cfg.opacityScaleMode,
+                                runtime.applyOpacityScaleFactors,
+                                "after measured LB repartition");
                         }
     #endif
 

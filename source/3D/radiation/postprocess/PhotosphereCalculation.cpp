@@ -1,4 +1,4 @@
-#include "photosphere_calculation.hpp"
+#include "PhotosphereCalculation.hpp"
 
 #include "source/monte/physics/MonteCarloPhysics.hpp"
 #include "source/monte/MonteCarloFunctionality.hpp"

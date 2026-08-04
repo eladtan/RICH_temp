@@ -1,12 +1,12 @@
 #ifndef IMC_POSTPROCESS_TDE_GREY_CALCULATION_HPP
 #define IMC_POSTPROCESS_TDE_GREY_CALCULATION_HPP
 
-#include "postprocess_config.hpp"
-#include "postprocess_runtime.hpp"
+#include "PostProcessConfig.hpp"
+#include "PostProcessRuntime.hpp"
 
 namespace imc_postprocess_tde {
 
-void RunGreyPostprocess(
+ForwardPostprocessResult RunGreyPostprocess(
     Config const& cfg,
     PostprocessRuntime& runtime,
     ForwardPostprocessResult const& forwardResult);

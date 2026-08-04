@@ -13,6 +13,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 
 #include "source/3D/output/read3D.hpp"
@@ -46,17 +47,200 @@
 #include "source/mpi/mpi_commands.hpp"
 #endif
 
-#include "postprocess_config.hpp"
-#include "postprocess_runtime.hpp"
-#include "adaptive_statistics.hpp"
-#include "photosphere_calculation.hpp"
-#include "forward_calculation.hpp"
-#include "grey_calculation.hpp"
-#include "flux_source_calculation.hpp"
+#include "IMCPostProcess.hpp"
+#include "PostProcessCommandLine.hpp"
+#include "PostProcessConfig.hpp"
+#include "PostProcessResultWriter.hpp"
+#include "PostProcessRuntime.hpp"
+#include "AdaptiveStatistics.hpp"
+#include "PhotosphereCalculation.hpp"
+#include "ForwardCalculation.hpp"
+#include "GreyCalculation.hpp"
+#include "FluxSourceCalculation.hpp"
 
 using namespace imc_postprocess_tde;
 
 namespace {
+
+PostProcessIMC::PostProcessResult* embeddedResultSink = nullptr;
+
+PostProcessIMC::PostProcessPassResult ToPublicResult(
+    ForwardPostprocessResult const& value)
+{
+    PostProcessIMC::PostProcessPassResult result;
+    result.ran = value.ran;
+    result.usesVelocity = value.usesVelocity;
+    result.usesDDMC = value.usesDDMC;
+    result.usesPolarization = value.usesPolarization;
+    result.usesCompton = value.usesCompton;
+    result.sourceLuminosity = value.sourceLuminosity;
+    result.emittedLuminosity = value.emittedLuminosity;
+    result.crossingLuminosity = value.crossingLuminosity;
+    result.crossingLuminosityStderr = value.crossingLuminosityStderr;
+    result.emittedEnergy = value.emittedEnergy;
+    result.timedOutFraction = value.timedOutFraction;
+    result.luminosityWeightedPolarizationDegree =
+        value.luminosityWeightedPolarizationDegree;
+    result.polarizedObserverCount = value.polarizedObserverCount;
+    return result;
+}
+
+void BroadcastPassResult(ForwardPostprocessResult& result)
+{
+#ifdef RICH_MPI
+    int flags[5] = {
+        result.ran ? 1 : 0,
+        result.usesVelocity ? 1 : 0,
+        result.usesDDMC ? 1 : 0,
+        result.usesPolarization ? 1 : 0,
+        result.usesCompton ? 1 : 0};
+    double values[7] = {
+        result.sourceLuminosity,
+        result.emittedLuminosity,
+        result.crossingLuminosity,
+        result.crossingLuminosityStderr,
+        result.emittedEnergy,
+        result.timedOutFraction,
+        result.luminosityWeightedPolarizationDegree};
+    unsigned long long polarizedObservers =
+        static_cast<unsigned long long>(result.polarizedObserverCount);
+    MPI_Bcast(flags, 5, MPI_INT, 0, MPI_COMM_WORLD);
+    MPI_Bcast(values, 7, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    MPI_Bcast(
+        &polarizedObservers, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+    result.ran = flags[0] != 0;
+    result.usesVelocity = flags[1] != 0;
+    result.usesDDMC = flags[2] != 0;
+    result.usesPolarization = flags[3] != 0;
+    result.usesCompton = flags[4] != 0;
+    result.sourceLuminosity = values[0];
+    result.emittedLuminosity = values[1];
+    result.crossingLuminosity = values[2];
+    result.crossingLuminosityStderr = values[3];
+    result.emittedEnergy = values[4];
+    result.timedOutFraction = values[5];
+    result.luminosityWeightedPolarizationDegree = values[6];
+    result.polarizedObserverCount =
+        static_cast<uint64_t>(polarizedObservers);
+#else
+    (void)result;
+#endif
+}
+
+Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
+{
+    Config cfg;
+    cfg.inputPath = publicConfig.input.snapshot;
+    cfg.outputPath = ReplaceExtension(publicConfig.output.stem, ".h5");
+    cfg.vtkOutput = ReplaceExtension(publicConfig.output.stem, ".vtk");
+    cfg.writeVtk = publicConfig.output.writeVtk;
+    cfg.opacityDir = publicConfig.input.multigroupOpacityDirectory;
+    cfg.greyOpacityDir = publicConfig.input.greyOpacityDirectory;
+    cfg.eosDir = publicConfig.input.eosDirectory;
+    cfg.radius = publicConfig.observer.radius;
+    cfg.nObservers = publicConfig.observer.count;
+    cfg.sourceDt = publicConfig.transport.sourceDt;
+    cfg.transportTime = publicConfig.transport.duration;
+    cfg.center = publicConfig.observer.center;
+    cfg.photonsPerCell = publicConfig.transport.photonsPerCell;
+    cfg.compton = publicConfig.transport.compton.enabled;
+    cfg.comptonSamples = publicConfig.transport.compton.matrixSamples;
+    cfg.comptonAngleDependent = publicConfig.transport.compton.angleDependent;
+    cfg.nGenerations = publicConfig.transport.generations;
+    cfg.ddmc = publicConfig.transport.ddmc;
+    cfg.randomWalk = publicConfig.transport.randomWalk;
+    cfg.useCellVelocities = publicConfig.transport.useCellVelocities;
+    cfg.polarization = publicConfig.polarization.enabled;
+    cfg.photosphere = publicConfig.photosphere.enabled;
+    cfg.fluxSourceCompare = publicConfig.fluxSource.enabled;
+    cfg.fluxSourceThermalizationTau = publicConfig.fluxSource.thermalizationTau;
+    cfg.fluxSourceRays = publicConfig.fluxSource.constructionRays;
+    cfg.fluxSourceDDMCFaceOpticalDepth = publicConfig.fluxSource.ddmcFaceOpticalDepth;
+    cfg.polarizationManualScatterings =
+        publicConfig.polarization.manualScatteringsAfterAcceleration;
+    cfg.polarizationDepolarizationScatterings =
+        publicConfig.polarization.depolarizationScatterings;
+    cfg.polarizationClosure = publicConfig.polarization.acceleratedClosure;
+    cfg.measuredLoadBalance = publicConfig.loadBalance.measured;
+    switch (publicConfig.opacityScaling.mode) {
+    case PostProcessIMC::OpacityScaleMode::None:
+        cfg.opacityScaleMode = OpacityScaleMode::None;
+        break;
+    case PostProcessIMC::OpacityScaleMode::Rosseland:
+        cfg.opacityScaleMode = OpacityScaleMode::Rosseland;
+        break;
+    case PostProcessIMC::OpacityScaleMode::Planck:
+        cfg.opacityScaleMode = OpacityScaleMode::Planck;
+        break;
+    }
+    cfg.adaptiveSourceCells = publicConfig.adaptive.source.enabled;
+    cfg.adaptiveSourceBurnin = publicConfig.adaptive.source.burninGenerations;
+    cfg.adaptiveSourceStrength = publicConfig.adaptive.source.strength;
+    cfg.adaptiveSourceEma = publicConfig.adaptive.source.ema;
+    cfg.adaptiveSourceMinEscapedFrac = publicConfig.adaptive.source.minEscapedFraction;
+    cfg.adaptiveSourceMaxFactor = publicConfig.adaptive.source.maxFactor;
+    cfg.adaptiveSourceBurninPhotonMultiplier =
+        publicConfig.adaptive.source.burninPhotonMultiplier;
+    cfg.adaptiveSourceLearnedReserveFrac =
+        publicConfig.adaptive.source.learnedReserveFraction;
+    cfg.adaptiveSourceLearnedMinFactor = publicConfig.adaptive.source.learnedMinFactor;
+    cfg.adaptiveSourceLearnedMinPhotons = publicConfig.adaptive.source.learnedMinPhotons;
+    cfg.adaptiveSourceLearnedMaxPhotons = publicConfig.adaptive.source.learnedMaxPhotons;
+    cfg.adaptiveSourceScorePower = publicConfig.adaptive.source.scorePower;
+    cfg.adaptiveSourceWeightScoreFrac = publicConfig.adaptive.source.weightScoreFraction;
+    cfg.adaptiveObserverEquity = publicConfig.adaptive.observer.equity;
+    cfg.adaptiveObserverExtraBudgetFrac =
+        publicConfig.adaptive.observer.extraBudgetFraction;
+    cfg.adaptiveObserverTargetNeff =
+        publicConfig.adaptive.observer.targetEffectivePackets;
+    cfg.adaptiveObserverTargetPolSnr =
+        publicConfig.adaptive.observer.targetPolarizationSnr;
+    cfg.adaptiveObserverDeficitMax = publicConfig.adaptive.observer.maxDeficit;
+    cfg.adaptiveObserverDeficitEma = publicConfig.adaptive.observer.deficitEma;
+    cfg.measuredLBWeightCompression = publicConfig.loadBalance.weightCompression;
+    cfg.adaptiveLBImbalanceThreshold = publicConfig.loadBalance.imbalanceThreshold;
+    cfg.adaptiveLBCooldownGenerations = publicConfig.loadBalance.cooldownGenerations;
+    cfg.adaptiveLBMaxRebalances = publicConfig.loadBalance.maxRebalances;
+    cfg.adaptiveGroupQuality = publicConfig.adaptive.group.quality;
+    cfg.adaptiveGroupSourceCells = publicConfig.adaptive.group.sourceCells;
+    cfg.adaptiveGroupFrequencySampling = publicConfig.adaptive.group.frequencySampling;
+    cfg.adaptiveGroupHistory = publicConfig.adaptive.group.history;
+    cfg.adaptiveGroupTargetNeff = publicConfig.adaptive.group.targetEffectivePackets;
+    cfg.adaptiveGroupTargetPolSnr = publicConfig.adaptive.group.targetPolarizationSnr;
+    cfg.adaptiveGroupDeficitMax = publicConfig.adaptive.group.maxDeficit;
+    cfg.adaptiveGroupMinCrossings = publicConfig.adaptive.group.minCrossings;
+    cfg.adaptiveGroupMinLuminosity = publicConfig.adaptive.group.minLuminosity;
+    cfg.adaptiveGroupMinLuminosityFracOfGroupMax =
+        publicConfig.adaptive.group.minLuminosityFractionOfGroupMax;
+    cfg.adaptiveGroupIneligiblePriorityCap =
+        publicConfig.adaptive.group.ineligiblePriorityCap;
+    cfg.adaptiveGroupRetainPriorityFloor = publicConfig.adaptive.group.retainPriorityFloor;
+    cfg.adaptiveGroupLuminosityNormalization =
+        publicConfig.adaptive.group.luminosityNormalization;
+    cfg.adaptiveGroupLuminosityGlobalWeight =
+        publicConfig.adaptive.group.luminosityGlobalWeight;
+    cfg.adaptiveGroupLuminosityPower = publicConfig.adaptive.group.luminosityPower;
+    cfg.adaptiveGroupPolarizationPower = publicConfig.adaptive.group.polarizationPower;
+    cfg.adaptiveGroupLuminosityWeight = publicConfig.adaptive.group.luminosityWeight;
+    cfg.adaptiveGroupPolarizationWeight = publicConfig.adaptive.group.polarizationWeight;
+    cfg.adaptiveGroupPolarizationFloor = publicConfig.adaptive.group.polarizationFloor;
+    cfg.adaptiveGroupHistoryEma = publicConfig.adaptive.group.historyEma;
+    cfg.adaptiveGroupLatestWeight = publicConfig.adaptive.group.latestWeight;
+    cfg.adaptiveGroupCumulativeWeight = publicConfig.adaptive.group.cumulativeWeight;
+    cfg.adaptiveGroupEmaWeight = publicConfig.adaptive.group.emaWeight;
+    cfg.adaptiveGroupScoreEma = publicConfig.adaptive.group.scoreEma;
+    cfg.adaptiveGroupStrength = publicConfig.adaptive.group.strength;
+    cfg.adaptiveGroupPdfFloor = publicConfig.adaptive.group.pdfFloor;
+    cfg.adaptiveGroupMaxBias = publicConfig.adaptive.group.maxBias;
+    cfg.adaptiveGroupMaxWeightCorrection = publicConfig.adaptive.group.maxWeightCorrection;
+    cfg.adaptiveGroupMaxLocalStats = publicConfig.adaptive.group.maxLocalStats;
+    cfg.adaptiveGroupStatMinCount = publicConfig.adaptive.group.statMinCount;
+    cfg.adaptiveGroupStatPriorityKeep = publicConfig.adaptive.group.statPriorityKeep;
+    cfg.adaptiveGroupFallbackToIntegratedOnOverflow =
+        publicConfig.adaptive.group.fallbackToIntegratedOnOverflow;
+    cfg.adaptiveDiagnosticsVerbose = publicConfig.diagnostics.verboseAdaptive;
+    return cfg;
+}
 
 std::vector<double> IntegrateFldFluxOverObserverPatches(
     Voronoi3D const& tess,
@@ -148,10 +332,119 @@ std::vector<double> IntegrateFldFluxOverObserverPatches(
 
 } // namespace
 
-int main(int argc, char* argv[])
+PostProcessIMC::PostProcessScenario PostProcessIMC::MakeStaSnapshotScenario(
+    std::string name)
+{
+    PostProcessScenario scenario;
+    scenario.name = std::move(name);
+    scenario.defaults.input.multigroupOpacityDirectory =
+        "/home/elads/RICH/data/STA/MG/";
+    scenario.defaults.input.eosDirectory = "/home/elads/RICH/data/EOS/";
+
+    scenario.factories.loadSnapshot = [](
+        PostProcessConfig::Input const& input,
+        ParallelContext const& parallel) {
+#ifdef RICH_MPI
+        Snapshot3D snapshot = ReadSnapshot3DParallel(input.snapshot);
+        int const fileRanks = GetNumberOfRanksInHDF(input.snapshot);
+        if (parallel.size < fileRanks && parallel.rank == 0) {
+            for (int fileRank = parallel.size; fileRank < fileRanks; ++fileRank) {
+                Snapshot3D extra = ReadSnapshot3DParallel(input.snapshot, fileRank);
+                snapshot.cells.insert(snapshot.cells.end(),
+                                      extra.cells.begin(), extra.cells.end());
+                snapshot.mesh_points.insert(snapshot.mesh_points.end(),
+                                            extra.mesh_points.begin(),
+                                            extra.mesh_points.end());
+            }
+        }
+        return snapshot;
+#else
+        (void)parallel;
+        return ReadSnapshot3D(input.snapshot);
+#endif
+    };
+
+    scenario.factories.transformSnapshot = [](
+        Snapshot3D& snapshot, ParallelContext const&) {
+        double const lengthScale = 7e10;
+        double const massScale = 2e33;
+        double const timeScale = 1603;
+        double const densityScale =
+            massScale / (lengthScale * lengthScale * lengthScale);
+        double const velocityScale = lengthScale / timeScale;
+        double const specificEnergyScale =
+            lengthScale * lengthScale / (timeScale * timeScale);
+
+        snapshot.ll = snapshot.ll * lengthScale;
+        snapshot.ur = snapshot.ur * lengthScale;
+        snapshot.time *= timeScale;
+        for (Vector3D& point : snapshot.mesh_points)
+            point = point * lengthScale;
+        for (ComputationalCell3D& cell : snapshot.cells) {
+            cell.density *= densityScale;
+            cell.pressure *= massScale /
+                (timeScale * timeScale * lengthScale);
+            cell.internal_energy *= specificEnergyScale;
+            cell.velocity = cell.velocity * velocityScale;
+            cell.Erad *= specificEnergyScale;
+            for (size_t group = 0; group < ENERGY_GROUPS_NUM; ++group)
+                cell.Eg[group] *= specificEnergyScale;
+        }
+    };
+
+    scenario.factories.createEquationOfState = [](
+        PostProcessConfig::Input const& input) {
+        return std::make_shared<OndrejEOS>(
+            input.eosDirectory + "density.txt",
+            input.eosDirectory + "Pfile.txt",
+            input.eosDirectory + "csfile.txt",
+            input.eosDirectory + "Sfile.txt",
+            input.eosDirectory + "Ufile.txt",
+            input.eosDirectory + "Tfile.txt",
+            input.eosDirectory + "CVfile.txt",
+            1.0, 1.0, 1.0);
+    };
+    scenario.factories.createMultigroupOpacity = [](
+        PostProcessConfig::Input const& input) {
+        return std::static_pointer_cast<OpacityCalculator>(
+            std::make_shared<STAMGopacityMC>(
+                input.multigroupOpacityDirectory));
+    };
+    scenario.factories.createGreyOpacity = [](
+        PostProcessConfig::Input const& input) {
+        return std::static_pointer_cast<OpacityCalculator>(
+            std::make_shared<STAgreyOpacity>(input.greyOpacityDirectory));
+    };
+    scenario.factories.applyOpacityScaleFactors = [](
+        OpacityCalculator& opacity,
+        std::unordered_map<size_t, double> factors) {
+        STAMGopacityMC* sta = dynamic_cast<STAMGopacityMC*>(&opacity);
+        if (sta == nullptr)
+            throw UniversalError(
+                "STA scenario opacity scaling requires STAMGopacityMC");
+        sta->SetRosselandScaleFactors(std::move(factors));
+    };
+    scenario.factories.createObserver = [](
+        PostProcessConfig::Observer const& observer,
+        std::vector<double> const& groupBoundaries) {
+        return std::make_shared<SphericalObserver>(
+            observer.center, observer.radius, observer.count,
+            groupBoundaries);
+    };
+    scenario.factories.configureSource = [](
+        SourceContext&, PostProcessConfig const&) {};
+    return scenario;
+}
+
+int PostProcessIMC::RunPostProcessMain(
+    int argc, char* argv[], PostProcessScenario scenario)
 {
 #ifdef RICH_MPI
-    MPI_Init(&argc, &argv);
+    int mpiInitialized = 0;
+    MPI_Initialized(&mpiInitialized);
+    bool ownsMpi = (mpiInitialized == 0);
+    if (ownsMpi)
+        MPI_Init(&argc, &argv);
     int rank = 0, mpiSize = 1;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &mpiSize);
@@ -159,12 +452,30 @@ int main(int argc, char* argv[])
     int rank = 0, mpiSize = 1;
 #endif
 
+    std::exception_ptr embeddedFailure;
     try {
-        Config cfg;
-        if (!parseArgs(argc, argv, cfg, rank)) {
-            printUsage(rank);
+        CommandLineAction const action =
+            ParseCommandLine(argc, argv, scenario.defaults, rank);
+        if (action == CommandLineAction::Help) {
+            PrintCommandLineHelp(scenario.defaults, rank);
 #ifdef RICH_MPI
-            MPI_Finalize();
+            if (ownsMpi) MPI_Finalize();
+#endif
+            return 0;
+        }
+        if (action == CommandLineAction::Error) {
+            if (rank == 0)
+                std::cerr << "Use --help to list supported options.\n";
+#ifdef RICH_MPI
+            if (ownsMpi) MPI_Finalize();
+#endif
+            return 1;
+        }
+
+        Config cfg = ToInternalConfig(scenario.defaults);
+        if (!ValidateConfig(cfg, rank)) {
+#ifdef RICH_MPI
+            if (ownsMpi) MPI_Finalize();
 #endif
             return 1;
         }
@@ -172,9 +483,9 @@ int main(int argc, char* argv[])
         if (cfg.ddmc) {
             if (rank == 0)
                 std::cerr << "Error: DDMC is enabled, but this executable was built without RadiationIMC_DDMC.cpp. "
-                          << "Rebuild with forward DDMC support or pass --no-ddmc.\n";
+                          << "Rebuild with forward DDMC support or pass --transport.ddmc false.\n";
 #ifdef RICH_MPI
-            MPI_Finalize();
+            if (ownsMpi) MPI_Finalize();
 #endif
             return 1;
         }
@@ -185,13 +496,22 @@ int main(int argc, char* argv[])
                 std::cerr
                     << "Error: polarization is enabled for imc_postprocess_tde, but this executable "
                     << "was built without MONTECARLO_POLARIZATION. Rebuild with "
-                    << "--montecarlo-polarization or pass --no-polarization.\n";
+                    << "--montecarlo-polarization or pass --polarization.enabled false.\n";
 #ifdef RICH_MPI
-            MPI_Finalize();
+            if (ownsMpi) MPI_Finalize();
 #endif
             return 1;
         }
 #endif
+        scenario.defaults.input.greyOpacityDirectory = cfg.greyOpacityDir;
+        scenario.defaults.transport.duration = cfg.transportTime;
+        if (action == CommandLineAction::PrintEffectiveConfig) {
+            PrintEffectiveConfig(scenario.defaults, rank);
+#ifdef RICH_MPI
+            if (ownsMpi) MPI_Finalize();
+#endif
+            return 0;
+        }
 
         if (rank == 0) {
             std::cout << "=== TDE IMC Post-Processing ===\n"
@@ -228,8 +548,8 @@ int main(int argc, char* argv[])
                       << "  weight compression: " << EffectiveMeasuredLBWeightCompression(cfg) << "\n"
                       << "  max cell imbalance: " << MEASURED_LB_MAX_CELL_IMBALANCE << "\n"
                       << "  adaptive cadence: learned-only probe LB, then every 10 learned-final steps before the last\n"
-                      << "Opacity scale:   " << (cfg.opacityScaleMode == OpacityScaleMode::Planck ? "planck" :
-                                                  cfg.opacityScaleMode == OpacityScaleMode::Rosseland ? "rosseland" : "disabled") << "\n"
+                      << "Opacity scale:   " << (cfg.opacityScaleMode == imc_postprocess_tde::OpacityScaleMode::Planck ? "planck" :
+                                                  cfg.opacityScaleMode == imc_postprocess_tde::OpacityScaleMode::Rosseland ? "rosseland" : "disabled") << "\n"
                       << "Adaptive source: " << (cfg.adaptiveSourceCells ? "enabled" : "disabled") << "\n"
                       << "  MG schedule:   1 exact-1 burn-in, 19 exact-3 burn-in, learned-only exact-75 probe, LB, "
                       << cfg.nGenerations << " learned-only final steps (min=500 max=2000)\n"
@@ -258,37 +578,40 @@ int main(int argc, char* argv[])
                       << std::endl;
         }
 
-        // ============================================================
-        // Code-unit scale factors (for snapshot → CGS conversion)
-        // ============================================================
-        double const lscale = 7e10;   // cm
-        double const mscale = 2e33;   // g
-        double const tscale = 1603;   // s
+        PostProcessConfig::Input effectiveInput;
+        effectiveInput.snapshot = cfg.inputPath;
+        effectiveInput.multigroupOpacityDirectory = cfg.opacityDir;
+        effectiveInput.greyOpacityDirectory = cfg.greyOpacityDir;
+        effectiveInput.eosDirectory = cfg.eosDir;
+        ParallelContext const parallel{rank, mpiSize};
 
-        double const rho_factor = mscale / (lscale * lscale * lscale);
-        double const vel_factor = lscale / tscale;
-        double const energy_factor = lscale * lscale / (tscale * tscale);
+        if (!scenario.factories.createEquationOfState ||
+            !scenario.factories.createMultigroupOpacity ||
+            !scenario.factories.createGreyOpacity ||
+            !scenario.factories.loadSnapshot ||
+            !scenario.factories.transformSnapshot ||
+            !scenario.factories.createObserver ||
+            !scenario.factories.applyOpacityScaleFactors)
+            throw UniversalError(
+                "Post-process scenario has an incomplete factory set");
 
-        // ============================================================
-        // Load EOS (identity scales: inputs will already be CGS)
-        // ============================================================
-        std::shared_ptr<EquationOfState> eos = std::make_shared<OndrejEOS>(
-            cfg.eosDir + "density.txt",
-            cfg.eosDir + "Pfile.txt",
-            cfg.eosDir + "csfile.txt",
-            cfg.eosDir + "Sfile.txt",
-            cfg.eosDir + "Ufile.txt",
-            cfg.eosDir + "Tfile.txt",
-            cfg.eosDir + "CVfile.txt",
-            1.0, 1.0, 1.0);
+        std::shared_ptr<EquationOfState> eos =
+            scenario.factories.createEquationOfState(effectiveInput);
+        if (!eos)
+            throw UniversalError("Post-process EOS factory returned null");
 
         if (rank == 0)
-            std::cout << "EOS loaded (CGS mode, lscale=" << lscale << " mscale=" << mscale << " tscale=" << tscale << ")." << std::endl;
+            std::cout << "EOS loaded for scenario " << scenario.name
+                      << "." << std::endl;
 
         // ============================================================
         // Load STA multigroup opacity
         // ============================================================
-        auto opacity = std::make_shared<STAMGopacityMC>(cfg.opacityDir);
+        std::shared_ptr<OpacityCalculator> opacity =
+            scenario.factories.createMultigroupOpacity(effectiveInput);
+        if (!opacity)
+            throw UniversalError(
+                "Post-process multigroup opacity factory returned null");
 
 #if ENERGY_GROUPS_NUM > 1
         if (opacity->energy_groups_boundary.size() != ENERGY_GROUPS_NUM + 1)
@@ -317,28 +640,13 @@ int main(int argc, char* argv[])
         if (rank == 0)
             std::cout << "Reading snapshot..." << std::endl;
 
-        Snapshot3D snapshot;
-#ifdef RICH_MPI
-        snapshot = ReadSnapshot3DParallel(cfg.inputPath);
-        int const fileRanks = GetNumberOfRanksInHDF(cfg.inputPath);
-        if (mpiSize < fileRanks && rank == 0) {
-            for (int fileRank = mpiSize; fileRank < fileRanks; ++fileRank) {
-                Snapshot3D extra = ReadSnapshot3DParallel(cfg.inputPath, fileRank);
-                snapshot.cells.insert(snapshot.cells.end(),
-                                      extra.cells.begin(), extra.cells.end());
-                snapshot.mesh_points.insert(snapshot.mesh_points.end(),
-                                            extra.mesh_points.begin(),
-                                            extra.mesh_points.end());
-            }
-        }
-#else
-        snapshot = ReadSnapshot3D(cfg.inputPath);
-#endif
+        Snapshot3D snapshot =
+            scenario.factories.loadSnapshot(effectiveInput, parallel);
 
         if (snapshot.mesh_points.empty()) {
             if (rank == 0) std::cerr << "Empty snapshot\n";
 #ifdef RICH_MPI
-            MPI_Finalize();
+            if (ownsMpi) MPI_Finalize();
 #endif
             return 1;
         }
@@ -346,25 +654,7 @@ int main(int argc, char* argv[])
         if (rank == 0)
             std::cout << "Snapshot read: " << snapshot.mesh_points.size() << " points, time=" << snapshot.time << std::endl;
 
-        // ============================================================
-        // Convert snapshot from code units to CGS
-        // ============================================================
-        snapshot.ll = snapshot.ll * lscale;
-        snapshot.ur = snapshot.ur * lscale;
-        snapshot.time *= tscale;
-
-        for (auto& pt : snapshot.mesh_points)
-            pt = pt * lscale;
-
-        for (auto& c : snapshot.cells) {
-            c.density *= rho_factor;
-            c.pressure *= mscale / (tscale * tscale * lscale);
-            c.internal_energy *= energy_factor;
-            c.velocity = c.velocity * vel_factor;
-            c.Erad *= energy_factor;
-            for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
-                c.Eg[g] *= energy_factor;
-        }
+        scenario.factories.transformSnapshot(snapshot, parallel);
 
         if (rank == 0)
             std::cout << "Converted snapshot to CGS." << std::endl;
@@ -468,7 +758,11 @@ int main(int argc, char* argv[])
         // ============================================================
         // Compute grey FLD luminosity per observer patch
         // ============================================================
-        auto greyOpacity = std::make_shared<STAgreyOpacity>(cfg.greyOpacityDir);
+        std::shared_ptr<OpacityCalculator> greyOpacity =
+            scenario.factories.createGreyOpacity(effectiveInput);
+        if (!greyOpacity)
+            throw UniversalError(
+                "Post-process grey opacity factory returned null");
         if (rank == 0)
             std::cout << "Grey opacity loaded for FLD luminosity." << std::endl;
 
@@ -476,9 +770,16 @@ int main(int argc, char* argv[])
         // Scale MG absorption to match grey mean
         // ============================================================
 #if ENERGY_GROUPS_NUM > 1
-        if (cfg.opacityScaleMode != OpacityScaleMode::None) {
+        if (cfg.opacityScaleMode !=
+            imc_postprocess_tde::OpacityScaleMode::None) {
             RecomputeOpacityScaleFactors(
-                *opacity, *greyOpacity, cells, Ncells, rank, cfg.opacityScaleMode, "initial");
+                *opacity, *greyOpacity, cells, Ncells, rank,
+                cfg.opacityScaleMode,
+                [&](std::unordered_map<size_t, double> factors) {
+                    scenario.factories.applyOpacityScaleFactors(
+                        *opacity, std::move(factors));
+                },
+                "initial");
         }
 #endif
 
@@ -556,8 +857,14 @@ int main(int argc, char* argv[])
         // ============================================================
         // Construct observer
         // ============================================================
-        auto observer = std::make_shared<SphericalObserver>(
-            cfg.center, cfg.radius, cfg.nObservers, groupBoundaries);
+        PostProcessConfig::Observer observerConfig;
+        observerConfig.center = cfg.center;
+        observerConfig.radius = cfg.radius;
+        observerConfig.count = cfg.nObservers;
+        std::shared_ptr<SphericalObserver> observer =
+            scenario.factories.createObserver(observerConfig, groupBoundaries);
+        if (!observer)
+            throw UniversalError("Post-process observer factory returned null");
 
         // ============================================================
         // Map FLD flux to observer patches
@@ -671,10 +978,22 @@ int main(int argc, char* argv[])
             std::cerr << std::flush;
         }
 
-        PostprocessRuntime runtime{
+        PostProcessSession runtime{
             rank, mpiSize, tess, cells, extensives, eos, opacity, greyOpacity,
             observer, boundary, popControl, physics, manager, params, Ncells,
-            snapshot.time, snapshot.cycle, dummyCell, fldLuminosity, totalFldLum};
+            snapshot.time, snapshot.cycle, dummyCell, fldLuminosity,
+            totalFldLum,
+            [&](std::unordered_map<size_t, double> factors) {
+                scenario.factories.applyOpacityScaleFactors(
+                    *opacity, std::move(factors));
+            }};
+
+        if (scenario.factories.configureSource) {
+            SourceContext sourceContext{
+                tess, cells, *opacity, *greyOpacity, *observer, *physics,
+                parallel};
+            scenario.factories.configureSource(sourceContext, scenario.defaults);
+        }
 
         if (cfg.photosphere) {
             observer->setPhotosphereData(ComputeObserverPhotospheres(cfg, runtime));
@@ -685,25 +1004,103 @@ int main(int argc, char* argv[])
             ConfigureFluxSourceForCurrentDecomposition(cfg, runtime, *physics);
         }
 
-        ForwardPostprocessResult forwardResult = RunForwardPostprocess(cfg, runtime);
-        RunGreyPostprocess(cfg, runtime, forwardResult);
+        Config const passConfig = MakePassOutputConfig(cfg);
+        ForwardPostprocessResult forwardResult =
+            RunForwardPostprocess(passConfig, runtime);
+        ForwardPostprocessResult greyResult =
+            RunGreyPostprocess(passConfig, runtime, forwardResult);
+        BroadcastPassResult(forwardResult);
+        BroadcastPassResult(greyResult);
+        FinalizeResultBundle(
+            cfg, passConfig, scenario.defaults, scenario.name, runtime,
+            forwardResult, greyResult);
+        if (embeddedResultSink != nullptr) {
+            embeddedResultSink->forward = ToPublicResult(forwardResult);
+            embeddedResultSink->grey = ToPublicResult(greyResult);
+            embeddedResultSink->hdf5Path = cfg.outputPath;
+            embeddedResultSink->vtkPath = BaseVtkOutputPath(cfg);
+        }
     } catch (UniversalError const& eo) {
-        std::cerr << "UniversalError on rank " << rank << ":\n";
-        reportError(eo, std::cerr);
+        if (embeddedResultSink != nullptr) {
+            embeddedFailure = std::current_exception();
+        } else {
+            std::cerr << "UniversalError on rank " << rank << ":\n";
+            reportError(eo, std::cerr);
 #ifdef RICH_MPI
-        MPI_Abort(MPI_COMM_WORLD, 1);
+            MPI_Abort(MPI_COMM_WORLD, 1);
 #endif
-        return 1;
+            return 1;
+        }
     } catch (std::exception const& e) {
-        std::cerr << "Exception on rank " << rank << ": " << e.what() << "\n";
+        if (embeddedResultSink != nullptr) {
+            embeddedFailure = std::current_exception();
+        } else {
+            std::cerr << "Exception on rank " << rank << ": " << e.what() << "\n";
 #ifdef RICH_MPI
-        MPI_Abort(MPI_COMM_WORLD, 1);
+            MPI_Abort(MPI_COMM_WORLD, 1);
 #endif
-        return 1;
+            return 1;
+        }
+    }
+
+    if (embeddedResultSink != nullptr) {
+        int localFailure = embeddedFailure ? 1 : 0;
+        int globalFailure = localFailure;
+#ifdef RICH_MPI
+        MPI_Allreduce(
+            &localFailure, &globalFailure, 1, MPI_INT, MPI_MAX,
+            MPI_COMM_WORLD);
+#endif
+        if (globalFailure != 0) {
+            if (embeddedFailure)
+                std::rethrow_exception(embeddedFailure);
+            throw UniversalError("RunPostProcess failed on another MPI rank");
+        }
     }
 
 #ifdef RICH_MPI
-    MPI_Finalize();
+    if (ownsMpi) MPI_Finalize();
 #endif
     return 0;
+}
+
+PostProcessIMC::PostProcessResult PostProcessIMC::RunPostProcess(
+    PostProcessConfig config,
+    PostProcessScenario const& scenario,
+    ParallelContext parallel)
+{
+    if (embeddedResultSink != nullptr)
+        throw UniversalError("RunPostProcess does not support nested invocations");
+#ifdef RICH_MPI
+    int initialized = 0;
+    MPI_Initialized(&initialized);
+    if (!initialized)
+        throw UniversalError(
+            "RunPostProcess requires an initialized MPI context; use RunPostProcessMain when MPI ownership is desired");
+    int actualRank = 0, actualSize = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &actualRank);
+    MPI_Comm_size(MPI_COMM_WORLD, &actualSize);
+    if (parallel.rank != actualRank || parallel.size != actualSize)
+        throw UniversalError("RunPostProcess ParallelContext does not match MPI_COMM_WORLD");
+#else
+    if (parallel.rank != 0 || parallel.size != 1)
+        throw UniversalError("Serial RunPostProcess requires ParallelContext{0, 1}");
+#endif
+
+    PostProcessScenario configured = scenario;
+    configured.defaults = std::move(config);
+    PostProcessResult result;
+    embeddedResultSink = &result;
+    char programName[] = "postprocess";
+    char* argv[] = {programName, nullptr};
+    try {
+        int const status = RunPostProcessMain(1, argv, std::move(configured));
+        embeddedResultSink = nullptr;
+        if (status != 0)
+            throw UniversalError("RunPostProcess failed");
+    } catch (...) {
+        embeddedResultSink = nullptr;
+        throw;
+    }
+    return result;
 }

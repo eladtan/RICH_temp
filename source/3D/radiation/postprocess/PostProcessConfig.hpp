@@ -6,17 +6,19 @@
 #include <string>
 #include <vector>
 
+#include "IMCPostProcess.hpp"
 #include "source/newtonian/three_dimensional/computational_cell.hpp"
 
 namespace imc_postprocess_tde {
 
-enum class OpacityScaleMode { None, Rosseland, Planck };
+using OpacityScaleMode = PostProcessIMC::OpacityScaleMode;
 
 struct Config
 {
     std::string inputPath = "/home/elads/TDEMG/R0.47M0.5BH1e+06beta1S50n1.5Compton/snap_full_136.h5";
     std::string outputPath = "tde_postprocess_output.h5";
     std::string vtkOutput;
+    bool writeVtk = true;
     std::string opacityDir = "/home/elads/RICH/data/STA/MG/";
     std::string greyOpacityDir;
     std::string eosDir = "/home/elads/RICH/data/EOS/";
@@ -105,12 +107,11 @@ struct Config
 };
 
 
-void printUsage(int rank);
 std::string ReplaceExtension(std::string const& path, std::string const& newExt);
 std::string InsertSuffixBeforeExtension(std::string const& path, std::string const& suffix);
 std::string BaseVtkOutputPath(Config const& cfg);
 std::string GreyVtkOutputPath(Config const& cfg);
-bool parseArgs(int argc, char* argv[], Config& cfg, int rank);
+bool ValidateConfig(Config& cfg, int rank);
 
 } // namespace imc_postprocess_tde
 

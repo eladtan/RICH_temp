@@ -1,4 +1,4 @@
-#include "flux_source_calculation.hpp"
+#include "FluxSourceCalculation.hpp"
 
 #include <algorithm>
 #include <chrono>

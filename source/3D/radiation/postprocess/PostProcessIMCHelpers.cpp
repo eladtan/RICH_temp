@@ -1,5 +1,5 @@
 #include "PostProcessIMCHelpers.hpp"
-#include "SphericalObserver.hpp"
+#include "3D/radiation/SphericalObserver.hpp"
 #include "misc/universal_error.hpp"
 #include <cmath>
 #include <iostream>

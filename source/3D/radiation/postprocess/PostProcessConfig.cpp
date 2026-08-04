@@ -1,4 +1,4 @@
-#include "postprocess_config.hpp"
+#include "PostProcessConfig.hpp"
 
 #include <algorithm>
 #include <climits>
@@ -11,7 +11,8 @@
 
 namespace imc_postprocess_tde {
 
-void printUsage(int rank)
+#if 0
+void printLegacyUsage(int rank)
 {
     if (rank != 0) return;
     std::cerr << "Usage: rich [options]\n"
@@ -117,6 +118,7 @@ void printUsage(int rank)
               << "  --no-adaptive-group-fallback-to-integrated-on-overflow\n"
               << "  --adaptive-diagnostics-verbose\n";
 }
+#endif
 
 std::string ReplaceExtension(std::string const& path, std::string const& newExt)
 {
@@ -141,6 +143,8 @@ std::string InsertSuffixBeforeExtension(
 
 std::string BaseVtkOutputPath(Config const& cfg)
 {
+    if (!cfg.writeVtk)
+        return std::string();
     if (!cfg.vtkOutput.empty())
         return cfg.vtkOutput;
     return ReplaceExtension(cfg.outputPath, ".vtk");
@@ -151,8 +155,9 @@ std::string GreyVtkOutputPath(Config const& cfg)
     return InsertSuffixBeforeExtension(BaseVtkOutputPath(cfg), "_grey");
 }
 
-bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
+bool ValidateConfig(Config &cfg, int rank)
 {
+#if 0
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
         if (arg == "--input" && i + 1 < argc) { cfg.inputPath = argv[++i]; }
@@ -271,7 +276,8 @@ bool parseArgs(int argc, char* argv[], Config &cfg, int rank)
         else { if (rank == 0) std::cerr << "Unknown argument: " << arg << "\n"; return false; }
     }
 
-    if (cfg.radius <= 0.0) { if (rank == 0) std::cerr << "--radius must be positive\n"; return false; }
+#endif
+    if (cfg.radius <= 0.0) { if (rank == 0) std::cerr << "--observer.radius must be positive\n"; return false; }
     if (cfg.nObservers == 0) { if (rank == 0) std::cerr << "--n-observers must be > 0\n"; return false; }
     if (cfg.fluxSourceRays > static_cast<size_t>(INT_MAX)) {
         if (rank == 0)

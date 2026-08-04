@@ -1,4 +1,4 @@
-#include "adaptive_statistics.hpp"
+#include "AdaptiveStatistics.hpp"
 #include "source/3D/radiation/PolarizationStatistics.hpp"
 
 #include <algorithm>
@@ -2527,18 +2527,22 @@ double SolvePlanckAlpha(
 }
 
 void RecomputeOpacityScaleFactors(
-    STAMGopacityMC& opacity,
-    STAgreyOpacity const& greyOpacity,
+    OpacityCalculator& opacity,
+    OpacityCalculator const& greyOpacity,
     std::vector<ComputationalCell3D> const& cells,
     size_t const Ncells,
     int const rank,
     OpacityScaleMode mode,
+    std::function<void(std::unordered_map<size_t, double>)> const&
+        applyScaleFactors,
     std::string const& label)
 {
+  if (!applyScaleFactors)
+    throw UniversalError("Post-process opacity scaling policy is not configured");
   // The scale-factor map is rank-local and keyed by cell.ID.  Clear it first so
   // CalcAbsorptionOpacity below samples the unscaled MG opacity, then rebuild it
   // for the cells currently owned by this rank.
-  opacity.SetRosselandScaleFactors(std::unordered_map<size_t, double>());
+  applyScaleFactors(std::unordered_map<size_t, double>());
 
   size_t const Ng = opacity.energy_groups_boundary.size() - 1;
   std::unordered_map<size_t, double> scaleFactors;
@@ -2601,7 +2605,7 @@ void RecomputeOpacityScaleFactors(
     if (alpha < 0.5 || alpha > 2.0) ++alphaOutliers;
   }
 
-  opacity.SetRosselandScaleFactors(std::move(scaleFactors));
+  applyScaleFactors(std::move(scaleFactors));
 
   double globalMin = 0.0, globalMax = 0.0, globalSum = 0.0;
   size_t globalCount = 0, globalOutliers = 0;

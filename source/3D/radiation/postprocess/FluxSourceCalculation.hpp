@@ -3,8 +3,8 @@
 
 #include <cstdint>
 
-#include "postprocess_config.hpp"
-#include "postprocess_runtime.hpp"
+#include "PostProcessConfig.hpp"
+#include "PostProcessRuntime.hpp"
 
 namespace imc_postprocess_tde {
 

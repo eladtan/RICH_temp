@@ -1,4 +1,5 @@
-#include "grey_calculation.hpp"
+#include "GreyCalculation.hpp"
+#include "PostProcessResultWriter.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -18,19 +19,20 @@
 #include "source/mpi/mpi_commands.hpp"
 #endif
 
-#include "adaptive_statistics.hpp"
-#include "flux_source_calculation.hpp"
+#include "AdaptiveStatistics.hpp"
+#include "FluxSourceCalculation.hpp"
 #include "source/3D/radiation/IMCMeasuredLoadBalance.hpp"
 #include "source/3D/radiation/IMCStepCounterCostCalculator.hpp"
 
 
 namespace imc_postprocess_tde {
 
-void RunGreyPostprocess(
+ForwardPostprocessResult RunGreyPostprocess(
     Config const& cfg,
     PostprocessRuntime& runtime,
     ForwardPostprocessResult const& forwardResult)
 {
+    ForwardPostprocessResult result;
     int const rank = runtime.rank;
     int const mpiSize = runtime.mpiSize;
     auto& tess = runtime.tess;
@@ -209,7 +211,11 @@ void RunGreyPostprocess(
                                              greyBurninGenerations,
                                              greyAdaptiveActiveThisGen, rank);
 
+                IMCPostProcessControl postProcessControl;
                 if (greyAdaptiveActiveThisGen) {
+                    postProcessControl.adaptiveCells.enabled = true;
+                    postProcessControl.adaptiveCells.scores =
+                        greyAdaptive.scoreByCellID;
                     double const learnedMinFactorThisGen =
                         greyLearnedProbeThisGen ? 1.0 : cfg.adaptiveSourceLearnedMinFactor;
                     size_t const learnedMinPhotonsThisGen =
@@ -218,29 +224,48 @@ void RunGreyPostprocess(
                         greyFinalThisGen ? cfg.adaptiveSourceLearnedMaxPhotons : 0;
                     double const scorePowerThisGen =
                         greyFinalThisGen ? cfg.adaptiveSourceScorePower : 1.0;
-                    greyPhysics->setAdaptiveSourceCellScores(
-                        greyAdaptive.scoreByCellID,
-                        cfg.adaptiveSourceStrength,
-                        cfg.adaptiveSourceMaxFactor,
-                        cfg.adaptiveSourceLearnedReserveFrac,
-                        learnedMinFactorThisGen,
-                        greyAdaptive.observerBudgetMultiplier,
-                        learnedMinPhotonsThisGen,
-                        learnedMaxPhotonsThisGen,
-                        scorePowerThisGen);
-                } else {
-                    greyPhysics->clearAdaptiveSourceCellScores();
+                    postProcessControl.adaptiveCells.strength =
+                        cfg.adaptiveSourceStrength;
+                    postProcessControl.adaptiveCells.maxFactor =
+                        cfg.adaptiveSourceMaxFactor;
+                    postProcessControl.adaptiveCells.learnedReserveFraction =
+                        cfg.adaptiveSourceLearnedReserveFrac;
+                    postProcessControl.adaptiveCells.learnedMinFactor =
+                        learnedMinFactorThisGen;
+                    postProcessControl.adaptiveCells.observerBudgetMultiplier =
+                        greyAdaptive.observerBudgetMultiplier;
+                    postProcessControl.adaptiveCells.learnedMinPhotons =
+                        learnedMinPhotonsThisGen;
+                    postProcessControl.adaptiveCells.learnedMaxPhotons =
+                        learnedMaxPhotonsThisGen;
+                    postProcessControl.adaptiveCells.scorePower =
+                        scorePowerThisGen;
                 }
-                if (greyFirstBurninThisGen)
-                    greyPhysics->setSourceEmissionControl(false, true, 1);
-                else if (greyUniformBurninThisGen)
-                    greyPhysics->setSourceEmissionControl(false, true, 3);
-                else if (greyLearnedProbeThisGen)
-                    greyPhysics->setSourceEmissionControl(true, false, 1, 1);
-                else if (cfg.adaptiveSourceCells && greyFinalThisGen)
-                    greyPhysics->setSourceEmissionControl(true, false, 1, 1, 0);
-                else
-                    greyPhysics->clearSourceEmissionControl();
+                if (greyFirstBurninThisGen) {
+                    postProcessControl.emission.enabled = true;
+                    postProcessControl.emission.includeUniformBase = true;
+                    postProcessControl.emission.baseMultiplier = 1;
+                } else if (greyUniformBurninThisGen) {
+                    postProcessControl.emission.enabled = true;
+                    postProcessControl.emission.includeUniformBase = true;
+                    postProcessControl.emission.baseMultiplier = 3;
+                } else if (greyLearnedProbeThisGen) {
+                    postProcessControl.emission.enabled = true;
+                    postProcessControl.emission.useLearnedScores = true;
+                    postProcessControl.emission.includeUniformBase = false;
+                    postProcessControl.emission.learnedBoostFactor = 1;
+                } else if (cfg.adaptiveSourceCells && greyFinalThisGen) {
+                    postProcessControl.emission.enabled = true;
+                    postProcessControl.emission.useLearnedScores = true;
+                    postProcessControl.emission.includeUniformBase = false;
+                    postProcessControl.emission.learnedBoostFactor = 1;
+                    postProcessControl.emission.learnedExtraBudget = 0;
+                }
+                greyPhysics->configurePostProcessControl(
+                    std::move(postProcessControl));
+                if (cfg.fluxSourceCompare)
+                    ConfigureFluxSourceForCurrentDecomposition(
+                        cfg, runtime, *greyPhysics);
                 greyObserver->resetGenerationSourceCellEscapeStats();
 
                 greyPhysics->reseedRNG(static_cast<uint64_t>(rank + 87654321) * greyTotalGenerations + gen);
@@ -248,9 +273,11 @@ void RunGreyPostprocess(
                 std::vector<Particle3D> empty;
                 auto remaining = greyManager->step(std::move(empty), cells, cfg.transportTime);
                 (void)remaining;
+                IMCPostProcessGenerationDiagnostics const generationDiagnostics =
+                    greyPhysics->getPostProcessGenerationDiagnostics();
 
                 auto greyAllocation = ReduceSourceAllocationSummary(
-                    greyPhysics->getLastSourceAllocationSummary());
+                    generationDiagnostics.sourceAllocation);
                 size_t const photonHistMin = greyFinalThisGen
                     ? cfg.adaptiveSourceLearnedMinPhotons
                     : 1;
@@ -258,7 +285,7 @@ void RunGreyPostprocess(
                     ? cfg.adaptiveSourceLearnedMaxPhotons
                     : std::max(photonHistMin, greyPhotonsThisGen * 20);
                 auto greyPhotonDistribution = ReduceSourcePhotonDistribution(
-                    greyPhysics->getLastSourcePhotonsPerCell(),
+                    generationDiagnostics.sourcePhotonsPerCell,
                     photonHistMin,
                     photonHistMax,
                     rank,
@@ -372,7 +399,8 @@ void RunGreyPostprocess(
                             greyCellIDs[i] = cells[i].ID;
 
                         auto greyLocalMeas = imc_measured_lb::BuildLocalMeasurements(
-                            greyCellIDs, greyLocalSteps, greyPhysics->getLastSourcePhotonsPerCell());
+                            greyCellIDs, greyLocalSteps,
+                            generationDiagnostics.sourcePhotonsPerCell);
 
                         uint64_t greyLocalTotalSteps = 0;
                         uint64_t greyLocalTotalSourceParticles = 0;
@@ -597,81 +625,48 @@ void RunGreyPostprocess(
                 double greyCutoff = greyObserver->getCutoffEnergy();
                 double greyResidual = greyEmitted - greyAbsorbed - greyBoxEscape - greyTimedOut - greyCutoff;
                 double greyTimedOutFrac = (greyEmitted > 0.0) ? greyTimedOut / greyEmitted : 0.0;
+                FluxSourcePolarizationSummary const greyPol =
+                    ComputeFluxSourcePolarizationSummary(
+                        greyObserver->getObserverQualitySnapshot());
+                result.ran = true;
+                result.usesVelocity = false;
+                result.usesDDMC = cfg.ddmc;
+                result.usesPolarization = cfg.polarization;
+                result.usesCompton = false;
+                result.sourceLuminosity = runtime.fluxSourceInjectedLuminosity;
+                result.emittedLuminosity = greyEmitted / cfg.sourceDt;
+                result.crossingLuminosity = greyTotalLum;
+                result.crossingLuminosityStderr =
+                    greyObserver->getTotalLuminosityStderrGen(cfg.sourceDt);
+                result.emittedEnergy = greyEmitted;
+                result.timedOutFraction = greyTimedOutFrac;
+                result.luminosityWeightedPolarizationDegree =
+                    greyPol.luminosityWeightedDegree;
+                result.polarizedObserverCount = greyPol.observerCount;
+                SphericalObserver::Diagnostics greyDiagnostics;
+                greyDiagnostics.sourceDt = cfg.sourceDt;
+                greyDiagnostics.transportTime = cfg.transportTime;
+                greyDiagnostics.mpiRanks = mpiSize;
+                greyDiagnostics.comptonEnabled = 0;
+                greyDiagnostics.emittedEnergy = greyEmitted;
+                greyDiagnostics.absorbedEnergy = greyAbsorbed;
+                greyDiagnostics.boxEscapeEnergy = greyBoxEscape;
+                greyDiagnostics.timedOutEnergy = greyTimedOut;
+                greyDiagnostics.cutoffEnergy = greyCutoff;
+                greyDiagnostics.snapshotTime = runtime.snapshotTime;
+                greyDiagnostics.snapshotCycle = runtime.snapshotCycle;
+                greyDiagnostics.nGenerations = static_cast<int>(nGreyGens);
+                greyDiagnostics.includedFinalGenerations =
+                    static_cast<int>(greyIncludedFinalGenerations);
+                greyDiagnostics.discardedBurninGenerations =
+                    static_cast<int>(greyDiscardedBurninGenerations);
+                greyDiagnostics.adaptiveOnlyFinalOutput =
+                    cfg.adaptiveSourceCells ? 1 : 0;
+                WriteGreyPassScratch(cfg, *greyObserver, greyDiagnostics);
 
-                if(cfg.fluxSourceCompare) {
-                    if(!forwardResult.ran)
-                        throw UniversalError(
-                            "Flux-source comparison is missing the MG result");
-                    FluxSourcePolarizationSummary const greyPol =
-                        ComputeFluxSourcePolarizationSummary(
-                            greyObserver->getObserverQualitySnapshot());
-                    double const sourceLum = runtime.fluxSourceInjectedLuminosity;
-                    double const greyEmittedLum = greyEmitted / cfg.sourceDt;
-                    auto safeRatio = [](double numerator, double denominator) {
-                        return denominator > 0.0 ? numerator / denominator : 0.0;
-                    };
-
-                    std::string const comparePath = ReplaceExtension(
-                        InsertSuffixBeforeExtension(cfg.outputPath, "_flux_compare"),
-                        ".tsv");
-                    std::ofstream compare(comparePath);
-                    if(!compare.is_open())
-                        throw UniversalError("Could not open flux-source comparison TSV");
-                    compare << std::scientific << std::setprecision(12);
-                    compare << "method\ttau_eff"
-                            << "\tdirect_surface_fraction"
-                            << "\tboundary_faces"
-                            << "\temitting_faces"
-                            << "\ttarget_source_luminosity_erg_s"
-                            << "\tnet_fld_luminosity_erg_s"
-                            << "\tclipped_inward_luminosity_erg_s"
-                            << "\tclipped_inward_fraction"
-                            << "\tactual_emitted_luminosity_erg_s"
-                            << "\tcrossing_luminosity_erg_s"
-                            << "\tcrossing_stderr_erg_s"
-                            << "\temitted_over_target"
-                            << "\tcrossing_over_target"
-                            << "\ttimed_out_fraction"
-                            << "\tluminosity_weighted_polarization_degree"
-                            << "\tpolarized_observer_count\n";
-                    compare << "MG\t" << runtime.fluxSourceTau
-                            << "\t" << runtime.fluxSourceDirectlyResolvedFraction
-                            << "\t" << runtime.fluxSourceBoundaryFaceCount
-                            << "\t" << runtime.fluxSourceEmittingFaceCount
-                            << "\t" << forwardResult.sourceLuminosity
-                            << "\t" << runtime.fluxSourceNetLuminosity
-                            << "\t" << runtime.fluxSourceInwardLuminosity
-                            << "\t" << safeRatio(
-                                runtime.fluxSourceInwardLuminosity, sourceLum)
-                            << "\t" << forwardResult.emittedLuminosity
-                            << "\t" << forwardResult.crossingLuminosity
-                            << "\t" << forwardResult.crossingLuminosityStderr
-                            << "\t" << safeRatio(
-                                forwardResult.emittedLuminosity, sourceLum)
-                            << "\t" << safeRatio(
-                                forwardResult.crossingLuminosity, sourceLum)
-                            << "\t" << forwardResult.timedOutFraction
-                            << "\t" << forwardResult.luminosityWeightedPolarizationDegree
-                            << "\t" << forwardResult.polarizedObserverCount << "\n";
-                    compare << "grey\t" << runtime.fluxSourceTau
-                            << "\t" << runtime.fluxSourceDirectlyResolvedFraction
-                            << "\t" << runtime.fluxSourceBoundaryFaceCount
-                            << "\t" << runtime.fluxSourceEmittingFaceCount
-                            << "\t" << sourceLum
-                            << "\t" << runtime.fluxSourceNetLuminosity
-                            << "\t" << runtime.fluxSourceInwardLuminosity
-                            << "\t" << safeRatio(
-                                runtime.fluxSourceInwardLuminosity, sourceLum)
-                            << "\t" << greyEmittedLum
-                            << "\t" << greyTotalLum
-                            << "\t" << greyObserver->getTotalLuminosityStderrGen(cfg.sourceDt)
-                            << "\t" << safeRatio(greyEmittedLum, sourceLum)
-                            << "\t" << safeRatio(greyTotalLum, sourceLum)
-                            << "\t" << greyTimedOutFrac
-                            << "\t" << greyPol.luminosityWeightedDegree
-                            << "\t" << greyPol.observerCount << "\n";
-                    std::cout << "Flux-source comparison TSV: " << comparePath << std::endl;
-                }
+                if (cfg.fluxSourceCompare && !forwardResult.ran)
+                    throw UniversalError(
+                        "Flux-source comparison is missing the MG result");
 
                 std::cout << "\n=== Grey IMC Results ===\n"
                           << "Generations:              " << nGreyGens << "\n"
@@ -699,6 +694,7 @@ void RunGreyPostprocess(
             }
 
     runtime.nCells = Ncells;
+    return result;
 }
 
 } // namespace imc_postprocess_tde

@@ -1,6 +1,6 @@
 #include "RadiationIMC.hpp"
 #include "SphericalObserver.hpp"
-#include "PostProcessIMCHelpers.hpp"
+#include "postprocess/PostProcessIMCHelpers.hpp"
 #include "IMCPolarization.hpp"
 #include "Radiation/CMMC/src/planck_integral/planck_integral.hpp"
 #include "mpi/mpi_commands_3d.hpp"
@@ -1154,36 +1154,9 @@ double AdaptiveScoreToUnitInterval(double score, AdaptiveScoreAllocationSpan con
 {
     if(postProcess_.enabled || postProcess_.polarization.enabled)
     {
-        RadiationIMCPostProcessConfig validationConfig;
-        validationConfig.enabled = postProcess_.enabled;
-        validationConfig.sourceDt = postProcess_.sourceDt;
-        validationConfig.transportTime = postProcess_.transportTime;
-        validationConfig.forceGreyFleckOne = postProcess_.forceGreyFleckOne;
-        validationConfig.useCellVelocities = postProcess_.useCellVelocities;
-        validationConfig.polarization.enabled = postProcess_.polarization.enabled;
-        validationConfig.polarization.manualScatteringsAfterAcceleration =
-            postProcess_.polarization.manualScatteringsAfterAcceleration;
-        validationConfig.polarization.depolarizationScatterings =
-            postProcess_.polarization.depolarizationScatterings;
-        validationConfig.polarization.acceleratedClosure =
-            postProcess_.polarization.acceleratedClosure;
-
         PostProcessIMC::NormalizeAndValidateConfig(
-            validationConfig, withCompton, parameters.withMultigroupOpacity,
+            postProcess_, withCompton, parameters.withMultigroupOpacity,
             withRandomWalk, withDDMC);
-
-        postProcess_.enabled = validationConfig.enabled;
-        postProcess_.sourceDt = validationConfig.sourceDt;
-        postProcess_.transportTime = validationConfig.transportTime;
-        postProcess_.forceGreyFleckOne = validationConfig.forceGreyFleckOne;
-        postProcess_.useCellVelocities = validationConfig.useCellVelocities;
-        postProcess_.polarization.enabled = validationConfig.polarization.enabled;
-        postProcess_.polarization.manualScatteringsAfterAcceleration =
-            validationConfig.polarization.manualScatteringsAfterAcceleration;
-        postProcess_.polarization.depolarizationScatterings =
-            validationConfig.polarization.depolarizationScatterings;
-        postProcess_.polarization.acceleratedClosure =
-            validationConfig.polarization.acceleratedClosure;
     }
     if(postProcess_.enabled)
     {
@@ -4776,6 +4749,62 @@ void RadiationIMC::clearPostProcessExternalSources()
     this->postProcessExternalSourceFaceIndex_.clear();
     this->postProcessExternalSourceInteriorCellIDs_.clear();
     this->postProcessExternalSourceMode_ = false;
+}
+
+void RadiationIMC::configurePostProcessControl(
+    IMCPostProcessControl control)
+{
+    if (control.adaptiveCells.enabled) {
+        setAdaptiveSourceCellScores(
+            std::move(control.adaptiveCells.scores),
+            control.adaptiveCells.strength,
+            control.adaptiveCells.maxFactor,
+            control.adaptiveCells.learnedReserveFraction,
+            control.adaptiveCells.learnedMinFactor,
+            control.adaptiveCells.observerBudgetMultiplier,
+            control.adaptiveCells.learnedMinPhotons,
+            control.adaptiveCells.learnedMaxPhotons,
+            control.adaptiveCells.scorePower);
+    } else {
+        clearAdaptiveSourceCellScores();
+    }
+
+    if (control.adaptiveGroups.enabled) {
+        setAdaptiveSourceCellGroupScores(
+            std::move(control.adaptiveGroups.scores),
+            control.adaptiveGroups.strength,
+            control.adaptiveGroups.pdfFloor,
+            control.adaptiveGroups.maxBias,
+            control.adaptiveGroups.maxWeightCorrection);
+    } else {
+        clearAdaptiveSourceCellGroupScores();
+    }
+
+    if (control.emission.enabled) {
+        setSourceEmissionControl(
+            control.emission.useLearnedScores,
+            control.emission.includeUniformBase,
+            control.emission.baseMultiplier,
+            control.emission.learnedBoostFactor,
+            control.emission.learnedExtraBudget);
+    } else {
+        clearSourceEmissionControl();
+    }
+
+    if (control.externalSources.empty())
+        clearPostProcessExternalSources();
+    else
+        setPostProcessExternalSources(std::move(control.externalSources));
+}
+
+IMCPostProcessGenerationDiagnostics
+RadiationIMC::getPostProcessGenerationDiagnostics() const
+{
+    IMCPostProcessGenerationDiagnostics diagnostics;
+    diagnostics.sourceAllocation = lastSourceAllocationSummary_;
+    diagnostics.groupSampling = lastGroupSamplingDiagnostics_;
+    diagnostics.sourcePhotonsPerCell = lastSourcePhotonsPerCell_;
+    return diagnostics;
 }
 
 Vector3D RadiationIMC::samplePostProcessExternalSourceDirection(

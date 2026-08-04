@@ -5,13 +5,14 @@
 #include <array>
 #include <cmath>
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
 
-#include "postprocess_config.hpp"
+#include "PostProcessConfig.hpp"
 
 #include "source/3D/output/read3D.hpp"
 #include "source/3D/output/Snapshot3D.hpp"
@@ -179,28 +180,72 @@ public:
 using VacuumBoundary3D = VacuumBoundaryCondition<Vector3D, Tessellation3D>;
 using NoPopulationControl3D = NoPopulationControl<Vector3D, Tessellation3D>;
 
-struct PostprocessRuntime
+class PostProcessSession
 {
+public:
+    PostProcessSession(
+        int rankIn,
+        int mpiSizeIn,
+        Voronoi3D& tessIn,
+        std::vector<ComputationalCell3D>& cellsIn,
+        std::vector<Conserved3D>& extensivesIn,
+        std::shared_ptr<EquationOfState> eosIn,
+        std::shared_ptr<OpacityCalculator> opacityIn,
+        std::shared_ptr<OpacityCalculator> greyOpacityIn,
+        std::shared_ptr<SphericalObserver> observerIn,
+        std::shared_ptr<VacuumBoundary3D> boundaryIn,
+        std::shared_ptr<NoPopulationControl3D> popControlIn,
+        std::shared_ptr<RadiationIMC> physicsIn,
+        std::shared_ptr<MonteCarloManager3D> managerIn,
+        RadiationIMCParameters paramsIn,
+        size_t nCellsIn,
+        double snapshotTimeIn,
+        int snapshotCycleIn,
+        ComputationalCell3D dummyCellIn,
+        std::vector<double> fldLuminosityIn,
+        double totalFldLuminosityIn,
+        std::function<void(std::unordered_map<size_t, double>)>
+            applyOpacityScaleFactorsIn)
+        : rank(rankIn), mpiSize(mpiSizeIn), tess(tessIn), cells(cellsIn),
+          extensives(extensivesIn), eos(std::move(eosIn)),
+          opacity(std::move(opacityIn)), greyOpacity(std::move(greyOpacityIn)),
+          observer(std::move(observerIn)), boundary(std::move(boundaryIn)),
+          popControl(std::move(popControlIn)), physics(std::move(physicsIn)),
+          manager(std::move(managerIn)), params(std::move(paramsIn)),
+          nCells(nCellsIn), snapshotTime(snapshotTimeIn),
+          snapshotCycle(snapshotCycleIn), dummyCell(std::move(dummyCellIn)),
+          fldLuminosity(std::move(fldLuminosityIn)),
+          totalFldLuminosity(totalFldLuminosityIn),
+          applyOpacityScaleFactors(std::move(applyOpacityScaleFactorsIn))
+    {}
+
+    PostProcessSession(PostProcessSession const&) = delete;
+    PostProcessSession& operator=(PostProcessSession const&) = delete;
+    PostProcessSession(PostProcessSession&&) = delete;
+    PostProcessSession& operator=(PostProcessSession&&) = delete;
+
     int rank;
     int mpiSize;
     Voronoi3D& tess;
     std::vector<ComputationalCell3D>& cells;
     std::vector<Conserved3D>& extensives;
-    std::shared_ptr<EquationOfState>& eos;
-    std::shared_ptr<STAMGopacityMC>& opacity;
-    std::shared_ptr<STAgreyOpacity>& greyOpacity;
-    std::shared_ptr<SphericalObserver>& observer;
-    std::shared_ptr<VacuumBoundary3D>& boundary;
-    std::shared_ptr<NoPopulationControl3D>& popControl;
-    std::shared_ptr<RadiationIMC>& physics;
-    std::shared_ptr<MonteCarloManager3D>& manager;
-    RadiationIMCParameters& params;
+    std::shared_ptr<EquationOfState> eos;
+    std::shared_ptr<OpacityCalculator> opacity;
+    std::shared_ptr<OpacityCalculator> greyOpacity;
+    std::shared_ptr<SphericalObserver> observer;
+    std::shared_ptr<VacuumBoundary3D> boundary;
+    std::shared_ptr<NoPopulationControl3D> popControl;
+    std::shared_ptr<RadiationIMC> physics;
+    std::shared_ptr<MonteCarloManager3D> manager;
+    RadiationIMCParameters params;
     size_t nCells;
     double snapshotTime;
     int snapshotCycle;
     ComputationalCell3D dummyCell;
     std::vector<double> fldLuminosity;
     double totalFldLuminosity;
+    std::function<void(std::unordered_map<size_t, double>)>
+        applyOpacityScaleFactors;
     bool fluxSourceEnabled = false;
     double fluxSourceTau = 0.0;
     std::vector<Vector3D> fluxSourceDirections;
@@ -213,6 +258,8 @@ struct PostprocessRuntime
     uint64_t fluxSourceBoundaryFaceCount = 0;
     uint64_t fluxSourceEmittingFaceCount = 0;
 };
+
+using PostprocessRuntime = PostProcessSession;
 
 struct ForwardPostprocessResult
 {

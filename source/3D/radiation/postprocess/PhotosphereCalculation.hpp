@@ -1,7 +1,7 @@
 #ifndef IMC_POSTPROCESS_TDE_PHOTOSPHERE_CALCULATION_HPP
 #define IMC_POSTPROCESS_TDE_PHOTOSPHERE_CALCULATION_HPP
 
-#include "postprocess_runtime.hpp"
+#include "PostProcessRuntime.hpp"
 
 namespace imc_postprocess_tde {
 

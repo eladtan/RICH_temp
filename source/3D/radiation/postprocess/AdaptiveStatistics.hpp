@@ -4,13 +4,14 @@
 #include <array>
 #include <cstddef>
 #include <fstream>
+#include <functional>
 #include <limits>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-#include "postprocess_config.hpp"
-#include "postprocess_runtime.hpp"
+#include "PostProcessConfig.hpp"
+#include "PostProcessRuntime.hpp"
 
 namespace imc_postprocess_tde {
 
@@ -287,12 +288,14 @@ std::unordered_map<size_t, double> BuildCombinedSourceScoresForIMC(
     AdaptiveSourceState const& integratedState,
     AdaptiveGroupSourceState const& groupState);
 void RecomputeOpacityScaleFactors(
-    STAMGopacityMC& opacity,
-    STAgreyOpacity const& greyOpacity,
+    OpacityCalculator& opacity,
+    OpacityCalculator const& greyOpacity,
     std::vector<ComputationalCell3D> const& cells,
     size_t const nCells,
     int const rank,
     OpacityScaleMode const mode,
+    std::function<void(std::unordered_map<size_t, double>)> const&
+        applyScaleFactors,
     std::string const& phaseLabel);
 void PrintVmRSS(std::string const& label, int rank);
 
