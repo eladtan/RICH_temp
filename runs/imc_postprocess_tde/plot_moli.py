@@ -19,16 +19,16 @@ List every field in a file::
 Plot the bolometric luminosity::
 
     python3 plot_imc_mollweide.py observer.vtk \
-        --field luminosity --scale log --output luminosity.png
+        --field forward_luminosity --scale log --output luminosity.png
 
 Plot one multigroup luminosity field::
 
     python3 plot_imc_mollweide.py observer.vtk \
-        --field group_12_luminosity --scale log
+        --field forward_group_12_luminosity --scale log
 
 Plot the gray FLD comparison field and mask zero-valued directions::
 
-    python3 plot_imc_mollweide.py observer_gray.vtk \
+    python3 plot_imc_mollweide.py observer.vtk \
         --field fld_surface_luminosity --scale log --mask-le 0
 
 Rescale coordinates and all length-valued plotted fields to solar radii::

@@ -43,9 +43,9 @@ export TEMP="$MPI_TMPDIR"
 export OMPI_MCA_orte_tmpdir_base="$MPI_TMPDIR"
 
 echo before
-# mpirun -mca btl ^openib ./rich --vtk-output luminosity.vtk --adaptive-source-cells --adaptive-group-quality --adaptive-group-source-cells --adaptive-group-frequency-sampling --adaptive-source-learned-min-photons 100 --adaptive-source-learned-max-photons 5000 --adaptive-source-score-power 2 --adaptive-source-weight-score-frac 0.85 --source-dt 100 --transport-time 750000 --photons-per-cell 50 --n-observers 512 --radius 7.5e14 --n-generations 75 --input /data/users/elads/RICH_dutch_restart/R0.47M0.5BH10000beta1S60n1.5ComptonHiResNewAMR/snap_full_151.h5
+# mpirun -mca btl ^openib ./rich --output.stem luminosity --adaptive.source.enabled true --adaptive.group.quality true --adaptive.group.source-cells true --adaptive.group.frequency-sampling true --adaptive.source.learned-min-photons 100 --adaptive.source.learned-max-photons 5000 --adaptive.source.score-power 2 --adaptive.source.weight-score-fraction 0.85 --transport.source-dt 100 --transport.duration 750000 --transport.photons-per-cell 50 --observer.count 512 --observer.radius 7.5e14 --transport.generations 75 --input.snapshot /data/users/elads/RICH_dutch_restart/R0.47M0.5BH10000beta1S60n1.5ComptonHiResNewAMR/snap_full_151.h5
 
-mpirun -mca btl ^openib ./rich --vtk-output luminosity_F.vtk --flux-source-rays 4096 --flux-source-compare --flux-source-tau 5  --flux-source-ddmc-face-tau 5  --source-dt 100 --transport-time 750000 --photons-per-cell 50 --n-observers 512 --radius 7.5e14 --n-generations 75 --input /data/users/elads/RICH_dutch_restart/R0.47M0.5BH10000beta1S60n1.5ComptonHiResNewAMR/snap_full_151.h5
+mpirun -mca btl ^openib ./rich --output.stem luminosity_F --flux-source.construction-rays 4096 --flux-source.enabled true --flux-source.thermalization-tau 5 --flux-source.ddmc-face-optical-depth 5 --transport.source-dt 100 --transport.duration 750000 --transport.photons-per-cell 50 --observer.count 512 --observer.radius 7.5e14 --transport.generations 75 --input.snapshot /data/users/elads/RICH_dutch_restart/R0.47M0.5BH10000beta1S60n1.5ComptonHiResNewAMR/snap_full_151.h5
 
 
 echo after

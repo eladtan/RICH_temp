@@ -31,6 +31,12 @@ lscpu
 #mpirun valgrind ./test.exe
 #mpirun -genv I_MPI_DEBUG=5 -genv I_MPI_SHM_LMT=shm ./test.exe
 #mpirun -genv I_MPI_FABRICS=shm:dapl ./test.exe
+RUN_TMP="${PWD}/tmp/${SLURM_JOB_ID:-manual}"
+mkdir -p "${RUN_TMP}"
+export TMPDIR="${RUN_TMP}"
+export TMP="${RUN_TMP}"
+export TEMP="${RUN_TMP}"
+export OMPI_MCA_orte_tmpdir_base="${RUN_TMP}"
 export UCX_TLS=ib
 mpirun -mca btl ^openib ./rich
 # mpirun ./rich

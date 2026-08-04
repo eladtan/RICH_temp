@@ -1230,7 +1230,7 @@ int main(void)
 #else
 	std::vector<std::string> rad_zero_cells;
 #endif
-	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, rad_zero_cells, flux_limit, hydro_on, compton_on, doppler_on, 2000, protection_on);
+	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, rad_zero_cells, flux_limit, hydro_on, compton_on, doppler_on, 2000, protection_on, true);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
