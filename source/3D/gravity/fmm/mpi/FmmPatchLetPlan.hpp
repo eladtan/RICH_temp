@@ -47,6 +47,7 @@ class FmmPatchLetPlan
 {
 public:
     FmmPatchLetPlan();
+    ~FmmPatchLetPlan();
 
     void build(const FmmPatchForest& forest,
                const std::vector<FmmPatchRootDescriptor>& globalDescriptors,
@@ -60,6 +61,9 @@ public:
                double particlePayloadSlackFactor,
                std::size_t particlePayloadSlackCount,
                bool enableLeafM2P,
+               bool compactParticlePayload,
+               bool sharePayloadsWithinNode,
+               std::size_t payloadHandlersPerNode,
                const MPI_Comm& comm,
                FmmSolveStats& stats,
                bool reuseUnaffectedTargetSubplans = false,
@@ -186,6 +190,24 @@ private:
         std::size_t nodeIndex = 0;
     };
 
+    struct NodeSubscriptionReference
+    {
+        int nodeHandler = -1;
+        std::size_t patchIndex = 0;
+        std::size_t nodeIndex = 0;
+        FmmSubscription subscription;
+    };
+
+    struct SharedPayloadDirectoryEntry
+    {
+        int sourceRank = -1;
+        int kind = 0;
+        std::uint64_t patchId = 0;
+        std::uint64_t spatialKey = 0;
+        std::uint64_t count = 0;
+        std::uint64_t byteOffset = 0;
+    };
+
     struct PayloadView
     {
         const char* data = nullptr;
@@ -209,6 +231,7 @@ private:
         const RemoteRootGeometry& root);
 
     std::size_t particlePayloadCapacity(std::size_t currentCount) const;
+    std::size_t particleWireBytes() const;
     std::size_t sourceRecordBytes(const SourceIdentity& source) const;
     std::size_t sourceRecordBytes(const SourceRecord& source) const;
     std::size_t ensureSourceRecord(
@@ -216,6 +239,9 @@ private:
         const SourceIdentity& identity,
         std::map<WaveSourceIdentity, std::uint32_t>& sourceIndexByWave);
     void buildWaveRanges();
+    void initializeNodeSharing(const MPI_Comm& comm);
+    void buildNodeSubscriptions(const FmmPatchForest& forest,
+                                FmmSolveStats& stats);
     void executeWave(std::size_t wave,
                      FmmPatchForest& forest,
                      const FmmTaylorExpansion& layout,
@@ -242,6 +268,8 @@ private:
     std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsReceived_;
     std::vector<std::vector<SubscriptionReference>>
         subscriptionsByWave_;
+    std::vector<std::vector<NodeSubscriptionReference>>
+        nodeSubscriptionsByWave_;
     std::map<std::pair<std::uint64_t, std::uint64_t>, std::size_t>
         localParticlePayloadCaps_;
     std::map<SourceIdentity, std::size_t> sourceParticlePayloadCaps_;
@@ -251,6 +279,7 @@ private:
     // into the exact local target-subplan invalidation closure.
     std::map<FmmPatchKey, std::set<FmmPatchKey>> targetsDependingOnSourcePatch_;
     FmmPeerExchange exchange_;
+    FmmPeerExchange nodePayloadExchange_;
     std::size_t waveCount_;
     std::size_t localWaveCount_;
     std::size_t maxLetWaveBytes_;
@@ -259,9 +288,20 @@ private:
     std::size_t maxParticlePayloadCount_;
     double particlePayloadSlackFactor_;
     std::size_t particlePayloadSlackCount_;
+    bool compactParticlePayload_;
+    bool sharePayloadsWithinNode_;
+    std::size_t configuredNodeHandlerCount_;
+    std::size_t localNodeHandlerCount_;
     std::uint64_t topologyEpoch_;
     MPI_Comm comm_;
+    MPI_Comm nodeComm_;
     int rank_;
+    int nodeRank_;
+    int nodeSize_;
+    int nodeLeader_;
+    std::vector<int> nodeLeaderByRank_;
+    std::vector<int> nodeSizeByRank_;
+    std::vector<int> nodeHandlersByRank_;
     bool initialized_;
 };
 

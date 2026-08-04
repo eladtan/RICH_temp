@@ -24,6 +24,16 @@ struct FmmSolveStats
     double interactionSeconds = 0;
     double downwardSeconds = 0;
     double totalSeconds = 0;
+    double gravityRedistributionSeconds = 0;
+    std::size_t directErrorSampleCount = 0;
+    double directErrorMeanRelativeAcceleration = 0;
+    double directErrorRmsRelativeAcceleration = 0;
+    double directErrorMaxRelativeAcceleration = 0;
+    double directErrorMedianRelativeAcceleration = 0;
+    double directErrorP90RelativeAcceleration = 0;
+    double directErrorP99RelativeAcceleration = 0;
+    double directErrorMeanAbsoluteAcceleration = 0;
+    double directErrorSampleSeconds = 0;
     std::size_t bytesOwned = 0;
     double totalMass = 0;
     double rootMass = 0;
@@ -51,6 +61,8 @@ struct FmmSolveStats
     double processOwnedNodeImbalance = 0.0;
     std::uint64_t processOwnedM2LCount = 0;
     std::uint64_t processOwnedM2LCountMax = 0;
+    double processOwnedM2LImbalance = 0.0;
+    bool processOwnershipGloballyBalanced = false;
     std::uint64_t letTargetSubplansReused = 0;
     std::uint64_t letTargetSubplansRebuilt = 0;
     std::uint64_t letSourceTriggeredInvalidations = 0;
@@ -66,6 +78,9 @@ struct FmmSolveStats
     bool letPayloadShapeTriggeredRebuild = false;
     bool letPayloadCapacityRefreshRequired = false;
     bool letPayloadLayoutRefreshed = false;
+    bool letParticlePayloadCompacted = false;
+    bool letParticlePayloadQuantized = false;
+    bool letMultipolePayloadCompacted = false;
 
     std::uint64_t processM2LCount = 0;
     std::uint64_t letM2LCount = 0;
@@ -117,6 +132,9 @@ struct FmmSolveStats
     std::uint64_t bytesReceived = 0;
     std::size_t peakRemoteBytes = 0;
     std::size_t peakProcessBytes = 0;
+    std::size_t letMaxOutgoingBytes = 0;
+    std::size_t letMaxIncomingBytes = 0;
+    std::size_t letMaxSendCapacityBytes = 0;
 
     // Topology construction is split into a rank-root process topology and a
     // local-leaf-dependent LET topology.  These timings expose the cost paid

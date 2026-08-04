@@ -63,7 +63,8 @@ double centerDistance(const FmmProcessNode& first,
 
 void FmmProcessTree::build(
     const std::vector<FmmPatchRootDescriptor>& descriptors,
-    bool balanceInternalOwners)
+    bool balanceInternalOwners,
+    bool allowAnyActiveOwner)
 {
     descriptorsByIndex_ = descriptors;
     activeRanks_.clear();
@@ -73,7 +74,9 @@ void FmmProcessTree::build(
     leafByPatch_.clear();
     compatLeafByRank_.clear();
     ownerWork_.clear();
+    ownerQueue_.clear();
     balanceInternalOwners_ = balanceInternalOwners;
+    allowAnyActiveOwner_ = allowAnyActiveOwner;
 
     bool haveEpoch = false;
     std::uint64_t epoch = 0;
@@ -141,10 +144,18 @@ void FmmProcessTree::build(
         return;
     }
 
+    if(balanceInternalOwners_ && allowAnyActiveOwner_)
+    {
+        for(std::size_t descriptorIndex : activeDescriptorIndices_)
+            ++ownerWork_[descriptorsByIndex_[descriptorIndex].ownerRank];
+        for(int activeRank : activeRanks_)
+            ownerQueue_.insert(std::make_pair(ownerWork_[activeRank], activeRank));
+    }
     buildRange(0, activeDescriptorIndices_.size(), 0);
     buildLevels();
     computeHash();
     std::unordered_map<int, std::size_t>().swap(ownerWork_);
+    std::set<std::pair<std::size_t, int>>().swap(ownerQueue_);
 
     std::unordered_map<int, std::size_t> patchCountByRank;
     for(const auto& leaf : leafByPatch_)
@@ -156,6 +167,20 @@ void FmmProcessTree::build(
             compatLeafByRank_[leaf.first.ownerRank] = leaf.second;
     }
     std::vector<FmmPatchRootDescriptor>().swap(descriptorsByIndex_);
+}
+
+void FmmProcessTree::addOwnerWork(int owner)
+{
+    const std::size_t previous = ownerWork_[owner];
+    if(balanceInternalOwners_ && allowAnyActiveOwner_)
+    {
+        if(ownerQueue_.erase(std::make_pair(previous, owner)) != 1)
+            throw UniversalError(
+                "FmmProcessTree::addOwnerWork: missing owner load");
+    }
+    ownerWork_[owner] = previous + 1;
+    if(balanceInternalOwners_ && allowAnyActiveOwner_)
+        ownerQueue_.insert(std::make_pair(previous + 1, owner));
 }
 
 std::size_t FmmProcessTree::buildRange(std::size_t begin,
@@ -269,8 +294,8 @@ std::size_t FmmProcessTree::buildRange(std::size_t begin,
             throw UniversalError("FmmProcessTree::buildRange: invalid leaf patch key");
         if(!leafByPatch_.emplace(patchKey, nodeIndex).second)
             throw UniversalError("FmmProcessTree::buildRange: duplicate patch leaf");
-        if(balanceInternalOwners_)
-            ++ownerWork_[node.owner];
+        if(balanceInternalOwners_ && !allowAnyActiveOwner_)
+            addOwnerWork(node.owner);
         return nodeIndex;
     }
 
@@ -285,14 +310,27 @@ std::size_t FmmProcessTree::buildRange(std::size_t begin,
     FmmProcessNode& completed = nodes_[nodeIndex];
     if(balanceInternalOwners_)
     {
-        const int leftOwner = nodes_[left].owner;
-        const int rightOwner = nodes_[right].owner;
-        const std::size_t leftWork = ownerWork_[leftOwner];
-        const std::size_t rightWork = ownerWork_[rightOwner];
-        completed.owner = leftWork < rightWork ? leftOwner :
-            (rightWork < leftWork ? rightOwner :
-             std::min(leftOwner, rightOwner));
-        ++ownerWork_[completed.owner];
+        if(allowAnyActiveOwner_)
+        {
+            if(activeRanks_.empty())
+                throw UniversalError(
+                    "FmmProcessTree::buildRange: no active process owner");
+            if(ownerQueue_.empty())
+                throw UniversalError(
+                    "FmmProcessTree::buildRange: empty owner load queue");
+            completed.owner = ownerQueue_.begin()->second;
+        }
+        else
+        {
+            const int leftOwner = nodes_[left].owner;
+            const int rightOwner = nodes_[right].owner;
+            const std::size_t leftWork = ownerWork_[leftOwner];
+            const std::size_t rightWork = ownerWork_[rightOwner];
+            completed.owner = leftWork < rightWork ? leftOwner :
+                (rightWork < leftWork ? rightOwner :
+                 std::min(leftOwner, rightOwner));
+        }
+        addOwnerWork(completed.owner);
     }
     else
     {

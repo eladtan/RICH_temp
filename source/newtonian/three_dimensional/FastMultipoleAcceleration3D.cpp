@@ -98,8 +98,9 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
 
     static std::uint64_t call = 0;
     ++call;
-    const double localTimes[21] = {
-        stats.totalSeconds, stats.buildSeconds, stats.topologyRebuildSeconds,
+    const double localTimes[22] = {
+        stats.totalSeconds, stats.gravityRedistributionSeconds,
+        stats.buildSeconds, stats.topologyRebuildSeconds,
         stats.rootDescriptorExchangeSeconds, stats.processTopologySeconds,
         stats.letPlanSeconds, stats.letBuildResetSeconds,
         stats.letDescriptorTraversalSeconds, stats.letFinalizeSeconds,
@@ -109,9 +110,9 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
         stats.processInteractionSeconds, stats.processDownwardSeconds,
         stats.letExchangeSeconds, stats.letM2LSeconds,
         stats.letP2PSeconds, stats.downwardSeconds};
-    double minimumTimes[21] = {};
-    double meanTimes[21] = {};
-    double maximumTimes[21] = {};
+    double minimumTimes[22] = {};
+    double meanTimes[22] = {};
+    double maximumTimes[22] = {};
     unsigned long long reusedActiveRanks =
         stats.localInteractionPlanReused ? 1ull : 0ull;
     unsigned long long globalReusedActiveRanks = reusedActiveRanks;
@@ -206,14 +207,24 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
     const double localPayloadLifetime = stats.letPayloadLifetimeSeconds;
     double maximumResidualWait = localResidualWait;
     double maximumPayloadLifetime = localPayloadLifetime;
+    const double localDetailedExchangeTimes[6] = {
+        stats.letPreparationSeconds, stats.letPayloadPlanningSeconds,
+        stats.letPayloadPackingSeconds, stats.letValidationSeconds,
+        stats.letDecodeSeconds, stats.letPayloadReleaseSeconds};
+    double maximumDetailedExchangeTimes[6] = {};
+    const unsigned long long localExchangeBytes[3] = {
+        static_cast<unsigned long long>(stats.letMaxOutgoingBytes),
+        static_cast<unsigned long long>(stats.letMaxIncomingBytes),
+        static_cast<unsigned long long>(stats.letMaxSendCapacityBytes)};
+    unsigned long long maximumExchangeBytes[3] = {};
     int rank = 0;
 #ifdef RICH_MPI
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Reduce(localTimes, minimumTimes, 21, MPI_DOUBLE, MPI_MIN, 0,
+    MPI_Reduce(localTimes, minimumTimes, 22, MPI_DOUBLE, MPI_MIN, 0,
                MPI_COMM_WORLD);
-    MPI_Reduce(localTimes, meanTimes, 21, MPI_DOUBLE, MPI_SUM, 0,
+    MPI_Reduce(localTimes, meanTimes, 22, MPI_DOUBLE, MPI_SUM, 0,
                MPI_COMM_WORLD);
-    MPI_Reduce(localTimes, maximumTimes, 21, MPI_DOUBLE, MPI_MAX, 0,
+    MPI_Reduce(localTimes, maximumTimes, 22, MPI_DOUBLE, MPI_MAX, 0,
                MPI_COMM_WORLD);
     MPI_Reduce(&reusedActiveRanks, &globalReusedActiveRanks, 1,
                MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
@@ -245,10 +256,14 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
                MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(&localPayloadLifetime, &maximumPayloadLifetime, 1, MPI_DOUBLE,
                MPI_MAX, 0, MPI_COMM_WORLD);
-    for(int i = 0; i < 21; ++i)
+    MPI_Reduce(localDetailedExchangeTimes, maximumDetailedExchangeTimes, 6,
+               MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(localExchangeBytes, maximumExchangeBytes, 3,
+               MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
+    for(int i = 0; i < 22; ++i)
         meanTimes[i] /= static_cast<double>(stats.mpiRankCount);
 #else
-    for(int i = 0; i < 21; ++i) {
+    for(int i = 0; i < 22; ++i) {
         minimumTimes[i] = localTimes[i];
         meanTimes[i] = localTimes[i];
         maximumTimes[i] = localTimes[i];
@@ -261,6 +276,10 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
         globalPatchMaxima[i] = localPatchMaxima[i];
     globalM2PCount = localM2PCount;
     maximumM2PSeconds = localM2PSeconds;
+    for(int i = 0; i < 6; ++i)
+        maximumDetailedExchangeTimes[i] = localDetailedExchangeTimes[i];
+    for(int i = 0; i < 3; ++i)
+        maximumExchangeBytes[i] = localExchangeBytes[i];
 #endif
     if(rank != 0)
         return;
@@ -268,20 +287,26 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
     std::ostringstream line;
     line.setf(std::ios::scientific);
     line.precision(8);
-    const char* const phaseNames[21] = {
-        "total", "build", "topology", "descriptor", "process_topology",
+    const char* const phaseNames[22] = {
+        "total", "redistribution", "build", "topology", "descriptor", "process_topology",
         "let_plan", "let_reset", "let_descriptor_traversal",
         "let_finalize", "let_subscription", "let_prune_compact",
         "local_traversal", "let_execute", "upward", "process_upward",
         "process_interaction", "process_downward", "let_exchange",
         "let_m2l", "let_p2p", "downward"};
     line << "fmm_solve_trace call=" << call;
-    for(int i = 0; i < 21; ++i)
+    for(int i = 0; i < 22; ++i)
         line << ' ' << phaseNames[i] << "_min=" << minimumTimes[i]
              << ' ' << phaseNames[i] << "_mean=" << meanTimes[i]
              << ' ' << phaseNames[i] << "_max=" << maximumTimes[i];
     line << " let_residual_wait_max=" << maximumResidualWait
          << " let_payload_lifetime_max=" << maximumPayloadLifetime
+         << " let_preparation_max=" << maximumDetailedExchangeTimes[0]
+         << " let_payload_planning_max=" << maximumDetailedExchangeTimes[1]
+         << " let_payload_packing_max=" << maximumDetailedExchangeTimes[2]
+         << " let_validation_max=" << maximumDetailedExchangeTimes[3]
+         << " let_decode_max=" << maximumDetailedExchangeTimes[4]
+         << " let_payload_release_max=" << maximumDetailedExchangeTimes[5]
          << " epoch=" << stats.topologyEpoch
          << " rebuilds=" << stats.topologyRebuildCount
          << " process_rebuilds=" << stats.processTopologyRebuildCount
@@ -330,6 +355,10 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
          << " process_owned_m2l_max=" << globalPatchMaxima[5]
          << " process_owner_imbalance_max="
          << maximumProcessOwnerImbalance
+         << " process_m2l_imbalance="
+         << stats.processOwnedM2LImbalance
+         << " process_global_owners="
+         << (stats.processOwnershipGloballyBalanced ? 1 : 0)
          << " let_target_subplans_reused_sum=" << globalPatchSums[7]
          << " let_target_subplans_rebuilt_sum=" << globalPatchSums[8]
          << " let_source_invalidations_sum=" << globalPatchSums[9]
@@ -338,6 +367,12 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
          << " let_payload_shape_rebuild_ranks=" << globalPatchSums[12]
          << " let_payload_refresh_required_ranks=" << globalPatchSums[13]
          << " let_payload_layout_refreshed_ranks=" << globalPatchSums[14]
+         << " let_particle_payload_compact="
+         << (stats.letParticlePayloadCompacted ? 1 : 0)
+         << " let_particle_payload_quantized="
+         << (stats.letParticlePayloadQuantized ? 1 : 0)
+         << " let_multipole_payload_compact="
+         << (stats.letMultipolePayloadCompacted ? 1 : 0)
          << " let_payload_capacity_updates_sum=" << globalPatchSums[15]
          << " let_payload_sources_repacked_sum=" << globalPatchSums[16]
          << " let_source_generation_checks_sum=" << globalPatchSums[17]
@@ -352,6 +387,9 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
          << " let_wave_count_max=" << globalPatchMaxima[6]
          << " bytes_owned_max=" << maximumBytesOwned
          << " peak_remote_bytes_max=" << maximumPeakRemoteBytes
+         << " let_outgoing_bytes_max=" << maximumExchangeBytes[0]
+         << " let_incoming_bytes_max=" << maximumExchangeBytes[1]
+         << " let_send_capacity_bytes_max=" << maximumExchangeBytes[2]
          << " local_planned_m2l_sum=" << globalPlanCounts[0]
          << " local_planned_p2p_blocks_sum=" << globalPlanCounts[1]
          << " let_planned_m2l_sum=" << globalPlanCounts[2]

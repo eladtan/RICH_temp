@@ -64,6 +64,24 @@ private:
                         const Vector3D& domainLower,
                         const Vector3D& domainUpper,
                         std::vector<double>* positiveKernelPotential) const;
+    void solveOwned(const std::vector<Vector3D>& positions,
+                    const std::vector<double>& masses,
+                    const std::vector<std::uint64_t>& cellIds,
+                    const Vector3D& domainLower,
+                    const Vector3D& domainUpper,
+                    std::vector<Vector3D>& acceleration,
+                    std::vector<double>* positiveKernelPotential);
+    void solveRedistributed(const std::vector<Vector3D>& positions,
+                            const std::vector<double>& masses,
+                            const std::vector<std::uint64_t>& cellIds,
+                            const Vector3D& domainLower,
+                            const Vector3D& domainUpper,
+                            std::vector<Vector3D>& acceleration,
+                            std::vector<double>* positiveKernelPotential);
+    void sampleDirectAccelerationError(
+        const std::vector<Vector3D>& positions,
+        const std::vector<double>& masses,
+        const std::vector<Vector3D>& acceleration);
     LocalTopologyChange prepareLocalTree(const std::vector<Vector3D>& positions,
                                          const Vector3D& domainLower,
                                          const Vector3D& domainUpper);
@@ -94,6 +112,7 @@ private:
     std::uint64_t topologyRebuildCount_;
     std::uint64_t processTopologyRebuildCount_;
     std::uint64_t letTopologyRebuildCount_;
+    std::uint64_t solveCount_;
 
     FmmTree localTree_;
     FmmM2LOperatorCache operatorCache_;
@@ -103,6 +122,7 @@ private:
     std::vector<FmmPatchRootDescriptor> rootDescriptors_;
     FmmProcessTree processTree_;
     FmmProcessPairPlan processPlan_;
+    std::vector<std::uint64_t> gravityRedistributionSplitters_;
     FmmLetPlan letPlan_;
     FmmPeerExchange processUpExchange_;
     FmmPeerExchange processM2LExchange_;

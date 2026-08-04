@@ -879,6 +879,10 @@ void FmmPatchDistributedSolver::solve(
         forestChange.geometryEnvelopeChanged;
     stats.localLeafOccupancyChanged = forestChange.occupancyChanged;
     stats.localCountOnlyLeafChange = forestChange.countOnlyChanged;
+    stats.processOwnershipGloballyBalanced =
+        distributedOptions_.globallyBalanceProcessNodeOwners;
+    stats.letParticlePayloadCompacted =
+        distributedOptions_.compactLetParticlePayload;
     stats.localPatchCount = forest_.patches().size();
     stats.reusedPatchCount = forestChange.reusedPatches;
     stats.reusedLocalPatchPlanCount = forestChange.reusedLocalPlans;
@@ -1014,7 +1018,9 @@ void FmmPatchDistributedSolver::solve(
         if(rebuildProcessTopology)
         {
             const Clock::time_point processTopologyStart = Clock::now();
-            processTree_.build(rootDescriptors_, true);
+            processTree_.build(
+                rootDescriptors_, true,
+                distributedOptions_.globallyBalanceProcessNodeOwners);
             processPlan_ = FmmProcessTraversal::build(
                 processTree_, options_.thetaCritical, topologyEpoch_, rank_,
                 comm_);
@@ -1070,6 +1076,9 @@ void FmmPatchDistributedSolver::solve(
             distributedOptions_.letParticlePayloadSlackFactor,
             distributedOptions_.letParticlePayloadSlackCount,
             distributedOptions_.enableLeafM2P,
+            distributedOptions_.compactLetParticlePayload,
+            distributedOptions_.shareLetPayloadsWithinNode,
+            distributedOptions_.letPayloadHandlersPerNode,
             comm_, stats,
             // Stable patch identities and spatial keys permit target-subplan
             // reuse.  When process routing is unchanged, source sets are also
@@ -1121,10 +1130,13 @@ void FmmPatchDistributedSolver::solve(
         static_cast<unsigned long long>(processPlan_.localM2LPairs.size());
     unsigned long long maxOwnedNodes = 0;
     unsigned long long maxOwnedM2L = 0;
+    unsigned long long totalOwnedM2L = 0;
     MPI_Allreduce(&localOwnedNodes, &maxOwnedNodes, 1,
                   MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm_);
     MPI_Allreduce(&localOwnedM2L, &maxOwnedM2L, 1,
                   MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm_);
+    MPI_Allreduce(&localOwnedM2L, &totalOwnedM2L, 1,
+                  MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm_);
     stats.processOwnedNodeCount = static_cast<std::size_t>(localOwnedNodes);
     stats.processOwnedNodeCountMax = static_cast<std::size_t>(maxOwnedNodes);
     stats.processOwnedM2LCount = localOwnedM2L;
@@ -1134,6 +1146,11 @@ void FmmPatchDistributedSolver::solve(
         static_cast<double>(stats.activeRankCount);
     stats.processOwnedNodeImbalance = meanOwnedNodes == 0.0 ? 0.0 :
         static_cast<double>(maxOwnedNodes) / meanOwnedNodes;
+    const double meanOwnedM2L = stats.activeRankCount == 0 ? 0.0 :
+        static_cast<double>(totalOwnedM2L) /
+        static_cast<double>(stats.activeRankCount);
+    stats.processOwnedM2LImbalance = meanOwnedM2L == 0.0 ? 0.0 :
+        static_cast<double>(maxOwnedM2L) / meanOwnedM2L;
 
     ProcessCoefficientStore processMultipoles(layout.coefficientCount());
     ProcessCoefficientStore processLocals(layout.coefficientCount());

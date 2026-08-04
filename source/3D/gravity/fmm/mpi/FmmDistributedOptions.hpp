@@ -2,6 +2,7 @@
 #define FMM_DISTRIBUTED_OPTIONS_HPP
 
 #include <cstddef>
+#include <cstdint>
 
 #include "3D/gravity/fmm/FmmConfig.hpp"
 
@@ -17,6 +18,19 @@ struct FmmDistributedOptions
     // for existing runs.
     bool emitSolveTrace = false;
     bool reuseInteractionPlansAcrossLeafCountChanges = true;
+    // Retain bounded-wave source assignments when only leaf counts change.
+    // The current payload is still checked against the hard remote-memory
+    // budget at execution time; structural splits rebuild and resize waves.
+    bool reuseBoundedLetWavesAcrossLeafCountChanges = false;
+
+    // Legacy process-tree planning restricts every internal node to one of its
+    // two child owners.  On strongly nonuniform decompositions this can funnel
+    // most internal nodes and process M2L work onto a few ranks.  When enabled,
+    // internal nodes may instead use any active rank and are assigned
+    // deterministically to the currently least-loaded owner.  Patch leaves
+    // remain on their hydro owners and the existing process coefficient routes
+    // carry data between independent internal owners.
+    bool globallyBalanceProcessNodeOwners = false;
 
     // Keep persistent-tree controls last for aggregate compatibility.
     bool persistentLocalTreeTopology = true;
@@ -43,6 +57,73 @@ struct FmmDistributedOptions
     // so it is off by default and only worth enabling for distributions with
     // spatially oversized ranks.
     bool enableLeafM2P = false;
+
+    // Encode patch-LET P2P particles as float offsets from their source-leaf
+    // center plus a float mass (16 bytes instead of four doubles / 32 bytes).
+    // Relative coordinates retain substantially more useful precision than
+    // casting absolute domain coordinates to float.  Disabled by default until
+    // a production geometry has passed its accuracy and performance gates.
+    bool compactLetParticlePayload = false;
+
+    // Further compress compatibility-LET near-field particles to three
+    // signed 16-bit leaf-relative coordinates plus one signed 16-bit mass
+    // fraction. Each source leaf carries one double mass scale. Requires the
+    // compact particle mode and leaves all force arithmetic in double.
+    bool quantizedLetParticlePayload = false;
+
+    // Encode compatibility-LET multipole coefficients as binary32 on the
+    // wire and use the source rank plus a compact 16-byte record header in
+    // place of the repeated 48-byte stamped header.  Coefficients are restored
+    // to double before any FMM kernel runs, so this changes only MPI storage
+    // and transfer precision. Disabled by default pending accuracy validation.
+    bool compactLetMultipolePayload = false;
+
+    // Deliver each remote LET source only once per physical compute node.
+    // A node leader receives the deduplicated payload and publishes a sorted
+    // directory plus the wire data through an MPI-3 shared-memory window.
+    // Local ranks then read only the sources in their own retained plan.  This
+    // removes the rank fanout that otherwise sends the same dense TDE source
+    // as many as 192 times to one Genoa node.
+    bool shareLetPayloadsWithinNode = false;
+    // Stripe node-level receive/copy work across several MPI ranks.  Twenty-four
+    // matches the CCD count of a dual-socket 192-core Genoa node and avoids a
+    // single handler becoming the critical path.
+    std::size_t letPayloadHandlersPerNode = 24;
+
+    // Temporarily repartition particles by a high-resolution Morton key for
+    // gravity, then return accelerations to their hydro owners.  This gives the
+    // one-tree-per-rank FMM compact, balanced spatial domains even when the
+    // moving Voronoi decomposition overlaps the dense TDE core on many ranks.
+    bool spatiallyRedistributeForGravity = false;
+
+    // Hilbert intervals have substantially better spatial locality than
+    // Morton intervals at curve discontinuities.  Use them for the temporary
+    // gravity ownership split to reduce pathological rank-root extents and
+    // the resulting worst-rank LET fanout.  This remains a pure MPI
+    // redistribution with one rank per core.
+    bool useHilbertGravityRedistribution = false;
+
+    // Blend particle-count and Hilbert-volume quantiles when choosing gravity
+    // owners.  A positive value assigns more ranks to sparse, physically large
+    // TDE atmosphere intervals instead of giving every interval the same body
+    // count.  The implementation also enforces a minimum sampled occupancy so
+    // empty Hilbert gaps cannot consume ranks.  Must be in [0,1).
+    double hilbertGravityVolumeWeight = 0.0;
+
+    // Replicate the small process-tree multipole array with one Allgather.
+    // For the one-tree-per-rank compatibility solver this replaces one sparse
+    // neighborhood collective per process-tree level and makes every remote
+    // process M2L source immediately available. Local particle trees and LET
+    // payloads remain rank-private.
+    bool replicateProcessMultipoles = false;
+
+    // On the selected (one-based) solve, compare a deterministic stratified
+    // random sample of target accelerations with a distributed direct sum over
+    // every source particle.  Each MPI rank accumulates its own sources and a
+    // small Allreduce combines the reference values; particles are never
+    // gathered onto one rank.  Zero samples disables the validation.
+    std::size_t directErrorSampleCount = 0;
+    std::uint64_t directErrorSampleSolve = 2;
 
     // Upper bound on the LET payload a single rank may request in one exchange.
     // Requests above this are split into several waves, so peak LET memory is

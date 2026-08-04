@@ -179,6 +179,20 @@ std::size_t checkedMultiply(std::size_t first,
     return first * second;
 }
 
+std::size_t payloadHandlerLane(std::uint64_t patchId,
+                               std::uint64_t spatialKey,
+                               int kind,
+                               std::size_t handlerCount)
+{
+    if(handlerCount == 0)
+        throw UniversalError("FmmPatchLetPlan: zero node payload handlers");
+    std::uint64_t hash = patchId + 0x9e3779b97f4a7c15ull;
+    hash ^= spatialKey + 0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
+    hash ^= static_cast<std::uint64_t>(static_cast<unsigned int>(kind)) +
+        0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
+    return static_cast<std::size_t>(hash % handlerCount);
+}
+
 void collectiveRequire(bool localOk,
                        const std::string& localMessage,
                        const char* context,
@@ -197,54 +211,133 @@ void collectiveRequire(bool localOk,
     }
 }
 
+void requireMpiSuccess(int status, const char* operation)
+{
+    if(status == MPI_SUCCESS)
+        return;
+    char text[MPI_MAX_ERROR_STRING];
+    int length = 0;
+    MPI_Error_string(status, text, &length);
+    throw UniversalError(std::string(operation) + ": " +
+                         std::string(text, static_cast<std::size_t>(length)));
+}
+
 void addDirectRemoteParticles(FmmLocalPatch& targetPatch,
                               const FmmNode& targetNode,
+                              const Vector3D& sourceCenter,
                               const char* payload,
                               std::size_t sourceCount,
+                              bool compactParticlePayload,
                               FmmSolveStats& stats)
 {
     const std::vector<std::size_t>& targetOrder =
         targetPatch.tree.particleOrder();
-    for(std::size_t k = targetNode.particleBegin;
-        k < targetNode.particleEnd; ++k)
+
+    // Validate each wire source once per block, rather than once for every
+    // target/source pair. The compact path intentionally stays in leaf-relative
+    // coordinates so it never reconstructs an absolute Vector3D in the hot
+    // loop. Double accumulation matches the local P2P kernel and is much faster
+    // than x87 extended arithmetic on Genoa.
+    if(compactParticlePayload)
     {
-        const std::size_t targetBody = targetOrder[k];
-        const Vector3D target = targetPatch.positions[targetBody];
-        long double ax = 0.0L;
-        long double ay = 0.0L;
-        long double az = 0.0L;
-        long double potential = 0.0L;
+        for(std::size_t sourceIndex = 0; sourceIndex < sourceCount;
+            ++sourceIndex)
+        {
+            FmmCompactPatchWireParticle source;
+            std::memcpy(&source,
+                        payload + sourceIndex * sizeof(source),
+                        sizeof(source));
+            if(!std::isfinite(source.offset[0]) ||
+               !std::isfinite(source.offset[1]) ||
+               !std::isfinite(source.offset[2]) ||
+               !std::isfinite(source.mass))
+                throw UniversalError(
+                    "FmmPatchLetPlan::execute: malformed compact remote particle");
+        }
+    }
+    else
+    {
         for(std::size_t sourceIndex = 0; sourceIndex < sourceCount;
             ++sourceIndex)
         {
             FmmPatchWireParticle source;
             std::memcpy(&source,
-                        payload + sourceIndex * sizeof(FmmPatchWireParticle),
-                        sizeof(FmmPatchWireParticle));
+                        payload + sourceIndex * sizeof(source),
+                        sizeof(source));
             if(!finiteVector(source.positionVector()) ||
                !std::isfinite(source.mass))
                 throw UniversalError(
                     "FmmPatchLetPlan::execute: malformed remote particle");
-            const Vector3D delta = target - source.positionVector();
-            const long double r2 =
-                static_cast<long double>(delta.x) * delta.x +
-                static_cast<long double>(delta.y) * delta.y +
-                static_cast<long double>(delta.z) * delta.z;
-            if(r2 == 0.0L)
-                continue;
-            const long double invR = 1.0L / std::sqrt(r2);
-            const long double factor =
-                static_cast<long double>(source.mass) * invR * invR * invR;
-            ax -= factor * delta.x;
-            ay -= factor * delta.y;
-            az -= factor * delta.z;
-            potential += static_cast<long double>(source.mass) * invR;
         }
-        targetPatch.acceleration[targetBody].x += static_cast<double>(ax);
-        targetPatch.acceleration[targetBody].y += static_cast<double>(ay);
-        targetPatch.acceleration[targetBody].z += static_cast<double>(az);
+    }
+
+    for(std::size_t k = targetNode.particleBegin;
+        k < targetNode.particleEnd; ++k)
+    {
+        const std::size_t targetBody = targetOrder[k];
+        const Vector3D target = targetPatch.positions[targetBody];
+        double ax = 0.0;
+        double ay = 0.0;
+        double az = 0.0;
+        double potential = 0.0;
+        if(compactParticlePayload)
+        {
+            const double relativeX = target.x - sourceCenter.x;
+            const double relativeY = target.y - sourceCenter.y;
+            const double relativeZ = target.z - sourceCenter.z;
+            for(std::size_t sourceIndex = 0; sourceIndex < sourceCount;
+                ++sourceIndex)
+            {
+                FmmCompactPatchWireParticle source;
+                std::memcpy(&source,
+                            payload + sourceIndex * sizeof(source),
+                            sizeof(source));
+                const double dx = relativeX -
+                    static_cast<double>(source.offset[0]);
+                const double dy = relativeY -
+                    static_cast<double>(source.offset[1]);
+                const double dz = relativeZ -
+                    static_cast<double>(source.offset[2]);
+                const double r2 = dx * dx + dy * dy + dz * dz;
+                if(r2 == 0.0)
+                    continue;
+                const double invR = 1.0 / std::sqrt(r2);
+                const double factor = static_cast<double>(source.mass) *
+                    invR * invR * invR;
+                ax -= factor * dx;
+                ay -= factor * dy;
+                az -= factor * dz;
+                potential += static_cast<double>(source.mass) * invR;
+            }
+        }
+        else
+        {
+            for(std::size_t sourceIndex = 0; sourceIndex < sourceCount;
+                ++sourceIndex)
+            {
+                FmmPatchWireParticle source;
+                std::memcpy(&source,
+                            payload + sourceIndex * sizeof(source),
+                            sizeof(source));
+                const double dx = target.x - source.position[0];
+                const double dy = target.y - source.position[1];
+                const double dz = target.z - source.position[2];
+                const double r2 = dx * dx + dy * dy + dz * dz;
+                if(r2 == 0.0)
+                    continue;
+                const double invR = 1.0 / std::sqrt(r2);
+                const double factor = source.mass * invR * invR * invR;
+                ax -= factor * dx;
+                ay -= factor * dy;
+                az -= factor * dz;
+                potential += source.mass * invR;
+            }
+        }
+        targetPatch.acceleration[targetBody].x += ax;
+        targetPatch.acceleration[targetBody].y += ay;
+        targetPatch.acceleration[targetBody].z += az;
         if(!targetPatch.potential.empty())
-            targetPatch.potential[targetBody] += static_cast<double>(potential);
+            targetPatch.potential[targetBody] += potential;
     }
     ++stats.p2pBlockCount;
     ++stats.letP2PBlockCount;
@@ -270,9 +363,172 @@ FmmPatchLetPlan::FmmPatchLetPlan():
     waveCount_(1), localWaveCount_(1), maxLetWaveBytes_(0),
     thetaCritical_(0.0), multipoleCoefficientCount_(0),
     maxParticlePayloadCount_(0), particlePayloadSlackFactor_(1.0),
-    particlePayloadSlackCount_(0), topologyEpoch_(0), comm_(MPI_COMM_NULL),
-    rank_(0), initialized_(false)
+    particlePayloadSlackCount_(0), compactParticlePayload_(false),
+    sharePayloadsWithinNode_(false), configuredNodeHandlerCount_(1),
+    localNodeHandlerCount_(1), topologyEpoch_(0),
+    comm_(MPI_COMM_NULL), nodeComm_(MPI_COMM_NULL), rank_(0), nodeRank_(0),
+    nodeSize_(1), nodeLeader_(0), initialized_(false)
 {
+}
+
+FmmPatchLetPlan::~FmmPatchLetPlan()
+{
+    int mpiInitialized = 0;
+    int mpiFinalized = 0;
+    MPI_Initialized(&mpiInitialized);
+    if(mpiInitialized != 0)
+        MPI_Finalized(&mpiFinalized);
+    if(nodeComm_ != MPI_COMM_NULL && mpiInitialized != 0 && mpiFinalized == 0)
+        MPI_Comm_free(&nodeComm_);
+    nodeComm_ = MPI_COMM_NULL;
+}
+
+void FmmPatchLetPlan::initializeNodeSharing(const MPI_Comm& comm)
+{
+    int worldSize = 1;
+    requireMpiSuccess(MPI_Comm_size(comm, &worldSize),
+                      "FmmPatchLetPlan MPI_Comm_size node sharing");
+    if(nodeComm_ != MPI_COMM_NULL &&
+       nodeLeaderByRank_.size() == static_cast<std::size_t>(worldSize) &&
+       nodeHandlersByRank_.size() == static_cast<std::size_t>(worldSize) *
+           configuredNodeHandlerCount_)
+        return;
+
+    if(nodeComm_ != MPI_COMM_NULL)
+        requireMpiSuccess(MPI_Comm_free(&nodeComm_),
+                          "FmmPatchLetPlan MPI_Comm_free node sharing");
+    requireMpiSuccess(MPI_Comm_split_type(
+                          comm, MPI_COMM_TYPE_SHARED, rank_, MPI_INFO_NULL,
+                          &nodeComm_),
+                      "FmmPatchLetPlan MPI_Comm_split_type node sharing");
+    requireMpiSuccess(MPI_Comm_rank(nodeComm_, &nodeRank_),
+                      "FmmPatchLetPlan MPI_Comm_rank node sharing");
+    requireMpiSuccess(MPI_Comm_size(nodeComm_, &nodeSize_),
+                      "FmmPatchLetPlan MPI_Comm_size node sharing");
+
+    nodeLeader_ = nodeRank_ == 0 ? rank_ : -1;
+    requireMpiSuccess(MPI_Bcast(&nodeLeader_, 1, MPI_INT, 0, nodeComm_),
+                      "FmmPatchLetPlan MPI_Bcast node leader");
+    nodeLeaderByRank_.resize(static_cast<std::size_t>(worldSize));
+    requireMpiSuccess(MPI_Allgather(
+                          &nodeLeader_, 1, MPI_INT,
+                          nodeLeaderByRank_.data(), 1, MPI_INT, comm),
+                      "FmmPatchLetPlan MPI_Allgather node leaders");
+    nodeSizeByRank_.resize(static_cast<std::size_t>(worldSize));
+    requireMpiSuccess(MPI_Allgather(
+                          &nodeSize_, 1, MPI_INT,
+                          nodeSizeByRank_.data(), 1, MPI_INT, comm),
+                      "FmmPatchLetPlan MPI_Allgather node sizes");
+    localNodeHandlerCount_ = std::min(
+        configuredNodeHandlerCount_, static_cast<std::size_t>(nodeSize_));
+    std::vector<int> localNodeRanks(static_cast<std::size_t>(nodeSize_));
+    requireMpiSuccess(MPI_Allgather(
+                          &rank_, 1, MPI_INT, localNodeRanks.data(),
+                          1, MPI_INT, nodeComm_),
+                      "FmmPatchLetPlan MPI_Allgather local node ranks");
+    std::vector<int> localHandlers(configuredNodeHandlerCount_, -1);
+    std::copy(localNodeRanks.begin(),
+              localNodeRanks.begin() + localNodeHandlerCount_,
+              localHandlers.begin());
+    if(configuredNodeHandlerCount_ > static_cast<std::size_t>(
+           std::numeric_limits<int>::max()))
+        throw UniversalError(
+            "FmmPatchLetPlan: node handler count exceeds MPI int");
+    nodeHandlersByRank_.resize(
+        static_cast<std::size_t>(worldSize) * configuredNodeHandlerCount_);
+    requireMpiSuccess(MPI_Allgather(
+                          localHandlers.data(),
+                          static_cast<int>(configuredNodeHandlerCount_),
+                          MPI_INT, nodeHandlersByRank_.data(),
+                          static_cast<int>(configuredNodeHandlerCount_),
+                          MPI_INT, comm),
+                      "FmmPatchLetPlan MPI_Allgather node handlers");
+    for(int leader : nodeLeaderByRank_)
+    {
+        if(leader < 0 || leader >= worldSize)
+            throw UniversalError(
+                "FmmPatchLetPlan: invalid physical-node leader map");
+    }
+    for(int size : nodeSizeByRank_)
+        if(size <= 0)
+            throw UniversalError(
+                "FmmPatchLetPlan: invalid physical-node size map");
+}
+
+void FmmPatchLetPlan::buildNodeSubscriptions(
+    const FmmPatchForest& forest,
+    FmmSolveStats& stats)
+{
+    nodeSubscriptionsByWave_.clear();
+    if(!sharePayloadsWithinNode_)
+        return;
+    if(nodeComm_ == MPI_COMM_NULL || nodeLeaderByRank_.empty())
+        throw UniversalError(
+            "FmmPatchLetPlan: node sharing was not initialized");
+
+    nodeSubscriptionsByWave_.assign(
+        waveCount_, std::vector<NodeSubscriptionReference>());
+    typedef std::tuple<int, std::uint64_t, std::uint64_t, int, int>
+        NodeSubscriptionKey;
+    std::set<NodeSubscriptionKey> unique;
+    std::vector<int> outgoingLeaders;
+    for(const auto& peerEntry : subscriptionsReceived_)
+    {
+        if(peerEntry.first < 0 ||
+           static_cast<std::size_t>(peerEntry.first) >=
+               nodeLeaderByRank_.size())
+            throw UniversalError(
+                "FmmPatchLetPlan: subscription consumer rank is invalid");
+        const std::size_t consumerRank = static_cast<std::size_t>(
+            peerEntry.first);
+        const std::size_t handlerCount = std::min(
+            configuredNodeHandlerCount_,
+            static_cast<std::size_t>(nodeSizeByRank_[consumerRank]));
+        for(const FmmSubscription& subscription : peerEntry.second)
+        {
+            if(subscription.waveIndex < 0 ||
+               static_cast<std::size_t>(subscription.waveIndex) >= waveCount_)
+                throw UniversalError(
+                    "FmmPatchLetPlan: node subscription wave is invalid");
+            const std::size_t lane = payloadHandlerLane(
+                subscription.patchId, subscription.spatialKey,
+                subscription.kind, handlerCount);
+            const int handler = nodeHandlersByRank_[
+                consumerRank * configuredNodeHandlerCount_ + lane];
+            if(handler < 0)
+                throw UniversalError(
+                    "FmmPatchLetPlan: missing striped node handler");
+            const NodeSubscriptionKey key(
+                handler, subscription.patchId, subscription.spatialKey,
+                subscription.kind, subscription.waveIndex);
+            if(!unique.insert(key).second)
+                continue;
+            const std::size_t patchIndex = forest.findPatch(
+                subscription.patchId);
+            if(patchIndex == std::numeric_limits<std::size_t>::max() ||
+               patchIndex >= localNodeByPatch_.size())
+                throw UniversalError(
+                    "FmmPatchLetPlan: node subscription patch disappeared");
+            const auto node = localNodeByPatch_[patchIndex].find(
+                subscription.spatialKey);
+            if(node == localNodeByPatch_[patchIndex].end())
+                throw UniversalError(
+                    "FmmPatchLetPlan: node subscription source disappeared");
+            nodeSubscriptionsByWave_[static_cast<std::size_t>(
+                subscription.waveIndex)].push_back(
+                    NodeSubscriptionReference{
+                        handler, patchIndex, node->second, subscription});
+            if(handler != rank_)
+                outgoingLeaders.push_back(handler);
+        }
+    }
+    std::sort(outgoingLeaders.begin(), outgoingLeaders.end());
+    outgoingLeaders.erase(
+        std::unique(outgoingLeaders.begin(), outgoingLeaders.end()),
+        outgoingLeaders.end());
+    const bool rebuilt = nodePayloadExchange_.resetIfChanged(
+        comm_, outgoingLeaders);
+    stats.letCommunicatorReused = stats.letCommunicatorReused && !rebuilt;
 }
 
 FmmRemoteNodeDescriptor FmmPatchLetPlan::descriptorForNode(
@@ -376,6 +632,12 @@ std::size_t FmmPatchLetPlan::particlePayloadCapacity(
     return result;
 }
 
+std::size_t FmmPatchLetPlan::particleWireBytes() const
+{
+    return compactParticlePayload_ ? sizeof(FmmCompactPatchWireParticle) :
+                                     sizeof(FmmPatchWireParticle);
+}
+
 std::size_t FmmPatchLetPlan::sourceRecordBytes(
     const SourceIdentity& source) const
 {
@@ -411,7 +673,7 @@ std::size_t FmmPatchLetPlan::sourceRecordBytes(
         if(retained != sourceParticlePayloadCaps_.end())
             plannedCount = std::max(plannedCount, retained->second);
         payload = checkedMultiply(
-            plannedCount, sizeof(FmmPatchWireParticle),
+            plannedCount, particleWireBytes(),
             "FmmPatchLetPlan: particle byte overflow");
     }
     else
@@ -437,7 +699,7 @@ std::size_t FmmPatchLetPlan::sourceRecordBytes(
             throw UniversalError(
                 "FmmPatchLetPlan: particle source has zero payload capacity");
         payload = checkedMultiply(
-            source.particlePayloadCapacity, sizeof(FmmPatchWireParticle),
+            source.particlePayloadCapacity, particleWireBytes(),
             "FmmPatchLetPlan: particle byte overflow");
     }
     else
@@ -591,6 +853,9 @@ void FmmPatchLetPlan::build(
     double particlePayloadSlackFactor,
     std::size_t particlePayloadSlackCount,
     bool enableLeafM2P,
+    bool compactParticlePayload,
+    bool sharePayloadsWithinNode,
+    std::size_t payloadHandlersPerNode,
     const MPI_Comm& comm,
     FmmSolveStats& stats,
     bool reuseUnaffectedTargetSubplans,
@@ -639,7 +904,15 @@ void FmmPatchLetPlan::build(
     maxParticlePayloadCount_ = maxParticlePayloadCount;
     particlePayloadSlackFactor_ = particlePayloadSlackFactor;
     particlePayloadSlackCount_ = particlePayloadSlackCount;
+    compactParticlePayload_ = compactParticlePayload;
+    sharePayloadsWithinNode_ = sharePayloadsWithinNode;
+    configuredNodeHandlerCount_ = payloadHandlersPerNode;
+    if(sharePayloadsWithinNode_ && configuredNodeHandlerCount_ == 0)
+        throw UniversalError(
+            "FmmPatchLetPlan::build: zero payload handlers per node");
     MPI_Comm_rank(comm_, &rank_);
+    if(sharePayloadsWithinNode_)
+        initializeNodeSharing(comm_);
 
     const std::size_t previousM2LInteractionCount = m2lInteractions_.size();
     const std::size_t previousP2PInteractionCount = p2pInteractions_.size();
@@ -1811,6 +2084,8 @@ void FmmPatchLetPlan::build(
         }
     }
 
+    buildNodeSubscriptions(forest, stats);
+
     stats.letSubscriptionSeconds += elapsed(subscriptionStart);
     stats.letWaveCount = waveCount_;
     stats.letLocalWaveCount = localWaveCount_;
@@ -2212,6 +2487,7 @@ void FmmPatchLetPlan::refreshPayloadLayout(
                     nodeIt->second});
         }
     }
+    buildNodeSubscriptions(forest, stats);
     if(!localPayloadCapacityReusable(forest))
         throw UniversalError(
             "FmmPatchLetPlan::refreshPayloadLayout: refreshed capacity is stale");
@@ -2343,31 +2619,24 @@ void FmmPatchLetPlan::executeWave(
         throw UniversalError("FmmPatchLetPlan::executeWave: wave out of range");
     const Clock::time_point exchangeStart = Clock::now();
 
-    if(wave >= subscriptionsByWave_.size())
+    if(wave >= subscriptionsByWave_.size() ||
+       (sharePayloadsWithinNode_ &&
+        wave >= nodeSubscriptionsByWave_.size()))
         throw UniversalError(
             "FmmPatchLetPlan::executeWave: missing indexed subscriptions");
-    const std::vector<SubscriptionReference>& waveSubscriptions =
-        subscriptionsByWave_[wave];
 
     // Exact pre-reservation avoids repeated growth/copying of large peer
     // buffers.  The solver already performed one collective payload-shape check
     // before entering execution, so repeating it for every wave was redundant.
-    std::unordered_map<int, std::size_t> peerReserveBytes;
-    for(const SubscriptionReference& reference : waveSubscriptions)
-    {
-        const auto peer = subscriptionsReceived_.find(reference.peer);
-        if(peer == subscriptionsReceived_.end() ||
-           reference.subscriptionIndex >= peer->second.size() ||
-           reference.patchIndex >= forest.patches().size())
-            throw UniversalError(
-                "FmmPatchLetPlan::executeWave: invalid indexed subscription");
-        const FmmSubscription& subscription =
-            peer->second[reference.subscriptionIndex];
-        const FmmLocalPatch& patch = forest.patches()[reference.patchIndex];
-        if(reference.nodeIndex >= patch.tree.nodes().size())
+    const auto packedRecordBytes = [&](std::size_t patchIndex,
+                                       std::size_t nodeIndex,
+                                       const FmmSubscription& subscription) {
+        if(patchIndex >= forest.patches().size() ||
+           nodeIndex >= forest.patches()[patchIndex].tree.nodes().size())
             throw UniversalError(
                 "FmmPatchLetPlan::executeWave: indexed source node disappeared");
-        const FmmNode& node = patch.tree.nodes()[reference.nodeIndex];
+        const FmmNode& node =
+            forest.patches()[patchIndex].tree.nodes()[nodeIndex];
         std::size_t recordBytes = sizeof(FmmPayloadRecordHeader);
         if(subscription.kind ==
            static_cast<int>(FmmSubscriptionKind::Multipole))
@@ -2379,33 +2648,66 @@ void FmmPatchLetPlan::executeWave(
                 static_cast<int>(FmmSubscriptionKind::Particles))
             recordBytes = checkedAdd(recordBytes,
                 checkedMultiply(node.particleCount(),
-                    sizeof(FmmPatchWireParticle),
+                    particleWireBytes(),
                     "FmmPatchLetPlan::executeWave: particle reserve overflow"),
                 "FmmPatchLetPlan::executeWave: particle record overflow");
         else
             throw UniversalError(
                 "FmmPatchLetPlan::executeWave: invalid indexed subscription kind");
-        peerReserveBytes[reference.peer] = checkedAdd(
-            peerReserveBytes[reference.peer], recordBytes,
-            "FmmPatchLetPlan::executeWave: peer reserve overflow");
+        return recordBytes;
+    };
+
+    std::unordered_map<int, std::size_t> peerReserveBytes;
+    if(sharePayloadsWithinNode_)
+    {
+        for(const NodeSubscriptionReference& reference :
+            nodeSubscriptionsByWave_[wave])
+            peerReserveBytes[reference.nodeHandler] = checkedAdd(
+                peerReserveBytes[reference.nodeHandler],
+                packedRecordBytes(reference.patchIndex, reference.nodeIndex,
+                                  reference.subscription),
+                "FmmPatchLetPlan::executeWave: node reserve overflow");
+    }
+    else
+    {
+        for(const SubscriptionReference& reference :
+            subscriptionsByWave_[wave])
+        {
+            const auto peer = subscriptionsReceived_.find(reference.peer);
+            if(peer == subscriptionsReceived_.end() ||
+               reference.subscriptionIndex >= peer->second.size())
+                throw UniversalError(
+                    "FmmPatchLetPlan::executeWave: invalid indexed subscription");
+            peerReserveBytes[reference.peer] = checkedAdd(
+                peerReserveBytes[reference.peer],
+                packedRecordBytes(reference.patchIndex, reference.nodeIndex,
+                                  peer->second[reference.subscriptionIndex]),
+                "FmmPatchLetPlan::executeWave: peer reserve overflow");
+        }
     }
 
     std::unordered_map<int, std::vector<char>> sendBuffers;
     for(const auto& peerBytes : peerReserveBytes)
-        sendBuffers[peerBytes.first].reserve(peerBytes.second);
-
-    for(const SubscriptionReference& reference : waveSubscriptions)
+        if(!sharePayloadsWithinNode_ || peerBytes.first != rank_)
+            sendBuffers[peerBytes.first].reserve(peerBytes.second);
+    std::vector<char> nodeLeaderLocalBuffer;
+    if(sharePayloadsWithinNode_)
     {
-        const auto peer = subscriptionsReceived_.find(reference.peer);
-        const FmmSubscription& subscription =
-            peer->second[reference.subscriptionIndex];
-        std::vector<char>& buffer = sendBuffers[reference.peer];
-        FmmLocalPatch& patch = forest.patches()[reference.patchIndex];
+        const auto localBytes = peerReserveBytes.find(rank_);
+        if(localBytes != peerReserveBytes.end())
+            nodeLeaderLocalBuffer.reserve(localBytes->second);
+    }
+
+    const auto appendRecord = [&](std::vector<char>& buffer,
+                                  std::size_t patchIndex,
+                                  std::size_t nodeIndex,
+                                  const FmmSubscription& subscription) {
+        FmmLocalPatch& patch = forest.patches()[patchIndex];
         if(patch.key.ownerRank != rank_ ||
            patch.key.patchId != subscription.patchId)
             throw UniversalError(
                 "FmmPatchLetPlan::executeWave: source patch identity mismatch");
-        const FmmNode& node = patch.tree.nodes()[reference.nodeIndex];
+        const FmmNode& node = patch.tree.nodes()[nodeIndex];
 
         FmmPayloadRecordHeader header;
         header.stamp = fmmPacketStamp(FmmPacketKind::LetPayload,
@@ -2437,12 +2739,33 @@ void FmmPatchLetPlan::executeWave(
                 k < node.particleEnd; ++k)
             {
                 const std::size_t body = patch.tree.particleOrder()[k];
-                FmmPatchWireParticle particle;
-                particle.position[0] = patch.positions[body].x;
-                particle.position[1] = patch.positions[body].y;
-                particle.position[2] = patch.positions[body].z;
-                particle.mass = patch.masses[body];
-                FmmPacketIO::appendPod(buffer, particle);
+                if(compactParticlePayload_)
+                {
+                    const Vector3D offset = patch.positions[body] - node.center;
+                    FmmCompactPatchWireParticle particle;
+                    particle.offset[0] = static_cast<float>(offset.x);
+                    particle.offset[1] = static_cast<float>(offset.y);
+                    particle.offset[2] = static_cast<float>(offset.z);
+                    particle.mass = static_cast<float>(patch.masses[body]);
+                    if(!std::isfinite(particle.offset[0]) ||
+                       !std::isfinite(particle.offset[1]) ||
+                       !std::isfinite(particle.offset[2]) ||
+                       !std::isfinite(particle.mass) ||
+                       (patch.masses[body] != 0.0 && particle.mass == 0.0f))
+                        throw UniversalError(
+                            "FmmPatchLetPlan::executeWave: compact particle "
+                            "cannot represent source values");
+                    FmmPacketIO::appendPod(buffer, particle);
+                }
+                else
+                {
+                    FmmPatchWireParticle particle;
+                    particle.position[0] = patch.positions[body].x;
+                    particle.position[1] = patch.positions[body].y;
+                    particle.position[2] = patch.positions[body].z;
+                    particle.mass = patch.masses[body];
+                    FmmPacketIO::appendPod(buffer, particle);
+                }
             }
         }
         else
@@ -2450,12 +2773,38 @@ void FmmPatchLetPlan::executeWave(
             throw UniversalError(
                 "FmmPatchLetPlan::executeWave: invalid subscription kind");
         }
+    };
+
+    if(sharePayloadsWithinNode_)
+    {
+        for(const NodeSubscriptionReference& reference :
+            nodeSubscriptionsByWave_[wave])
+        {
+            std::vector<char>& buffer = reference.nodeHandler == rank_ ?
+                nodeLeaderLocalBuffer : sendBuffers[reference.nodeHandler];
+            appendRecord(buffer, reference.patchIndex, reference.nodeIndex,
+                         reference.subscription);
+        }
+    }
+    else
+    {
+        for(const SubscriptionReference& reference :
+            subscriptionsByWave_[wave])
+        {
+            const auto peer = subscriptionsReceived_.find(reference.peer);
+            appendRecord(sendBuffers[reference.peer], reference.patchIndex,
+                         reference.nodeIndex,
+                         peer->second[reference.subscriptionIndex]);
+        }
     }
 
     std::size_t totalSendBytes = 0;
     for(const auto& peerEntry : sendBuffers)
         totalSendBytes = checkedAdd(totalSendBytes, peerEntry.second.size(),
             "FmmPatchLetPlan::executeWave: total send byte overflow");
+    totalSendBytes = checkedAdd(
+        totalSendBytes, nodeLeaderLocalBuffer.size(),
+        "FmmPatchLetPlan::executeWave: local node payload overflow");
 
     std::size_t sendCapacityBytes = 0;
     for(const auto& peerEntry : sendBuffers)
@@ -2464,6 +2813,9 @@ void FmmPatchLetPlan::executeWave(
             sendCapacityBytes, peerEntry.second.capacity(),
             "FmmPatchLetPlan::executeWave: send capacity overflow");
     }
+    sendCapacityBytes = checkedAdd(
+        sendCapacityBytes, nodeLeaderLocalBuffer.capacity(),
+        "FmmPatchLetPlan::executeWave: local node capacity overflow");
     const bool localOutgoingOk =
         totalSendBytes <= maxRemoteBytes / 2 &&
         sendCapacityBytes <= maxRemoteBytes - totalSendBytes;
@@ -2478,7 +2830,9 @@ void FmmPatchLetPlan::executeWave(
         maxRemoteBytes / 2);
     FmmPeerExchangeRequest request;
     request.clear();
-    exchange_.beginExchangeBytes(
+    const FmmPeerExchange& payloadExchange = sharePayloadsWithinNode_ ?
+        nodePayloadExchange_ : exchange_;
+    payloadExchange.beginExchangeBytes(
         sendBuffers, request, receiveLimit,
         maxRemoteBytes - sendCapacityBytes);
     const std::size_t launchBytes =
@@ -2497,7 +2851,7 @@ void FmmPatchLetPlan::executeWave(
         std::numeric_limits<std::size_t>::max() :
         request.bytesOwned() + received.bytesOwned();
     const bool localReceiveOk = !wireOverflow && wireBytes <= maxRemoteBytes &&
-        (maxLetWaveBytes_ == 0 ||
+        (sharePayloadsWithinNode_ || maxLetWaveBytes_ == 0 ||
          received.totalBytes() <= maxLetWaveBytes_);
     collectiveRequire(
         localReceiveOk,
@@ -2584,75 +2938,361 @@ void FmmPatchLetPlan::executeWave(
                                                                &*found;
     };
 
-    for(const FmmReceivedMessage& message : received.messages())
+    MPI_Win sharedPayloadWindow = MPI_WIN_NULL;
+    char* sharedPayloadBase = nullptr;
+    std::size_t sharedPayloadBytes = 0;
+    if(!sharePayloadsWithinNode_)
     {
-        const FmmByteView view = received.view(message);
-        std::size_t offset = 0;
-        while(offset < view.size)
+        for(const FmmReceivedMessage& message : received.messages())
         {
-            const FmmPayloadRecordHeader header =
-                FmmPacketIO::readPod<FmmPayloadRecordHeader>(view, offset);
-            validateFmmPacketStamp(
-                header.stamp, FmmPacketKind::LetPayload,
-                topologyEpoch_,
-                "FmmPatchLetPlan::executeWave payload");
-            if(header.waveIndex < 0 ||
-               static_cast<std::size_t>(header.waveIndex) != wave ||
-               header.patchId == 0 || header.spatialKey == 0)
-                throw UniversalError(
-                    "FmmPatchLetPlan::executeWave: invalid payload identity");
-            const PayloadKey key(
-                FmmPatchKey{message.source, header.patchId},
-                header.spatialKey, header.kind);
-            const ExpectedPayload* expectedPayload = findExpected(key);
-            if(expectedPayload == nullptr || expectedPayload->source == nullptr)
-                throw UniversalError(
-                    "FmmPatchLetPlan::executeWave: unsolicited payload record");
+            const FmmByteView view = received.view(message);
+            std::size_t offset = 0;
+            while(offset < view.size)
+            {
+                const FmmPayloadRecordHeader header =
+                    FmmPacketIO::readPod<FmmPayloadRecordHeader>(view, offset);
+                validateFmmPacketStamp(
+                    header.stamp, FmmPacketKind::LetPayload,
+                    topologyEpoch_,
+                    "FmmPatchLetPlan::executeWave payload");
+                if(header.waveIndex < 0 ||
+                   static_cast<std::size_t>(header.waveIndex) != wave ||
+                   header.patchId == 0 || header.spatialKey == 0)
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: invalid payload identity");
+                const PayloadKey key(
+                    FmmPatchKey{message.source, header.patchId},
+                    header.spatialKey, header.kind);
+                const ExpectedPayload* expectedPayload = findExpected(key);
+                if(expectedPayload == nullptr ||
+                   expectedPayload->source == nullptr)
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: unsolicited payload record");
 
-            std::size_t elementBytes = 0;
-            if(header.kind ==
-               static_cast<int>(FmmSubscriptionKind::Multipole))
-            {
-                if(header.count != static_cast<std::uint64_t>(
-                       layout.coefficientCount()))
+                std::size_t elementBytes = 0;
+                if(header.kind ==
+                   static_cast<int>(FmmSubscriptionKind::Multipole))
+                {
+                    if(header.count != static_cast<std::uint64_t>(
+                           layout.coefficientCount()))
+                        throw UniversalError(
+                            "FmmPatchLetPlan::executeWave: multipole count mismatch");
+                    elementBytes = sizeof(double);
+                }
+                else if(header.kind ==
+                        static_cast<int>(FmmSubscriptionKind::Particles))
+                {
+                    if(expectedPayload->source->descriptor.isLeaf == 0)
+                        throw UniversalError(
+                            "FmmPatchLetPlan::executeWave: particle payload for non-leaf");
+                    elementBytes = particleWireBytes();
+                }
+                else
+                {
                     throw UniversalError(
-                        "FmmPatchLetPlan::executeWave: multipole count mismatch");
-                elementBytes = sizeof(double);
-            }
-            else if(header.kind ==
-                    static_cast<int>(FmmSubscriptionKind::Particles))
-            {
-                if(expectedPayload->source->descriptor.isLeaf == 0)
+                        "FmmPatchLetPlan::executeWave: invalid payload kind");
+                }
+                if(header.count > static_cast<std::uint64_t>(
+                        std::numeric_limits<std::size_t>::max()))
                     throw UniversalError(
-                        "FmmPatchLetPlan::executeWave: particle payload for non-leaf");
-                // Particle occupancy is payload state, not topology.  A reused
-                // LET subscription is keyed by (patch, spatialKey); the current
-                // count is carried by this header and may legitimately change.
-                elementBytes = sizeof(FmmPatchWireParticle);
+                        "FmmPatchLetPlan::executeWave: payload count overflow");
+                const std::size_t count = static_cast<std::size_t>(
+                    header.count);
+                const std::size_t bytes = checkedMultiply(
+                    count, elementBytes,
+                    "FmmPatchLetPlan::executeWave: payload byte overflow");
+                if(bytes > FmmPacketIO::remaining(view, offset))
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: truncated payload");
+                if(payloads.size() >= expectedCount)
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: excessive payload records");
+                payloads.push_back(ReceivedPayload{
+                    key, PayloadView{view.data + offset, count}});
+                offset += bytes;
             }
-            else
+        }
+    }
+    else
+    {
+        struct LeaderPayloadRecord
+        {
+            SharedPayloadDirectoryEntry entry;
+            const char* data = nullptr;
+            std::size_t bytes = 0;
+        };
+        std::vector<LeaderPayloadRecord> leaderRecords;
+        std::size_t leaderBodyBytes = 0;
+        const auto appendLeaderMessage = [&](int sourceRank,
+                                             const FmmByteView& view) {
+            std::size_t offset = 0;
+            while(offset < view.size)
             {
-                throw UniversalError(
-                    "FmmPatchLetPlan::executeWave: invalid payload kind");
+                const FmmPayloadRecordHeader header =
+                    FmmPacketIO::readPod<FmmPayloadRecordHeader>(view, offset);
+                validateFmmPacketStamp(
+                    header.stamp, FmmPacketKind::LetPayload,
+                    topologyEpoch_,
+                    "FmmPatchLetPlan::executeWave shared payload");
+                if(header.waveIndex < 0 ||
+                   static_cast<std::size_t>(header.waveIndex) != wave ||
+                   header.patchId == 0 || header.spatialKey == 0 ||
+                   sourceRank < 0)
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: invalid shared payload identity");
+                std::size_t elementBytes = 0;
+                if(header.kind ==
+                   static_cast<int>(FmmSubscriptionKind::Multipole))
+                {
+                    if(header.count != static_cast<std::uint64_t>(
+                           layout.coefficientCount()))
+                        throw UniversalError(
+                            "FmmPatchLetPlan::executeWave: shared multipole count mismatch");
+                    elementBytes = sizeof(double);
+                }
+                else if(header.kind ==
+                        static_cast<int>(FmmSubscriptionKind::Particles))
+                {
+                    if(header.count > static_cast<std::uint64_t>(
+                           maxParticlePayloadCount_))
+                        throw UniversalError(
+                            "FmmPatchLetPlan::executeWave: shared particle count exceeds leaf limit");
+                    elementBytes = particleWireBytes();
+                }
+                else
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: invalid shared payload kind");
+                if(header.count > static_cast<std::uint64_t>(
+                       std::numeric_limits<std::size_t>::max()))
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: shared count overflow");
+                const std::size_t count = static_cast<std::size_t>(
+                    header.count);
+                const std::size_t bytes = checkedMultiply(
+                    count, elementBytes,
+                    "FmmPatchLetPlan::executeWave: shared payload overflow");
+                if(bytes > FmmPacketIO::remaining(view, offset))
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: truncated shared payload");
+                leaderRecords.push_back(LeaderPayloadRecord{
+                    SharedPayloadDirectoryEntry{
+                        sourceRank, header.kind, header.patchId,
+                        header.spatialKey, header.count, 0},
+                    view.data + offset, bytes});
+                leaderBodyBytes = checkedAdd(
+                    leaderBodyBytes, bytes,
+                    "FmmPatchLetPlan::executeWave: shared body overflow");
+                offset += bytes;
             }
-            if(header.count > static_cast<std::uint64_t>(
-                    std::numeric_limits<std::size_t>::max()))
+        };
+
+        const bool localHandler = static_cast<std::size_t>(nodeRank_) <
+            localNodeHandlerCount_;
+        if(localHandler)
+        {
+            for(const FmmReceivedMessage& message : received.messages())
+                appendLeaderMessage(message.source, received.view(message));
+            if(!nodeLeaderLocalBuffer.empty())
+                appendLeaderMessage(
+                    rank_, FmmByteView{nodeLeaderLocalBuffer.data(),
+                                       nodeLeaderLocalBuffer.size()});
+            const auto entryLess = [](
+                const LeaderPayloadRecord& first,
+                const LeaderPayloadRecord& second) {
+                return std::tie(first.entry.sourceRank,
+                                first.entry.patchId,
+                                first.entry.spatialKey,
+                                first.entry.kind) <
+                       std::tie(second.entry.sourceRank,
+                                second.entry.patchId,
+                                second.entry.spatialKey,
+                                second.entry.kind);
+            };
+            std::sort(leaderRecords.begin(), leaderRecords.end(), entryLess);
+            if(std::adjacent_find(
+                   leaderRecords.begin(), leaderRecords.end(),
+                   [&](const LeaderPayloadRecord& first,
+                       const LeaderPayloadRecord& second) {
+                       return !entryLess(first, second) &&
+                              !entryLess(second, first);
+                   }) != leaderRecords.end())
                 throw UniversalError(
-                    "FmmPatchLetPlan::executeWave: payload count overflow");
-            const std::size_t count = static_cast<std::size_t>(header.count);
+                    "FmmPatchLetPlan::executeWave: duplicate node-shared payload");
+        }
+        else if(!received.messages().empty() || !nodeLeaderLocalBuffer.empty())
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: nonhandler received node payload");
+
+        const unsigned long long localSharedShape[2] = {
+            static_cast<unsigned long long>(leaderRecords.size()),
+            static_cast<unsigned long long>(leaderBodyBytes)};
+        std::vector<unsigned long long> sharedShapes(
+            static_cast<std::size_t>(2 * nodeSize_), 0);
+        requireMpiSuccess(MPI_Allgather(
+                              localSharedShape, 2, MPI_UNSIGNED_LONG_LONG,
+                              sharedShapes.data(), 2,
+                              MPI_UNSIGNED_LONG_LONG, nodeComm_),
+                          "FmmPatchLetPlan MPI_Allgather shared payload shapes");
+        std::vector<std::size_t> handlerDirectoryCounts(
+            localNodeHandlerCount_, 0);
+        std::vector<std::size_t> handlerArenaBytes(
+            localNodeHandlerCount_, 0);
+        for(std::size_t handler = 0; handler < localNodeHandlerCount_;
+            ++handler)
+        {
+            if(sharedShapes[2 * handler] >
+                   static_cast<unsigned long long>(
+                       std::numeric_limits<std::size_t>::max()) ||
+               sharedShapes[2 * handler + 1] >
+                   static_cast<unsigned long long>(
+                       std::numeric_limits<std::size_t>::max()))
+                throw UniversalError(
+                    "FmmPatchLetPlan::executeWave: shared payload shape overflow");
+            handlerDirectoryCounts[handler] = static_cast<std::size_t>(
+                sharedShapes[2 * handler]);
+            const std::size_t handlerDirectoryBytes = checkedMultiply(
+                handlerDirectoryCounts[handler],
+                sizeof(SharedPayloadDirectoryEntry),
+                "FmmPatchLetPlan::executeWave: shared directory overflow");
+            handlerArenaBytes[handler] = checkedAdd(
+                handlerDirectoryBytes,
+                static_cast<std::size_t>(sharedShapes[2 * handler + 1]),
+                "FmmPatchLetPlan::executeWave: shared handler arena overflow");
+            sharedPayloadBytes = checkedAdd(
+                sharedPayloadBytes, handlerArenaBytes[handler],
+                "FmmPatchLetPlan::executeWave: shared node arena overflow");
+        }
+        const std::size_t localHandlerArenaBytes = localHandler ?
+            handlerArenaBytes[static_cast<std::size_t>(nodeRank_)] : 0;
+        const bool localSharedBudgetOk = sharedPayloadBytes <= maxRemoteBytes &&
+            localHandlerArenaBytes <= maxRemoteBytes &&
+            wireBytes <= maxRemoteBytes - localHandlerArenaBytes;
+        collectiveRequire(
+            localSharedBudgetOk,
+            localSharedBudgetOk ? std::string() :
+                "FmmPatchLetPlan::executeWave: node-shared arena exceeds memory budget",
+            "FmmPatchLetPlan::executeWave shared arena preflight", comm_);
+        if(localHandlerArenaBytes > static_cast<std::size_t>(
+               std::numeric_limits<MPI_Aint>::max()))
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: shared arena exceeds MPI_Aint");
+
+        void* localSharedBase = nullptr;
+        const MPI_Aint localAllocation = static_cast<MPI_Aint>(
+            localHandlerArenaBytes);
+        requireMpiSuccess(MPI_Win_allocate_shared(
+                              localAllocation, 1, MPI_INFO_NULL, nodeComm_,
+                              &localSharedBase, &sharedPayloadWindow),
+                          "FmmPatchLetPlan MPI_Win_allocate_shared payload");
+        std::vector<char*> handlerBases(localNodeHandlerCount_, nullptr);
+        for(std::size_t handler = 0; handler < localNodeHandlerCount_;
+            ++handler)
+        {
+            MPI_Aint queriedSize = 0;
+            int displacementUnit = 0;
+            requireMpiSuccess(MPI_Win_shared_query(
+                                  sharedPayloadWindow,
+                                  static_cast<int>(handler), &queriedSize,
+                                  &displacementUnit,
+                                  reinterpret_cast<void**>(
+                                      &handlerBases[handler])),
+                              "FmmPatchLetPlan MPI_Win_shared_query payload");
+            if(queriedSize != static_cast<MPI_Aint>(
+                   handlerArenaBytes[handler]) ||
+               displacementUnit != 1 ||
+               (handlerArenaBytes[handler] != 0 &&
+                handlerBases[handler] == nullptr))
+                throw UniversalError(
+                    "FmmPatchLetPlan::executeWave: invalid shared handler mapping");
+        }
+
+        if(localHandler)
+        {
+            sharedPayloadBase = handlerBases[static_cast<std::size_t>(
+                nodeRank_)];
+            const std::size_t directoryBytes = checkedMultiply(
+                leaderRecords.size(), sizeof(SharedPayloadDirectoryEntry),
+                "FmmPatchLetPlan::executeWave: local handler directory overflow");
+            SharedPayloadDirectoryEntry* directory =
+                reinterpret_cast<SharedPayloadDirectoryEntry*>(
+                    sharedPayloadBase);
+            std::size_t bodyOffset = directoryBytes;
+            for(std::size_t index = 0; index < leaderRecords.size(); ++index)
+            {
+                leaderRecords[index].entry.byteOffset =
+                    static_cast<std::uint64_t>(bodyOffset);
+                directory[index] = leaderRecords[index].entry;
+                if(leaderRecords[index].bytes != 0)
+                    std::memcpy(sharedPayloadBase + bodyOffset,
+                                leaderRecords[index].data,
+                                leaderRecords[index].bytes);
+                bodyOffset += leaderRecords[index].bytes;
+            }
+            if(bodyOffset != localHandlerArenaBytes)
+                throw UniversalError(
+                    "FmmPatchLetPlan::executeWave: shared arena fill mismatch");
+        }
+        requireMpiSuccess(MPI_Win_sync(sharedPayloadWindow),
+                          "FmmPatchLetPlan MPI_Win_sync shared payload");
+        requireMpiSuccess(MPI_Barrier(nodeComm_),
+                          "FmmPatchLetPlan MPI_Barrier publish shared payload");
+
+        const auto sharedEntryLess = [](
+            const SharedPayloadDirectoryEntry& entry,
+            const PayloadKey& key) {
+            return std::tie(entry.sourceRank, entry.patchId,
+                            entry.spatialKey, entry.kind) <
+                   std::tie(std::get<0>(key).ownerRank,
+                            std::get<0>(key).patchId,
+                            std::get<1>(key), std::get<2>(key));
+        };
+        for(const ExpectedPayload& wanted : expected)
+        {
+            const std::size_t handler = payloadHandlerLane(
+                std::get<0>(wanted.key).patchId,
+                std::get<1>(wanted.key), std::get<2>(wanted.key),
+                localNodeHandlerCount_);
+            const std::size_t directoryCount =
+                handlerDirectoryCounts[handler];
+            const char* handlerBase = handlerBases[handler];
+            const SharedPayloadDirectoryEntry* directory =
+                reinterpret_cast<const SharedPayloadDirectoryEntry*>(
+                    handlerBase);
+            const SharedPayloadDirectoryEntry* found = std::lower_bound(
+                directory, directory + directoryCount, wanted.key,
+                sharedEntryLess);
+            if(found == directory + directoryCount ||
+               found->sourceRank != std::get<0>(wanted.key).ownerRank ||
+               found->patchId != std::get<0>(wanted.key).patchId ||
+               found->spatialKey != std::get<1>(wanted.key) ||
+               found->kind != std::get<2>(wanted.key) ||
+               found->count > static_cast<std::uint64_t>(
+                   std::numeric_limits<std::size_t>::max()))
+                throw UniversalError(
+                    "FmmPatchLetPlan::executeWave: missing node-shared payload");
+            const std::size_t count = static_cast<std::size_t>(found->count);
+            const std::size_t elementBytes = found->kind ==
+                static_cast<int>(FmmSubscriptionKind::Multipole) ?
+                sizeof(double) : particleWireBytes();
             const std::size_t bytes = checkedMultiply(
                 count, elementBytes,
-                "FmmPatchLetPlan::executeWave: payload byte overflow");
-            if(bytes > FmmPacketIO::remaining(view, offset))
+                "FmmPatchLetPlan::executeWave: shared view overflow");
+            if(found->byteOffset > handlerArenaBytes[handler] ||
+               bytes > handlerArenaBytes[handler] -
+                   static_cast<std::size_t>(found->byteOffset))
                 throw UniversalError(
-                    "FmmPatchLetPlan::executeWave: truncated payload");
-            if(payloads.size() >= expectedCount)
-                throw UniversalError(
-                    "FmmPatchLetPlan::executeWave: excessive payload records");
+                    "FmmPatchLetPlan::executeWave: invalid node-shared view");
             payloads.push_back(ReceivedPayload{
-                key, PayloadView{view.data + offset, count}});
-            offset += bytes;
+                wanted.key,
+                PayloadView{handlerBase + found->byteOffset, count}});
         }
+        received.releaseStorage();
+        request.clear();
+        stats.peakRemoteBytes = std::max(
+            stats.peakRemoteBytes,
+            saturatingAdd(wireBytes, sharedPayloadBytes));
+        stats.letMaxWavePayloadBytes = std::max(
+            stats.letMaxWavePayloadBytes, sharedPayloadBytes);
     }
     std::sort(payloads.begin(), payloads.end(),
         [](const ReceivedPayload& first, const ReceivedPayload& second) {
@@ -2842,11 +3482,22 @@ void FmmPatchLetPlan::executeWave(
             throw UniversalError(
                 "FmmPatchLetPlan::executeWave: missing P2P payload");
         addDirectRemoteParticles(targetPatch, targetNode,
+                                 source.sourceNode.center,
                                  payload->view.data,
                                  payload->view.count,
+                                 compactParticlePayload_,
                                  stats);
     }
     stats.letP2PSeconds += elapsed(p2pStart);
+    if(sharedPayloadWindow != MPI_WIN_NULL)
+    {
+        // No handler may recycle its segment until every local rank has
+        // finished evaluating the views it obtained from that segment.
+        requireMpiSuccess(MPI_Barrier(nodeComm_),
+                          "FmmPatchLetPlan MPI_Barrier consume shared payload");
+        requireMpiSuccess(MPI_Win_free(&sharedPayloadWindow),
+                          "FmmPatchLetPlan MPI_Win_free shared payload");
+    }
     received.releaseStorage();
     request.clear();
 }
@@ -2937,7 +3588,7 @@ void FmmPatchLetPlan::emitNonuniformityDiagnostics(
             {
                 payloadBytes = static_cast<unsigned long long>(
                     node.particleCount()) * static_cast<unsigned long long>(
-                        sizeof(FmmPatchWireParticle));
+                        particleWireBytes());
                 localTotals[7] += payloadBytes;
             }
             else if(subscription.kind ==
@@ -3047,7 +3698,8 @@ void FmmPatchLetPlan::emitNonuniformityDiagnostics(
 
 std::size_t FmmPatchLetPlan::bytesOwned() const
 {
-    std::size_t result = exchange_.bytesOwned();
+    std::size_t result = saturatingAdd(
+        exchange_.bytesOwned(), nodePayloadExchange_.bytesOwned());
     const auto add = [&](std::size_t bytes) {
         if(bytes > std::numeric_limits<std::size_t>::max() - result)
             result = std::numeric_limits<std::size_t>::max();
@@ -3163,6 +3815,14 @@ std::size_t FmmPatchLetPlan::bytesOwned() const
                  sizeof(std::vector<SubscriptionReference>)));
     for(const auto& wave : subscriptionsByWave_)
         add(multiply(wave.capacity(), sizeof(SubscriptionReference)));
+
+    add(multiply(nodeSubscriptionsByWave_.capacity(),
+                 sizeof(std::vector<NodeSubscriptionReference>)));
+    for(const auto& wave : nodeSubscriptionsByWave_)
+        add(multiply(wave.capacity(), sizeof(NodeSubscriptionReference)));
+    add(multiply(nodeLeaderByRank_.capacity(), sizeof(int)));
+    add(multiply(nodeSizeByRank_.capacity(), sizeof(int)));
+    add(multiply(nodeHandlersByRank_.capacity(), sizeof(int)));
 
     return result;
 }

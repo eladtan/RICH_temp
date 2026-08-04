@@ -143,6 +143,7 @@ private:
     std::vector<int> sources_;
     std::vector<int> destinations_;
     std::unordered_map<int, int> destinationSlot_;
+    bool dense_;
 };
 
 #endif // RICH_MPI

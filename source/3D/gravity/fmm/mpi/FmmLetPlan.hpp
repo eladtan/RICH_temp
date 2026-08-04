@@ -5,6 +5,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <unordered_map>
 #include <vector>
 
@@ -61,6 +62,9 @@ public:
                const MPI_Comm& comm,
                bool reuseBuildStorage,
                bool enableLeafM2P,
+               bool compactParticlePayload,
+               bool quantizedParticlePayload,
+               bool compactMultipolePayload,
                std::size_t maxLetWaveBytes,
                std::size_t multipoleCoefficientCount,
                FmmSolveStats& stats);
@@ -140,6 +144,8 @@ private:
     {
         FmmPatchKey sourcePatch;
         std::uint64_t spatialKey = 0;
+        std::uint32_t ownerSubscriptionIndex =
+            std::numeric_limits<std::uint32_t>::max();
         FmmNode node;
     };
 
@@ -147,6 +153,24 @@ private:
     {
         FmmPatchKey sourcePatch;
         std::uint64_t spatialKey = 0;
+        std::uint32_t ownerSubscriptionIndex =
+            std::numeric_limits<std::uint32_t>::max();
+    };
+
+    struct ResolvedSubscription
+    {
+        FmmSubscription subscription;
+        std::uint32_t localNodeIndex = 0;
+    };
+
+    // Interactions are retained in wave/target order. A warm solve can skip
+    // every interaction of an empty target with one particle-count test rather
+    // than scanning the complete persistent interaction array.
+    struct InteractionTargetRange
+    {
+        std::uint32_t targetNode = 0;
+        std::uint32_t begin = 0;
+        std::uint32_t end = 0;
     };
 
     struct PendingInteraction
@@ -197,15 +221,24 @@ private:
     std::vector<std::pair<std::size_t, std::size_t>> m2lWaveRanges_;
     std::vector<std::pair<std::size_t, std::size_t>> p2pWaveRanges_;
     std::vector<std::pair<std::size_t, std::size_t>> m2pWaveRanges_;
+    std::vector<InteractionTargetRange> m2lTargetRanges_;
+    std::vector<InteractionTargetRange> p2pTargetRanges_;
+    std::vector<InteractionTargetRange> m2pTargetRanges_;
+    std::vector<std::pair<std::size_t, std::size_t>> m2lTargetWaveRanges_;
+    std::vector<std::pair<std::size_t, std::size_t>> p2pTargetWaveRanges_;
+    std::vector<std::pair<std::size_t, std::size_t>> m2pTargetWaveRanges_;
     std::size_t waveCount_;
     std::vector<std::uint32_t> activeM2LInteractionIndices_;
     std::vector<std::uint32_t> activeP2PInteractionIndices_;
     std::vector<std::uint32_t> activeM2PInteractionIndices_;
+    std::vector<unsigned char> activeM2LSourceFlags_;
+    std::vector<unsigned char> activeP2PSourceFlags_;
     std::vector<PendingPair> pendingScratch_;
     std::vector<PendingPair> workScratch_;
     std::vector<PendingPair> blockedScratch_;
     std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsToSend_;
-    std::unordered_map<int, std::vector<FmmSubscription>> subscriptionsReceived_;
+    std::unordered_map<int, std::vector<ResolvedSubscription>>
+        subscriptionsReceived_;
     FmmPeerExchange exchange_;
     FmmPeerExchangeRequest pendingExchange_;
     bool executePending_;
@@ -217,6 +250,9 @@ private:
     MPI_Comm comm_;
     int rank_;
     std::uint64_t topologyEpoch_;
+    bool compactParticlePayload_;
+    bool quantizedParticlePayload_;
+    bool compactMultipolePayload_;
 };
 
 #endif // RICH_MPI

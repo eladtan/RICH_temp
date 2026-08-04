@@ -6,7 +6,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <set>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "3D/elementary/Vector3D.hpp"
@@ -47,7 +49,8 @@ class FmmProcessTree
 {
 public:
     void build(const std::vector<FmmPatchRootDescriptor>& descriptors,
-               bool balanceInternalOwners = false);
+               bool balanceInternalOwners = false,
+               bool allowAnyActiveOwner = false);
 
     const std::vector<FmmProcessNode>& nodes() const { return nodes_; }
     const std::vector<int>& activeRanks() const { return activeRanks_; }
@@ -67,6 +70,7 @@ public:
 
 private:
     std::size_t buildRange(std::size_t begin, std::size_t end, std::size_t depth);
+    void addOwnerWork(int owner);
     void buildLevels();
     void computeHash();
 
@@ -78,7 +82,9 @@ private:
     std::unordered_map<FmmPatchKey, std::size_t, FmmPatchKeyHash> leafByPatch_;
     std::unordered_map<int, std::size_t> compatLeafByRank_;
     std::unordered_map<int, std::size_t> ownerWork_;
+    std::set<std::pair<std::size_t, int>> ownerQueue_;
     bool balanceInternalOwners_ = false;
+    bool allowAnyActiveOwner_ = false;
     std::uint64_t topologyHash_ = 0;
 };
 
