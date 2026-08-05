@@ -65,6 +65,49 @@ if(DEFINED MPI)
     find_program(MPI_CXX_COMPILER NAMES mpicxx mpic++ NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH NO_CMAKE_SYSTEM_PATH REQUIRED)
     find_program(MPI_C_COMPILER   NAMES mpicc         NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH NO_CMAKE_SYSTEM_PATH REQUIRED)
 
+    # Select the Fortran wrapper from the same MPI implementation.  FindMPI
+    # otherwise sees the Intel Fortran compiler and can independently select
+    # Intel MPI even when C and CXX use OpenMPI.
+    if(MPI_IMPL STREQUAL "OpenMPI")
+        set(_mpi_fortran_wrappers mpifort mpif90)
+    elseif(MPI_IMPL STREQUAL "IntelMPI")
+        set(_mpi_fortran_wrappers mpiifx mpiifort)
+    else()
+        set(_mpi_fortran_wrappers mpifort mpif90)
+    endif()
+    unset(MPI_Fortran_COMPILER CACHE)
+    unset(MPI_Fortran_COMPILER)
+    find_program(MPI_Fortran_COMPILER
+        NAMES ${_mpi_fortran_wrappers}
+        NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH NO_CMAKE_SYSTEM_PATH REQUIRED
+    )
+    message(STATUS "MPI Fortran wrapper: ${MPI_Fortran_COMPILER}")
+
+    # OneAPI exports its own MPI headers from the compiler environment.  When
+    # OpenMPI is selected, compiling directly with icx/icpx/ifx can therefore
+    # pick up Intel MPI's mpi.h even though linking uses OpenMPI.  Configure
+    # through OpenMPI's wrappers instead: they still invoke the Intel
+    # compilers, but add OpenMPI's headers before the OneAPI defaults.
+    if(DEFINED INTEL AND MPI_IMPL STREQUAL "OpenMPI")
+        execute_process(
+            COMMAND ${MPI_CXX_COMPILER} -showme:command
+            OUTPUT_VARIABLE _openmpi_cxx_backend
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+            RESULT_VARIABLE _openmpi_cxx_backend_result
+        )
+        if(NOT _openmpi_cxx_backend_result EQUAL 0 OR
+           NOT _openmpi_cxx_backend MATCHES "(^|.*/)icpx( |$)")
+            message(FATAL_ERROR
+                "intelReleaseMPI with OpenMPI requires mpicxx to invoke icpx; "
+                "got '${_openmpi_cxx_backend}' from ${MPI_CXX_COMPILER}")
+        endif()
+
+        set(CMAKE_C_COMPILER       "${MPI_C_COMPILER}"       CACHE FILEPATH "OpenMPI C wrapper" FORCE)
+        set(CMAKE_CXX_COMPILER     "${MPI_CXX_COMPILER}"     CACHE FILEPATH "OpenMPI C++ wrapper" FORCE)
+        set(CMAKE_Fortran_COMPILER "${MPI_Fortran_COMPILER}" CACHE FILEPATH "OpenMPI Fortran wrapper" FORCE)
+        message(STATUS "Intel/OpenMPI compiler wrappers: ${CMAKE_C_COMPILER}; ${CMAKE_CXX_COMPILER}; ${CMAKE_Fortran_COMPILER}")
+    endif()
+
     # Query compile and link flags from the MPI wrapper
     if(MPI_IMPL STREQUAL "OpenMPI")
         execute_process(COMMAND ${MPI_CXX_COMPILER} -showme:compile

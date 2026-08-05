@@ -91,29 +91,49 @@ if(DEFINED MPI)
         OUTPUT_VARIABLE _vtk_mpi_output
     )
 
-    # if(NOT _vtk_mpi_ok)
-    #     message(FATAL_ERROR
-    #         "\n"
-    #         "===========================================================\n"
-    #         " VTK-MPI compatibility check FAILED!\n"
-    #         "\n"
-    #         " VTK was compiled with a different MPI implementation than\n"
-    #         " the one currently in use. MPI_Comm has a different type in\n"
-    #         " each implementation (e.g. int for MPICH/IntelMPI vs\n"
-    #         " ompi_communicator_t* for OpenMPI), causing linker errors.\n"
-    #         "\n"
-    #         " Current MPI compiler: ${MPI_CXX_COMPILER}\n"
-    #         " VTK directory:        ${VTK_DIRECTORY}\n"
-    #         "\n"
-    #         " Please recompile VTK with the same MPI, or switch to the\n"
-    #         " MPI implementation that VTK was compiled with.\n"
-    #         "===========================================================\n"
-    #         "\n"
-    #         "Build output:\n${_vtk_mpi_output}\n"
-    #     )
-    # else()
-    #     message(STATUS "VTK-MPI compatibility: OK")
-    # endif()
+    if(NOT _vtk_mpi_ok)
+        message(FATAL_ERROR
+            "VTK MPI ABI check failed. VTK_DIRECTORY=${VTK_DIRECTORY}; "
+            "MPI wrapper=${MPI_CXX_COMPILER}. The VTK build and selected MPI "
+            "must use the same MPI implementation.\n${_vtk_mpi_output}")
+    endif()
+
+    # VTK::ParallelMPI is a shared imported target. Inspect its direct MPI
+    # dependency as well: a successful CMake link can still load a second MPI
+    # implementation at runtime through VTK.
+    if(MPI_IMPL STREQUAL "OpenMPI")
+        set(_vtk_parallel_mpi_library "")
+        foreach(_vtk_imported_config "" "_RELEASE" "_RELWITHDEBINFO" "_DEBUG")
+            get_target_property(_vtk_candidate VTK::ParallelMPI "IMPORTED_LOCATION${_vtk_imported_config}")
+            if(_vtk_candidate AND EXISTS "${_vtk_candidate}")
+                set(_vtk_parallel_mpi_library "${_vtk_candidate}")
+                break()
+            endif()
+        endforeach()
+
+        if(NOT _vtk_parallel_mpi_library)
+            message(FATAL_ERROR
+                "Could not resolve VTK::ParallelMPI's shared library for OpenMPI validation")
+        endif()
+
+        find_program(_rich_readelf readelf REQUIRED)
+        execute_process(
+            COMMAND ${_rich_readelf} -d "${_vtk_parallel_mpi_library}"
+            OUTPUT_VARIABLE _vtk_dynamic_dependencies
+            RESULT_VARIABLE _vtk_readelf_result
+            ERROR_VARIABLE _vtk_readelf_error
+        )
+        if(NOT _vtk_readelf_result EQUAL 0)
+            message(FATAL_ERROR
+                "Could not inspect ${_vtk_parallel_mpi_library}: ${_vtk_readelf_error}")
+        endif()
+        if(_vtk_dynamic_dependencies MATCHES "libmpi\\.so\\.12" OR
+           _vtk_dynamic_dependencies MATCHES "intel/OneApi/.*/mpi")
+            message(FATAL_ERROR
+                "VTK::ParallelMPI at ${_vtk_parallel_mpi_library} requires Intel MPI. "
+                "intelReleaseMPI with OpenMPI requires a VTK built against OpenMPI only.")
+        endif()
+    endif()
 else()
     # VTK built with MPI declares internal dependency chains
     # (e.g. FiltersGeneral -> ParallelDIY -> mpi) that pull libmpi
