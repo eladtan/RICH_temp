@@ -1,4 +1,5 @@
 #include "Neighbors.hpp"
+#include <algorithm>
 
 #ifdef RICH_MPI
     struct Request : public Serializable
@@ -193,11 +194,19 @@ void addPointToSet(boost::container::flat_set<RemotePoint> &set, const RemotePoi
         }
     #endif // RICH_MPI
     
+    // Multiple queried points often share first-order neighbors. Recursing on
+    // duplicates repeats the same MPI requests and graph traversal while the
+    // result map ultimately keeps only one entry per point.
+    std::vector<size_t> uniqueNextSearch = nextSearch;
+    std::sort(uniqueNextSearch.begin(), uniqueNextSearch.end());
+    uniqueNextSearch.erase(std::unique(uniqueNextSearch.begin(), uniqueNextSearch.end()),
+                           uniqueNextSearch.end());
+
     // recurse - get neighbors of neighbors
     #ifdef RICH_MPI
-        PointsToNeighborsMap neighborPoints = GetKOrderNeighbors(tess, nextSearch, order - 1, atMost, comm);
+        PointsToNeighborsMap neighborPoints = GetKOrderNeighbors(tess, uniqueNextSearch, order - 1, atMost, comm);
     #else // RICH_MPI
-        PointsToNeighborsMap neighborPoints = GetKOrderNeighbors(tess, nextSearch, order - 1, atMost);
+        PointsToNeighborsMap neighborPoints = GetKOrderNeighbors(tess, uniqueNextSearch, order - 1, atMost);
     #endif // RICH_MPI
 
     #ifdef RICH_MPI

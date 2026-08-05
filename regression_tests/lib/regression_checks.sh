@@ -401,6 +401,8 @@ check_amr_random_case() {
     local mode
     local max_drift
     local threshold
+    local max_volume_growth
+    local volume_growth_limit
     local pass_flag
     local expected_threshold
 
@@ -416,9 +418,12 @@ check_amr_random_case() {
     mode=$(awk '$1 == "mode" { print $2 }' "$metrics_file")
     max_drift=$(awk '$1 == "max_drift" { print $2 }' "$metrics_file")
     threshold=$(awk '$1 == "threshold" { print $2 }' "$metrics_file")
+    max_volume_growth=$(awk '$1 == "max_volume_growth" { print $2 }' "$metrics_file")
+    volume_growth_limit=$(awk '$1 == "volume_growth_limit" { print $2 }' "$metrics_file")
     pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
 
-    if [[ -z "$mode" || -z "$max_drift" || -z "$threshold" || -z "$pass_flag" ]]; then
+    if [[ -z "$mode" || -z "$max_drift" || -z "$threshold" ||
+          -z "$max_volume_growth" || -z "$volume_growth_limit" || -z "$pass_flag" ]]; then
         set_check_msg "failed to parse AMR random metrics"
         return 1
     fi
@@ -429,6 +434,14 @@ check_amr_random_case() {
     fi
     if ! is_finite_number "$threshold"; then
         set_check_msg "amr_random threshold is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$max_volume_growth" || ! is_finite_number "$volume_growth_limit"; then
+        set_check_msg "amr_random volume growth metric is not finite"
+        return 1
+    fi
+    if ! awk -v l="$volume_growth_limit" 'BEGIN { exit !(l == 3.0) }'; then
+        set_check_msg "amr_random expected volume growth limit 3, got ${volume_growth_limit}"
         return 1
     fi
     if [[ "$mode" != "serial" && "$mode" != "mpi" ]]; then
@@ -456,12 +469,65 @@ check_amr_random_case() {
         return 1
     fi
 
+    if ! awk -v g="$max_volume_growth" -v l="$volume_growth_limit" \
+        'BEGIN { exit !(g <= l * (1 + 1e-8)) }'; then
+        set_check_msg "amr_random volume growth exceeded limit (${max_volume_growth} > ${volume_growth_limit})"
+        return 1
+    fi
+
     if [[ "$pass_flag" != "1" ]]; then
         set_check_msg "amr_random test reported pass=0"
         return 1
     fi
 
     set_check_msg "AMR random drift check passed (${mode}, max_drift=${max_drift})"
+    return 0
+}
+
+check_amr_neighbor_remove_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/amr_neighbor_remove_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale amr_neighbor_remove_metrics.txt"
+        return 1
+    fi
+
+    local removed_count mass_error energy_error momentum_error max_growth growth_limit pass_flag
+    removed_count=$(awk '$1 == "removed_count" { print $2 }' "$metrics_file")
+    mass_error=$(awk '$1 == "mass_error" { print $2 }' "$metrics_file")
+    energy_error=$(awk '$1 == "energy_error" { print $2 }' "$metrics_file")
+    momentum_error=$(awk '$1 == "momentum_error" { print $2 }' "$metrics_file")
+    max_growth=$(awk '$1 == "max_volume_growth" { print $2 }' "$metrics_file")
+    growth_limit=$(awk '$1 == "volume_growth_limit" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ "$removed_count" != "2" || "$pass_flag" != "1" ]]; then
+        set_check_msg "neighbor removal did not remove the requested adjacent pair"
+        return 1
+    fi
+    for value in "$mass_error" "$energy_error" "$momentum_error" "$max_growth" "$growth_limit"; do
+        if ! is_finite_number "$value"; then
+            set_check_msg "non-finite AMR neighboring-removal metric"
+            return 1
+        fi
+    done
+    if ! awk -v l="$growth_limit" 'BEGIN { exit !(l == 3.0) }'; then
+        set_check_msg "neighbor-removal expected volume growth limit 3, got ${growth_limit}"
+        return 1
+    fi
+    if ! awk -v g="$max_growth" -v l="$growth_limit" 'BEGIN { exit !(g <= l * (1 + 1e-8)) }'; then
+        set_check_msg "AMR volume growth exceeded limit (${max_growth} > ${growth_limit})"
+        return 1
+    fi
+
+    set_check_msg "AMR adjacent-pair removal passed (growth=${max_growth}, limit=${growth_limit})"
     return 0
 }
 
