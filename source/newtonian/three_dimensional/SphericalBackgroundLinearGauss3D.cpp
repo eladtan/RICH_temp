@@ -3,6 +3,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
+
+#include "misc/universal_error.hpp"
 
 #ifdef RICH_MPI
 #include <mpi.h>
@@ -48,51 +51,46 @@ SphericalBackgroundLinearGauss3D::SphericalBackgroundLinearGauss3D(
 	double delta_v,
 	double theta,
 	double delta_pressure)
+	: SphericalBackgroundLinearGauss3D(eos, ghost,
+		std::make_shared<SphericalShellGeometry3D>(center,
+			std::move(shell_radii)), slope_limiter, delta_v, theta,
+		delta_pressure)
+{}
+
+SphericalBackgroundLinearGauss3D::SphericalBackgroundLinearGauss3D(
+	EquationOfState const& eos,
+	Ghost3D const& ghost,
+	std::shared_ptr<SphericalShellGeometry3D> shell_geometry,
+	bool slope_limiter,
+	double delta_v,
+	double theta,
+	double delta_pressure)
 	: eos_(eos),
-	  center_(center),
-	  shell_radii_(std::move(shell_radii)),
+	  center_(shell_geometry ? shell_geometry->GetCenter() : Vector3D()),
+	  shell_radii_(shell_geometry ? shell_geometry->GetShellRadii() :
+		  std::vector<double>()),
+	  shell_geometry_(std::move(shell_geometry)),
 	  full_reconstruction_(eos, ghost, slope_limiter, delta_v, theta,
 		  delta_pressure),
 	  background_reconstruction_(eos, ghost, slope_limiter, delta_v,
 		  theta, delta_pressure)
 {
-	std::sort(shell_radii_.begin(), shell_radii_.end());
-	shell_radii_.erase(std::unique(shell_radii_.begin(),
-		shell_radii_.end(), [](double left, double right) {
-			return std::abs(left - right) <=
-				1e-12 * std::max({1.0, left, right});
-		}), shell_radii_.end());
+	if (!shell_geometry_)
+		throw UniversalError(
+			"SphericalBackgroundLinearGauss3D requires shell geometry");
 }
 
 int SphericalBackgroundLinearGauss3D::FindShell(double radius) const
 {
-	auto const upper = std::lower_bound(shell_radii_.begin(),
-		shell_radii_.end(), radius);
-	int best = -1;
-	double distance = std::numeric_limits<double>::infinity();
-	if (upper != shell_radii_.end()) {
-		best = static_cast<int>(upper - shell_radii_.begin());
-		distance = std::abs(*upper - radius);
-	}
-	if (upper != shell_radii_.begin()) {
-		auto const lower = upper - 1;
-		double const candidate = std::abs(*lower - radius);
-		if (candidate < distance) {
-			best = static_cast<int>(lower - shell_radii_.begin());
-			distance = candidate;
-		}
-	}
-	if (best < 0)
-		return -1;
-	double const tolerance = 1e-9 *
-		std::max(1.0, shell_radii_[static_cast<size_t>(best)]);
-	return distance <= tolerance ? best : -1;
+	return shell_geometry_->FindShell(radius);
 }
 
 void SphericalBackgroundLinearGauss3D::PrepareBackground(
 	Tessellation3D const& tess,
 	std::vector<ComputationalCell3D> const& cells) const
 {
+	shell_geometry_->Update(tess);
+	shell_radii_ = shell_geometry_->GetShellRadii();
 	size_t const local_count = tess.GetPointNo();
 	size_t const available_count = std::min(cells.size(),
 		tess.GetTotalPointNumber());

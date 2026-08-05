@@ -27,6 +27,7 @@
 #endif
 
 class SphericalShellProjector3D;
+class SphericalShellGeometry3D;
 
 //! \brief Three dimensional simulation
 class HDSim3D
@@ -145,6 +146,10 @@ public:
   #endif // RICH_MPI
 
 private:
+  void RefreshSphericalShellGeometry(
+    char const* update_name,
+    bool always_report = false);
+
   void ApplySphericalBackgroundCorrection(
     vector<ComputationalCell3D> const& stage_input_cells,
     vector<Conserved3D> const& stage_input_extensives,
@@ -181,6 +186,7 @@ private:
   vector<Conserved3D> u3_scratch_;
   vector<size_t> hilbert_order_scratch_;
   std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values_scratch_;
+  std::shared_ptr<SphericalShellGeometry3D> spherical_shell_geometry_;
   std::shared_ptr<SphericalShellProjector3D> spherical_shell_projector_;
   FluxCalculator3D const* spherical_perturbation_flux_calculator_ = nullptr;
   size_t spherical_perturbation_evaluation_count_ = 0;

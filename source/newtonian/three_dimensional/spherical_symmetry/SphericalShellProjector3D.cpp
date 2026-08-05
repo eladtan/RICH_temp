@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 #include "misc/universal_error.hpp"
 
@@ -25,21 +26,19 @@ SphericalShellProjector3D::SphericalShellProjector3D(Vector3D center,
 	std::vector<double> shell_radii,
 	double relative_radius_tolerance,
 	double absolute_radius_tolerance)
-	: center_(center),
-	  shell_radii_(std::move(shell_radii)),
-	  relative_radius_tolerance_(relative_radius_tolerance),
-	  absolute_radius_tolerance_(absolute_radius_tolerance)
+	: SphericalShellProjector3D(
+		std::make_shared<SphericalShellGeometry3D>(center,
+			std::move(shell_radii), relative_radius_tolerance,
+			absolute_radius_tolerance))
+{}
+
+SphericalShellProjector3D::SphericalShellProjector3D(
+	std::shared_ptr<SphericalShellGeometry3D> shell_geometry)
+	: shell_geometry_(std::move(shell_geometry))
 {
-	shell_radii_.erase(std::remove_if(shell_radii_.begin(), shell_radii_.end(),
-		[](double radius) { return !(radius > 0.0) || !std::isfinite(radius); }),
-		shell_radii_.end());
-	std::sort(shell_radii_.begin(), shell_radii_.end());
-	shell_radii_.erase(std::unique(shell_radii_.begin(), shell_radii_.end(),
-		[this](double left, double right) {
-			double const tolerance = std::max(absolute_radius_tolerance_,
-				relative_radius_tolerance_ * std::max(left, right));
-			return std::abs(left - right) <= tolerance;
-		}), shell_radii_.end());
+	if (!shell_geometry_)
+		throw UniversalError(
+			"SphericalShellProjector3D requires shell geometry");
 }
 
 void SphericalShellProjector3D::ProjectExtensives(
@@ -79,19 +78,24 @@ void SphericalShellProjector3D::ProjectLinear(
 	}
 
 	output = input;
-	if (shell_radii_.empty())
+	shell_geometry_->Update(tess);
+	std::vector<double> const& shell_radii =
+		shell_geometry_->GetShellRadii();
+	if (shell_radii.empty())
 		return;
 
 	std::vector<int> shell_ids(local_count, -1);
 	std::vector<Vector3D> radial_directions(local_count);
-	std::vector<double> shell_sums(shell_radii_.size() * SHELL_SUM_STRIDE, 0.0);
+	std::vector<double> shell_sums(shell_radii.size() * SHELL_SUM_STRIDE, 0.0);
 	for (size_t i = 0; i < local_count; ++i) {
-		Vector3D const generator_offset = tess.GetMeshPoint(i) - center_;
-		int const shell = FindShell(abs(generator_offset));
+		Vector3D const generator_offset = tess.GetMeshPoint(i) -
+			shell_geometry_->GetCenter();
+		int const shell = shell_geometry_->FindShell(abs(generator_offset));
 		if (shell < 0)
 			continue;
 
-		Vector3D const cm_offset = tess.GetCellCM(i) - center_;
+		Vector3D const cm_offset = tess.GetCellCM(i) -
+			shell_geometry_->GetCenter();
 		double const cm_radius = abs(cm_offset);
 		if (!(cm_radius > std::numeric_limits<double>::min()))
 			continue;
@@ -140,35 +144,16 @@ void SphericalShellProjector3D::ProjectLinear(
 
 Vector3D const& SphericalShellProjector3D::GetCenter() const
 {
-	return center_;
+	return shell_geometry_->GetCenter();
 }
 
 std::vector<double> const& SphericalShellProjector3D::GetShellRadii() const
 {
-	return shell_radii_;
+	return shell_geometry_->GetShellRadii();
 }
 
-int SphericalShellProjector3D::FindShell(double radius) const
+std::shared_ptr<SphericalShellGeometry3D>
+SphericalShellProjector3D::GetShellGeometry() const
 {
-	auto const upper = std::lower_bound(shell_radii_.begin(), shell_radii_.end(),
-		radius);
-	int best = -1;
-	double best_distance = std::numeric_limits<double>::infinity();
-	if (upper != shell_radii_.end()) {
-		best = static_cast<int>(upper - shell_radii_.begin());
-		best_distance = std::abs(*upper - radius);
-	}
-	if (upper != shell_radii_.begin()) {
-		auto const lower = upper - 1;
-		double const distance = std::abs(*lower - radius);
-		if (distance < best_distance) {
-			best = static_cast<int>(lower - shell_radii_.begin());
-			best_distance = distance;
-		}
-	}
-	if (best < 0)
-		return -1;
-	double const tolerance = std::max(absolute_radius_tolerance_,
-		relative_radius_tolerance_ * shell_radii_[static_cast<size_t>(best)]);
-	return best_distance <= tolerance ? best : -1;
+	return shell_geometry_;
 }

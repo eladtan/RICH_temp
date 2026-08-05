@@ -2,9 +2,11 @@
 #define SPHERICAL_BACKGROUND_LINEAR_GAUSS_3D_HPP
 
 #include <array>
+#include <memory>
 #include <vector>
 
 #include "LinearGauss3D.hpp"
+#include "spherical_symmetry/SphericalShellGeometry3D.hpp"
 
 class SphericalBackgroundLinearGauss3D : public SpatialReconstruction3D
 {
@@ -14,6 +16,14 @@ public:
 		Ghost3D const& ghost,
 		Vector3D center,
 		std::vector<double> shell_radii,
+		bool slope_limiter = true,
+		double delta_v = 0.2,
+		double theta = 0.5,
+		double delta_pressure = 0.7);
+	SphericalBackgroundLinearGauss3D(
+		EquationOfState const& eos,
+		Ghost3D const& ghost,
+		std::shared_ptr<SphericalShellGeometry3D> shell_geometry,
 		bool slope_limiter = true,
 		double delta_v = 0.2,
 		double theta = 0.5,
@@ -60,7 +70,8 @@ private:
 
 	EquationOfState const& eos_;
 	Vector3D center_;
-	std::vector<double> shell_radii_;
+	mutable std::vector<double> shell_radii_;
+	std::shared_ptr<SphericalShellGeometry3D> shell_geometry_;
 	LinearGauss3D full_reconstruction_;
 	LinearGauss3D background_reconstruction_;
 	mutable std::vector<ShellPrimitive> shell_states_;

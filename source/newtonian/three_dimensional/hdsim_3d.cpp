@@ -77,8 +77,31 @@ void HDSim3D::SetSphericalShellProjector(
 	FluxCalculator3D const& perturbation_flux_calculator)
 {
 	spherical_shell_projector_ = std::move(projector);
+	spherical_shell_geometry_ = spherical_shell_projector_ ?
+		spherical_shell_projector_->GetShellGeometry() : nullptr;
 	spherical_perturbation_flux_calculator_ =
 		spherical_shell_projector_ ? &perturbation_flux_calculator : nullptr;
+	RefreshSphericalShellGeometry("initial mesh", true);
+}
+
+void HDSim3D::RefreshSphericalShellGeometry(
+	char const* update_name,
+	bool always_report)
+{
+	if (!spherical_shell_geometry_)
+		return;
+	bool const mesh_changed = spherical_shell_geometry_->Update(tess_);
+	if (!always_report && !mesh_changed)
+		return;
+#ifdef RICH_MPI
+	int rank = -1;
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	if (rank != 0)
+		return;
+#endif
+	std::cout << "Spherical shell update (" << update_name << "): "
+		<< spherical_shell_geometry_->GetShellRadii().size()
+		<< " shells" << std::endl;
 }
 
 FluxCalculator3D const&
@@ -503,6 +526,7 @@ namespace
 
 void HDSim3D::timeAdvance2(void)
 {
+	RefreshSphericalShellGeometry("timeAdvance2 entry");
 	MEMORY_PROFILE_SCOPE("hydro timeAdvance2");
 #ifdef RICH_MPI
 	this->exchange_chain_.Reset(tess_.GetPointNo());
@@ -585,6 +609,7 @@ void HDSim3D::timeAdvance2(void)
 		#else // RICH_MPI
 			UpdateTessellation(tess_, point_vel, dt, this->tessellation_points_scratch_);
 		#endif // RICH_MPI
+		RefreshSphericalShellGeometry("timeAdvance2 mesh build", true);
 		t2 = get_time();
 		DisplayTime(t1, t2, "Voronoi build time ");
 #ifdef RICH_MPI
@@ -629,6 +654,7 @@ void HDSim3D::timeAdvanceLagrangian1D(
 	const ComputationalCell3D* left_external,
 	const ComputationalCell3D* right_external)
 {
+	RefreshSphericalShellGeometry("timeAdvanceLagrangian1D entry");
 	MEMORY_PROFILE_SCOPE("hydro timeAdvanceLagrangian1D");
 #ifdef RICH_MPI
 	this->exchange_chain_.Reset(tess_.GetPointNo());
@@ -791,6 +817,7 @@ void HDSim3D::timeAdvanceLagrangian1D(
 
 void HDSim3D::timeAdvance(void)
 {
+	RefreshSphericalShellGeometry("timeAdvance entry");
 	MEMORY_PROFILE_SCOPE("hydro timeAdvance");
 	MEMORY_DEBUG_PRINT("hydro1: start");
 #ifdef RICH_MPI
@@ -829,6 +856,7 @@ void HDSim3D::timeAdvance(void)
 	#else // RICH_MPI
 		UpdateTessellation(tess_, point_vel, dt, this->tessellation_points_scratch_);
 	#endif // RICH_MPI
+	RefreshSphericalShellGeometry("timeAdvance mesh build", true);
 
 	#ifdef RICH_MPI
 	// Keep relevant points
@@ -848,6 +876,7 @@ void HDSim3D::timeAdvance(void)
 
 void HDSim3D::timeAdvance3(void)
 {
+	RefreshSphericalShellGeometry("timeAdvance3 entry");
 	MEMORY_PROFILE_SCOPE("hydro timeAdvance3");
 	MEMORY_DEBUG_PRINT("hydro3: start");
 #ifdef RICH_MPI
@@ -909,6 +938,7 @@ void HDSim3D::timeAdvance3(void)
 	#else // RICH_MPI
 		UpdateTessellation(tess_, point_vel, 0.5 * dt, this->tessellation_points_scratch_);
 	#endif // RICH_MPI
+	RefreshSphericalShellGeometry("timeAdvance3 first mesh build", true);
 #ifdef RICH_MPI
 	// Keep relevant points
 	MPI_exchange_data(tess_, mid_extensives, false);
@@ -939,6 +969,7 @@ void HDSim3D::timeAdvance3(void)
 	#else // RICH_MPI
 		UpdateTessellation(tess_, point_vel, dt, this->tessellation_points_scratch_, &oldpoints);
 	#endif // RICH_MPI
+	RefreshSphericalShellGeometry("timeAdvance3 second mesh build", true);
 #ifdef RICH_MPI
 	// Keep relevant points
 	MPI_exchange_data(tess_, mid_extensives, false);
@@ -970,6 +1001,7 @@ void HDSim3D::timeAdvance3(void)
 
 void HDSim3D::timeAdvance33(void)
 {
+	RefreshSphericalShellGeometry("timeAdvance33 entry");
 	MEMORY_PROFILE_SCOPE("hydro timeAdvance33");
 	MEMORY_DEBUG_PRINT("hydro33: start");
 #ifdef RICH_MPI
@@ -1029,6 +1061,7 @@ void HDSim3D::timeAdvance33(void)
 	#else // RICH_MPI
 		UpdateTessellation(tess_, point_vel, dt, this->tessellation_points_scratch_);
 	#endif // RICH_MPI
+	RefreshSphericalShellGeometry("timeAdvance33 first mesh build", true);
 #ifdef RICH_MPI
 	// Keep relevant points
 	MPI_exchange_data(tess_, mid_extensives, false);
@@ -1057,6 +1090,7 @@ void HDSim3D::timeAdvance33(void)
 	#else // RICH_MPI
 		UpdateTessellation(tess_, point_vel, dt / 2, this->tessellation_points_scratch_, &oldpoints);
 	#endif // RICH_MPI
+	RefreshSphericalShellGeometry("timeAdvance33 second mesh build", true);
 #ifdef RICH_MPI
 	// Keep relevant points
 	MPI_exchange_data(tess_, mid_extensives, false);
@@ -1083,6 +1117,7 @@ void HDSim3D::timeAdvance33(void)
 	#else // RICH_MPI
 		UpdateTessellation(tess_, point_vel, dt, this->tessellation_points_scratch_, &oldpoints);
 	#endif // RICH_MPI
+	RefreshSphericalShellGeometry("timeAdvance33 third mesh build", true);
 
 #ifdef RICH_MPI
 	// Keep relevant points
@@ -1099,6 +1134,7 @@ void HDSim3D::timeAdvance33(void)
 
 void HDSim3D::timeAdvance32(void)
 {
+	RefreshSphericalShellGeometry("timeAdvance32 entry");
 	MEMORY_PROFILE_SCOPE("hydro timeAdvance32");
 	MEMORY_DEBUG_PRINT("hydro32: start");
 #ifdef RICH_MPI
@@ -1157,6 +1193,7 @@ void HDSim3D::timeAdvance32(void)
 	#else // RICH_MPI
 		UpdateTessellation(tess_, point_vel, dt, this->tessellation_points_scratch_);
 	#endif // RICH_MPI
+	RefreshSphericalShellGeometry("timeAdvance32 mesh build", true);
 
 	#ifdef RICH_MPI
 	// Keep relevant points
@@ -1198,6 +1235,7 @@ void HDSim3D::timeAdvance32(void)
 
 void HDSim3D::timeAdvance4(void)
 {
+	RefreshSphericalShellGeometry("timeAdvance4 entry");
 	MEMORY_PROFILE_SCOPE("hydro timeAdvance4");
 	MEMORY_DEBUG_PRINT("hydro4: start");
 #ifdef RICH_MPI
@@ -1260,6 +1298,7 @@ void HDSim3D::timeAdvance4(void)
 	#else // RICH_MPI
 		UpdateTessellation(tess_, point_vel, 0.5 * dt, this->tessellation_points_scratch_);
 	#endif // RICH_MPI
+	RefreshSphericalShellGeometry("timeAdvance4 first mesh build", true);
 
 #ifdef RICH_MPI
 	// Keep relevant points
@@ -1300,6 +1339,7 @@ void HDSim3D::timeAdvance4(void)
 	#else // RICH_MPI
 		UpdateTessellation(tess_, point_vel, dt, this->tessellation_points_scratch_, &oldpoints);
 	#endif // RICH_MPI
+	RefreshSphericalShellGeometry("timeAdvance4 second mesh build", true);
 
 #ifdef RICH_MPI
 	// Keep relevant points
