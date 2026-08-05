@@ -16,12 +16,12 @@ struct FmmDistributedOptions
     // Emit the detailed fmm_solve_trace line without relying on a process
     // environment variable. The legacy RICH_FMM_TRACE switch remains supported
     // for existing runs.
-    bool emitSolveTrace = false;
+    bool emitSolveTrace = true;
     bool reuseInteractionPlansAcrossLeafCountChanges = true;
     // Retain bounded-wave source assignments when only leaf counts change.
     // The current payload is still checked against the hard remote-memory
     // budget at execution time; structural splits rebuild and resize waves.
-    bool reuseBoundedLetWavesAcrossLeafCountChanges = false;
+    bool reuseBoundedLetWavesAcrossLeafCountChanges = true;
 
     // Legacy process-tree planning restricts every internal node to one of its
     // two child owners.  On strongly nonuniform decompositions this can funnel
@@ -34,8 +34,8 @@ struct FmmDistributedOptions
 
     // Keep persistent-tree controls last for aggregate compatibility.
     bool persistentLocalTreeTopology = true;
-    double persistentLeafSplitFactor = 1.5;
-    double persistentLeafMergeFactor = 0.5;
+    double persistentLeafSplitFactor = 4.0;
+    double persistentLeafMergeFactor = 0.2;
 
     // Retained particle subscriptions reserve more than the current leaf
     // occupancy.  This keeps count-only moving-mesh changes from rebuilding the
@@ -54,22 +54,23 @@ struct FmmDistributedOptions
     // Lets an inadmissible leaf target accept a remote multipole evaluated at
     // each of its particles. This removes the target radius from the accuracy
     // bound, but pays an uncached translation operator per particle and source,
-    // so it is off by default and only worth enabling for distributions with
-    // spatially oversized ranks.
-    bool enableLeafM2P = false;
+    // This is enabled by default to avoid transferring remote near-field
+    // particles when a target leaf's extent alone prevents M2L.
+    bool enableLeafM2P = true;
 
     // Encode patch-LET P2P particles as float offsets from their source-leaf
     // center plus a float mass (16 bytes instead of four doubles / 32 bytes).
     // Relative coordinates retain substantially more useful precision than
-    // casting absolute domain coordinates to float.  Disabled by default until
-    // a production geometry has passed its accuracy and performance gates.
-    bool compactLetParticlePayload = false;
+    // casting absolute domain coordinates to float. This format passed the TDE
+    // and Lane-Emden accuracy and performance gates.
+    bool compactLetParticlePayload = true;
 
     // Further compress compatibility-LET near-field particles to three
     // signed 16-bit leaf-relative coordinates plus one signed 16-bit mass
     // fraction. Each source leaf carries one double mass scale. Requires the
-    // compact particle mode and leaves all force arithmetic in double.
-    bool quantizedLetParticlePayload = false;
+    // compact particle mode and leaves all force arithmetic in double. This
+    // mode passed the TDE and Lane-Emden validation gates.
+    bool quantizedLetParticlePayload = true;
 
     // Encode compatibility-LET multipole coefficients as binary32 on the
     // wire and use the source rank plus a compact 16-byte record header in
@@ -94,14 +95,14 @@ struct FmmDistributedOptions
     // gravity, then return accelerations to their hydro owners.  This gives the
     // one-tree-per-rank FMM compact, balanced spatial domains even when the
     // moving Voronoi decomposition overlaps the dense TDE core on many ranks.
-    bool spatiallyRedistributeForGravity = false;
+    bool spatiallyRedistributeForGravity = true;
 
     // Hilbert intervals have substantially better spatial locality than
     // Morton intervals at curve discontinuities.  Use them for the temporary
     // gravity ownership split to reduce pathological rank-root extents and
     // the resulting worst-rank LET fanout.  This remains a pure MPI
     // redistribution with one rank per core.
-    bool useHilbertGravityRedistribution = false;
+    bool useHilbertGravityRedistribution = true;
 
     // Blend particle-count and Hilbert-volume quantiles when choosing gravity
     // owners.  A positive value assigns more ranks to sparse, physically large
@@ -115,7 +116,7 @@ struct FmmDistributedOptions
     // neighborhood collective per process-tree level and makes every remote
     // process M2L source immediately available. Local particle trees and LET
     // payloads remain rank-private.
-    bool replicateProcessMultipoles = false;
+    bool replicateProcessMultipoles = true;
 
     // On the selected (one-based) solve, compare a deterministic stratified
     // random sample of target accelerations with a distributed direct sum over
@@ -132,16 +133,16 @@ struct FmmDistributedOptions
     std::size_t maxLetWaveBytes =
         static_cast<std::size_t>(256) * 1024 * 1024;
 
-    // Patch-forest mode is the production default.  Set enablePatchForest=false
-    // for the one-tree-per-rank compatibility path during the fallback cycle.
-    // The fixed level-7 partition is deliberately conservative; adaptive patch
-    // splitting remains opt-in through targetParticlesPerPatch.
-    bool enablePatchForest = true;
+    // The one-tree-per-rank compatibility path is the production default. Patch
+    // forest remains available explicitly for patch-specific regression and
+    // development coverage. Its fixed level-7 partition is deliberately
+    // conservative; adaptive splitting remains opt-in.
+    bool enablePatchForest = false;
     int minimumPatchLevel = 7;
-    int maximumPatchLevel = FMM_MAX_TREE_DEPTH;
+    int maximumPatchLevel = 7;
     std::size_t targetParticlesPerPatch = 0;
     std::size_t maxLocalPatchCount = 65536;
-    std::size_t maxTargetPatchesPerWave = 64;
+    std::size_t maxTargetPatchesPerWave = 65536;
     bool useLocalPatchLet = true;
 
     // The patch-root directory and compact process tree are replicated on every
