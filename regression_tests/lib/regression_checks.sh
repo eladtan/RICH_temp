@@ -796,8 +796,6 @@ check_spherical_collapse_case() {
     local max_density_scatter
     local max_velocity_scatter
     local max_tangential_velocity_rms
-    local max_first_postshock_added_shock_weight
-    local min_first_postshock_base_scalar_limiter
     local pass_flag
 
     if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
@@ -812,14 +810,10 @@ check_spherical_collapse_case() {
     max_density_scatter=$(awk '$1 == "max_density_scatter" { print $2 }' "$metrics_file")
     max_velocity_scatter=$(awk '$1 == "max_velocity_scatter" { print $2 }' "$metrics_file")
     max_tangential_velocity_rms=$(awk '$1 == "max_tangential_velocity_rms" { print $2 }' "$metrics_file")
-    max_first_postshock_added_shock_weight=$(awk '$1 == "max_first_postshock_added_shock_weight" { print $2 }' "$metrics_file")
-    min_first_postshock_base_scalar_limiter=$(awk '$1 == "min_first_postshock_base_scalar_limiter" { print $2 }' "$metrics_file")
     pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
 
     if [[ -z "$max_density_scatter" || -z "$max_velocity_scatter" ||
-          -z "$max_tangential_velocity_rms" ||
-          -z "$max_first_postshock_added_shock_weight" ||
-          -z "$min_first_postshock_base_scalar_limiter" || -z "$pass_flag" ]]; then
+          -z "$max_tangential_velocity_rms" || -z "$pass_flag" ]]; then
         set_check_msg "failed to parse spherical collapse metrics"
         return 1
     fi
@@ -832,10 +826,8 @@ check_spherical_collapse_case() {
         set_check_msg "spherical_collapse max_velocity_scatter is not finite"
         return 1
     fi
-    if ! is_finite_number "$max_tangential_velocity_rms" ||
-       ! is_finite_number "$max_first_postshock_added_shock_weight" ||
-       ! is_finite_number "$min_first_postshock_base_scalar_limiter"; then
-        set_check_msg "spherical_collapse extended diagnostics are not finite"
+    if ! is_finite_number "$max_tangential_velocity_rms"; then
+        set_check_msg "spherical_collapse max_tangential_velocity_rms is not finite"
         return 1
     fi
     if [[ "$pass_flag" != "0" && "$pass_flag" != "1" ]]; then
@@ -863,18 +855,112 @@ check_spherical_collapse_case() {
         return 1
     fi
 
-    local max_postshock="${COLLAPSE_MAX_FIRST_POSTSHOCK_ADDED_SHOCK_WEIGHT:-1e-12}"
-    if ! awk -v v="$max_first_postshock_added_shock_weight" -v t="$max_postshock" 'BEGIN { exit !(v <= t) }'; then
-        set_check_msg "spherical_collapse first postshock added shock weight exceeds threshold (${max_first_postshock_added_shock_weight} > ${max_postshock})"
-        return 1
-    fi
-
     if [[ "$pass_flag" != "1" ]]; then
         set_check_msg "spherical_collapse test reported pass=0"
         return 1
     fi
 
-    set_check_msg "Spherical collapse symmetry check passed (density_scatter=${max_density_scatter}, velocity_scatter=${max_velocity_scatter}, tangential_rms=${max_tangential_velocity_rms}, postshock_added=${max_first_postshock_added_shock_weight}, postshock_base=${min_first_postshock_base_scalar_limiter})"
+    set_check_msg "Spherical collapse symmetry check passed (density_scatter=${max_density_scatter}, velocity_scatter=${max_velocity_scatter}, tangential_rms=${max_tangential_velocity_rms})"
+    return 0
+}
+
+check_spherical_collapse_perturbed_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/collapse_perturbed_metrics.txt"
+    local reached_target
+    local injected_amplitude
+    local initial_amplitude
+    local initial_amplitude_error
+    local initial_amplitude_tolerance
+    local measured_shock_radius
+    local target_shock_radius
+    local velocity_amplitude
+    local minimum_imprint
+    local retained_fraction
+    local perturbation_evaluations
+    local mass_drift
+    local energy_drift
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale collapse_perturbed_metrics.txt"
+        return 1
+    fi
+
+    reached_target=$(awk '$1 == "reached_target_shock" { print $2 }' "$metrics_file")
+    injected_amplitude=$(awk '$1 == "injected_velocity_y33_amplitude" { print $2 }' "$metrics_file")
+    initial_amplitude=$(awk '$1 == "measured_initial_velocity_y33_amplitude" { print $2 }' "$metrics_file")
+    initial_amplitude_error=$(awk '$1 == "initial_amplitude_error" { print $2 }' "$metrics_file")
+    initial_amplitude_tolerance=$(awk '$1 == "initial_amplitude_tolerance" { print $2 }' "$metrics_file")
+    measured_shock_radius=$(awk '$1 == "measured_shock_radius" { print $2 }' "$metrics_file")
+    target_shock_radius=$(awk '$1 == "target_shock_radius" { print $2 }' "$metrics_file")
+    velocity_amplitude=$(awk '$1 == "shock_velocity_y33_amplitude" { print $2 }' "$metrics_file")
+    minimum_imprint=$(awk '$1 == "minimum_retained_imprint" { print $2 }' "$metrics_file")
+    retained_fraction=$(awk '$1 == "retained_velocity_fraction" { print $2 }' "$metrics_file")
+    perturbation_evaluations=$(awk '$1 == "perturbation_evaluation_count" { print $2 }' "$metrics_file")
+    mass_drift=$(awk '$1 == "max_mass_relative_drift" { print $2 }' "$metrics_file")
+    energy_drift=$(awk '$1 == "max_energy_relative_drift" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$reached_target" || -z "$injected_amplitude" ||
+          -z "$initial_amplitude" || -z "$initial_amplitude_error" ||
+          -z "$initial_amplitude_tolerance" || -z "$measured_shock_radius" ||
+          -z "$target_shock_radius" || -z "$velocity_amplitude" ||
+          -z "$minimum_imprint" || -z "$retained_fraction" ||
+          -z "$perturbation_evaluations" || -z "$mass_drift" ||
+          -z "$energy_drift" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse perturbed spherical collapse metrics"
+        return 1
+    fi
+
+    for value in "$injected_amplitude" "$initial_amplitude" \
+                 "$initial_amplitude_error" "$initial_amplitude_tolerance" \
+                 "$measured_shock_radius" "$target_shock_radius" \
+                 "$velocity_amplitude" "$minimum_imprint" \
+                 "$retained_fraction" "$perturbation_evaluations" \
+                 "$mass_drift" "$energy_drift"; do
+        if ! is_finite_number "$value"; then
+            set_check_msg "perturbed spherical collapse metric is not finite"
+            return 1
+        fi
+    done
+
+    if [[ "$reached_target" != "1" ]]; then
+        set_check_msg "perturbed spherical collapse did not reach the target shock radius"
+        return 1
+    fi
+    if ! awk -v e="$initial_amplitude_error" -v t="$initial_amplitude_tolerance" \
+        'BEGIN { exit !(e <= t) }'; then
+        set_check_msg "Y33 injection mismatch (requested=${injected_amplitude}, measured=${initial_amplitude})"
+        return 1
+    fi
+    if ! awk -v r="$measured_shock_radius" -v t="$target_shock_radius" \
+        'BEGIN { exit !(r <= t) }'; then
+        set_check_msg "perturbed spherical collapse stopped before shock radius ${target_shock_radius}"
+        return 1
+    fi
+    if ! awk -v a="$velocity_amplitude" -v t="$minimum_imprint" \
+        'BEGIN { exit !(a >= t) }'; then
+        set_check_msg "Y33 velocity imprint was erased (${velocity_amplitude} < ${minimum_imprint})"
+        return 1
+    fi
+    if ! awk -v n="$perturbation_evaluations" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "perturbed spherical operator was not evaluated"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "perturbed spherical collapse test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "Perturbed spherical collapse retained Y33 velocity imprint (amplitude=${velocity_amplitude}, fraction=${retained_fraction}, shock_r=${measured_shock_radius})"
     return 0
 }
 

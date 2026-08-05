@@ -35,7 +35,13 @@ namespace {
 
 double const R_OUTER = 1.1;
 double const R_INNER = 0.05;
-double const FINAL_TIME = 4.170877e-1;
+double const DENSE_SHELL_INNER_RADIUS = 0.9;
+double const DENSE_SHELL_OUTER_RADIUS = 1.0;
+double const VELOCITY_Y33_AMPLITUDE = 0.05;
+double const TARGET_SHOCK_RADIUS = 0.1;
+double const MAX_SIMULATION_TIME = 1.0;
+double const MINIMUM_RETAINED_IMPRINT = 1e-5;
+double const INITIAL_AMPLITUDE_TOLERANCE = 1e-10;
 #ifdef HIGH_RES
 size_t const N_CUBE_EDGE = 82;
 #else
@@ -62,11 +68,25 @@ std::vector<double> build_bin_edges()
     return SphericalShellMeshActiveBinEdges(build_shell_mesh_options());
 }
 
+// Peak-normalized real Y_3^3 cosine component:
+// sin(theta)^3 cos(3 phi) = x (x^2 - 3 y^2) / r^3.
+double real_y33(Vector3D const& position)
+{
+    double const radius = abs(position);
+    if (radius <= 0.0)
+        return 0.0;
+    double const x = position.x / radius;
+    double const y = position.y / radius;
+    return x * (x * x - 3.0 * y * y);
+}
+
 struct DiagResult {
     double shock_r;
     double rho_scatter;
     double vr_scatter;
     double tangential_velocity_rms;
+    double shock_velocity_y33_amplitude;
+    double shock_density_y33_relative_amplitude;
 };
 
 DiagResult compute_diagnostics(HDSim3D const& sim,
@@ -79,6 +99,7 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
     std::vector<double> rho_vol(nbins, 0.0);
     std::vector<double> vr_vol(nbins, 0.0);
     std::vector<double> ie_vol(nbins, 0.0);
+    std::vector<double> y33_vol(nbins, 0.0);
     double tangential_v2_vol = 0.0;
     double tangential_vol = 0.0;
 
@@ -86,6 +107,7 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
     std::vector<double> cell_rho(N);
     std::vector<double> cell_vr(N);
     std::vector<double> cell_vol(N);
+    std::vector<double> cell_y33(N);
 
     for (size_t i = 0; i < N; ++i) {
         Vector3D const cm = sim.getTessellation().GetCellCM(i);
@@ -103,6 +125,7 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
         double const vol = sim.getTessellation().GetVolume(i);
         double const rho = sim.getCells()[i].density;
         double const ie = sim.getCells()[i].internal_energy;
+        double const y33 = real_y33(cm);
         double vr = 0.0;
         double vt2 = 0.0;
         if (r > 1e-12) {
@@ -116,11 +139,13 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
         cell_rho[i] = rho;
         cell_vr[i] = vr;
         cell_vol[i] = vol;
+        cell_y33[i] = y33;
 
         vol_sum[bin] += vol;
         rho_vol[bin] += rho * vol;
         vr_vol[bin] += vr * vol;
         ie_vol[bin] += ie * vol;
+        y33_vol[bin] += y33 * vol;
         tangential_v2_vol += vt2 * vol;
         tangential_vol += vol;
     }
@@ -137,6 +162,8 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
         vr_vol = g;
         MPI_Allreduce(ie_vol.data(), g.data(), n, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         ie_vol = g;
+        MPI_Allreduce(y33_vol.data(), g.data(), n, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        y33_vol = g;
         double gt = 0.0;
         MPI_Allreduce(&tangential_v2_vol, &gt, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         tangential_v2_vol = gt;
@@ -148,16 +175,21 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
     std::vector<double> rho_mean(nbins, 0.0);
     std::vector<double> vr_mean(nbins, 0.0);
     std::vector<double> ie_mean(nbins, 0.0);
+    std::vector<double> y33_mean(nbins, 0.0);
     for (size_t b = 0; b < nbins; ++b) {
         if (vol_sum[b] > 0.0) {
             rho_mean[b] = rho_vol[b] / vol_sum[b];
             vr_mean[b] = vr_vol[b] / vol_sum[b];
             ie_mean[b] = ie_vol[b] / vol_sum[b];
+            y33_mean[b] = y33_vol[b] / vol_sum[b];
         }
     }
 
     std::vector<double> rho_mad(nbins, 0.0);
     std::vector<double> vr_mad(nbins, 0.0);
+    std::vector<double> y33_sq_vol(nbins, 0.0);
+    std::vector<double> rho_y33_vol(nbins, 0.0);
+    std::vector<double> vr_y33_vol(nbins, 0.0);
 
     for (size_t i = 0; i < N; ++i) {
         if (cell_bin[i] >= nbins)
@@ -165,6 +197,10 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
         size_t b = cell_bin[i];
         rho_mad[b] += std::abs(cell_rho[i] - rho_mean[b]) * cell_vol[i];
         vr_mad[b] += std::abs(cell_vr[i] - vr_mean[b]) * cell_vol[i];
+        double const centered_y33 = cell_y33[i] - y33_mean[b];
+        y33_sq_vol[b] += centered_y33 * centered_y33 * cell_vol[i];
+        rho_y33_vol[b] += (cell_rho[i] - rho_mean[b]) * centered_y33 * cell_vol[i];
+        vr_y33_vol[b] += (cell_vr[i] - vr_mean[b]) * centered_y33 * cell_vol[i];
     }
 
 #ifdef RICH_MPI
@@ -175,10 +211,17 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
         rho_mad = g;
         MPI_Allreduce(vr_mad.data(), g.data(), n, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         vr_mad = g;
+        MPI_Allreduce(y33_sq_vol.data(), g.data(), n, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        y33_sq_vol = g;
+        MPI_Allreduce(rho_y33_vol.data(), g.data(), n, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        rho_y33_vol = g;
+        MPI_Allreduce(vr_y33_vol.data(), g.data(), n, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        vr_y33_vol = g;
     }
 #endif
 
     double shock_r = bin_edges.back();
+    size_t shock_bin = nbins;
     double total_rho_mad = 0.0;
     double total_vr_mad = 0.0;
     double total_vol = 0.0;
@@ -196,6 +239,29 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
         if (ie_mean[b] > 0.2 && bin_center < shock_r)
         {
             shock_r = bin_center;
+            shock_bin = b;
+        }
+    }
+
+    double shock_velocity_y33_amplitude = 0.0;
+    double shock_density_y33_relative_amplitude = 0.0;
+    if (shock_bin < nbins) {
+        size_t const first = shock_bin > 0 ? shock_bin - 1 : shock_bin;
+        size_t const last = std::min(nbins - 1, shock_bin + 1);
+        for (size_t b = first; b <= last; ++b) {
+            if (!(y33_sq_vol[b] > 0.0))
+                continue;
+            double const velocity_coefficient =
+                vr_y33_vol[b] / y33_sq_vol[b];
+            double const density_coefficient =
+                rho_y33_vol[b] / y33_sq_vol[b];
+            shock_velocity_y33_amplitude = std::max(
+                shock_velocity_y33_amplitude,
+                std::abs(velocity_coefficient));
+            shock_density_y33_relative_amplitude = std::max(
+                shock_density_y33_relative_amplitude,
+                std::abs(density_coefficient) /
+                    std::max(std::abs(rho_mean[b]), 1e-300));
         }
     }
 
@@ -205,7 +271,53 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
     res.vr_scatter = (total_vol > 0.0) ? total_vr_mad / total_vol : 0.0;
     res.tangential_velocity_rms = (tangential_vol > 0.0)
         ? std::sqrt(tangential_v2_vol / tangential_vol) : 0.0;
+    res.shock_velocity_y33_amplitude = shock_velocity_y33_amplitude;
+    res.shock_density_y33_relative_amplitude =
+        shock_density_y33_relative_amplitude;
     return res;
+}
+
+double measure_inner_layer_velocity_y33_amplitude(
+    Voronoi3D const& tess,
+    std::vector<ComputationalCell3D> const& cells,
+    double const layer_outer_radius)
+{
+    double sums[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+    for (size_t i = 0; i < cells.size(); ++i) {
+        double const mesh_radius = abs(tess.GetMeshPoint(i));
+        if (!(mesh_radius > DENSE_SHELL_INNER_RADIUS &&
+              mesh_radius < layer_outer_radius))
+            continue;
+
+        Vector3D const cm = tess.GetCellCM(i);
+        double const radius = abs(cm);
+        if (!(radius > 1e-12))
+            continue;
+
+        double const volume = tess.GetVolume(i);
+        double const y33 = real_y33(cm);
+        double const radial_velocity =
+            ScalarProd(cells[i].velocity, cm) / radius;
+        sums[0] += volume;
+        sums[1] += y33 * volume;
+        sums[2] += radial_velocity * volume;
+        sums[3] += y33 * y33 * volume;
+        sums[4] += radial_velocity * y33 * volume;
+    }
+
+#ifdef RICH_MPI
+    double global_sums[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
+    MPI_Allreduce(sums, global_sums, 5, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    std::copy(global_sums, global_sums + 5, sums);
+#endif
+
+    if (!(sums[0] > 0.0))
+        return 0.0;
+    double const denominator = sums[3] - sums[1] * sums[1] / sums[0];
+    if (!(denominator > 0.0))
+        return 0.0;
+    double const numerator = sums[4] - sums[2] * sums[1] / sums[0];
+    return numerator / denominator;
 }
 
 } // namespace
@@ -229,6 +341,20 @@ int main(void)
     Voronoi3D tess(ll, ur);
     std::vector<ComputationalCell3D> cells;
     SphericalShellMeshOptions const shell_options = build_shell_mesh_options();
+    std::vector<double> const shell_radii =
+        SphericalShellMeshRadii(shell_options);
+    std::vector<double> dense_shell_radii;
+    for (double const radius : shell_radii) {
+        if (radius > DENSE_SHELL_INNER_RADIUS &&
+            radius < DENSE_SHELL_OUTER_RADIUS)
+            dense_shell_radii.push_back(radius);
+    }
+    std::sort(dense_shell_radii.begin(), dense_shell_radii.end());
+    if (dense_shell_radii.size() < 2)
+        throw UniversalError(
+            "Spherical collapse perturbation needs two dense-shell radii");
+    double const perturbation_layer_outer_radius =
+        0.5 * (dense_shell_radii[0] + dense_shell_radii[1]);
 
     {
         std::vector<Vector3D> points;
@@ -257,11 +383,17 @@ int main(void)
             Vector3D const cm = tess.GetCellCM(i);
             double const r_mp = abs(pos);
             double const r_cm = abs(cm);
-            if (r_mp > 0.9 && r_mp < 1.0) {
+            if (r_mp > DENSE_SHELL_INNER_RADIUS &&
+                r_mp < DENSE_SHELL_OUTER_RADIUS) {
                 cells[i].density = 10.0;
                 cells[i].pressure = 0.1;
-                if (r_cm > 1e-12)
+                if (r_cm > 1e-12) {
                     cells[i].velocity = cm * (-1.0 / r_cm);
+                    if (r_mp < perturbation_layer_outer_radius) {
+                        cells[i].velocity += cm *
+                            (VELOCITY_Y33_AMPLITUDE * real_y33(cm) / r_cm);
+                    }
+                }
             } else {
                 cells[i].density = 0.001;
                 // Keep the inner ambient medium unchanged.  At fixed density,
@@ -273,11 +405,14 @@ int main(void)
                                                  cells[i].tracers, ComputationalCell3D::tracerNames);
         }
     }
+    double const initial_velocity_y33_amplitude =
+        measure_inner_layer_velocity_y33_amplitude(
+            tess, cells, perturbation_layer_outer_radius);
 
     Hllc3D rs;
     RigidWallGenerator3D ghost;
     SphericalBackgroundLinearGauss3D interp(eos, ghost, Vector3D(),
-        SphericalShellMeshRadii(shell_options), true, 0.2, 0.5, 0.7);
+        shell_radii, true, 0.2, 0.5, 0.7);
     LinearGauss3D perturbation_interp(eos, ghost, true, 0.2, 0.5, 0.7);
     Eulerian3D pm;
     ZeroForce3D force;
@@ -308,7 +443,7 @@ int main(void)
                 std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
     sim.SetSphericalShellProjector(
         std::make_shared<SphericalShellProjector3D>(
-            shell_options.center, SphericalShellMeshRadii(shell_options)),
+            shell_options.center, shell_radii),
         perturbation_fc);
 
     auto hydroStep = std::make_shared<HydroStep>(sim, HydroStep::TIMEADVANCE_2);
@@ -361,6 +496,8 @@ int main(void)
     double max_rho_scatter = 0.0;
     double max_vr_scatter = 0.0;
     double max_tangential_velocity_rms = 0.0;
+    bool reached_target_shock = false;
+    DiagResult target_diag{};
 
     while (true) {
         try {
@@ -386,6 +523,7 @@ int main(void)
         max_vr_scatter = std::max(max_vr_scatter, diag.vr_scatter);
         max_tangential_velocity_rms = std::max(max_tangential_velocity_rms,
                                                diag.tangential_velocity_rms);
+        target_diag = diag;
 
         if (rank == 0) {
             std::cout << "Cycle " << simulation.GetCycle()
@@ -395,6 +533,10 @@ int main(void)
                       << " rho_scatter=" << diag.rho_scatter
                       << " vr_scatter=" << diag.vr_scatter
                       << " tangential_velocity_rms=" << diag.tangential_velocity_rms
+                      << " shock_velocity_y33_amplitude="
+                      << diag.shock_velocity_y33_amplitude
+                      << " shock_density_y33_relative_amplitude="
+                      << diag.shock_density_y33_relative_amplitude
                       << " mass_relative_drift=" << mass_relative_drift
                       << " energy_relative_drift=" << energy_relative_drift
                       << std::endl;
@@ -409,7 +551,12 @@ int main(void)
             next_snapshot_r -= 0.1;
         }
 
-        if (simulation.GetTime() >= FINAL_TIME)
+        if (diag.shock_r <= TARGET_SHOCK_RADIUS) {
+            reached_target_shock = true;
+            break;
+        }
+
+        if (simulation.GetTime() >= MAX_SIMULATION_TIME)
             break;
     }
 
@@ -464,12 +611,47 @@ int main(void)
 
     int exit_code = 0;
     if (rank == 0) {
-        int pass = (max_rho_scatter <= 1e-4 && max_vr_scatter <= 1e-4
-                    && max_tangential_velocity_rms <= 1e-4
+        double const retained_velocity_fraction =
+            target_diag.shock_velocity_y33_amplitude /
+            VELOCITY_Y33_AMPLITUDE;
+        double const initial_amplitude_error = std::abs(
+            initial_velocity_y33_amplitude - VELOCITY_Y33_AMPLITUDE);
+        int pass = (reached_target_shock
+                    && initial_amplitude_error <= INITIAL_AMPLITUDE_TOLERANCE
+                    && std::isfinite(target_diag.shock_velocity_y33_amplitude)
+                    && target_diag.shock_velocity_y33_amplitude >=
+                        MINIMUM_RETAINED_IMPRINT
                     && max_mass_relative_drift <= 1e-10
                     && max_energy_relative_drift <= 1e-10) ? 1 : 0;
-        std::ofstream mf("collapse_metrics.txt");
+        std::ofstream mf("collapse_perturbed_metrics.txt");
         mf << std::scientific << std::setprecision(12);
+        mf << "harmonic_l 3\n";
+        mf << "harmonic_m 3\n";
+        mf << "harmonic_component real_cosine\n";
+        mf << "harmonic_normalization peak_one\n";
+        mf << "injected_velocity_y33_amplitude "
+           << VELOCITY_Y33_AMPLITUDE << "\n";
+        mf << "measured_initial_velocity_y33_amplitude "
+           << initial_velocity_y33_amplitude << "\n";
+        mf << "initial_amplitude_error " << initial_amplitude_error << "\n";
+        mf << "initial_amplitude_tolerance "
+           << INITIAL_AMPLITUDE_TOLERANCE << "\n";
+        mf << "perturbation_layer_outer_radius "
+           << perturbation_layer_outer_radius << "\n";
+        mf << "target_shock_radius " << TARGET_SHOCK_RADIUS << "\n";
+        mf << "reached_target_shock " << (reached_target_shock ? 1 : 0)
+           << "\n";
+        mf << "measured_shock_radius " << target_diag.shock_r << "\n";
+        mf << "shock_velocity_y33_amplitude "
+           << target_diag.shock_velocity_y33_amplitude << "\n";
+        mf << "shock_density_y33_relative_amplitude "
+           << target_diag.shock_density_y33_relative_amplitude << "\n";
+        mf << "retained_velocity_fraction " << retained_velocity_fraction
+           << "\n";
+        mf << "minimum_retained_imprint " << MINIMUM_RETAINED_IMPRINT
+           << "\n";
+        mf << "perturbation_evaluation_count "
+           << sim.GetSphericalPerturbationEvaluationCount() << "\n";
         mf << "max_density_scatter " << max_rho_scatter << "\n";
         mf << "max_velocity_scatter " << max_vr_scatter << "\n";
         mf << "max_tangential_velocity_rms " << max_tangential_velocity_rms << "\n";
@@ -481,10 +663,13 @@ int main(void)
         mf << "max_energy_relative_drift " << max_energy_relative_drift << "\n";
         mf << "pass " << pass << "\n";
         mf.close();
-        std::cout << "Wrote collapse_metrics.txt"
-                  << " (max_density_scatter=" << max_rho_scatter
-                   << ", max_velocity_scatter=" << max_vr_scatter
-                   << ", max_tangential_velocity_rms=" << max_tangential_velocity_rms
+        std::cout << "Wrote collapse_perturbed_metrics.txt"
+                  << " (reached_target_shock=" << reached_target_shock
+                   << ", measured_shock_radius=" << target_diag.shock_r
+                   << ", shock_velocity_y33_amplitude="
+                   << target_diag.shock_velocity_y33_amplitude
+                   << ", retained_velocity_fraction="
+                   << retained_velocity_fraction
                    << ", max_mass_relative_drift="
                    << max_mass_relative_drift
                    << ", max_energy_relative_drift="

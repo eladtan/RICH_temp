@@ -130,18 +130,11 @@ public:
   void SetTimeStep(double dt) {this->tsc_.SetTimeStep(dt);}
 
   void SetSphericalShellProjector(
-    std::shared_ptr<SphericalShellProjector3D> projector);
+    std::shared_ptr<SphericalShellProjector3D> projector,
+    FluxCalculator3D const& perturbation_flux_calculator);
 
-  void SetSphericalPositivityPreservingStage(bool enabled = true);
-
-  double GetLastSphericalPositivityTheta(void) const
-  {return last_spherical_positivity_theta_;}
-
-  double GetMinimumSphericalPositivityTheta(void) const
-  {return minimum_spherical_positivity_theta_;}
-
-  size_t GetSphericalPositivityActivationCount(void) const
-  {return spherical_positivity_activation_count_;}
+  size_t GetSphericalPerturbationEvaluationCount(void) const
+  {return spherical_perturbation_evaluation_count_;}
 
   #ifdef RICH_MPI
     const ExchangeChain &GetExchangeChain(void) const {return this->exchange_chain_;}
@@ -160,35 +153,11 @@ private:
     double time,
     double dt,
     bool source_before_extensive_update,
-    vector<Conserved3D>& full_candidate,
-    bool low_order);
+    vector<Conserved3D>& full_candidate);
 
-  void CalculateSphericalLowOrderFluxes(
-    vector<ComputationalCell3D> const& cells,
-    vector<Vector3D> const& face_velocities,
-    vector<Conserved3D>& fluxes) const;
+  FluxCalculator3D const& GetSphericalPerturbationFluxCalculator(void) const;
 
-  void ApplyFluxesWithoutValidation(
-    vector<Conserved3D> const& fluxes,
-    vector<ComputationalCell3D> const& cells,
-    double dt,
-    vector<Conserved3D>& candidate) const;
-
-  void BuildSphericalStageCandidate(
-    vector<ComputationalCell3D> const& stage_input_cells,
-    vector<Conserved3D> const& stage_input_extensives,
-    vector<Vector3D> const& face_velocities,
-    vector<Vector3D> const& point_velocities,
-    double time,
-    double dt,
-    bool source_before_extensive_update,
-    bool low_order,
-    vector<Conserved3D>& candidate);
-
-  void BlendSphericalStageCandidates(
-    vector<Conserved3D> const& low_order,
-    vector<Conserved3D> const& high_order,
-    vector<Conserved3D>& result);
+  FluxCalculator3D const& GetFullStateFluxCalculator(void) const;
 
   Tessellation3D& tess_;
   const EquationOfState& eos_;
@@ -213,10 +182,8 @@ private:
   vector<size_t> hilbert_order_scratch_;
   std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values_scratch_;
   std::shared_ptr<SphericalShellProjector3D> spherical_shell_projector_;
-  bool spherical_positivity_preserving_ = false;
-  double last_spherical_positivity_theta_ = 1.0;
-  double minimum_spherical_positivity_theta_ = 1.0;
-  size_t spherical_positivity_activation_count_ = 0;
+  FluxCalculator3D const* spherical_perturbation_flux_calculator_ = nullptr;
+  size_t spherical_perturbation_evaluation_count_ = 0;
   #ifdef RICH_MPI
     ExchangeChain exchange_chain_;
   #endif // RICH_MPI
