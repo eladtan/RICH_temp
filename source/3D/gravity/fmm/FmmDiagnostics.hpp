@@ -24,6 +24,16 @@ struct FmmSolveStats
     double interactionSeconds = 0;
     double downwardSeconds = 0;
     double totalSeconds = 0;
+    double gravityRedistributionSeconds = 0;
+    std::size_t directErrorSampleCount = 0;
+    double directErrorMeanRelativeAcceleration = 0;
+    double directErrorRmsRelativeAcceleration = 0;
+    double directErrorMaxRelativeAcceleration = 0;
+    double directErrorMedianRelativeAcceleration = 0;
+    double directErrorP90RelativeAcceleration = 0;
+    double directErrorP99RelativeAcceleration = 0;
+    double directErrorMeanAbsoluteAcceleration = 0;
+    double directErrorSampleSeconds = 0;
     std::size_t bytesOwned = 0;
     double totalMass = 0;
     double rootMass = 0;
@@ -33,6 +43,45 @@ struct FmmSolveStats
     std::size_t mpiRankCount = 1;
     std::size_t activeRankCount = 1;
     std::size_t processNodeCount = 0;
+
+    // Patch-forest reuse, replicated metadata, and process-owner balance.
+    std::size_t localPatchCount = 0;
+    std::size_t globalPatchCount = 0;
+    std::size_t reusedPatchCount = 0;
+    std::size_t reusedLocalPatchPlanCount = 0;
+    std::size_t rebuiltLocalPatchPlanCount = 0;
+    std::size_t patchNodeGeometryExpansionCount = 0;
+    std::size_t patchRetainedBytes = 0;
+    std::size_t patchReleasedBytes = 0;
+    std::size_t replicatedDescriptorBytes = 0;
+    std::size_t processTreeBytes = 0;
+    std::size_t processPlanBytes = 0;
+    std::size_t processOwnedNodeCount = 0;
+    std::size_t processOwnedNodeCountMax = 0;
+    double processOwnedNodeImbalance = 0.0;
+    std::uint64_t processOwnedM2LCount = 0;
+    std::uint64_t processOwnedM2LCountMax = 0;
+    double processOwnedM2LImbalance = 0.0;
+    bool processOwnershipGloballyBalanced = false;
+    std::uint64_t letTargetSubplansReused = 0;
+    std::uint64_t letTargetSubplansRebuilt = 0;
+    std::uint64_t letSourceTriggeredInvalidations = 0;
+    std::uint64_t letWavePlanRebuildCount = 0;
+    std::uint64_t letDescriptorTraversalSkippedCount = 0;
+    std::uint64_t letPayloadCapacityUpdateCount = 0;
+    std::uint64_t letPayloadSourceRepackCount = 0;
+    std::uint64_t letSourceGenerationCheckCount = 0;
+    std::uint64_t letChangedSourcePatchCount = 0;
+    std::uint64_t letReverseDependencyLookupCount = 0;
+    std::uint64_t letReverseDependencyTargetCount = 0;
+    std::uint64_t letReverseDependencyEdgeCount = 0;
+    bool letPayloadShapeTriggeredRebuild = false;
+    bool letPayloadCapacityRefreshRequired = false;
+    bool letPayloadLayoutRefreshed = false;
+    bool letParticlePayloadCompacted = false;
+    bool letParticlePayloadQuantized = false;
+    bool letMultipolePayloadCompacted = false;
+
     std::uint64_t processM2LCount = 0;
     std::uint64_t letM2LCount = 0;
     std::uint64_t letP2PBlockCount = 0;
@@ -47,6 +96,8 @@ struct FmmSolveStats
     std::uint64_t letTopologyRebuildCount = 0;
     std::size_t ranksWithRootGeometryChange = 0;
     std::size_t ranksWithLeafTopologyChange = 0;
+    std::size_t ranksWithNodeGeometryChange = 0;
+    std::size_t ranksWithGeometryEnvelopeChange = 0;
     std::size_t ranksWithLeafOccupancyChange = 0;
     std::size_t ranksWithCountOnlyLeafChange = 0;
     std::size_t persistentTreeRefitRankCount = 0;
@@ -57,11 +108,18 @@ struct FmmSolveStats
     std::uint64_t localInactiveP2PBlockCount = 0;
     std::uint64_t letInactiveM2LCount = 0;
     std::uint64_t letInactiveP2PBlockCount = 0;
+    std::uint64_t letM2PCount = 0;
+    std::uint64_t letInactiveM2PCount = 0;
+    std::size_t letWaveCount = 1;
+    std::size_t letLocalWaveCount = 1;
+    std::size_t letMaxWavePayloadBytes = 0;
     std::uint64_t letZeroMultipolePayloadCount = 0;
     std::uint64_t letOmittedMultipolePayloadCount = 0;
     std::uint64_t letOmittedParticlePayloadCount = 0;
     bool localRootGeometryChanged = false;
     bool localLeafTopologyChanged = false;
+    bool localNodeGeometryChanged = false;
+    bool localGeometryEnvelopeChanged = false;
     bool localLeafOccupancyChanged = false;
     bool localCountOnlyLeafChange = false;
     bool processTopologyRebuilt = false;
@@ -74,6 +132,9 @@ struct FmmSolveStats
     std::uint64_t bytesReceived = 0;
     std::size_t peakRemoteBytes = 0;
     std::size_t peakProcessBytes = 0;
+    std::size_t letMaxOutgoingBytes = 0;
+    std::size_t letMaxIncomingBytes = 0;
+    std::size_t letMaxSendCapacityBytes = 0;
 
     // Topology construction is split into a rank-root process topology and a
     // local-leaf-dependent LET topology.  These timings expose the cost paid
@@ -93,6 +154,8 @@ struct FmmSolveStats
     double letFinalizeSeconds = 0;
     double letSubscriptionSeconds = 0;
     double letPruneCompactSeconds = 0;
+    double letPayloadLayoutRefreshSeconds = 0;
+    double letInvalidationSeconds = 0;
 
     // Persistent distributed-memory attribution.  bytesOwned remains the
     // aggregate value; these fields expose the dominant components.
@@ -164,6 +227,7 @@ struct FmmSolveStats
 
     double letM2LSeconds = 0;
     double letP2PSeconds = 0;
+    double letM2PSeconds = 0;
     double localTraversalSeconds = 0;
 };
 

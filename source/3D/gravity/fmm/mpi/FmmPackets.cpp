@@ -6,7 +6,7 @@
 
 double FmmRemoteNodeDescriptor::geometricRadius() const
 {
-    return std::sqrt(3.0) * halfSize;
+    return radius > 0.0 ? radius : std::sqrt(3.0) * halfSize;
 }
 
 #endif // RICH_MPI

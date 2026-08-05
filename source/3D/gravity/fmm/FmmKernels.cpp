@@ -333,6 +333,60 @@ void FmmKernels::evaluateL2P(const FmmNode& leaf,
     }
 }
 
+void FmmKernels::accumulateM2POrder2(
+    const Vector3D& displacement,
+    const double* sourceCoefficients,
+    Vector3D& acceleration,
+    double* positiveKernelPotential)
+{
+    const double x = displacement.x;
+    const double y = displacement.y;
+    const double z = displacement.z;
+    const double r2 = x * x + y * y + z * z;
+    if(!(r2 > 0.0) || !std::isfinite(r2))
+        throw UniversalError(
+            "FmmKernels::accumulateM2POrder2: invalid center separation");
+
+    const double inverseR = 1.0 / std::sqrt(r2);
+    const double inverseR3 = inverseR / r2;
+    const double inverseR5 = inverseR3 / r2;
+
+    const double dx = -x * inverseR3;
+    const double dy = -y * inverseR3;
+    const double dz = -z * inverseR3;
+    const double dxx = (3.0 * x * x - r2) * inverseR5;
+    const double dxy = 3.0 * x * y * inverseR5;
+    const double dxz = 3.0 * x * z * inverseR5;
+    const double dyy = (3.0 * y * y - r2) * inverseR5;
+    const double dyz = 3.0 * y * z * inverseR5;
+    const double dzz = (3.0 * z * z - r2) * inverseR5;
+
+    // FmmTaylorExpansion orders equal total degree first, then x and y.  P2M
+    // stores each Cartesian moment divided by its multi-index factorial.
+    const double m0 = sourceCoefficients[0];
+    const double mz = sourceCoefficients[1];
+    const double my = sourceCoefficients[2];
+    const double mx = sourceCoefficients[3];
+
+    acceleration.x += m0 * dx - mx * dxx - my * dxy - mz * dxz;
+    acceleration.y += m0 * dy - mx * dxy - my * dyy - mz * dyz;
+    acceleration.z += m0 * dz - mx * dxz - my * dyz - mz * dzz;
+
+    if(positiveKernelPotential != nullptr)
+    {
+        const double mzz = sourceCoefficients[4];
+        const double myz = sourceCoefficients[5];
+        const double myy = sourceCoefficients[6];
+        const double mxz = sourceCoefficients[7];
+        const double mxy = sourceCoefficients[8];
+        const double mxx = sourceCoefficients[9];
+        *positiveKernelPotential +=
+            m0 * inverseR - mx * dx - my * dy - mz * dz +
+            mxx * dxx + mxy * dxy + mxz * dxz +
+            myy * dyy + myz * dyz + mzz * dzz;
+    }
+}
+
 void FmmKernels::accumulateP2P(const std::vector<Vector3D>& targetPositions,
                                const std::vector<Vector3D>& sourcePositions,
                                const std::vector<double>& sourceMasses,

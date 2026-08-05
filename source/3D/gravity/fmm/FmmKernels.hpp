@@ -57,6 +57,16 @@ void evaluateL2P(const FmmNode& leaf,
                  std::vector<Vector3D>& acceleration,
                  std::vector<double>* positiveKernelPotential);
 
+// Evaluate the order-two Cartesian Taylor multipole directly at one point.
+// The coefficient order is the canonical FmmTaylorExpansion(2) order.  This
+// produces exactly the same truncated potential and gradient as M2L to a
+// zero-radius target followed by L2P, without constructing the unused local
+// coefficients.
+void accumulateM2POrder2(const Vector3D& displacement,
+                         const double* sourceCoefficients,
+                         Vector3D& acceleration,
+                         double* positiveKernelPotential);
+
 void accumulateP2P(const std::vector<Vector3D>& targetPositions,
                    const std::vector<Vector3D>& sourcePositions,
                    const std::vector<double>& sourceMasses,

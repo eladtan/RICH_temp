@@ -4,6 +4,7 @@
 #include <array>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 #include "misc/universal_error.hpp"
 
@@ -177,6 +178,11 @@ void FmmTree::buildPersistent(
     bool initializeFromScratch,
     FmmPersistentTreeStats& stats)
 {
+    if(!(options.persistentRadiusSlackFactor >= 1.0) ||
+       !std::isfinite(options.persistentRadiusSlackFactor))
+        throw UniversalError(
+            "FmmTree::buildPersistent: invalid persistent radius slack factor");
+
     if(splitCapacity <= options.leafCapacity ||
        mergeCapacity >= options.leafCapacity ||
        mergeCapacity >= splitCapacity)
@@ -194,6 +200,20 @@ void FmmTree::buildPersistent(
                 throw UniversalError(
                     "FmmTree::buildPersistent: retained topology is not full-octant");
         }
+    }
+
+    // The planning radius is part of the conservative interaction contract,
+    // but not of the dyadic node identity. Keep the previous envelope by
+    // spatial key while rebuilding particle ranges. currentRadius remains the
+    // tight geometry of this solve, while radius becomes the retained planning
+    // envelope used by local and remote traversal.
+    std::vector<std::pair<std::uint64_t, double>> previousRadiusByKey;
+    if(!initializeFromScratch)
+    {
+        previousRadiusByKey.reserve(nodes_.size());
+        for(const FmmNode& node : nodes_)
+            previousRadiusByKey.emplace_back(node.spatialKey, node.radius);
+        std::sort(previousRadiusByKey.begin(), previousRadiusByKey.end());
     }
 
     std::vector<std::uint64_t> previousInternalKeys;
@@ -215,6 +235,43 @@ void FmmTree::buildPersistent(
     buildPersistentNode(0, positions, options, splitCapacity, mergeCapacity,
                         initializeFromScratch, previousInternalKeys, stats);
     finishMetadata(positions);
+
+    // Grow an envelope only when the actual radius breaches the previous one.
+    // Contraction keeps the previous radius, which is conservative.  When a
+    // breach occurs, reserve fresh multiplicative headroom.  The node's cube
+    // radius is an absolute geometric upper bound required by the wire checks.
+    for(FmmNode& node : nodes_)
+    {
+        const double actualRadius = node.currentRadius;
+        const double cubeRadius = std::sqrt(3.0) * node.halfSize;
+        double retainedRadius = std::min(
+            cubeRadius, actualRadius * options.persistentRadiusSlackFactor);
+
+        if(!initializeFromScratch)
+        {
+            const auto previous = std::lower_bound(
+                previousRadiusByKey.begin(), previousRadiusByKey.end(),
+                node.spatialKey,
+                [](const std::pair<std::uint64_t, double>& value,
+                   std::uint64_t key) { return value.first < key; });
+            if(previous != previousRadiusByKey.end() &&
+               previous->first == node.spatialKey)
+            {
+                const double tolerance =
+                    64.0 * std::numeric_limits<double>::epsilon() *
+                    std::max(1.0, std::max(actualRadius, previous->second));
+                if(actualRadius <= previous->second + tolerance)
+                    retainedRadius = std::max(actualRadius, previous->second);
+            }
+        }
+
+        if(!std::isfinite(retainedRadius) || retainedRadius < actualRadius ||
+           retainedRadius > cubeRadius)
+            throw UniversalError(
+                "FmmTree::buildPersistent: invalid retained radius envelope");
+        node.radius = retainedRadius;
+    }
+
     collectOrders(0);
     validateInvariants(positions.size());
 
@@ -304,7 +361,10 @@ void FmmTree::buildNode(std::size_t nodeIndex,
                         const FmmGravityOptions& options)
 {
     const FmmNode node = nodes_[nodeIndex];
-    if(node.particleCount() <= options.leafCapacity ||
+    const bool sizeRequiresSplit = node.particleCount() != 0 &&
+        options.maxLeafHalfSize > 0.0 &&
+        node.halfSize > options.maxLeafHalfSize;
+    if((node.particleCount() <= options.leafCapacity && !sizeRequiresSplit) ||
        node.depth >= static_cast<std::size_t>(options.maxDepth) ||
        node.halfSize <= std::numeric_limits<double>::min())
         return;
@@ -338,10 +398,14 @@ void FmmTree::buildPersistentNode(
     const bool canSplit =
         node.depth < static_cast<std::size_t>(options.maxDepth) &&
         node.halfSize > std::numeric_limits<double>::min();
+    const bool sizeRequiresSplit = node.particleCount() != 0 &&
+        options.maxLeafHalfSize > 0.0 &&
+        node.halfSize > options.maxLeafHalfSize;
     const bool shouldSplit = canSplit &&
-        (initializeFromScratch ? node.particleCount() > options.leafCapacity :
+        (sizeRequiresSplit ||
+         (initializeFromScratch ? node.particleCount() > options.leafCapacity :
          (wasInternal ? node.particleCount() > mergeCapacity :
-                        node.particleCount() > splitCapacity));
+                        node.particleCount() > splitCapacity)));
 
     if(!shouldSplit)
     {
@@ -391,9 +455,11 @@ void FmmTree::finishMetadata(const std::vector<Vector3D>& positions)
                 if(childNode.particleCount() == 0)
                     continue;
                 radius = std::max(radius,
-                    nodeDistance(childNode.center, node.center) + childNode.radius);
+                    nodeDistance(childNode.center, node.center) +
+                    childNode.currentRadius);
             }
         }
+        node.currentRadius = radius;
         node.radius = radius;
     }
 }
@@ -455,7 +521,8 @@ void FmmTree::validateInvariants(std::size_t particleCount) const
         if(node.particleBegin > node.particleEnd ||
            node.particleEnd > particleCount ||
            !finiteVector(node.center) || !std::isfinite(node.radius) ||
-           node.radius < 0)
+           node.radius < 0 || !std::isfinite(node.currentRadius) ||
+           node.currentRadius < 0 || node.currentRadius > node.radius)
             throw UniversalError("FmmTree::build: invalid node metadata");
         if(node.isLeaf())
         {

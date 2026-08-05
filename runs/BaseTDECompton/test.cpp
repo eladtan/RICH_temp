@@ -22,7 +22,7 @@
 #include "source/3D/output/write3D.hpp"
 #include "source/3D/output/read3D.hpp"
 #include "source/newtonian/three_dimensional/AMR3D.hpp"
-#include "source/newtonian/three_dimensional/GravityAcc3D.hpp"
+#include "source/newtonian/three_dimensional/FastMultipoleAcceleration3D.hpp"
 #include "source/Radiation/Diffusion.hpp"
 #include "source/Radiation/MultigroupDiffusion.hpp"
 #include "source/misc/int2str.hpp"
@@ -1249,7 +1249,11 @@ int main(void)
 
 	vector<pair<const ConditionExtensiveUpdater3D::Condition3D *, const ConditionExtensiveUpdater3D::Action3D *>> eu_sequence;
 	ConditionExtensiveUpdater3D eu(eu_sequence);
-	GravityAcceleration3D sg(1.05, true, 1.0);
+	FmmGravityOptions fmm_options;
+	fmm_options.expansionOrder = 2;
+	fmm_options.thetaCritical = 1.0;
+	fmm_options.leafCapacity = 64;
+	FastMultipoleAcceleration3D sg(fmm_options, 1.0);
 	TDEGravity acc(Mbh, M, R, beta, sg, not full_gravity);
 	std::shared_ptr<ConservativeForce3D> gravity_force = std::make_shared<ConservativeForce3D>(acc, false);
 	std::vector<std::shared_ptr<SourceTerm3D>> forces;

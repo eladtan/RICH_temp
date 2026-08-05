@@ -11,10 +11,20 @@ struct FmmGravityOptions
 {
     int expansionOrder = 4;
     double thetaCritical = 0.5;
-    std::size_t leafCapacity = 32;
+    std::size_t leafCapacity = 64;
     int maxDepth = FMM_MAX_TREE_DEPTH;
+    // Physical half-size limit for non-empty leaves. Zero disables the limit.
+    double maxLeafHalfSize = 0.0;
     bool computePotential = false;
     bool validateFinite = true;
+
+    // Persistent moving-mesh trees retain a conservative radius envelope.
+    // Values above one reserve geometric headroom so small particle motion does
+    // not invalidate every local/LET interaction plan.  The retained radius is
+    // always at least the actual radius and never exceeds the node cube radius.
+    // The default reserves the geometry headroom validated by the moving-mesh
+    // TDE workload; one disables the envelope.
+    double persistentRadiusSlackFactor = 1.05;
 
     // Total persistent M2L operator-cache budget. Scale-free canonical
     // direction keys are retained up to this cap; misses beyond it are

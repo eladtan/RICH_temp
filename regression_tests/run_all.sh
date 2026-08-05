@@ -693,11 +693,18 @@ SUITE_START_EPOCH="$(date +%s)"
 
 # ==================== Parallel build configuration ====================
 MAX_PARALLEL_BUILDS=4
-MAX_TOTAL_MAKE_JOBS=20
+MAX_TOTAL_MAKE_JOBS=32
 TOTAL_CORES="${NPROC_OVERRIDE:-$(nproc)}"
-JOBS_PER_BUILD=$(( TOTAL_CORES / MAX_PARALLEL_BUILDS ))
+
+# Allocate build slots only for tests that are actually selected. With
+# --test, one build receives the full job budget instead of one quarter of it.
+ACTIVE_PARALLEL_BUILDS=${MAX_PARALLEL_BUILDS}
+(( NUM_TESTS < ACTIVE_PARALLEL_BUILDS )) && ACTIVE_PARALLEL_BUILDS=${NUM_TESTS}
+(( SEQUENTIAL == 1 )) && ACTIVE_PARALLEL_BUILDS=1
+
+JOBS_PER_BUILD=$(( TOTAL_CORES / ACTIVE_PARALLEL_BUILDS ))
 (( JOBS_PER_BUILD < 1 )) && JOBS_PER_BUILD=1
-MAX_JOBS_PER_BUILD=$(( MAX_TOTAL_MAKE_JOBS / MAX_PARALLEL_BUILDS ))
+MAX_JOBS_PER_BUILD=$(( MAX_TOTAL_MAKE_JOBS / ACTIVE_PARALLEL_BUILDS ))
 (( MAX_JOBS_PER_BUILD < 1 )) && MAX_JOBS_PER_BUILD=1
 (( JOBS_PER_BUILD > MAX_JOBS_PER_BUILD )) && JOBS_PER_BUILD=$MAX_JOBS_PER_BUILD
 
@@ -706,14 +713,14 @@ BUILD_FIFO="$(mktemp -u)"
 mkfifo "${BUILD_FIFO}"
 exec 7<>"${BUILD_FIFO}"
 rm "${BUILD_FIFO}"
-for (( s=0; s<MAX_PARALLEL_BUILDS; s++ )); do
+for (( s=0; s<ACTIVE_PARALLEL_BUILDS; s++ )); do
     echo >&7
 done
 
 # ==========================================================================
-#  PHASE 1: BUILD & RUN (pipelined, max ${MAX_PARALLEL_BUILDS} concurrent builds)
+#  PHASE 1: BUILD & RUN (pipelined, max ${ACTIVE_PARALLEL_BUILDS} concurrent builds)
 # ==========================================================================
-echo "${BOLD}=== BUILD & RUN PHASE (max ${MAX_PARALLEL_BUILDS} concurrent builds, ${JOBS_PER_BUILD} make-jobs each, ${MAX_TOTAL_MAKE_JOBS} total cap) ===${NC}"
+echo "${BOLD}=== BUILD & RUN PHASE (max ${ACTIVE_PARALLEL_BUILDS} concurrent builds, ${JOBS_PER_BUILD} make-jobs each, ${MAX_TOTAL_MAKE_JOBS} total cap) ===${NC}"
 
 declare -A JOB_PIDS=()    # test_id -> PID
 declare -A JOB_INDICES=()  # test_id -> index into ALL_* arrays
@@ -825,6 +832,7 @@ for i in "${!ALL_TEST_IDS[@]}"; do
             sbatch_wrap_cmd="${SLURM_MODULE_SETUP} && ROOT_DIR=\"${ROOT_DIR}\" CONFIG=\"${CONFIG}\" MPI_NP=\"${MPI_NP}\" SLURM_NTASKS=\"${slurm_ntasks}\" RICH_BIN=\"${rich_bin}\" bash -c '${local_escaped_run_cmd}'"
             sbatch_args=(
                 sbatch
+                --export=ALL
                 --wait
                 --time="${slurm_time_limit}"
                 --job-name="$(slurm_job_name "${test_id}")"

@@ -15,7 +15,7 @@
 #include "misc/universal_error.hpp"
 
 static constexpr std::uint32_t FMM_MPI_PACKET_MAGIC = 0x52464d4du; // "RFMM"
-static constexpr std::uint16_t FMM_MPI_PACKET_VERSION = 3u;
+static constexpr std::uint16_t FMM_MPI_PACKET_VERSION = 10u;
 
 enum class FmmPacketKind : std::uint16_t
 {
@@ -25,7 +25,8 @@ enum class FmmPacketKind : std::uint16_t
     DescriptorReply = 4,
     Subscription = 5,
     ProcessCoefficient = 6,
-    LetPayload = 7
+    LetPayload = 7,
+    PayloadCapacity = 8
 };
 
 struct FmmPacketStamp
@@ -71,20 +72,22 @@ struct FmmByteView
     std::size_t size = 0;
 };
 
-struct FmmRankRootDescriptor
+struct FmmPatchRootDescriptor
 {
     double center[3] = {0.0, 0.0, 0.0};
     double halfSize = 0.0;
+    double radius = 0.0;
     std::uint64_t particleCount = 0;
     std::uint64_t topologyHash = 0;
     std::uint64_t epoch = 0;
+    std::uint64_t patchId = 0;
     std::uint64_t latticeId = 0;
     std::int64_t latticeCenter[3] = {0, 0, 0};
     std::uint64_t latticeHalfUnits = 0;
     std::uint32_t magic = FMM_MPI_PACKET_MAGIC;
     std::uint16_t version = FMM_MPI_PACKET_VERSION;
     std::uint16_t reserved16 = 0;
-    int rank = -1;
+    int ownerRank = -1;
     int active = 0;
     int rootLeaf = 1;
     int childMask = 0;
@@ -92,11 +95,15 @@ struct FmmRankRootDescriptor
     Vector3D centerVector() const { return Vector3D(center[0], center[1], center[2]); }
 };
 
+using FmmRankRootDescriptor = FmmPatchRootDescriptor;
+
 struct FmmRemoteNodeDescriptor
 {
     double center[3] = {0.0, 0.0, 0.0};
     double halfSize = 0.0;
+    double radius = 0.0;
     std::uint64_t spatialKey = 0;
+    std::uint64_t patchId = 0;
     std::uint64_t particleCount = 0;
     std::uint64_t topologyEpoch = 0;
     int sourceRank = -1;
@@ -118,6 +125,7 @@ struct FmmProcessPairTask
 struct FmmDescriptorRequest
 {
     FmmPacketStamp stamp;
+    std::uint64_t patchId = 0;
     std::uint64_t spatialKey = 0;
 };
 
@@ -139,9 +147,20 @@ enum class FmmSubscriptionKind : int
 struct FmmSubscription
 {
     FmmPacketStamp stamp;
+    std::uint64_t patchId = 0;
     std::uint64_t spatialKey = 0;
     int kind = 0;
-    int reserved = 0;
+    int waveIndex = 0;
+    // Index in the subscriber's persistent source table. Compatibility LET
+    // payloads echo this value so the receiver can resolve records without a
+    // spatial-key lookup or sort. Patch LET currently leaves it unused.
+    std::uint32_t receiverSourceIndex =
+        std::numeric_limits<std::uint32_t>::max();
+    // Position of this record in the owner's retained subscription vector for
+    // this subscriber. Warm solves return only these compact slot IDs, letting
+    // the owner omit payloads that no currently occupied target consumes.
+    std::uint32_t ownerSubscriptionIndex =
+        std::numeric_limits<std::uint32_t>::max();
 };
 
 struct FmmProcessDependency
@@ -161,10 +180,31 @@ struct FmmProcessCoefficientHeader
 struct FmmPayloadRecordHeader
 {
     FmmPacketStamp stamp;
+    std::uint64_t patchId = 0;
     std::uint64_t spatialKey = 0;
     std::uint64_t count = 0;
     int kind = 0;
-    int reserved = 0;
+    int waveIndex = 0;
+};
+
+// The compatibility LET already knows the source rank, topology epoch, wave,
+// and sole patch ID from its persistent peer plan.  Its compact wire mode only
+// needs the subscriber's direct source index, payload count, and record kind.
+struct FmmCompactPayloadRecordHeader
+{
+    std::uint32_t receiverSourceIndex =
+        std::numeric_limits<std::uint32_t>::max();
+    std::uint32_t count = 0;
+    std::uint32_t kind = 0;
+    std::uint32_t reserved = 0;
+};
+
+struct FmmPayloadCapacity
+{
+    FmmPacketStamp stamp;
+    std::uint64_t patchId = 0;
+    std::uint64_t spatialKey = 0;
+    std::uint64_t particleCount = 0;
 };
 
 struct FmmWireParticle
@@ -182,6 +222,32 @@ struct FmmWireParticle
     }
 };
 
+// Patch LET P2P traffic never needs body identity: source and target patches
+// are owned by different MPI ranks, and the patch interaction plan already
+// identifies the source leaf. Keep only the values used by the force kernel.
+struct FmmPatchWireParticle
+{
+    double position[3] = {0.0, 0.0, 0.0};
+    double mass = 0.0;
+
+    Vector3D positionVector() const
+    {
+        return Vector3D(position[0], position[1], position[2]);
+    }
+};
+
+struct FmmCompactPatchWireParticle
+{
+    float offset[3] = {0.0f, 0.0f, 0.0f};
+    float mass = 0.0f;
+};
+
+struct FmmQuantizedPatchWireParticle
+{
+    std::int16_t offset[3] = {0, 0, 0};
+    std::int16_t mass = 0;
+};
+
 static_assert(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559,
               "Distributed FMM wire protocol requires IEEE-754 binary64 doubles");
 static_assert(sizeof(int) == 4,
@@ -192,29 +258,41 @@ static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t),
               "Distributed FMM wire protocol requires <=64-bit size_t");
 static_assert(sizeof(FmmPacketStamp) == 16,
               "Distributed FMM packet stamp has unsupported padding");
-static_assert(sizeof(FmmRankRootDescriptor) == 120,
+static_assert(sizeof(FmmPatchRootDescriptor) == 136,
               "Distributed FMM root descriptor has unsupported padding");
-static_assert(sizeof(FmmRemoteNodeDescriptor) == 72,
+static_assert(sizeof(FmmRemoteNodeDescriptor) == 88,
               "Distributed FMM node descriptor has unsupported padding");
 static_assert(sizeof(FmmProcessPairTask) == 32,
               "Distributed FMM process task has unsupported padding");
-static_assert(sizeof(FmmDescriptorRequest) == 24,
+static_assert(sizeof(FmmDescriptorRequest) == 32,
               "Distributed FMM descriptor request has unsupported padding");
-static_assert(sizeof(FmmDescriptorReply) == 104,
+static_assert(sizeof(FmmDescriptorReply) == 120,
               "Distributed FMM descriptor reply has unsupported padding");
-static_assert(sizeof(FmmSubscription) == 32,
+static_assert(sizeof(FmmSubscription) == 48,
               "Distributed FMM subscription has unsupported padding");
 static_assert(sizeof(FmmProcessDependency) == 32,
               "Distributed FMM dependency has unsupported padding");
 static_assert(sizeof(FmmProcessCoefficientHeader) == 24,
               "Distributed FMM coefficient header has unsupported padding");
-static_assert(sizeof(FmmPayloadRecordHeader) == 40,
+static_assert(sizeof(FmmPayloadRecordHeader) == 48,
               "Distributed FMM payload header has unsupported padding");
+static_assert(sizeof(FmmCompactPayloadRecordHeader) == 16,
+              "Compact distributed FMM payload header has unsupported padding");
+static_assert(sizeof(FmmPayloadCapacity) == 40,
+              "Distributed FMM payload capacity has unsupported padding");
 static_assert(sizeof(FmmWireParticle) == 56,
               "Distributed FMM wire particle has unsupported padding");
+static_assert(sizeof(FmmPatchWireParticle) == 32,
+              "Distributed patch FMM wire particle has unsupported padding");
+static_assert(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559,
+              "Compact distributed FMM particles require IEEE-754 binary32 floats");
+static_assert(sizeof(FmmCompactPatchWireParticle) == 16,
+              "Compact distributed patch FMM particle has unsupported padding");
+static_assert(sizeof(FmmQuantizedPatchWireParticle) == 8,
+              "Quantized distributed FMM particle has unsupported padding");
 static_assert(std::is_trivially_copyable<FmmPacketStamp>::value,
               "FMM packet stamp must be trivially copyable");
-static_assert(std::is_trivially_copyable<FmmRankRootDescriptor>::value,
+static_assert(std::is_trivially_copyable<FmmPatchRootDescriptor>::value,
               "FMM root descriptor must be trivially copyable");
 static_assert(std::is_trivially_copyable<FmmRemoteNodeDescriptor>::value,
               "FMM node descriptor must be trivially copyable");
@@ -232,8 +310,18 @@ static_assert(std::is_trivially_copyable<FmmProcessCoefficientHeader>::value,
               "FMM coefficient header must be trivially copyable");
 static_assert(std::is_trivially_copyable<FmmPayloadRecordHeader>::value,
               "FMM payload header must be trivially copyable");
+static_assert(std::is_trivially_copyable<FmmCompactPayloadRecordHeader>::value,
+              "Compact FMM payload header must be trivially copyable");
+static_assert(std::is_trivially_copyable<FmmPayloadCapacity>::value,
+              "FMM payload capacity must be trivially copyable");
 static_assert(std::is_trivially_copyable<FmmWireParticle>::value,
               "FMM wire particle must be trivially copyable");
+static_assert(std::is_trivially_copyable<FmmPatchWireParticle>::value,
+              "FMM patch wire particle must be trivially copyable");
+static_assert(std::is_trivially_copyable<FmmCompactPatchWireParticle>::value,
+              "Compact FMM patch wire particle must be trivially copyable");
+static_assert(std::is_trivially_copyable<FmmQuantizedPatchWireParticle>::value,
+              "Quantized FMM wire particle must be trivially copyable");
 
 namespace FmmPacketIO
 {

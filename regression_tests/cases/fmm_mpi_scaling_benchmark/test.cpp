@@ -41,6 +41,7 @@ struct Options
     int repeats = 2;
     int fmmOrder = 4;
     double fmmTheta = 0.5;
+    double quadrupoleTheta = 0.5;
     std::size_t fmmLeafCapacity = 32;
     double fmmMeanErrorTarget = 1e-3;
     double fmmMaxErrorTarget = 5e-3;
@@ -335,6 +336,8 @@ Options parseOptions(int argc, char** argv)
             result.fmmOrder = std::atoi(argv[++i]);
         else if(arg == "--fmm-theta" && i + 1 < argc)
             result.fmmTheta = std::strtod(argv[++i], nullptr);
+        else if(arg == "--quadrupole-theta" && i + 1 < argc)
+            result.quadrupoleTheta = std::strtod(argv[++i], nullptr);
         else if(arg == "--fmm-leaf-capacity" && i + 1 < argc)
         {
             const char* text = argv[++i];
@@ -383,7 +386,9 @@ Options parseOptions(int argc, char** argv)
        result.outputPath.empty() || result.fmmOrder < 1 ||
        result.fmmOrder > FMM_MAX_ORDER ||
        !(result.fmmTheta > 0.0) || result.fmmTheta > 1.0 ||
-       !std::isfinite(result.fmmTheta) || result.fmmLeafCapacity == 0 ||
+       !std::isfinite(result.fmmTheta) ||
+       !(result.quadrupoleTheta > 0.0) || result.quadrupoleTheta > 1.0 ||
+       !std::isfinite(result.quadrupoleTheta) || result.fmmLeafCapacity == 0 ||
        !(result.fmmMeanErrorTarget > 0.0) ||
        !std::isfinite(result.fmmMeanErrorTarget) ||
        !(result.fmmMaxErrorTarget > 0.0) ||
@@ -996,6 +1001,7 @@ SolverResult runFmm(const LocalParticles& local,
 SolverResult runQuadrupole(const LocalParticles& local,
                            const ProbeReference& reference,
                            int repeats,
+                           double theta,
                            const MPI_Comm& comm)
 {
     SolverResult result;
@@ -1012,7 +1018,7 @@ SolverResult runQuadrupole(const LocalParticles& local,
             DistributedGravityCalculator solver(
                 local.positions, local.masses,
                 Vector3D(-1, -1, -1), Vector3D(1, 1, 1),
-                0.5, true, comm);
+                theta, true, comm);
             acceleration = solver.getAcceleration(local.positions);
             localWalkSeconds = solver.getWalkTime();
         }
@@ -1087,7 +1093,8 @@ int main(int argc, char** argv)
         trimAllocator();
         reportStage("after_fmm_trim", MPI_COMM_WORLD);
         const SolverResult quadrupole = runQuadrupole(
-            local, reference, options.repeats, MPI_COMM_WORLD);
+            local, reference, options.repeats, options.quadrupoleTheta,
+            MPI_COMM_WORLD);
         reportStage("quadrupole_complete", MPI_COMM_WORLD);
 
         const bool timingFinite =
@@ -1146,6 +1153,7 @@ int main(int argc, char** argv)
             output << std::scientific << std::setprecision(16);
             output << "fmm_config order " << options.fmmOrder
                    << " theta " << options.fmmTheta
+                   << " quadrupole_theta " << options.quadrupoleTheta
                    << " leaf_capacity " << options.fmmLeafCapacity
                    << " mean_error_target " << options.fmmMeanErrorTarget
                    << " max_error_target " << options.fmmMaxErrorTarget
@@ -1242,6 +1250,7 @@ int main(int argc, char** argv)
                       << " ranks_per_node=" << options.expectedRanksPerNode
                       << " fmm_order=" << options.fmmOrder
                       << " fmm_theta=" << options.fmmTheta
+                      << " quadrupole_theta=" << options.quadrupoleTheta
                       << " fmm_leaf_capacity=" << options.fmmLeafCapacity
                       << " fmm_mean_error_target="
                       << options.fmmMeanErrorTarget

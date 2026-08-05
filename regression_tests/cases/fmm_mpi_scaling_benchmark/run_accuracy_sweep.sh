@@ -19,6 +19,7 @@ MAX_REMOTE_MIB="${FMM_TUNE_MAX_REMOTE_MIB:-512}"
 OPERATOR_CACHE_MIB="${FMM_TUNE_OPERATOR_CACHE_MIB:-128}"
 MEAN_ERROR_TARGET="${FMM_TUNE_MEAN_ERROR_TARGET:-1e-3}"
 MAX_ERROR_TARGET="${FMM_TUNE_MAX_ERROR_TARGET:-5e-3}"
+QUADRUPOLE_THETA="${FMM_TUNE_QUADRUPOLE_THETA:-0.5}"
 RANKS=$((NODES * RANKS_PER_NODE))
 
 if [[ ! -x "${RICH_BIN}" ]]; then
@@ -81,6 +82,7 @@ for config in "${configs[@]}"; do
         --warm-only \
         --fmm-order "${order}" \
         --fmm-theta "${theta}" \
+        --quadrupole-theta "${QUADRUPOLE_THETA}" \
         --fmm-leaf-capacity "${leaf}" \
         --fmm-mean-error-target "${MEAN_ERROR_TARGET}" \
         --fmm-max-error-target "${MAX_ERROR_TARGET}" \

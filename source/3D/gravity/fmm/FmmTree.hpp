@@ -15,7 +15,12 @@ struct FmmNode
 {
     Vector3D center;
     double halfSize = 0;
+    // Conservative radius used by traversal planning and remote descriptors.
+    // Persistent trees may retain this value across solves as an envelope.
     double radius = 0;
+    // Tight radius of the particles in the current solve. This is diagnostic
+    // geometry and must never be substituted for the planning envelope.
+    double currentRadius = 0;
     std::size_t particleBegin = 0;
     std::size_t particleEnd = 0;
     std::size_t firstChild = std::numeric_limits<std::size_t>::max();

@@ -32,6 +32,7 @@ public:
 
 private:
     double G_;
+    bool traceEnabled_;
 #ifdef RICH_MPI
     mutable DistributedFmmGravityCalculator calculator_;
 #else

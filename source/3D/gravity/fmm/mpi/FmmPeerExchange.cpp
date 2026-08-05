@@ -3,6 +3,8 @@
 #ifdef RICH_MPI
 
 #include <algorithm>
+#include <cstdio>
+#include <numeric>
 #include <limits>
 #include <string>
 #include <utility>
@@ -22,8 +24,16 @@ void checkMpi(int status, const char* operation)
                          std::string(text, static_cast<std::size_t>(length)));
 }
 
-[[noreturn]] void abortInvariant(const MPI_Comm& comm, const char* message)
+[[noreturn]] void abortInvariant(const MPI_Comm& comm, const char* message,
+                                 const char* detail = nullptr)
 {
+    int rank = -1;
+    MPI_Comm_rank(comm, &rank);
+    std::fprintf(stderr, "FMM peer exchange abort on MPI rank %d: %s\n",
+                   rank, message);
+    if(detail != nullptr && detail[0] != '\0')
+        std::fprintf(stderr, "%s\n", detail);
+    std::fflush(stderr);
     MPI_Abort(comm, 91);
     throw UniversalError(message);
 }
@@ -188,11 +198,11 @@ std::size_t FmmPeerExchangeRequest::bytesOwned() const
     return saturatingAdd(result, result_.bytesOwned());
 }
 
-FmmPeerExchange::FmmPeerExchange(): graph_(MPI_COMM_NULL) {}
+FmmPeerExchange::FmmPeerExchange(): graph_(MPI_COMM_NULL), dense_(false) {}
 
 FmmPeerExchange::FmmPeerExchange(const MPI_Comm& parent,
                                  const std::vector<int>& outgoingPeers):
-    graph_(MPI_COMM_NULL)
+    graph_(MPI_COMM_NULL), dense_(false)
 {
     reset(parent, outgoingPeers);
 }
@@ -201,9 +211,11 @@ FmmPeerExchange::FmmPeerExchange(FmmPeerExchange&& other) noexcept:
     graph_(other.graph_),
     sources_(std::move(other.sources_)),
     destinations_(std::move(other.destinations_)),
-    destinationSlot_(std::move(other.destinationSlot_))
+    destinationSlot_(std::move(other.destinationSlot_)),
+    dense_(other.dense_)
 {
     other.graph_ = MPI_COMM_NULL;
+    other.dense_ = false;
 }
 
 FmmPeerExchange& FmmPeerExchange::operator=(FmmPeerExchange&& other) noexcept
@@ -215,7 +227,9 @@ FmmPeerExchange& FmmPeerExchange::operator=(FmmPeerExchange&& other) noexcept
         sources_ = std::move(other.sources_);
         destinations_ = std::move(other.destinations_);
         destinationSlot_ = std::move(other.destinationSlot_);
+        dense_ = other.dense_;
         other.graph_ = MPI_COMM_NULL;
+        other.dense_ = false;
     }
     return *this;
 }
@@ -235,6 +249,7 @@ void FmmPeerExchange::clear()
     if(graph_ != MPI_COMM_NULL && initialized != 0 && finalized == 0)
         MPI_Comm_free(&graph_);
     graph_ = MPI_COMM_NULL;
+    dense_ = false;
     sources_.clear();
     destinations_.clear();
     destinationSlot_.clear();
@@ -360,6 +375,18 @@ void FmmPeerExchange::resetValidated(
              "FmmPeerExchange::resetValidated MPI_Dist_graph_neighbors");
     for(int i = 0; i < outdegree; ++i)
         destinationSlot_[destinations_[static_cast<std::size_t>(i)]] = i;
+    int communicatorSize = 0;
+    checkMpi(MPI_Comm_size(graph_, &communicatorSize),
+             "FmmPeerExchange::resetValidated MPI_Comm_size");
+    const int localDense = communicatorSize > 0 &&
+        sources_.size() == static_cast<std::size_t>(communicatorSize - 1) &&
+        destinations_.size() ==
+            static_cast<std::size_t>(communicatorSize - 1) ? 1 : 0;
+    int globalDense = 0;
+    checkMpi(MPI_Allreduce(&localDense, &globalDense, 1, MPI_INT, MPI_MIN,
+                           graph_),
+             "FmmPeerExchange::resetValidated dense decision");
+    dense_ = globalDense != 0;
 }
 
 std::size_t FmmPeerExchange::bytesOwned() const
@@ -400,13 +427,30 @@ void FmmPeerExchange::beginExchangeBytes(
 
     const double flattenStart = MPI_Wtime();
     request.graph_ = graph_;
-    request.sourceRanks_ = sources_;
-    request.sendCounts_.assign(destinations_.size(), 0);
-    request.sendDisplacements_.assign(destinations_.size(), 0);
-    request.totalSend_ = 0;
-    for(std::size_t i = 0; i < destinations_.size(); ++i)
+    int communicatorSize = 0;
+    checkMpi(MPI_Comm_size(graph_, &communicatorSize),
+             "FmmPeerExchange::beginExchangeBytes MPI_Comm_size");
+    const bool denseExchange = dense_;
+    if(denseExchange)
     {
-        const auto found = sendByRank.find(destinations_[i]);
+        request.sourceRanks_.resize(static_cast<std::size_t>(communicatorSize));
+        std::iota(request.sourceRanks_.begin(), request.sourceRanks_.end(), 0);
+        request.sendCounts_.assign(static_cast<std::size_t>(communicatorSize), 0);
+        request.sendDisplacements_.assign(
+            static_cast<std::size_t>(communicatorSize), 0);
+    }
+    else
+    {
+        request.sourceRanks_ = sources_;
+        request.sendCounts_.assign(destinations_.size(), 0);
+        request.sendDisplacements_.assign(destinations_.size(), 0);
+    }
+    request.totalSend_ = 0;
+    for(std::size_t i = 0; i < request.sendCounts_.size(); ++i)
+    {
+        const int destination = denseExchange ? static_cast<int>(i) :
+                                                destinations_[i];
+        const auto found = sendByRank.find(destination);
         const std::size_t count =
             found == sendByRank.end() ? 0 : found->second.size();
         if(count > static_cast<std::size_t>(std::numeric_limits<int>::max()) ||
@@ -421,13 +465,24 @@ void FmmPeerExchange::beginExchangeBytes(
         request.totalSend_ += count;
     }
     if(localInvalid != 0)
+    {
+        char detail[512];
+        std::snprintf(detail, sizeof(detail),
+            "totalSend=%zu mpiCountMax=%zu destinationPeers=%zu",
+            request.totalSend_,
+            static_cast<std::size_t>(std::numeric_limits<int>::max()),
+            destinations_.size());
         abortInvariant(graph_,
-            "FmmPeerExchange::beginExchangeBytes: invalid or oversized send");
+            "FmmPeerExchange::beginExchangeBytes: invalid or oversized send",
+            detail);
+    }
 
     request.sendBuffer_.resize(request.totalSend_);
-    for(std::size_t i = 0; i < destinations_.size(); ++i)
+    for(std::size_t i = 0; i < request.sendCounts_.size(); ++i)
     {
-        const auto found = sendByRank.find(destinations_[i]);
+        const int destination = denseExchange ? static_cast<int>(i) :
+                                                destinations_[i];
+        const auto found = sendByRank.find(destination);
         if(found == sendByRank.end() || found->second.empty())
             continue;
         std::copy(found->second.begin(), found->second.end(),
@@ -439,22 +494,29 @@ void FmmPeerExchange::beginExchangeBytes(
     // Count exchange is tiny and deliberately blocking. It lets us allocate
     // the exact receive buffer and launch the large payload collective before
     // local traversal begins, maximizing the useful overlap window.
-    request.receiveCounts_.assign(sources_.size(), 0);
+    request.receiveCounts_.assign(request.sourceRanks_.size(), 0);
     const double countExchangeStart = MPI_Wtime();
-    checkMpi(MPI_Neighbor_alltoall(
-        request.sendCounts_.empty() ? nullptr : request.sendCounts_.data(),
-        1, MPI_INT,
-        request.receiveCounts_.empty() ? nullptr : request.receiveCounts_.data(),
-        1, MPI_INT, graph_),
-        "FmmPeerExchange::beginExchangeBytes MPI_Neighbor_alltoall");
+    if(denseExchange)
+        checkMpi(MPI_Alltoall(
+            request.sendCounts_.data(), 1, MPI_INT,
+            request.receiveCounts_.data(), 1, MPI_INT, graph_),
+            "FmmPeerExchange::beginExchangeBytes MPI_Alltoall");
+    else
+        checkMpi(MPI_Neighbor_alltoall(
+            request.sendCounts_.empty() ? nullptr : request.sendCounts_.data(),
+            1, MPI_INT,
+            request.receiveCounts_.empty() ? nullptr :
+                                             request.receiveCounts_.data(),
+            1, MPI_INT, graph_),
+            "FmmPeerExchange::beginExchangeBytes MPI_Neighbor_alltoall");
     if(timings != nullptr)
         timings->countExchangeSeconds += MPI_Wtime() - countExchangeStart;
 
     const double receiveSetupStart = MPI_Wtime();
-    request.receiveDisplacements_.assign(sources_.size(), 0);
+    request.receiveDisplacements_.assign(request.sourceRanks_.size(), 0);
     request.totalReceive_ = 0;
     localInvalid = 0;
-    for(std::size_t i = 0; i < sources_.size(); ++i)
+    for(std::size_t i = 0; i < request.sourceRanks_.size(); ++i)
     {
         if(request.receiveCounts_[i] < 0 ||
            request.totalReceive_ >
@@ -473,34 +535,65 @@ void FmmPeerExchange::beginExchangeBytes(
     if(request.totalReceive_ > maxReceiveBytes)
         localInvalid = 1;
     if(localInvalid != 0)
+    {
+        char detail[512];
+        std::snprintf(detail, sizeof(detail),
+            "totalReceive=%zu maxReceiveBytes=%zu totalSend=%zu "
+            "maxRequestBytes=%zu sourcePeers=%zu",
+            request.totalReceive_, maxReceiveBytes, request.totalSend_,
+            maxRequestBytes, request.sourceRanks_.size());
         abortInvariant(graph_,
-            "FmmPeerExchange::beginExchangeBytes: receive size or memory budget exceeded");
+            "FmmPeerExchange::beginExchangeBytes: receive size or memory budget exceeded",
+            detail);
+    }
 
     request.result_.storage_.clear();
     request.result_.storage_.resize(request.totalReceive_);
     request.result_.messages_.clear();
     request.result_.messages_.reserve(request.sourceRanks_.size());
-    if(request.bytesOwned() > maxRequestBytes)
+    const std::size_t requestBytesOwned = request.bytesOwned();
+    if(requestBytesOwned > maxRequestBytes)
+    {
+        char detail[512];
+        std::snprintf(detail, sizeof(detail),
+            "requestBytesOwned=%zu maxRequestBytes=%zu totalReceive=%zu "
+            "totalSend=%zu maxReceiveBytes=%zu",
+            requestBytesOwned, maxRequestBytes, request.totalReceive_,
+            request.totalSend_, maxReceiveBytes);
         abortInvariant(graph_,
-            "FmmPeerExchange::beginExchangeBytes: request workspace exceeds memory budget");
+            "FmmPeerExchange::beginExchangeBytes: request workspace exceeds memory budget",
+            detail);
+    }
     if(timings != nullptr)
         timings->receiveSetupSeconds += MPI_Wtime() - receiveSetupStart;
 
     const double payloadLaunchStart = MPI_Wtime();
-    checkMpi(MPI_Ineighbor_alltoallv(
-        request.sendBuffer_.empty() ? nullptr : request.sendBuffer_.data(),
-        request.sendCounts_.empty() ? nullptr : request.sendCounts_.data(),
-        request.sendDisplacements_.empty() ? nullptr :
-                                             request.sendDisplacements_.data(),
-        MPI_BYTE,
-        request.result_.storage_.empty() ? nullptr :
-                                           request.result_.storage_.data(),
-        request.receiveCounts_.empty() ? nullptr :
-                                         request.receiveCounts_.data(),
-        request.receiveDisplacements_.empty() ? nullptr :
-                                                request.receiveDisplacements_.data(),
-        MPI_BYTE, graph_, &request.payloadRequest_),
-        "FmmPeerExchange::beginExchangeBytes MPI_Ineighbor_alltoallv");
+    if(denseExchange)
+        checkMpi(MPI_Ialltoallv(
+            request.sendBuffer_.empty() ? nullptr : request.sendBuffer_.data(),
+            request.sendCounts_.data(), request.sendDisplacements_.data(),
+            MPI_BYTE,
+            request.result_.storage_.empty() ? nullptr :
+            request.result_.storage_.data(),
+            request.receiveCounts_.data(),
+            request.receiveDisplacements_.data(), MPI_BYTE, graph_,
+            &request.payloadRequest_),
+            "FmmPeerExchange::beginExchangeBytes MPI_Ialltoallv");
+    else
+        checkMpi(MPI_Ineighbor_alltoallv(
+            request.sendBuffer_.empty() ? nullptr : request.sendBuffer_.data(),
+            request.sendCounts_.empty() ? nullptr : request.sendCounts_.data(),
+            request.sendDisplacements_.empty() ? nullptr :
+                                                 request.sendDisplacements_.data(),
+            MPI_BYTE,
+            request.result_.storage_.empty() ? nullptr :
+                                               request.result_.storage_.data(),
+            request.receiveCounts_.empty() ? nullptr :
+                                             request.receiveCounts_.data(),
+            request.receiveDisplacements_.empty() ? nullptr :
+                                                    request.receiveDisplacements_.data(),
+            MPI_BYTE, graph_, &request.payloadRequest_),
+            "FmmPeerExchange::beginExchangeBytes MPI_Ineighbor_alltoallv");
     const double payloadLaunchEnd = MPI_Wtime();
     if(timings != nullptr)
         timings->payloadLaunchSeconds += payloadLaunchEnd - payloadLaunchStart;

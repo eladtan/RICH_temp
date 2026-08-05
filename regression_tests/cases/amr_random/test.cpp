@@ -7,6 +7,7 @@
 #include <limits>
 #include <random>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
@@ -235,7 +236,13 @@ int main()
         AMR3D amr(eos, refine, remove, interp);
 
         double max_drift_local = 0.0;
+        double max_volume_growth = 0.0;
         for(size_t round = 0; round < amr_rounds; ++round) {
+            std::unordered_map<size_t, double> old_volumes;
+            old_volumes.reserve(tess.GetPointNo());
+            for(size_t i = 0; i < tess.GetPointNo(); ++i) {
+                old_volumes[simulation.getCells()[i].ID] = tess.GetVolume(i);
+            }
             amr(simulation);
             const std::vector<ComputationalCell3D>& current_cells = sim.getCells();
             const Tessellation3D& current_tess = sim.getTessellation();
@@ -253,6 +260,11 @@ int main()
                 }
                 ++real_local_points;
                 const ComputationalCell3D& c = current_cells[i];
+                auto old_volume = old_volumes.find(c.ID);
+                if(old_volume != old_volumes.end()) {
+                    max_volume_growth = std::max(max_volume_growth,
+                        current_tess.GetVolume(i) / old_volume->second);
+                }
                 const double density_drift = rel_diff(c.density, baseline.density);
                 const double ie_drift = rel_diff(c.internal_energy, baseline.internal_energy);
                 const double pressure_drift = rel_diff(c.pressure, baseline.pressure);
@@ -320,10 +332,12 @@ int main()
         double max_drift = max_drift_local;
 #ifdef RICH_MPI
         MPI_Allreduce(&max_drift_local, &max_drift, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &max_volume_growth, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif
         const bool mpi_mode = world_size > 1;
         const double threshold = mpi_mode ? 1e-6 : 1e-8;
-        const int passed = (max_drift <= threshold) ? 1 : 0;
+        const int passed = (max_drift <= threshold &&
+            max_volume_growth <= 3.0 * (1.0 + 1e-8)) ? 1 : 0;
         int all_passed = passed;
 #ifdef RICH_MPI
         MPI_Allreduce(&passed, &all_passed, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
@@ -338,6 +352,8 @@ int main()
             out << "target_points " << target_points << "\n";
             out << "max_drift " << max_drift << "\n";
             out << "threshold " << threshold << "\n";
+            out << "max_volume_growth " << max_volume_growth << "\n";
+            out << "volume_growth_limit 3.0\n";
             out << "pass " << all_passed << "\n";
             out.close();
         }

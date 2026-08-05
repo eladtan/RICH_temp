@@ -6,21 +6,23 @@
 
 #include <mpi.h>
 
+#include "source/3D/gravity/fmm/mpi/FmmPatchKey.hpp"
 #include "source/3D/gravity/fmm/mpi/FmmProcessTraversal.hpp"
 #include "source/3D/gravity/fmm/mpi/FmmProcessTree.hpp"
 
 namespace
 {
-std::vector<FmmRankRootDescriptor> descriptorsForCase(int size, int which,
+std::vector<FmmPatchRootDescriptor> descriptorsForCase(int size, int which,
                                                        std::uint64_t epoch)
 {
-    std::vector<FmmRankRootDescriptor> descriptors(
+    std::vector<FmmPatchRootDescriptor> descriptors(
         static_cast<std::size_t>(size));
     for(int rank = 0; rank < size; ++rank)
     {
-        FmmRankRootDescriptor& descriptor =
+        FmmPatchRootDescriptor& descriptor =
             descriptors[static_cast<std::size_t>(rank)];
-        descriptor.rank = rank;
+        descriptor.ownerRank = rank;
+        descriptor.patchId = FMM_COMPAT_PATCH_ID;
         descriptor.epoch = epoch;
         const bool empty = which == 1 && size >= 3 && rank == size - 1;
         descriptor.active = empty ? 0 : 1;
@@ -60,7 +62,7 @@ void collectLeafRanks(const FmmProcessTree& tree, std::size_t node,
     const FmmProcessNode& value = tree.nodes()[node];
     if(value.isLeaf())
     {
-        leaves.push_back(value.leafRank);
+        leaves.push_back(value.leafOwnerRank);
         return;
     }
     collectLeafRanks(tree, value.left, leaves);
@@ -70,7 +72,7 @@ void collectLeafRanks(const FmmProcessTree& tree, std::size_t node,
 bool auditCase(int rank, int size, int which)
 {
     const std::uint64_t epoch = static_cast<std::uint64_t>(which + 1);
-    const std::vector<FmmRankRootDescriptor> descriptors =
+    const std::vector<FmmPatchRootDescriptor> descriptors =
         descriptorsForCase(size, which, epoch);
     FmmProcessTree tree;
     tree.build(descriptors);
