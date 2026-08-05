@@ -362,8 +362,7 @@ int main(int argc, char** argv)
 
     FmmDistributedOptions distributed;
     // This regression intentionally exercises the one-tree-per-rank fallback
-    // and its historical process/LET invalidation counters. Patch-forest
-    // production behavior is covered by fmm_patch_moving_mesh.
+    // and its historical process/LET invalidation counters.
     distributed.enablePatchForest = false;
     distributed.maxRemoteBytes = 64u * 1024u * 1024u;
     // This regression validates the legacy count-only interaction-plan reuse
