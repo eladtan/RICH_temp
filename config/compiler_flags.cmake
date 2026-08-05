@@ -174,6 +174,7 @@ if(DEFINED INTEL)
         list(APPEND CMAKE_Fortran_FLAGS_RELEASE "-O2")
 
         list(APPEND CMAKE_CXX_FLAGS
+                "-fp-model precise"
                 "-diag-remark=13397,13401,15552,2196"
                 "-Wall"
                 "-qopenmp"
@@ -181,12 +182,10 @@ if(DEFINED INTEL)
                 "-fimf-arch-consistency=true")
 
         list(APPEND CMAKE_CXX_FLAGS_DEBUG
-                "-fp-model consistent"
                 "-diag-disable=openmp"
                 "-Wno-unknown-pragmas")
         
         list(APPEND CMAKE_CXX_FLAGS_RELEASE
-                "-fp-model precise"
                 "-march=core-avx2"
                 "-qopenmp")
 endif()
