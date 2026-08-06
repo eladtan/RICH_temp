@@ -99,6 +99,56 @@ Each simulation is selected by the directory containing its `main.cpp` or
 `test.cpp`. The top-level helper wraps CMake and keeps separate build trees for
 each configuration.
 
+```text
+./build_rich.sh <config> --test_name=<path> [options]
+```
+
+### Build configurations
+
+| Configuration | Compiler | Build type | MPI |
+|---|---|---|---|
+| `gnuRelease` | GNU | Release | No |
+| `gnuDebug` | GNU | Debug | No |
+| `gnuReleaseMPI` | GNU | Release | Yes |
+| `gnuDebugMPI` | GNU | Debug | Yes |
+| `gnuMixedMPI` | GNU | Release with selected debug files | Yes |
+| `intelRelease` | Intel | Release | No |
+| `intelDebug` | Intel | Debug | No |
+| `intelReleaseMPI` | Intel | Release | Yes |
+| `intelDebugMPI` | Intel | Debug | Yes |
+| `intelMixedMPI` | Intel | Release with selected debug files | Yes |
+
+These are the configurations advertised by the script's completion support.
+The parser derives compiler, build type, and MPI support from the configuration
+name; CMake rejects unknown compiler or build-type components.
+
+### Complete build option reference
+
+| Argument | Value/default | Effect |
+|---|---|---|
+| `<config>` | Required positional value | Selects GNU or Intel, Release/Debug/Mixed, and MPI as shown above. |
+| `--test_name=<path>` | Required | Selects the run or regression directory containing `main.cpp` or `test.cpp`; passed to CMake as `TEST_DIR`. |
+| `--with_asan` | Off | Sets `ASAN=1` for AddressSanitizer instrumentation. |
+| `--energy_groups_num=<N>` | Compile-time default | Sets `ENERGY_GROUPS_NUM=N`. |
+| `--debug_files=<file>` | None | Resolves a source-list file and sets `DEBUG_FILES`; intended for Mixed builds. |
+| `--mc_debug` | Off | Sets `MC_DEBUG=1`. |
+| `--mc_trace_debug=<N>` | Off | Sets `MC_TRACE_DEBUG=N`. |
+| `--shared` | Off | Sets `DYNAMIC_LIBS=1` to use the shared-library build path. |
+| `--high-res` | Off | Sets `HIGH_RES=1`. |
+| `--memory_debug` | Off | Sets `MEMORY_DEBUG=1`. |
+| `--memory_profile` | Off | Sets `MEMORY_PROFILE=1`. |
+| `--assert` | Off | Sets `FORCE_ASSERT=1`. |
+| `--timing` | Off | Sets `TIMING=1`. |
+| `--montecarlo-polarization` | Off | Sets `RICH_MONTECARLO_POLARIZATION=ON`. |
+| `--build-subdir=<name>` | None | Uses `build/<config>/<name>/` so multiple executables can coexist. It does not itself invalidate an existing configuration. |
+| `--jobs=<N>` | `nproc` | Sets parallel build jobs. It does not itself invalidate an existing configuration. |
+| `--completions` | Special first argument | Defines Bash completion when sourced: `source ./build_rich.sh --completions`. |
+
+The script has no separate `--help` mode. Missing required arguments print the
+usage line; unknown options fail immediately.
+
+### Examples
+
 ```bash
 # Serial GNU release build
 ./build_rich.sh gnuRelease --test_name=sedov_3d
@@ -112,12 +162,6 @@ each configuration.
 # Debug build with AddressSanitizer
 ./build_rich.sh gnuDebug --test_name=sod --with_asan
 ```
-
-Common configurations are `gnuRelease`, `gnuDebug`, `gnuReleaseMPI`,
-`gnuDebugMPI`, `intelRelease`, `intelDebug`, `intelReleaseMPI`, and
-`intelDebugMPI`. Useful optional flags include `--build-subdir=<name>`,
-`--jobs=<N>`, `--memory_debug`, `--memory_profile`, `--assert`, `--timing`, and
-`--montecarlo-polarization`.
 
 The default executable and build logs are written under `build/<config>/`:
 
@@ -164,6 +208,16 @@ and artifacts are collected under `regression_results/`. The unified RICH and
 STORM inventory contains 56 tests split into 39 `physics` tests and 17
 `code_correctness` tests; every discovered case declares exactly one category.
 
+The root wrapper clears `CPATH`, then invokes THUNDER with
+`regression_tests/config.json`:
+
+```text
+./regression_tests/run_all.sh [options]
+```
+
+With no arguments it runs the `serial` mode using GNU Release builds. It does
+not accept the old `--config` or `--mpi-np` options.
+
 ```bash
 # List the tests discovered from current metadata
 ./regression_tests/run_all.sh --list-tests
@@ -187,17 +241,123 @@ STORM inventory contains 56 tests split into 39 `physics` tests and 17
 ./regression_tests/run_all.sh --mode mpi --local
 
 # Run one test
-./regression_tests/run_all.sh --test sod_1d --config gnuRelease
+./regression_tests/run_all.sh --test sod_1d --compiler gnu --build-type Release
 ```
 
-Use `--partition`, `--project`, and `--exclude` for scheduler settings;
-`--concurrent` or `--no-concurrent` for orchestration; and `--artifact-dir` or
-`--keep-artifacts` for result retention. `--category` intersects with `--mode`
-and `--test`; dependency expansion may include a prerequisite from the other
-category. `--list-tests` appends the category after its existing four columns.
-The authoritative case list is the
-[regression catalog](docs/regression-tests/test-catalog.md) and the live
-metadata under [`regression_tests/cases/`](regression_tests/cases/).
+### Complete regression-runner option reference
+
+| Option | Value/default | Effect |
+|---|---|---|
+| `-h`, `--help` | — | Prints the generated THUNDER help and exits. |
+| `--thunder-config <path>` | Wrapper supplies `regression_tests/config.json` | Selects another THUNDER project configuration; normally internal to the wrapper. |
+| `--list-tests` | Off | Lists all discovered tests and exits. |
+| `--test <id>` | None; repeatable | Runs only the named test IDs. Repeat to select multiple tests. |
+| `--mode <mode>` | `serial` | Filters by tags. Choices: `serial`, `mpi`, `all`, `serial_then_mpi`, `mpi_then_serial`. Ordered modes perform separate serial and MPI passes. |
+| `--category <category>` | All | Filters to `physics` or `code_correctness`. |
+| `--nproc <N>` | Host CPU count | Sets build parallelism in local mode. |
+| `--compile-jobs <N>` | `8` | Sets CPUs for SLURM build jobs. |
+| `--artifact-dir <path>` | Configured `regression_results/` tree | Overrides the artifact directory. |
+| `--keep-artifacts` | Off | Compatibility flag; THUNDER always retains test metadata. |
+| `--verbose` | Off | Prints commands and subprocess output. |
+| `--dry-run` | Off | Resolves and prints work without building or running. |
+| `--recheck` | Off | Re-runs checks against the latest artifacts. |
+| `--clean-results` | Off | Deletes the configured regression artifact directory. |
+| `--local` | Off | Runs SLURM-tagged tests directly on the host; rank counts are not reduced. |
+| `--partition <name>` | Metadata/default | Overrides the SLURM partition. |
+| `--exclude <nodes>` | None | Excludes comma-separated SLURM nodes or ranges. |
+| `--project <account>` | None | Sets the SLURM project/account. |
+| `--sequential` | Off | Alias for `--no-concurrent`. |
+| `--no-concurrent` | Off | Runs tests sequentially. |
+| `--concurrent <N>` | `0` | Caps concurrent tests; `0` means unlimited. |
+| `--nohup` | Off | Leaves submitted SLURM jobs running if a non-interactive runner is interrupted. |
+| `--compiler <family>` | `gnu` | Selects `gnu` or `intel`. |
+| `--build-type <type>` | `Release` | Selects `Release`, `Debug`, or `Mixed`. |
+
+`--category` intersects with `--mode` and `--test`; dependency expansion may
+include a prerequisite from the other category. `--mode mpi` and `--mode all`
+include large cases such as the manual 128-rank `lane_self_gravity_fmm` test and
+the 512-rank STORM `hohlraum_parallel` test. Inspect `--list-tests` or select
+explicit tests before submitting on a shared cluster.
+
+### Complete regression-test catalog
+
+Modes, rank counts, build arguments, checks, and thresholds below come from the
+current metadata and checker libraries. Unless stated otherwise, checks also
+reject fatal markers and missing or stale artifacts.
+
+#### RICH tests
+
+| Test ID | Category; mode/resources | Coverage and pass criteria |
+|---|---|---|
+| `amr_distributed_clip` | Correctness; MPI 64 | Distributed AMR clipping; executable pass flag plus relative mass and energy drift at most `1e-6`. |
+| `amr_random` | Correctness; serial and MPI 64 | Random AMR stress; maximum drift at most `1e-8` serial or `1e-6` MPI. |
+| `cartesian_gauss_linear` | Correctness; serial | Cartesian/spherical Gauss reconstruction of linear fields. Limits: scalar relative error `1e-6`, Cartesian velocity `0.1`, spherical velocity `0.5`. |
+| `ddmc_mpi_zero_cell` | Correctness; MPI 8 | Zero-cell ranks and cross-rank DDMC faces; reciprocity, rate/conductance, and packet-weight errors within `1e-10` to `1e-12` limits. |
+| `desmore2012_mc` | Physics; MPI 32; 30 groups | Densmore 2012 heterogeneous-opacity MC benchmark; gas-temperature L1 at most `0.05`. |
+| `desmore2012_mc_ddmc` | Physics; MPI 32; 30 groups | Coupled MC+DDMC Densmore benchmark; gas-temperature L1 at most `0.06`. |
+| `desmore2012_mc_serial` | Physics; serial; 30 groups | Serial MC plus random-walk Densmore benchmark; gas-temperature L1 at most `0.05`. |
+| `eulerian_diffusion_freefree_1d` | Physics; MPI 16 | 512-cell grey free-free profile; requires fresh temperature/shock data and gas/radiation-temperature and velocity plots. |
+| `eulerian_diffusion_freefree_1d_32` | Physics; MPI 4 | 32-cell grey counterpart with the same data and plot checks. |
+| `eulerian_diffusion_freefree_1d_32_limited` | Physics; MPI 4 | 32-cell limited grey case with fresh profiles and plots. |
+| `eulerian_diffusion_freefree_1d_512_limited` | Physics; MPI 16 | 512-cell limited grey case with fresh profiles and plots. |
+| `eulerian_diffusion_freefree_multigroup_1d` | Physics; MPI 8; 32 groups | 512-cell multigroup free-free profile with fresh-data and plot checks. |
+| `eulerian_diffusion_freefree_multigroup_1d_32` | Physics; MPI 4; 32 groups | 32-cell multigroup counterpart with fresh-data and plot checks. |
+| `eulerian_diffusion_freefree_multigroup_1d_32_limited` | Physics; MPI 4; 32 groups | 32-cell limited multigroup case with fresh-data and plot checks. |
+| `eulerian_diffusion_freefree_multigroup_1d_512_limited` | Physics; MPI 8; 32 groups | 512-cell limited multigroup case with fresh-data and plot checks. |
+| `eulerian_diffusion_freefree_suite` | Physics; MPI-tagged aggregate, 1 task | No simulation build; depends on four grey cases and requires fresh four-way temperature, radiation-temperature, density, and velocity figures. |
+| `eulerian_diffusion_freefree_multigroup_suite` | Physics; MPI-tagged aggregate, 1 task | No simulation build; depends on four multigroup cases and requires analogous four-way figures. |
+| `fmm_gravity_mpi` | Correctness; MPI 7 | Distributed FMM versus direct acceleration/potential; covers duplicate IDs, an empty rank, reuse, root rebuild, and inconsistent-domain rejection. |
+| `fmm_gravity_mpi_guard` | Correctness; MPI 4 | Collective API guards: supported construction succeeds and the invalid potential option is rejected. |
+| `fmm_gravity_serial` | Correctness; serial | Serial FMM acceleration/potential against a direct reference; requires executable pass. |
+| `fmm_operator_cache` | Correctness; serial | Bounded operator-cache memory, warm hits, and bypass behavior. |
+| `fmm_peer_exchange_rebuild` | Correctness; MPI 7 | Persistent peer exchanger while ranks change isolated/connected roles; every rebuild round must pass. |
+| `fmm_process_pair_coverage` | Correctness; MPI 7 | Non-power-of-two process-pair interaction coverage; all enumerated cases must pass. |
+| `fmm_quadrupole_benchmark` | Correctness/benchmark; serial | Monopole/quadrupole FMM versus direct gravity; requires benchmark accuracy pass. |
+| `gresho_euler` | Physics; serial | Eulerian Gresho vortex profile; L1 at most `0.1`. |
+| `gresho_lagrangian` | Physics; MPI 8 | Lagrangian Gresho vortex profile; L1 at most `0.05`. |
+| `lane_self_gravity` | Physics; MPI 128 on 8 nodes | Lane-Emden equilibrium with tree gravity; final metric at most `4e-2`. |
+| `lane_self_gravity_fmm` | Physics/manual benchmark; MPI 128 on 8 nodes | Lane-Emden equilibrium with distributed FMM; final metric at most `4e-2`. |
+| `mach2_diffusion` | Physics; MPI 8 | Grey Mach-2 radiative shock; density and temperature relative L1 each at most `0.025`. |
+| `mach2_multigroup` | Physics; MPI 8; 32 groups | Multigroup Mach-2 counterpart with the same `0.025` limits. |
+| `marshak_wave_1_diffusion` | Physics; serial | Diffusion Marshak problem 1; gas/radiation temperature relative L1 each at most `1e-2`. |
+| `marshak_wave_2_diffusion` | Physics; serial | Diffusion Marshak problem 2 with the same `1e-2` limits. |
+| `marshak_wave_3_diffusion` | Physics; serial | Diffusion Marshak problem 3 with the same `1e-2` limits. |
+| `marshak_wave_4_diffusion` | Physics; serial | Diffusion Marshak problem 4 with the same `1e-2` limits. |
+| `moving_slab_mc_32` | Physics; MPI 32 on 8 nodes; 32 groups | Moving-slab MC spectrum; F-error at most `0.30`. |
+| `radiation_direction_sampling` | Correctness; serial | Isotropic direction moments, angular chi-square, and observer Voronoi-area closure; requires executable pass. |
+| `rayleigh_taylor_mpi` | Physics; MPI 128 | Rayleigh-Taylor growth from kinetic-energy/density data; relative growth-rate error at most `0.25`. |
+| `sedov_3d_mpi` | Physics; MPI 128 | Sedov exact-ODE profile; relative L1 limits: density `0.50`, pressure `0.30`, velocity `0.60`. |
+| `sod_1d` | Physics; serial | Sod exact Riemann profile; density and pressure goodness-of-fit at most `2e-2`. |
+| `spherical_collapse` | Physics; MPI 64 | Collapse symmetry; density scatter, velocity scatter, and tangential RMS each at most `1e-4`. |
+| `spherical_gauss_linear` | Correctness; serial | Spherical Gauss linear reconstruction; scalar relative error `1e-8`, velocity relative error `0.1`. |
+| `spherical_gauss_tangential` | Correctness; serial | Spherical tangential face basis; maximum absolute error at most `1e-8`. |
+| `till_compton` | Physics; serial; 32 groups | Till Compton equilibration; temperature relative difference at most `1e-2`, total-energy relative error at most `1e-8`. |
+| `voronoi_volume` | Correctness; serial and MPI 64 | Summed Voronoi volume versus exact box volume within `1e-10`. |
+| `yee_vortex_128` | Physics; MPI 16 | 128-resolution Yee vortex; density L1 at most `0.05`. |
+| `yee_vortex_64` | Physics; MPI 8 | 64-resolution Yee vortex; density L1 at most `0.05`. |
+
+#### Embedded STORM tests
+
+These are discovered from `source/monte/examples/`; the superproject points
+STORM at the checked-out RICH dependency submodules.
+
+| Test ID | Category; mode/resources | Coverage and pass criteria |
+|---|---|---|
+| `cartesian_parallel_check` | Correctness; MPI, metadata default 1 task | Parallel Cartesian transport self-check; requires the explicit `cartesian_parallel_check PASS` marker. |
+| `densmore2012` | Physics; MPI 4 | Native STORM Densmore benchmark; requires `PASS` (`DENSMORE2012_TGAS_L1`, documented threshold `0.10 keV`). |
+| `hohlraum_parallel` | Physics; MPI 512 | Large hohlraum run; clean completion without fatal markers. No analytic threshold. |
+| `marshak_wave_1` | Physics; serial | Native Marshak problem 1. `PASS` succeeds; reported `WARN` above nominal `0.10` L1 is also accepted as MC noise. |
+| `marshak_wave_2` | Physics; serial | Native Marshak problem 2 with the same PASS-or-WARN policy. |
+| `marshak_wave_3` | Physics; serial | Native Marshak problem 3 with the same PASS-or-WARN policy. |
+| `marshak_wave_4` | Physics; MPI 16 | Parallel native Marshak problem 4 with the same PASS-or-WARN policy. |
+| `moving_slab` | Physics; MPI 48 on 16 nodes | Native moving-slab spectrum, cyclic node distribution; requires checker `PASS` with reported F-error/L1. |
+| `serial_cartesian` | Correctness; serial | Serial Cartesian smoke test; clean completion without fatal markers. |
+| `till_compton_mc` | Physics; serial | Fresh four-column Till-Compton profile with at least two rows plus comparison/energy diagnostics; intentionally no curve threshold. |
+
+The live metadata under [`regression_tests/cases/`](regression_tests/cases/) and
+[`source/monte/examples/`](source/monte/examples/) is authoritative if a test
+changes. Additional background is in the
+[regression catalog](docs/regression-tests/test-catalog.md).
 
 ## Repository layout
 
