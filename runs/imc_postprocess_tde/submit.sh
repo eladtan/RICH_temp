@@ -3,7 +3,7 @@
 #SBATCH --output=output_%j.txt
 #SBATCH --error=error_%j.txt
 #SBATCH --partition=bigrun
-#SBATCH --ntasks=800
+#SBATCH --ntasks=960
 #SBATCH --exclusive
 #SBATCH --distribution=cyclic
 ##SBATCH --time=820:00:00
@@ -42,8 +42,12 @@ export TMP="$MPI_TMPDIR"
 export TEMP="$MPI_TMPDIR"
 export OMPI_MCA_orte_tmpdir_base="$MPI_TMPDIR"
 
-echo before
-mpirun -mca btl ^openib ./rich --postprocess-estimator reverse --reverse-measured-lb --reverse-lb-pilot-packets-per-observer-group 100 --reverse-progress-interval-sec 10 --reverse-ddmc-min-cell-optical-depth 15 --reverse-ddmc-min-particle-optical-depth 10 --vtk-output luminosity.vtk --adaptive-source-cells --source-dt 100 --transport-time 750000 --photons-per-cell 50 --n-observers 512 --radius 7.5e14 --n-generations 5 --input /data/users/elads/RICH_dutch_restart/R0.47M0.5BH10000beta1S60n1.5ComptonHiResNewAMR/snap_full_151.h5
-# mpirun ./rich
-echo after
+: "${RICH_POSTPROCESS_SNAPSHOT:?Set RICH_POSTPROCESS_SNAPSHOT to the input snapshot}"
+: "${RICH_STA_MG_DIR:?Set RICH_STA_MG_DIR to the multigroup STA tables}"
+: "${RICH_EOS_DIR:?Set RICH_EOS_DIR to the EOS tables}"
 
+echo before
+mpirun -mca btl ^openib ./rich --output.stem luminosity_F --flux-source.construction-rays 4096 --flux-source.enabled true --flux-source.thermalization-tau 5 --flux-source.ddmc-face-optical-depth 5 --transport.source-dt 100 --transport.duration 750000 --transport.photons-per-cell 50 --observer.count 512 --observer.radius 7.5e14 --transport.generations 75 --input.snapshot "$RICH_POSTPROCESS_SNAPSHOT" --input.multigroup-opacity-directory "$RICH_STA_MG_DIR" --input.eos-directory "$RICH_EOS_DIR"
+
+
+echo after

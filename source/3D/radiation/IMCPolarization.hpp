@@ -71,6 +71,7 @@ inline void InitializeIfNeeded(Particle &p)
     p.stokesU = 0.0;
     p.polarizationBasis = ChoosePerpendicularBasis(p.velocity);
     p.polarizationInitialized = true;
+    p.polarizationPendingMeanScatterings = 0.0;
 }
 
 template<class Particle>
@@ -80,6 +81,7 @@ inline void ResetUnpolarized(Particle &p)
     p.stokesU = 0.0;
     p.polarizationBasis = ChoosePerpendicularBasis(p.velocity);
     p.polarizationInitialized = true;
+    p.polarizationPendingMeanScatterings = 0.0;
 }
 
 template<class Particle>
@@ -321,12 +323,107 @@ inline void ApplyManualSyntheticScatterings(Particle &p,
     }
 }
 
+inline double SaturatingNonnegativeProduct(double a, double b)
+{
+    double const maxValue = std::numeric_limits<double>::max();
+    if(std::isnan(a) || std::isnan(b))
+        return maxValue;
+    if(a <= 0.0 || b <= 0.0)
+        return 0.0;
+    if(!std::isfinite(a) || !std::isfinite(b) || a > maxValue / b)
+        return maxValue;
+    return a * b;
+}
+
+inline double SaturatingNonnegativeAdd(double a, double b)
+{
+    double const maxValue = std::numeric_limits<double>::max();
+    if(std::isnan(a) || std::isnan(b))
+        return maxValue;
+    if(a < 0.0)
+        a = 0.0;
+    else if(!std::isfinite(a))
+        a = maxValue;
+    if(b < 0.0)
+        b = 0.0;
+    else if(!std::isfinite(b))
+        b = maxValue;
+    if(a > maxValue - b)
+        return maxValue;
+    return a + b;
+}
+
+template<class Uniform01>
+inline Vector3D SampleIsotropicVelocity(Vector3D const &referenceVelocity,
+                                        Uniform01 &&u01)
+{
+    double speed = abs(referenceVelocity);
+    if(!(speed > POL_EPS) || !std::isfinite(speed))
+        speed = units::clight;
+    double const mu = 2.0 * u01() - 1.0;
+    double const phi = 2.0 * POL_PI * u01();
+    double const sinTheta = std::sqrt(std::max(0.0, 1.0 - mu * mu));
+    return speed * Vector3D(sinTheta * std::cos(phi),
+                            sinTheta * std::sin(phi),
+                            mu);
+}
+
+template<class Particle>
+inline void ClearAcceleratedPolarizationHistory(Particle &p)
+{
+    p.polarizationPendingMeanScatterings = 0.0;
+}
+
 template<class Particle, class RandomEngine, class UniformDist>
-inline void ApplyAcceleratedPolarizationHistory(
+inline void AccumulateAcceleratedPolarizationHistory(
     Particle &p,
     double dtCo,
     double sigmaScattering,
-    double sigmaEffectiveReset,
+    double sigmaUnresolvedReset,
+    RandomEngine &engine,
+    UniformDist &uniformDist)
+{
+    InitializeIfNeeded(p);
+
+    if(!(dtCo > 0.0) || !std::isfinite(dtCo))
+        return;
+
+    auto u01 = [&]() -> double {
+        return std::clamp(uniformDist(engine),
+                          std::numeric_limits<double>::min(),
+                          1.0 - std::numeric_limits<double>::epsilon());
+    };
+
+    double const resetRate = SaturatingNonnegativeProduct(
+        units::clight, sigmaUnresolvedReset);
+    double const scatRate = SaturatingNonnegativeProduct(
+        units::clight, sigmaScattering);
+
+    bool resetOccurred = false;
+    double const ageSinceReset = SampleAgeSinceLastReset(
+        resetRate, dtCo, u01, resetOccurred);
+    double const intervalMean = SaturatingNonnegativeProduct(
+        scatRate, resetOccurred ? ageSinceReset : dtCo);
+
+    if(resetOccurred)
+    {
+        // Effective absorption/re-emission destroys the incoming Stokes state
+        // and also destroys the microscopic incoming direction.  The latter
+        // must not remain correlated with the packet's stale DDMC direction.
+        p.velocity = SampleIsotropicVelocity(p.velocity, u01);
+        ResetUnpolarized(p);
+        p.polarizationPendingMeanScatterings = intervalMean;
+    }
+    else
+    {
+        p.polarizationPendingMeanScatterings = SaturatingNonnegativeAdd(
+            p.polarizationPendingMeanScatterings, intervalMean);
+    }
+}
+
+template<class Particle, class RandomEngine, class UniformDist>
+inline void FinalizeAcceleratedPolarizationHistory(
+    Particle &p,
     Vector3D const &finalVelocityCo,
     int manualScatteringsAfterAcceleration,
     double depolarizationScatterings,
@@ -344,32 +441,21 @@ inline void ApplyAcceleratedPolarizationHistory(
     int const K = std::max(0, manualScatteringsAfterAcceleration);
     double const Npol = depolarizationScatterings;
 
-    if(!(dtCo > 0.0) || !std::isfinite(dtCo))
-    {
-        p.velocity = finalVelocityCo;
-        p.polarizationBasis = ProjectBasisToDirection(p.polarizationBasis, p.velocity);
-        return;
-    }
+    double meanScat = p.polarizationPendingMeanScatterings;
+    if(std::isnan(meanScat))
+        meanScat = std::numeric_limits<double>::max();
+    else if(!(meanScat > 0.0))
+        meanScat = 0.0;
+    else if(!std::isfinite(meanScat))
+        meanScat = std::numeric_limits<double>::max();
+    ClearAcceleratedPolarizationHistory(p);
 
-    double const resetRate = units::clight * std::max(0.0, sigmaEffectiveReset);
-    double const scatRate = units::clight * std::max(0.0, sigmaScattering);
-
-    bool resetOccurred = false;
-    double const ageSinceReset = SampleAgeSinceLastReset(resetRate, dtCo, u01, resetOccurred);
-
-    if(resetOccurred)
-        ResetUnpolarized(p);
-
-    double const meanScat = scatRate * ageSinceReset;
-    std::uint64_t const N = DrawPoissonForPolarization(meanScat,
-                                                       static_cast<std::uint64_t>(K),
-                                                       Npol,
-                                                       engine,
-                                                       uniformDist);
-
-    int const nManual = static_cast<int>(std::min<std::uint64_t>(static_cast<std::uint64_t>(K), N));
-    std::uint64_t const nDamped = (N > static_cast<std::uint64_t>(K)) ?
-                                  (N - static_cast<std::uint64_t>(K)) : 0ULL;
+    std::uint64_t const N = DrawPoissonForPolarization(
+        meanScat, static_cast<std::uint64_t>(K), Npol, engine, uniformDist);
+    int const nManual = static_cast<int>(std::min<std::uint64_t>(
+        static_cast<std::uint64_t>(K), N));
+    std::uint64_t const nDamped = N > static_cast<std::uint64_t>(K)
+        ? N - static_cast<std::uint64_t>(K) : 0ULL;
 
     double damping = 1.0;
     if(nDamped > 0)
@@ -382,11 +468,43 @@ inline void ApplyAcceleratedPolarizationHistory(
     p.stokesU *= damping;
     ClampLinearPolarization(p.stokesQ, p.stokesU);
 
+    if(nDamped > 0)
+    {
+        // The omitted scattering chain has also erased microscopic angular
+        // memory.  Starting the retained last-K chain from the stale DDMC
+        // entry direction would reintroduce a mesh-partition-dependent bias.
+        // The exponential Q/U damping already models polarization-memory
+        // loss, so preserve its residual orientation instead of applying a
+        // second, complete randomization of the polarization-frame azimuth.
+        p.velocity = SampleIsotropicVelocity(p.velocity, u01);
+        p.polarizationBasis = ProjectBasisToDirection(
+            p.polarizationBasis, p.velocity);
+    }
+
     ApplyManualSyntheticScatterings(p, nManual, finalVelocityCo, u01);
 
     p.velocity = finalVelocityCo;
     p.polarizationBasis = ProjectBasisToDirection(p.polarizationBasis, p.velocity);
     ClampLinearPolarization(p.stokesQ, p.stokesU);
+}
+
+template<class Particle, class RandomEngine, class UniformDist>
+inline void ApplyAcceleratedPolarizationHistory(
+    Particle &p,
+    double dtCo,
+    double sigmaScattering,
+    double sigmaEffectiveReset,
+    Vector3D const &finalVelocityCo,
+    int manualScatteringsAfterAcceleration,
+    double depolarizationScatterings,
+    RandomEngine &engine,
+    UniformDist &uniformDist)
+{
+    AccumulateAcceleratedPolarizationHistory(
+        p, dtCo, sigmaScattering, sigmaEffectiveReset, engine, uniformDist);
+    FinalizeAcceleratedPolarizationHistory(
+        p, finalVelocityCo, manualScatteringsAfterAcceleration,
+        depolarizationScatterings, engine, uniformDist);
 }
 
 #endif // MONTECARLO_POLARIZATION

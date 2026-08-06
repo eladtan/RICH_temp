@@ -435,13 +435,6 @@
         </td>
       </tr>
       <tr>
-        <td><code>source/3D/radiation/ReverseDDMC.hpp</code></td>
-        <td>
-          Updated a comment that referenced the deleted forward DDMC implementation file.
-          Reverse DDMC remains separate and was not removed.
-        </td>
-      </tr>
-      <tr>
         <td><code>source/CMakeLists.txt</code></td>
         <td>
           Removed the stale line that explicitly excluded the now-deleted
@@ -524,18 +517,6 @@
     </p>
     <pre><code>source/3D/radiation/RadiationIMC*.cpp
 source/3D/radiation/RandomWalk.*</code></pre>
-
-    <h2>What Was Not Removed</h2>
-    <p>
-      <code>source/3D/radiation/MultigroupOpacity.hpp</code> and <code>MultigroupOpacity.cpp</code>
-      remain in RICH. They are used by reverse/adjoint radiation code, not by the current STORM forward
-      IMC implementation. Since the request was to remove copies of the forward IMC and classes the STORM
-      IMC uses, those files were not removed in this pass.
-    </p>
-    <p>
-      Reverse DDMC code remains as well. The stale references that claimed it mirrored a forward
-      <code>RadiationIMC_DDMC.cpp</code> file were cleaned up, but reverse transport is a separate module.
-    </p>
 
     <h2>STORM IMC Current Feature Surface</h2>
     <p>
@@ -693,11 +674,6 @@ class RandomWalk
 tryRandomWalkStep
 precomputeRandomWalkData
 tryDDMCStep</code></pre>
-    <p>
-      The only remaining <code>precomputeDDMCData</code> names are in
-      <code>ReverseAdjointTransport3D</code>, which is reverse transport, not the forward IMC copy.
-    </p>
-
     <h2>Current Worktree Notes</h2>
     <p>
       The relevant status after this work includes:
@@ -709,7 +685,6 @@ D  source/3D/radiation/RadiationIMC_DDMC.cpp
 D  source/3D/radiation/RadiationIMC_RandomWalk.cpp
 D  source/3D/radiation/RandomWalk.cpp
 D  source/3D/radiation/RandomWalk.hpp
-M  source/3D/radiation/ReverseDDMC.hpp
 M  source/CMakeLists.txt
 M  source/monte/PhysicalConstants.hpp
 ?? source/monte/radiation/RadiationIMC.hpp

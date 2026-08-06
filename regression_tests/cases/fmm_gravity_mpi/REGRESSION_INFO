@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+
+TEST_ID="fmm_gravity_mpi"
+TAGS="mpi"
+BUILD_TEST_NAME="regression_tests/cases/fmm_gravity_mpi"
+RUN_DIR_REL="regression_tests/cases/fmm_gravity_mpi"
+CHECK_FUNCTION="check_fmm_gravity_mpi_case"
+RUN_MODE="slurm"
+SLURM_NTASKS="7"
+SLURM_PARTITION="bigrun"
+SLURM_EXCLUSIVE="1"
+SLURM_TIME_LIMIT="00:10:00"
+RUN_COMMAND='mpirun -np ${SLURM_NTASKS} "${RICH_BIN}"'
+
+# Seven ranks exercise a non-power-of-two process tree and leave one rank empty.
+# Keep this as a SLURM test; do not run it on a login node.

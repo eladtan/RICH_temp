@@ -4,6 +4,7 @@
 #include <boost/scoped_ptr.hpp>
 #include <limits>
 #include <stack>
+#include <map>
 #include <unordered_set>
 #include <unordered_map>
 #include "3D/tessellation/utils/PolyClip.hpp"
@@ -18,6 +19,9 @@
 
 namespace
 {
+	const size_t removal_target_order = 2;
+	const double removal_volume_growth_limit = 3.0;
+
 		const std::vector<Plane> &CachedPolyPlanes(Tessellation3D const& tess, size_t cell_index,
 			std::unordered_map<size_t, std::vector<Plane> > &cache)
 		{
@@ -43,29 +47,63 @@ namespace
 			return inserted.first->second;
 		}
 
-		void RemoveRefineNeighborRemove(Tessellation3D const& tess, std::vector<size_t> const& remove,
-		std::vector<size_t> &refine, std::vector<Vector3D> &refine_direction)
+	void RemoveRefineNeighborRemove(Tessellation3D const& tess, std::vector<size_t> const& remove,
+		PointsToNeighborsMap const& removal_targets, std::vector<size_t> &refine,
+		std::vector<Vector3D> &refine_direction)
 	{
-		vector<size_t> neigh;
-		size_t Nrefine = refine.size();
+		const size_t Nrefine = refine.size();
+#ifdef RICH_MPI
+		unsigned long long counts[2] = {
+			static_cast<unsigned long long>(remove.size()),
+			static_cast<unsigned long long>(refine.size())};
+		MPI_Allreduce(MPI_IN_PLACE, counts, 2, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+		if (counts[0] == 0 || counts[1] == 0)
+			return;
+
+		int world_size = 1;
+		MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+		std::vector<std::vector<size_t> > blocked_by_rank(static_cast<size_t>(world_size));
+		for (size_t source : remove)
+		{
+			auto found = removal_targets.find(source);
+			if (found == removal_targets.end())
+				throw UniversalError("Missing refine/removal conflict targets");
+			for (const RemotePoint &target : found->second)
+				blocked_by_rank[static_cast<size_t>(target.rank)].push_back(target.indexOnRank);
+		}
+		for (std::vector<size_t> &rank_targets : blocked_by_rank)
+		{
+			std::sort(rank_targets.begin(), rank_targets.end());
+			rank_targets.erase(std::unique(rank_targets.begin(), rank_targets.end()), rank_targets.end());
+		}
+		blocked_by_rank = MPI_Exchange_all_to_all(blocked_by_rank, MPI_COMM_WORLD);
+		std::vector<char> blocked(tess.GetPointNo(), 0);
+		for (const std::vector<size_t> &from_rank : blocked_by_rank)
+			for (size_t target : from_rank)
+				if (target < blocked.size())
+					blocked[target] = 1;
+#else
+		if (remove.empty() || refine.empty())
+			return;
+		std::vector<char> blocked(tess.GetPointNo(), 0);
+		for (size_t source : remove)
+		{
+			auto found = removal_targets.find(source);
+			if (found == removal_targets.end())
+				throw UniversalError("Missing refine/removal conflict targets");
+			for (const RemotePoint &target : found->second)
+				if (target.index < blocked.size())
+					blocked[target.index] = 1;
+		}
+#endif
+
 		vector<size_t> newrefine;
 		newrefine.reserve(Nrefine);
 		std::vector<Vector3D> new_direction;
 		new_direction.reserve(Nrefine);
 		for (size_t i = 0; i < Nrefine; ++i)
 		{
-			tess.GetNeighbors(refine[i], neigh);
-			neigh.push_back(refine[i]);
-			bool good = true;
-			for (size_t j = 0; j < neigh.size(); ++j)
-			{
-				if (std::binary_search(remove.begin(), remove.end(), neigh[j]))
-				{
-					good = false;
-					break;
-				}
-			}
-			if (good)
+			if (refine[i] < blocked.size() && !blocked[refine[i]])
 			{
 				newrefine.push_back(refine[i]);
 				if (!refine_direction.empty())
@@ -78,7 +116,7 @@ namespace
 
 	std::pair<vector<size_t>, vector<double> > GreedyRemoveCandidates(
 		vector<double> const& merits, vector<size_t> const& candidates,
-		Tessellation3D const& tess)
+		Tessellation3D const& tess, vector<ComputationalCell3D> const& cells)
 	{
 		if (merits.size() != candidates.size())
 			throw UniversalError("Merits and Candidates don't have same size in GreedyRemoveCandidates");
@@ -86,6 +124,10 @@ namespace
 
 		vector<size_t> all_candidates = candidates;
 		vector<double> all_merits = merits;
+		vector<size_t> all_ids;
+		all_ids.reserve(candidates.size());
+		for (size_t candidate : candidates)
+			all_ids.push_back(cells[candidate].ID);
 
 #ifdef RICH_MPI
 		size_t Norg = tess.GetPointNo();
@@ -100,6 +142,7 @@ namespace
 		size_t nproc = duplicated_indeces.size();
 		vector<vector<size_t> > indeces(nproc);
 		vector<vector<double> > merit_send(nproc);
+		vector<vector<size_t> > id_send(nproc);
 		vector<vector<size_t> > local_cells_sent(nproc);
 		vector<size_t> neigh_tmp;
 		for (size_t i = 0; i < N; ++i)
@@ -124,6 +167,7 @@ namespace
 					{
 						indeces[k].push_back(sort_indeces[k][static_cast<size_t>(it - duplicated_indeces[k].begin())]);
 						merit_send[k].push_back(merits[i]);
+						id_send[k].push_back(cells[candidates[i]].ID);
 						local_cells_sent[k].push_back(candidates[i]);
 					}
 				}
@@ -160,6 +204,7 @@ namespace
 		const std::vector<int> &amr_dupProcs = tess.GetDuplicatedProcs();
 		indeces = MPI_exchange_data(amr_dupProcs, indeces);
 		merit_send = MPI_exchange_data(amr_dupProcs, merit_send);
+		id_send = MPI_exchange_data(amr_dupProcs, id_send);
 		adj_send = MPI_exchange_data(amr_dupProcs, adj_send);
 		for (size_t i = 0; i < nproc; ++i)
 		{
@@ -168,6 +213,7 @@ namespace
 				indeces[i] = VectorValues(tess.GetGhostIndeces()[i], indeces[i]);
 				all_candidates.insert(all_candidates.end(), indeces[i].begin(), indeces[i].end());
 				all_merits.insert(all_merits.end(), merit_send[i].begin(), merit_send[i].end());
+				all_ids.insert(all_ids.end(), id_send[i].begin(), id_send[i].end());
 			}
 		}
 #endif // RICH_MPI
@@ -213,7 +259,9 @@ namespace
 		}
 #endif
 
-		// Sort by merit descending; break ties by cell index ascending
+		// Sort by merit descending; break ties by globally stable cell ID.
+		// Local and ghost indices are rank-dependent and cannot be used for an
+		// MPI-consistent tie break.
 		vector<size_t> order(Nall);
 		for (size_t i = 0; i < Nall; ++i)
 			order[i] = i;
@@ -221,7 +269,7 @@ namespace
 		{
 			if (all_merits[a] != all_merits[b])
 				return all_merits[a] > all_merits[b];
-			return all_candidates[a] < all_candidates[b];
+			return all_ids[a] < all_ids[b];
 		});
 
 		// Greedy: accept highest-merit candidate, exclude its candidate-neighbors
@@ -260,6 +308,321 @@ namespace
 		result_names = VectorValues(result_names, sort_idx);
 		result_merits = VectorValues(result_merits, sort_idx);
 		return std::pair<vector<size_t>, vector<double> >(result_names, result_merits);
+	}
+
+	bool HigherRemovalPriority(double merit_a, size_t id_a, double merit_b, size_t id_b)
+	{
+		return merit_a > merit_b || (merit_a == merit_b && id_a < id_b);
+	}
+
+	struct PairProposal
+	{
+		size_t anchor_id;
+		int candidate_rank;
+		size_t candidate_index;
+		size_t candidate_id;
+		double merit;
+	};
+
+	struct PairGrant
+	{
+		size_t candidate_index;
+		size_t candidate_id;
+		double merit;
+	};
+
+	std::pair<vector<size_t>, vector<double> > AddNeighborRemovalPartners(
+		std::pair<vector<size_t>, vector<double> > const& anchors,
+		vector<size_t> const& candidates, vector<double> const& merits,
+		Tessellation3D const& tess, vector<ComputationalCell3D> const& cells)
+	{
+		const size_t norg = tess.GetPointNo();
+		std::vector<char> anchor_flags(norg, 0);
+		std::unordered_set<size_t> anchor_ids;
+		for (size_t cell : anchors.first)
+		{
+			anchor_flags[cell] = 1;
+			anchor_ids.insert(cells[cell].ID);
+		}
+
+		int rank = 0;
+		int world_size = 1;
+#ifdef RICH_MPI
+		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+		MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+		MPI_exchange_data(tess, anchor_flags, true);
+#endif
+
+		std::vector<std::vector<PairProposal> > proposals(static_cast<size_t>(world_size));
+		std::vector<size_t> neigh;
+		for (size_t i = 0; i < candidates.size(); ++i)
+		{
+			const size_t candidate = candidates[i];
+			if (anchor_flags[candidate])
+				continue;
+			tess.GetNeighbors(candidate, neigh);
+			size_t anchor_neighbor = std::numeric_limits<size_t>::max();
+			size_t anchor_count = 0;
+			for (size_t neighbor : neigh)
+			{
+				if (neighbor < anchor_flags.size() && anchor_flags[neighbor])
+				{
+					anchor_neighbor = neighbor;
+					++anchor_count;
+				}
+			}
+			// A partner may attach to exactly one anchor. This is what bounds
+			// every connected simultaneous-removal component to a pair.
+			if (anchor_count != 1)
+				continue;
+
+			int anchor_owner = rank;
+#ifdef RICH_MPI
+			anchor_owner = tess.GetOwner(tess.GetMeshPoint(anchor_neighbor));
+#endif
+			PairProposal proposal;
+			proposal.anchor_id = cells[anchor_neighbor].ID;
+			proposal.candidate_rank = rank;
+			proposal.candidate_index = candidate;
+			proposal.candidate_id = cells[candidate].ID;
+			proposal.merit = merits[i];
+			proposals[static_cast<size_t>(anchor_owner)].push_back(proposal);
+		}
+
+#ifdef RICH_MPI
+		proposals = MPI_Exchange_all_to_all(proposals, MPI_COMM_WORLD);
+#endif
+
+		std::unordered_map<size_t, PairProposal> best_for_anchor;
+		for (const std::vector<PairProposal> &from_rank : proposals)
+		{
+			for (const PairProposal &proposal : from_rank)
+			{
+				if (!anchor_ids.count(proposal.anchor_id))
+					continue;
+				auto found = best_for_anchor.find(proposal.anchor_id);
+				if (found == best_for_anchor.end() ||
+					HigherRemovalPriority(proposal.merit, proposal.candidate_id,
+						found->second.merit, found->second.candidate_id))
+					best_for_anchor[proposal.anchor_id] = proposal;
+			}
+		}
+
+		std::vector<std::vector<PairGrant> > grants(static_cast<size_t>(world_size));
+		for (const auto &item : best_for_anchor)
+		{
+			const PairProposal &proposal = item.second;
+			PairGrant grant;
+			grant.candidate_index = proposal.candidate_index;
+			grant.candidate_id = proposal.candidate_id;
+			grant.merit = proposal.merit;
+			grants[static_cast<size_t>(proposal.candidate_rank)].push_back(grant);
+		}
+
+#ifdef RICH_MPI
+		grants = MPI_Exchange_all_to_all(grants, MPI_COMM_WORLD);
+#endif
+
+		vector<size_t> partner_candidates;
+		vector<double> partner_merits;
+		for (const std::vector<PairGrant> &from_rank : grants)
+		{
+			for (const PairGrant &grant : from_rank)
+			{
+				if (grant.candidate_index < norg &&
+					cells[grant.candidate_index].ID == grant.candidate_id)
+				{
+					partner_candidates.push_back(grant.candidate_index);
+					partner_merits.push_back(grant.merit);
+				}
+			}
+		}
+
+		// Independently thin the granted partners. Two partners that touch
+		// would otherwise connect two anchor pairs into a larger component.
+		std::pair<vector<size_t>, vector<double> > partners =
+			GreedyRemoveCandidates(partner_merits, partner_candidates, tess, cells);
+
+		vector<size_t> result_names = anchors.first;
+		vector<double> result_merits = anchors.second;
+		result_names.insert(result_names.end(), partners.first.begin(), partners.first.end());
+		result_merits.insert(result_merits.end(), partners.second.begin(), partners.second.end());
+		vector<size_t> sort_idx = sort_index(result_names);
+		result_names = VectorValues(result_names, sort_idx);
+		result_merits = VectorValues(result_merits, sort_idx);
+		return std::make_pair(result_names, result_merits);
+	}
+
+	struct RemovalVolumeClaim
+	{
+		size_t target_index;
+		int source_rank;
+		size_t source_index;
+		size_t source_id;
+		double source_volume;
+		double source_merit;
+	};
+
+	struct RemovalVolumeVeto
+	{
+		size_t source_index;
+		size_t source_id;
+	};
+
+	std::pair<vector<size_t>, vector<double> > EnforceRemovalVolumeGrowthLimit(
+		std::pair<vector<size_t>, vector<double> > const& proposed,
+		Tessellation3D const& tess, vector<ComputationalCell3D> const& cells,
+		PointsToNeighborsMap &target_map)
+	{
+		target_map.clear();
+		int rank = 0;
+		int world_size = 1;
+#ifdef RICH_MPI
+		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+		MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+		int proposed_global = static_cast<int>(proposed.first.size());
+		MPI_Allreduce(MPI_IN_PLACE, &proposed_global, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+		if (proposed_global == 0)
+			return proposed;
+		target_map = GetKOrderNeighbors(
+			tess, proposed.first, removal_target_order, true, MPI_COMM_WORLD);
+#else
+		if (proposed.first.empty())
+			return proposed;
+		target_map = GetKOrderNeighbors(
+			tess, proposed.first, removal_target_order, true);
+#endif
+
+		std::unordered_map<size_t, double> merit_by_index;
+		for (size_t i = 0; i < proposed.first.size(); ++i)
+			merit_by_index[proposed.first[i]] = proposed.second[i];
+
+		std::vector<char> selected(tess.GetPointNo(), 0);
+		for (size_t source : proposed.first)
+			selected[source] = 1;
+
+		while (true)
+		{
+			std::vector<std::vector<RemovalVolumeClaim> > claims(static_cast<size_t>(world_size));
+			for (size_t source : proposed.first)
+			{
+				if (!selected[source])
+					continue;
+				auto map_it = target_map.find(source);
+				if (map_it == target_map.end())
+					continue;
+				for (const RemotePoint &target : map_it->second)
+				{
+					int target_rank = 0;
+					size_t target_index = 0;
+#ifdef RICH_MPI
+					target_rank = target.rank;
+					target_index = target.indexOnRank;
+#else
+					target_index = target.index;
+#endif
+					RemovalVolumeClaim claim;
+					claim.target_index = target_index;
+					claim.source_rank = rank;
+					claim.source_index = source;
+					claim.source_id = cells[source].ID;
+					claim.source_volume = tess.GetVolume(source);
+					claim.source_merit = merit_by_index[source];
+					claims[static_cast<size_t>(target_rank)].push_back(claim);
+				}
+			}
+
+#ifdef RICH_MPI
+			claims = MPI_Exchange_all_to_all(claims, MPI_COMM_WORLD);
+#endif
+
+			std::map<size_t, std::vector<RemovalVolumeClaim> > claims_by_target;
+			for (const std::vector<RemovalVolumeClaim> &from_rank : claims)
+				for (const RemovalVolumeClaim &claim : from_rank)
+					claims_by_target[claim.target_index].push_back(claim);
+
+			std::vector<std::vector<RemovalVolumeVeto> > vetoes(static_cast<size_t>(world_size));
+			for (auto &target_claims : claims_by_target)
+			{
+				const size_t target = target_claims.first;
+				if (target >= tess.GetPointNo() || selected[target])
+					continue;
+
+				double claimed_volume = 0.0;
+				for (const RemovalVolumeClaim &claim : target_claims.second)
+					claimed_volume += claim.source_volume;
+				const double headroom =
+					(removal_volume_growth_limit - 1.0) * tess.GetVolume(target);
+				if (claimed_volume <= headroom * (1.0 + 1e-12))
+					continue;
+
+				// Remove the lowest-priority sources until this potential target's
+				// conservative full-volume reservation fits below 3 V_old.
+				std::sort(target_claims.second.begin(), target_claims.second.end(),
+					[](const RemovalVolumeClaim &a, const RemovalVolumeClaim &b)
+					{
+						if (a.source_merit != b.source_merit)
+							return a.source_merit < b.source_merit;
+						return a.source_id > b.source_id;
+					});
+				for (const RemovalVolumeClaim &claim : target_claims.second)
+				{
+					if (claimed_volume <= headroom * (1.0 + 1e-12))
+						break;
+					RemovalVolumeVeto veto;
+					veto.source_index = claim.source_index;
+					veto.source_id = claim.source_id;
+					vetoes[static_cast<size_t>(claim.source_rank)].push_back(veto);
+					claimed_volume -= claim.source_volume;
+				}
+			}
+
+#ifdef RICH_MPI
+			vetoes = MPI_Exchange_all_to_all(vetoes, MPI_COMM_WORLD);
+#endif
+
+			int removed_local = 0;
+			for (const std::vector<RemovalVolumeVeto> &from_rank : vetoes)
+			{
+				for (const RemovalVolumeVeto &veto : from_rank)
+				{
+					if (veto.source_index < selected.size() && selected[veto.source_index] &&
+						cells[veto.source_index].ID == veto.source_id)
+					{
+						selected[veto.source_index] = 0;
+						++removed_local;
+					}
+				}
+			}
+
+			int removed_global = removed_local;
+#ifdef RICH_MPI
+			MPI_Allreduce(MPI_IN_PLACE, &removed_global, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+#endif
+			if (removed_global == 0)
+				break;
+		}
+
+		vector<size_t> result_names;
+		vector<double> result_merits;
+		for (size_t i = 0; i < proposed.first.size(); ++i)
+		{
+			if (selected[proposed.first[i]])
+			{
+				result_names.push_back(proposed.first[i]);
+				result_merits.push_back(proposed.second[i]);
+			}
+		}
+		PointsToNeighborsMap retained_targets;
+		for (size_t source : result_names)
+		{
+			auto found = target_map.find(source);
+			if (found == target_map.end())
+				throw UniversalError("Missing retained removal target map");
+			retained_targets.emplace(source, found->second);
+		}
+		target_map.swap(retained_targets);
+		return std::make_pair(result_names, result_merits);
 	}
 
 	std::vector<Vector3D> GetNewPoints(Tessellation3D const& tess, std::pair<vector<size_t>,
@@ -1141,6 +1504,306 @@ namespace
 		}
 #endif
 
+#ifdef RICH_MPI
+	class RemovalSourcePacket : public Serializable
+	{
+	public:
+		size_t source_index;
+		size_t source_id;
+		double source_volume;
+		ComputationalCell3D cell;
+		Slope3D slope;
+		Vector3D source_cm;
+		std::vector<Plane> planes;
+		std::vector<size_t> target_old_indices;
+
+		RemovalSourcePacket(void): source_index(0), source_id(0), source_volume(0) {}
+
+		size_t dump(Serializer *serializer) const override
+		{
+			size_t bytes = 0;
+			bytes += serializer->insert(source_index);
+			bytes += serializer->insert(source_id);
+			bytes += serializer->insert(source_volume);
+			bytes += serializer->insert(cell);
+			bytes += serializer->insert(slope);
+			bytes += serializer->insert(source_cm);
+			bytes += serializer->insert(planes);
+			bytes += serializer->insert(target_old_indices);
+			return bytes;
+		}
+
+		size_t load(const Serializer *serializer, size_t offset) override
+		{
+			size_t bytes = 0;
+			bytes += serializer->extract(source_index, offset + bytes);
+			bytes += serializer->extract(source_id, offset + bytes);
+			bytes += serializer->extract(source_volume, offset + bytes);
+			bytes += serializer->extract(cell, offset + bytes);
+			bytes += serializer->extract(slope, offset + bytes);
+			bytes += serializer->extract(source_cm, offset + bytes);
+			bytes += serializer->extract(planes, offset + bytes);
+			bytes += serializer->extract(target_old_indices, offset + bytes);
+			return bytes;
+		}
+	};
+
+	struct RemovalOverlapReturn
+	{
+		size_t source_index;
+		size_t source_id;
+		double volume;
+	};
+#endif
+
+	void LocalRemoveWithTargets(Tessellation3D const& oldtess, Tessellation3D const& tess,
+		std::vector<size_t> const& ToRemove, PointsToNeighborsMap const& target_map,
+		AMRExtensiveUpdater3D const& eu, std::vector<ComputationalCell3D> const& cells,
+		EquationOfState const& eos, std::vector<Conserved3D> &extensives,
+		SpatialReconstruction3D &interp)
+	{
+		std::vector<Plane> source_planes;
+		std::vector<Face> target_poly;
+		ClipWorkspace workspace;
+		for (size_t source : ToRemove)
+		{
+			CreatePolyPlanes(oldtess, source, source_planes);
+			double overlap_sum = 0.0;
+			auto map_it = target_map.find(source);
+			if (map_it == target_map.end())
+				throw UniversalError("Missing two-hop removal target map");
+			for (const RemotePoint &remote_target : map_it->second)
+			{
+#ifdef RICH_MPI
+				if (remote_target.rank != 0)
+					continue;
+				const size_t old_target = remote_target.indexOnRank;
+#else
+				const size_t old_target = remote_target.index;
+#endif
+				if (old_target >= oldtess.GetPointNo() ||
+					std::binary_search(ToRemove.begin(), ToRemove.end(), old_target))
+					continue;
+				const size_t removed_before = static_cast<size_t>(
+					std::lower_bound(ToRemove.begin(), ToRemove.end(), old_target) - ToRemove.begin());
+				const size_t target = old_target - removed_before;
+				CreatePolyFaces(tess, target, target_poly);
+				ClipBounds target_bounds = computeBounds(target_poly);
+				auto [dv, clip_volume, clip_cm] = clipCells(
+					target_poly, source_planes, workspace, &target_bounds);
+				if (dv <= 0)
+					continue;
+				overlap_sum += dv;
+				if (dv > oldtess.GetVolume(source) * 1e-12)
+				{
+					Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[source], eos, dv,
+						interp.GetSlopes()[source], oldtess.GetCellCM(source), clip_cm);
+					extensives[target] += toadd;
+				}
+			}
+			const double source_volume = oldtess.GetVolume(source);
+			const double relative_error = std::abs(overlap_sum - source_volume) /
+				std::max(source_volume, std::numeric_limits<double>::min());
+			if (relative_error > 1e-6)
+			{
+				UniversalError eo("Incomplete neighboring-cell removal remap");
+				eo.addEntry("Source index", source);
+				eo.addEntry("Source ID", cells[source].ID);
+				eo.addEntry("Source volume", source_volume);
+				eo.addEntry("Clipped volume", overlap_sum);
+				eo.addEntry("Relative error", relative_error);
+				throw eo;
+			}
+		}
+	}
+
+#ifdef RICH_MPI
+	void MPIRemoveWithTargets(Tessellation3D const& oldtess, Tessellation3D const& tess,
+		std::vector<size_t> const& ToRemove, PointsToNeighborsMap const& target_map,
+		AMRExtensiveUpdater3D const& eu, std::vector<ComputationalCell3D> const& cells,
+		EquationOfState const& eos, std::vector<Conserved3D> &extensives,
+		SpatialReconstruction3D &interp, bool distribute_clips)
+	{
+		int rank = 0;
+		int world_size = 1;
+		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+		MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+		std::vector<std::vector<RemovalSourcePacket> > packets(static_cast<size_t>(world_size));
+
+		for (size_t source : ToRemove)
+		{
+			auto map_it = target_map.find(source);
+			if (map_it == target_map.end())
+				throw UniversalError("Missing MPI two-hop removal target map");
+			std::map<int, std::vector<size_t> > targets_by_rank;
+			for (const RemotePoint &target : map_it->second)
+				targets_by_rank[target.rank].push_back(target.indexOnRank);
+
+			std::vector<Plane> source_planes;
+			CreatePolyPlanes(oldtess, source, source_planes);
+			for (auto &rank_targets : targets_by_rank)
+			{
+				std::sort(rank_targets.second.begin(), rank_targets.second.end());
+				rank_targets.second.erase(std::unique(rank_targets.second.begin(), rank_targets.second.end()),
+					rank_targets.second.end());
+				RemovalSourcePacket packet;
+				packet.source_index = source;
+				packet.source_id = cells[source].ID;
+				packet.source_volume = oldtess.GetVolume(source);
+				packet.cell = cells[source];
+				packet.slope = interp.GetSlopes()[source];
+				packet.source_cm = oldtess.GetCellCM(source);
+				packet.planes = source_planes;
+				packet.target_old_indices = rank_targets.second;
+				packets[static_cast<size_t>(rank_targets.first)].push_back(packet);
+			}
+		}
+
+		packets = MPI_Exchange_all_to_all(packets, MPI_COMM_WORLD);
+		std::vector<std::vector<double> > overlap_sums(static_cast<size_t>(world_size));
+		for (int source_rank = 0; source_rank < world_size; ++source_rank)
+			overlap_sums[static_cast<size_t>(source_rank)].resize(
+				packets[static_cast<size_t>(source_rank)].size(), 0.0);
+
+		if (distribute_clips)
+		{
+			struct RemovalClipTask
+			{
+				int source_rank;
+				size_t packet_index;
+				size_t target_index;
+			};
+			std::vector<RemovalClipTask> task_info;
+			std::vector<double> packed_tasks;
+			std::vector<double> source_volumes;
+			std::vector<Face> target_poly;
+			std::vector<double> poly_packed;
+			std::vector<double> planes_packed;
+			for (int source_rank = 0; source_rank < world_size; ++source_rank)
+			{
+				const auto &rank_packets = packets[static_cast<size_t>(source_rank)];
+				for (size_t packet_index = 0; packet_index < rank_packets.size(); ++packet_index)
+				{
+					const RemovalSourcePacket &packet = rank_packets[packet_index];
+					PackPlanes(packet.planes, planes_packed);
+					for (size_t old_target : packet.target_old_indices)
+					{
+						if (old_target >= oldtess.GetPointNo() ||
+							std::binary_search(ToRemove.begin(), ToRemove.end(), old_target))
+							continue;
+						const size_t removed_before = static_cast<size_t>(
+							std::lower_bound(ToRemove.begin(), ToRemove.end(), old_target) - ToRemove.begin());
+						const size_t target = old_target - removed_before;
+						CreatePolyFaces(tess, target, target_poly);
+						const ClipBounds target_bounds = computeBounds(target_poly);
+						PackPolyhedron(target_poly, poly_packed);
+						packed_tasks.insert(packed_tasks.end(), poly_packed.begin(), poly_packed.end());
+						packed_tasks.insert(packed_tasks.end(), planes_packed.begin(), planes_packed.end());
+						PackBounds(target_bounds, packed_tasks);
+						ClipBounds no_plane_bounds;
+						PackBounds(no_plane_bounds, packed_tasks);
+						source_volumes.push_back(packet.source_volume);
+						task_info.push_back({source_rank, packet_index, target});
+					}
+				}
+			}
+
+			std::vector<ClipResultEntry> results;
+			DistributeAndComputeClips(packed_tasks, task_info.size(), source_volumes,
+				results, MPI_COMM_WORLD);
+			for (const ClipResultEntry &entry : results)
+			{
+				const RemovalClipTask &task = task_info[entry.task_id];
+				const RemovalSourcePacket &packet =
+					packets[static_cast<size_t>(task.source_rank)][task.packet_index];
+				overlap_sums[static_cast<size_t>(task.source_rank)][task.packet_index] += entry.dv;
+				Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(packet.cell, eos, entry.dv,
+					packet.slope, packet.source_cm, entry.clip_CM);
+				extensives[task.target_index] += toadd;
+			}
+		}
+		else
+		{
+			std::vector<Face> target_poly;
+			ClipWorkspace workspace;
+			for (int source_rank = 0; source_rank < world_size; ++source_rank)
+			{
+				const auto &rank_packets = packets[static_cast<size_t>(source_rank)];
+				for (size_t packet_index = 0; packet_index < rank_packets.size(); ++packet_index)
+				{
+					const RemovalSourcePacket &packet = rank_packets[packet_index];
+					for (size_t old_target : packet.target_old_indices)
+					{
+						if (old_target >= oldtess.GetPointNo() ||
+							std::binary_search(ToRemove.begin(), ToRemove.end(), old_target))
+							continue;
+						const size_t removed_before = static_cast<size_t>(
+							std::lower_bound(ToRemove.begin(), ToRemove.end(), old_target) - ToRemove.begin());
+						const size_t target = old_target - removed_before;
+						CreatePolyFaces(tess, target, target_poly);
+						ClipBounds target_bounds = computeBounds(target_poly);
+						auto [dv, clip_volume, clip_cm] = clipCells(
+							target_poly, packet.planes, workspace, &target_bounds);
+						if (dv <= 0)
+							continue;
+						overlap_sums[static_cast<size_t>(source_rank)][packet_index] += dv;
+						if (dv > packet.source_volume * 1e-12)
+						{
+							Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(packet.cell, eos, dv,
+								packet.slope, packet.source_cm, clip_cm);
+							extensives[target] += toadd;
+						}
+					}
+				}
+			}
+		}
+
+		std::vector<std::vector<RemovalOverlapReturn> > returns(static_cast<size_t>(world_size));
+		for (int source_rank = 0; source_rank < world_size; ++source_rank)
+		{
+			const auto &rank_packets = packets[static_cast<size_t>(source_rank)];
+			for (size_t packet_index = 0; packet_index < rank_packets.size(); ++packet_index)
+			{
+				RemovalOverlapReturn result;
+				result.source_index = rank_packets[packet_index].source_index;
+				result.source_id = rank_packets[packet_index].source_id;
+				result.volume = overlap_sums[static_cast<size_t>(source_rank)][packet_index];
+				returns[static_cast<size_t>(source_rank)].push_back(result);
+			}
+		}
+
+		returns = MPI_Exchange_all_to_all(returns, MPI_COMM_WORLD);
+		std::unordered_map<size_t, double> overlap_by_source;
+		for (const std::vector<RemovalOverlapReturn> &from_rank : returns)
+			for (const RemovalOverlapReturn &result : from_rank)
+			{
+				if (result.source_index >= oldtess.GetPointNo() ||
+					cells[result.source_index].ID != result.source_id)
+					throw UniversalError("Invalid MPI removal overlap return");
+				overlap_by_source[result.source_index] += result.volume;
+			}
+
+		for (size_t source : ToRemove)
+		{
+			const double source_volume = oldtess.GetVolume(source);
+			const double overlap_sum = overlap_by_source[source];
+			const double relative_error = std::abs(overlap_sum - source_volume) /
+				std::max(source_volume, std::numeric_limits<double>::min());
+			if (relative_error > 1e-6)
+			{
+				UniversalError eo("Incomplete MPI neighboring-cell removal remap");
+				eo.addEntry("Rank", rank);
+				eo.addEntry("Source index", source);
+				eo.addEntry("Source ID", cells[source].ID);
+				eo.addEntry("Source volume", source_volume);
+				eo.addEntry("Clipped volume", overlap_sum);
+				eo.addEntry("Relative error", relative_error);
+				throw eo;
+			}
+		}
+	}
+#endif
+
 	void LocalRefine(Tessellation3D const& oldtess, Tessellation3D const& tess, std::vector<size_t> const& ToRefine,
 		std::vector<ComputationalCell3D> const& cells, EquationOfState const& eos, AMRExtensiveUpdater3D const&eu, std::vector<Conserved3D> &extensives,SpatialReconstruction3D &interp)
 	{
@@ -1955,8 +2618,17 @@ void AMR3D::operator() (Simulation &sim)
 	vector<size_t> indeces = sort_index(ToRemove.first);
 	ToRemove.second = VectorValues(ToRemove.second, indeces);
 	ToRemove.first = VectorValues(ToRemove.first, indeces);
-	// Remove neighboring candidates via greedy independent set
-	ToRemove = GreedyRemoveCandidates(ToRemove.second, ToRemove.first, tess);
+	// Form an MPI-consistent independent anchor set, allow one neighboring
+	// partner per anchor, then conservatively enforce V_new <= 3 V_old for
+	// every possible surviving target in the old two-hop graph.
+	std::pair<vector<size_t>, vector<double> > RemoveAnchors =
+		GreedyRemoveCandidates(ToRemove.second, ToRemove.first, tess, cells);
+	ToRemove = AddNeighborRemovalPartners(RemoveAnchors, ToRemove.first, ToRemove.second, tess, cells);
+	// The limiter retains the accepted sources' two-hop topology. Reuse it for
+	// refinement conflicts and conservative remapping instead of discovering
+	// the same MPI neighborhoods two more times.
+	PointsToNeighborsMap removal_targets;
+	ToRemove = EnforceRemovalVolumeGrowthLimit(ToRemove, tess, cells, removal_targets);
 	// Get points to refine
 	std::pair<vector<size_t>, std::vector<Vector3D> > ToRefine = refine_.ToRefine(tess, cells, time);
 	sort_index(ToRefine.first, indeces);
@@ -1964,7 +2636,8 @@ void AMR3D::operator() (Simulation &sim)
 	if (!ToRefine.second.empty())
 		VectorValues(ToRefine.second, indeces);
 	// remove neighboring refine/remove
-	RemoveRefineNeighborRemove(tess, ToRemove.first, ToRefine.first, ToRefine.second);
+	RemoveRefineNeighborRemove(tess, ToRemove.first, removal_targets,
+		ToRefine.first, ToRefine.second);
 
 	// Do we need to rebuild tess ?
 	int nAMR[2];
@@ -2017,20 +2690,15 @@ void AMR3D::operator() (Simulation &sim)
 #endif
 	// Remove from extensive the remove cells
 	RemoveVector(extensives, ToRemove.first);
-	// Add the removed extensive to the neighboring cells
+	// Add removed extensives to every geometrically overlapping survivor from
+	// the saved two-hop target map. This supports adjacent removals while
+	// retaining a single Voronoi rebuild.
 #ifdef RICH_MPI
-	if (distribute_clips_)
-	{
-		DistributedLocalRemove(*oldtess, ToRemove.first, *eu_, cells, eos_, tess, extensives, interp_);
-		DistributedMPIRemove(*oldtess, tess, ToRemove.first, *eu_, eos, cells, extensives, interp_);
-	}
-	else
-	{
-		LocalRemove(*oldtess, ToRemove.first, *eu_, cells, eos_, tess, extensives, interp_);
-		MPIRemove(*oldtess, tess, ToRemove.first, *eu_, eos, cells, extensives, interp_);
-	}
+	MPIRemoveWithTargets(*oldtess, tess, ToRemove.first, removal_targets,
+		*eu_, cells, eos_, extensives, interp_, distribute_clips_);
 #else
-	LocalRemove(*oldtess, ToRemove.first, *eu_, cells, eos_, tess, extensives, interp_);
+	LocalRemoveWithTargets(*oldtess, tess, ToRemove.first, removal_targets,
+		*eu_, cells, eos_, extensives, interp_);
 #endif
 	// Recalc cells
 	RemoveVector(cells, ToRemove.first);

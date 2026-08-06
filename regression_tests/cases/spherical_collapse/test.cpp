@@ -16,13 +16,15 @@
 #include "source/newtonian/three_dimensional/CourantFriedrichsLewy.hpp"
 #include "source/newtonian/three_dimensional/Ghost3D.hpp"
 #include "source/newtonian/three_dimensional/Hllc3D.hpp"
-#include "source/newtonian/three_dimensional/SphericalLinearGauss3D.hpp"
+#include "source/newtonian/three_dimensional/LinearGauss3D.hpp"
+#include "source/newtonian/three_dimensional/SphericalBackgroundLinearGauss3D.hpp"
 #include "source/newtonian/three_dimensional/eulerian_3d.hpp"
 #include "source/newtonian/three_dimensional/default_cell_updater.hpp"
 #include "source/newtonian/three_dimensional/default_extensive_updater.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
 #include "source/newtonian/three_dimensional/simulation/Simulation.hpp"
 #include "source/newtonian/three_dimensional/simulation/steps/HydroStep.hpp"
+#include "source/newtonian/three_dimensional/spherical_symmetry/SphericalShellProjector3D.hpp"
 
 #ifdef RICH_MPI
 #include <mpi.h>
@@ -33,36 +35,38 @@ namespace {
 
 double const R_OUTER = 1.1;
 double const R_INNER = 0.05;
+double const FINAL_TIME = 4.170877e-1;
 #ifdef HIGH_RES
 size_t const N_CUBE_EDGE = 82;
 #else
 size_t const N_CUBE_EDGE = 41;
 #endif
 
+SphericalShellMeshOptions build_shell_mesh_options()
+{
+    SphericalShellMeshOptions options;
+    options.center = Vector3D();
+    options.inner_radius = R_INNER;
+    options.outer_radius = R_OUTER;
+    options.angular_edge_count = N_CUBE_EDGE;
+    options.guard_shell_count = 2;
+    options.fill_inner_core = true;
+    options.fill_outer_box = true;
+    options.antipodal_directions = true;
+    options.centered_cartesian_fill = true;
+    return options;
+}
+
 std::vector<double> build_bin_edges()
 {
-    auto sphere_raw = CubedSphereSurface(1.0, N_CUBE_EDGE, Vector3D(), 0);
-    size_t N_angular = 0;
-    for (auto const& p : sphere_raw)
-        if (abs(p) > 1e-12)
-            ++N_angular;
-    double dR_over_R = std::sqrt(4.0 * M_PI / static_cast<double>(N_angular));
-
-    std::vector<double> edges;
-    double R = R_OUTER;
-    while (R > R_INNER) {
-        edges.push_back(R);
-        R *= (1.0 - dR_over_R);
-    }
-    edges.push_back(R);
-    std::reverse(edges.begin(), edges.end());
-    return edges;
+    return SphericalShellMeshActiveBinEdges(build_shell_mesh_options());
 }
 
 struct DiagResult {
     double shock_r;
     double rho_scatter;
     double vr_scatter;
+    double tangential_velocity_rms;
 };
 
 DiagResult compute_diagnostics(HDSim3D const& sim,
@@ -75,6 +79,8 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
     std::vector<double> rho_vol(nbins, 0.0);
     std::vector<double> vr_vol(nbins, 0.0);
     std::vector<double> ie_vol(nbins, 0.0);
+    double tangential_v2_vol = 0.0;
+    double tangential_vol = 0.0;
 
     std::vector<size_t> cell_bin(N, nbins);
     std::vector<double> cell_rho(N);
@@ -98,9 +104,12 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
         double const rho = sim.getCells()[i].density;
         double const ie = sim.getCells()[i].internal_energy;
         double vr = 0.0;
+        double vt2 = 0.0;
         if (r > 1e-12) {
             Vector3D const v = sim.getCells()[i].velocity;
             vr = (v.x * cm.x + v.y * cm.y + v.z * cm.z) / r;
+            Vector3D const vt = v - cm * (vr / r);
+            vt2 = ScalarProd(vt, vt);
         }
 
         cell_bin[i] = bin;
@@ -112,6 +121,8 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
         rho_vol[bin] += rho * vol;
         vr_vol[bin] += vr * vol;
         ie_vol[bin] += ie * vol;
+        tangential_v2_vol += vt2 * vol;
+        tangential_vol += vol;
     }
 
 #ifdef RICH_MPI
@@ -126,6 +137,11 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
         vr_vol = g;
         MPI_Allreduce(ie_vol.data(), g.data(), n, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         ie_vol = g;
+        double gt = 0.0;
+        MPI_Allreduce(&tangential_v2_vol, &gt, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        tangential_v2_vol = gt;
+        MPI_Allreduce(&tangential_vol, &gt, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        tangential_vol = gt;
     }
 #endif
 
@@ -166,7 +182,6 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
     double total_rho_mad = 0.0;
     double total_vr_mad = 0.0;
     double total_vol = 0.0;
-
     for (size_t b = 0; b < nbins; ++b) {
         if (vol_sum[b] <= 0.0)
             continue;
@@ -179,13 +194,17 @@ DiagResult compute_diagnostics(HDSim3D const& sim,
         }
 
         if (ie_mean[b] > 0.2 && bin_center < shock_r)
+        {
             shock_r = bin_center;
+        }
     }
 
     DiagResult res;
     res.shock_r = shock_r;
     res.rho_scatter = (total_vol > 0.0) ? total_rho_mad / total_vol : 0.0;
     res.vr_scatter = (total_vol > 0.0) ? total_vr_mad / total_vol : 0.0;
+    res.tangential_velocity_rms = (tangential_vol > 0.0)
+        ? std::sqrt(tangential_v2_vol / tangential_vol) : 0.0;
     return res;
 }
 
@@ -209,47 +228,13 @@ int main(void)
 
     Voronoi3D tess(ll, ur);
     std::vector<ComputationalCell3D> cells;
+    SphericalShellMeshOptions const shell_options = build_shell_mesh_options();
 
     {
         std::vector<Vector3D> points;
-        auto sphere_raw = CubedSphereSurface(1.0, N_CUBE_EDGE, Vector3D(), 200);
 
-        if (rank == 0) {
-            std::vector<Vector3D> unit_dirs;
-            unit_dirs.reserve(sphere_raw.size());
-            for (auto const& p : sphere_raw) {
-                double r = abs(p);
-                if (r > 1e-12)
-                    unit_dirs.push_back(p / r);
-            }
-            double const dR_over_R = std::sqrt(4.0 * M_PI / static_cast<double>(unit_dirs.size()));
-            std::vector<double> radii;
-            double R = R_OUTER;
-            while (R > R_INNER) {
-                radii.push_back(R);
-                R *= (1.0 - dR_over_R);
-            }
-            points.reserve(radii.size() * unit_dirs.size() + 200000);
-            for (double shell_r : radii)
-                for (auto const& d : unit_dirs)
-                    points.push_back(d * shell_r);
-            double innermost_dR = R_INNER * dR_over_R;
-            double inner_cell_vol = innermost_dR * innermost_dR * innermost_dR;
-            double inner_sphere_vol = (4.0 / 3.0) * M_PI * R_INNER * R_INNER * R_INNER;
-            size_t N_inner = std::max(static_cast<size_t>(100),
-                                      static_cast<size_t>(inner_sphere_vol / inner_cell_vol));
-            auto inner_pts = RandSphereR(N_inner, ll, ur, 0, R_INNER);
-            points.insert(points.end(), inner_pts.begin(), inner_pts.end());
-            double outer_cell_size = R_OUTER * dR_over_R;
-            double box_vol = std::pow(2.0 * box_half, 3);
-            double sphere_vol = (4.0 / 3.0) * M_PI * R_OUTER * R_OUTER * R_OUTER;
-            double outer_vol = box_vol - sphere_vol;
-            double outer_cell_vol = outer_cell_size * outer_cell_size * outer_cell_size * 8.0;
-            size_t N_outer = std::max(static_cast<size_t>(1000),
-                                      static_cast<size_t>(outer_vol / outer_cell_vol));
-            auto outer_pts = RandSphereR2(N_outer, ll, ur, R_OUTER, box_half * std::sqrt(3.0));
-            points.insert(points.end(), outer_pts.begin(), outer_pts.end());
-        }
+        if (rank == 0)
+            points = GenerateSphericalShellMesh3D(ll, ur, shell_options);
 
 #ifdef RICH_MPI
         points = MPI_Spread(points, 0, MPI_COMM_WORLD);
@@ -279,7 +264,9 @@ int main(void)
                     cells[i].velocity = cm * (-1.0 / r_cm);
             } else {
                 cells[i].density = 0.001;
-                cells[i].pressure = 1e-5;
+                // Keep the inner ambient medium unchanged.  At fixed density,
+                // raising the outer pressure by 100 raises its sound speed by 10.
+                cells[i].pressure = r_mp >= 1.0 ? 1e-3 : 1e-5;
                 cells[i].velocity = Vector3D(0, 0, 0);
             }
             cells[i].internal_energy = eos.dp2e(cells[i].density, cells[i].pressure,
@@ -289,7 +276,9 @@ int main(void)
 
     Hllc3D rs;
     RigidWallGenerator3D ghost;
-    SphericalLinearGauss3D interp(eos, ghost, Vector3D(0, 0, 0), true, 0.2, 0.5, 0.7, false, {}, "", true, false, false);
+    SphericalBackgroundLinearGauss3D interp(eos, ghost, Vector3D(),
+        SphericalShellMeshRadii(shell_options), true, 0.2, 0.5, 0.7);
+    LinearGauss3D perturbation_interp(eos, ghost, true, 0.2, 0.5, 0.7);
     Eulerian3D pm;
     ZeroForce3D force;
     DefaultCellUpdater cu;
@@ -304,6 +293,8 @@ int main(void)
     flux_vector.push_back({boundary_face, &rigidflux});
     flux_vector.push_back({bulk_face, regular_flux});
     ConditionActionFlux1 fc(flux_vector, interp);
+    ConditionActionFlux1 perturbation_fc(flux_vector,
+                                         perturbation_interp);
 
     std::vector<std::pair<const ConditionExtensiveUpdater3D::Condition3D*,
         const ConditionExtensiveUpdater3D::Action3D*>> eu_sequence;
@@ -315,10 +306,33 @@ int main(void)
     simulation.SetTimeStepFunction(tsf);
     HDSim3D sim(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, *tsf, fc, cu, eu, force,
                 std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
+    sim.SetSphericalShellProjector(
+        std::make_shared<SphericalShellProjector3D>(
+            shell_options.center, SphericalShellMeshRadii(shell_options)),
+        perturbation_fc);
 
     auto hydroStep = std::make_shared<HydroStep>(sim, HydroStep::TIMEADVANCE_2);
     simulation.addPhysics(hydroStep);
     simulation.SetTimeStep(1.0);
+
+    auto global_conserved_totals = [&sim]() {
+        double totals[2] = {0.0, 0.0};
+        size_t const owned_cell_count = sim.getTessellation().GetPointNo();
+        for (size_t i = 0; i < owned_cell_count; ++i) {
+            totals[0] += sim.getExtensives()[i].mass;
+            totals[1] += sim.getExtensives()[i].energy;
+        }
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, totals, 2, MPI_DOUBLE, MPI_SUM,
+                      MPI_COMM_WORLD);
+#endif
+        return std::make_pair(totals[0], totals[1]);
+    };
+    std::pair<double, double> const initial_totals =
+        global_conserved_totals();
+    std::pair<double, double> final_totals = initial_totals;
+    double max_mass_relative_drift = 0.0;
+    double max_energy_relative_drift = 0.0;
 
     WriteSnapshot3D(sim, "snap_initial.h5");
     if (rank == 0)
@@ -346,6 +360,7 @@ int main(void)
     double next_snapshot_r = R_OUTER - 0.1;
     double max_rho_scatter = 0.0;
     double max_vr_scatter = 0.0;
+    double max_tangential_velocity_rms = 0.0;
 
     while (true) {
         try {
@@ -356,8 +371,21 @@ int main(void)
         }
 
         DiagResult diag = compute_diagnostics(sim, bin_edges);
+        final_totals = global_conserved_totals();
+        double const mass_relative_drift =
+            std::abs(final_totals.first - initial_totals.first) /
+            std::abs(initial_totals.first);
+        double const energy_relative_drift =
+            std::abs(final_totals.second - initial_totals.second) /
+            std::abs(initial_totals.second);
+        max_mass_relative_drift = std::max(max_mass_relative_drift,
+            mass_relative_drift);
+        max_energy_relative_drift = std::max(max_energy_relative_drift,
+            energy_relative_drift);
         max_rho_scatter = std::max(max_rho_scatter, diag.rho_scatter);
         max_vr_scatter = std::max(max_vr_scatter, diag.vr_scatter);
+        max_tangential_velocity_rms = std::max(max_tangential_velocity_rms,
+                                               diag.tangential_velocity_rms);
 
         if (rank == 0) {
             std::cout << "Cycle " << simulation.GetCycle()
@@ -365,7 +393,11 @@ int main(void)
                       << " dt=" << simulation.GetTimeStep()
                       << " shock_r=" << diag.shock_r
                       << " rho_scatter=" << diag.rho_scatter
-                      << " vr_scatter=" << diag.vr_scatter << std::endl;
+                      << " vr_scatter=" << diag.vr_scatter
+                      << " tangential_velocity_rms=" << diag.tangential_velocity_rms
+                      << " mass_relative_drift=" << mass_relative_drift
+                      << " energy_relative_drift=" << energy_relative_drift
+                      << std::endl;
         }
 
         if (diag.shock_r <= next_snapshot_r) {
@@ -377,7 +409,7 @@ int main(void)
             next_snapshot_r -= 0.1;
         }
 
-        if (diag.shock_r <= R_INNER)
+        if (simulation.GetTime() >= FINAL_TIME)
             break;
     }
 
@@ -386,11 +418,11 @@ int main(void)
         std::cout << "Wrote snap_final.h5" << std::endl;
 
     {
-        size_t const N = sim.getTessellation().GetPointNo();
+        size_t const owned_cell_count = sim.getTessellation().GetPointNo();
         double const box_half = R_OUTER * 1.5;
         double const z_tol = box_half / static_cast<double>(N_CUBE_EDGE);
         std::vector<double> local_x, local_y, local_rho, local_ie;
-        for (size_t i = 0; i < N; ++i) {
+        for (size_t i = 0; i < owned_cell_count; ++i) {
             Vector3D const cm = sim.getTessellation().GetCellCM(i);
             if (std::abs(cm.z) > z_tol)
                 continue;
@@ -430,22 +462,40 @@ int main(void)
         }
     }
 
+    int exit_code = 0;
     if (rank == 0) {
-        int pass = (max_rho_scatter < 0.1 && max_vr_scatter < 0.1) ? 1 : 0;
+        int pass = (max_rho_scatter <= 1e-4 && max_vr_scatter <= 1e-4
+                    && max_tangential_velocity_rms <= 1e-4
+                    && max_mass_relative_drift <= 1e-10
+                    && max_energy_relative_drift <= 1e-10) ? 1 : 0;
         std::ofstream mf("collapse_metrics.txt");
         mf << std::scientific << std::setprecision(12);
         mf << "max_density_scatter " << max_rho_scatter << "\n";
         mf << "max_velocity_scatter " << max_vr_scatter << "\n";
+        mf << "max_tangential_velocity_rms " << max_tangential_velocity_rms << "\n";
+        mf << "initial_mass " << initial_totals.first << "\n";
+        mf << "final_mass " << final_totals.first << "\n";
+        mf << "max_mass_relative_drift " << max_mass_relative_drift << "\n";
+        mf << "initial_energy " << initial_totals.second << "\n";
+        mf << "final_energy " << final_totals.second << "\n";
+        mf << "max_energy_relative_drift " << max_energy_relative_drift << "\n";
         mf << "pass " << pass << "\n";
         mf.close();
         std::cout << "Wrote collapse_metrics.txt"
                   << " (max_density_scatter=" << max_rho_scatter
-                  << ", max_velocity_scatter=" << max_vr_scatter
-                  << ", pass=" << pass << ")" << std::endl;
+                   << ", max_velocity_scatter=" << max_vr_scatter
+                   << ", max_tangential_velocity_rms=" << max_tangential_velocity_rms
+                   << ", max_mass_relative_drift="
+                   << max_mass_relative_drift
+                   << ", max_energy_relative_drift="
+                   << max_energy_relative_drift
+                   << ", pass=" << pass << ")" << std::endl;
+        exit_code = pass ? 0 : 1;
     }
 
 #ifdef RICH_MPI
+    MPI_Bcast(&exit_code, 1, MPI_INT, 0, MPI_COMM_WORLD);
     MPI_Finalize();
 #endif
-    return 0;
+    return exit_code;
 }

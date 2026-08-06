@@ -62,6 +62,7 @@ set(STORM_DIR        "${PROJECT_SOURCE_DIR}/monte")
 set(MPI_UTILS_DIR    "${PROJECT_SOURCE_DIR}/utils/mpi_utils")
 set(SPATIAL_DS_DIR   "${PROJECT_SOURCE_DIR}/utils/spatial_ds")
 set(MESH_DECOMP_DIR  "${PROJECT_SOURCE_DIR}/3D/tessellation/MeshDecomposer3D")
+add_compile_definitions(RICH_IMC_DDMC_ENABLED)
 
 # =============================================
 # Source collection
@@ -376,55 +377,3 @@ vtk_module_autoinit(
   TARGETS ${EXE_NAME}
   MODULES ${VTK_LIBRARIES}
 )
-
-# Optional: build reverse estimator unit tests
-option(BUILD_REVERSE_TESTS "Build reverse estimator standalone tests" ON)
-if(BUILD_REVERSE_TESTS)
-    file(GLOB_RECURSE REVERSE_TEST_SRC
-        "${PROJECT_SOURCE_DIR}/../tests/reverse_estimator_tests.cpp")
-    if(REVERSE_TEST_SRC)
-        set(REVERSE_CORE_SRC
-            "${PROJECT_SOURCE_DIR}/3D/radiation/ReverseDDMC.cpp"
-            "${PROJECT_SOURCE_DIR}/3D/radiation/ReverseDoppler.cpp"
-            "${PROJECT_SOURCE_DIR}/3D/radiation/ReversePolarizationMueller.cpp"
-            "${PROJECT_SOURCE_DIR}/misc/universal_error.cpp"
-            "${PROJECT_SOURCE_DIR}/newtonian/three_dimensional/computational_cell.cpp"
-            "${PROJECT_SOURCE_DIR}/misc/utils.cpp")
-        add_library(rich_reverse_core OBJECT ${REVERSE_CORE_SRC})
-        target_link_libraries(rich_reverse_core PUBLIC
-            ZLIB::ZLIB ${CMAKE_DL_LIBS})
-        if(DEFINED MPI)
-            target_compile_options(rich_reverse_core PUBLIC ${mpi_compile_flags})
-            target_link_options(rich_reverse_core PUBLIC ${mpi_link_flags})
-            target_link_libraries(rich_reverse_core PUBLIC MPI::MPI_C)
-        endif()
-        if(DEFINED JSONCPP_LIB)
-            target_link_libraries(rich_reverse_core PUBLIC ${JSONCPP_LIB})
-        endif()
-        if(DEFINED VTUNE_LIB)
-            target_link_libraries(rich_reverse_core PUBLIC "${VTUNE_LIB}")
-        endif()
-
-        add_executable(reverse_estimator_tests ${REVERSE_TEST_SRC})
-        target_link_libraries(reverse_estimator_tests PRIVATE
-            rich_reverse_core ZLIB::ZLIB ${CMAKE_DL_LIBS})
-        if(DEFINED MPI)
-            target_compile_options(reverse_estimator_tests PRIVATE ${mpi_compile_flags})
-            target_link_options(reverse_estimator_tests PRIVATE ${mpi_link_flags})
-            target_link_libraries(reverse_estimator_tests PRIVATE MPI::MPI_C)
-        endif()
-        if(DEFINED JSONCPP_LIB)
-            target_link_libraries(reverse_estimator_tests PRIVATE ${JSONCPP_LIB})
-        endif()
-        if(DEFINED VTUNE_LIB)
-            target_link_libraries(reverse_estimator_tests PRIVATE "${VTUNE_LIB}")
-        endif()
-        target_link_options(reverse_estimator_tests PRIVATE -rdynamic)
-        if(DEFINED MPI)
-            add_test(NAME reverse_estimator_tests
-                     COMMAND ${MPIEXEC_PATH} -n 2 $<TARGET_FILE:reverse_estimator_tests>)
-        else()
-            add_test(NAME reverse_estimator_tests COMMAND reverse_estimator_tests)
-        endif()
-    endif()
-endif()

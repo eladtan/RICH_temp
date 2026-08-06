@@ -23,7 +23,6 @@
 \contentsline {section}{\numberline {20}Yee Isentropic Vortex (128$\times $128, Lagrangian)}{38}{section.20}%
 \contentsline {section}{\numberline {21}Spherical LSQ Gradient -- Linear Field Verification}{39}{section.21}%
 \contentsline {section}{\numberline {22}Cartesian LSQ Gradient -- Linear Field Verification}{41}{section.22}%
-\contentsline {section}{\numberline {23}Spherical Shell Collapse (High Resolution, Symmetry Test)}{43}{section.23}%
 \contentsline {section}{\numberline {24}Spherical Shell Collapse (Symmetry Test)}{44}{section.24}%
 \contentsline {section}{\numberline {25}Rayleigh--Taylor Instability (3D, MPI)}{46}{section.25}%
 \contentsline {section}{\numberline {26}1D Eulerian Diffusion Suite (Gray Free--Free, Cooling Limiter)}{48}{section.26}%

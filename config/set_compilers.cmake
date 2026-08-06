@@ -34,7 +34,30 @@ message(STATUS "Fortran Compiler: ${CMAKE_Fortran_COMPILER}")
 
 if(DEFINED MPI)
     # Detect MPI implementation from mpiexec
-    find_program(MPIEXEC_PATH mpiexec REQUIRED)
+    # Build directories are intentionally reused across compiler/module
+    # configurations.  Do not let find_program reuse a wrapper cached by a
+    # previous configuration; the active PATH is the source of truth here.
+    unset(MPIEXEC_PATH CACHE)
+    unset(MPIEXEC_PATH)
+    find_program(MPIEXEC_PATH NAMES mpiexec
+        NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH NO_CMAKE_SYSTEM_PATH REQUIRED)
+    set(MPIEXEC_EXECUTABLE "${MPIEXEC_PATH}" CACHE FILEPATH
+        "MPI launcher selected from the active PATH" FORCE)
+
+    # FindMPI caches paths and flags derived from its wrapper probes.  Refresh
+    # those derived entries when this build directory is reconfigured with a
+    # different MPI module, while leaving user-supplied hint variables alone.
+    get_cmake_property(_rich_cache_variables CACHE_VARIABLES)
+    foreach(_rich_cache_variable IN LISTS _rich_cache_variables)
+        if(_rich_cache_variable MATCHES "^MPI_.*_(LIBRARY|WORKS)$" OR
+           _rich_cache_variable MATCHES
+               "^MPI_(C|CXX|Fortran)_(COMPILER_INCLUDE_DIRS|HEADER_DIR|F77_HEADER_DIR|MODULE_DIR|LIB_NAMES|LINK_FLAGS)$")
+            unset("${_rich_cache_variable}" CACHE)
+        endif()
+    endforeach()
+    unset(_rich_cache_variable)
+    unset(_rich_cache_variables)
+
     execute_process(
         COMMAND ${MPIEXEC_PATH} --version
         OUTPUT_VARIABLE mpi_version_out
@@ -62,6 +85,10 @@ if(DEFINED MPI)
     # Intel OneAPI pollutes. Cache MPI_CXX_COMPILER / MPI_C_COMPILER so
     # that dependencies calling find_package(MPI) internally (e.g. VTK's
     # ParallelMPI) also find the correct MPI.
+    unset(MPI_CXX_COMPILER CACHE)
+    unset(MPI_CXX_COMPILER)
+    unset(MPI_C_COMPILER CACHE)
+    unset(MPI_C_COMPILER)
     find_program(MPI_CXX_COMPILER NAMES mpicxx mpic++ NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH NO_CMAKE_SYSTEM_PATH REQUIRED)
     find_program(MPI_C_COMPILER   NAMES mpicc         NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH NO_CMAKE_SYSTEM_PATH REQUIRED)
 
@@ -83,29 +110,39 @@ if(DEFINED MPI)
     )
     message(STATUS "MPI Fortran wrapper: ${MPI_Fortran_COMPILER}")
 
-    # OneAPI exports its own MPI headers from the compiler environment.  When
-    # OpenMPI is selected, compiling directly with icx/icpx/ifx can therefore
-    # pick up Intel MPI's mpi.h even though linking uses OpenMPI.  Configure
-    # through OpenMPI's wrappers instead: they still invoke the Intel
-    # compilers, but add OpenMPI's headers before the OneAPI defaults.
-    if(DEFINED INTEL AND MPI_IMPL STREQUAL "OpenMPI")
+    # Compiler environments can export headers from an MPI implementation
+    # other than the one selected on PATH.  Configure every OpenMPI build
+    # through its wrappers so the compiler, headers, and libraries stay
+    # together.  Verify that the wrapper still uses the requested compiler
+    # family rather than silently changing the toolchain.
+    if(MPI_IMPL STREQUAL "OpenMPI")
         execute_process(
             COMMAND ${MPI_CXX_COMPILER} -showme:command
             OUTPUT_VARIABLE _openmpi_cxx_backend
             OUTPUT_STRIP_TRAILING_WHITESPACE
             RESULT_VARIABLE _openmpi_cxx_backend_result
         )
-        if(NOT _openmpi_cxx_backend_result EQUAL 0 OR
-           NOT _openmpi_cxx_backend MATCHES "(^|.*/)icpx( |$)")
+        if(DEFINED GNU)
+            set(_openmpi_expected_backend "(g\\+\\+|c\\+\\+)")
+            set(_openmpi_expected_backend_description "g++ or c++")
+        elseif(DEFINED INTEL)
+            set(_openmpi_expected_backend "icpx")
+            set(_openmpi_expected_backend_description "icpx")
+        else()
+            message(FATAL_ERROR "OpenMPI compiler wrapper requested for an unknown compiler family")
+        endif()
+        if(NOT _openmpi_cxx_backend_result EQUAL 0 OR NOT
+           _openmpi_cxx_backend MATCHES "(^|.*/)${_openmpi_expected_backend}( |$)")
             message(FATAL_ERROR
-                "intelReleaseMPI with OpenMPI requires mpicxx to invoke icpx; "
+                "${CONFIG} with OpenMPI requires mpicxx to invoke "
+                "${_openmpi_expected_backend_description}; "
                 "got '${_openmpi_cxx_backend}' from ${MPI_CXX_COMPILER}")
         endif()
 
         set(CMAKE_C_COMPILER       "${MPI_C_COMPILER}"       CACHE FILEPATH "OpenMPI C wrapper" FORCE)
         set(CMAKE_CXX_COMPILER     "${MPI_CXX_COMPILER}"     CACHE FILEPATH "OpenMPI C++ wrapper" FORCE)
         set(CMAKE_Fortran_COMPILER "${MPI_Fortran_COMPILER}" CACHE FILEPATH "OpenMPI Fortran wrapper" FORCE)
-        message(STATUS "Intel/OpenMPI compiler wrappers: ${CMAKE_C_COMPILER}; ${CMAKE_CXX_COMPILER}; ${CMAKE_Fortran_COMPILER}")
+        message(STATUS "OpenMPI compiler wrappers: ${CMAKE_C_COMPILER}; ${CMAKE_CXX_COMPILER}; ${CMAKE_Fortran_COMPILER}")
     endif()
 
     # Query compile and link flags from the MPI wrapper

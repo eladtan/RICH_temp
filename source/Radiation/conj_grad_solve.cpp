@@ -173,12 +173,6 @@ namespace CG
         if (cells.size() > max_loc0 and cells.size() > max_loc1){
             if(rank == 0)
                 std:: cout << "Converged at iter = " << i <<" error "<<error<<" negative value "<<max_data_2_val<<std::endl;
-            if(rank == max_data_0_id)
-                std::cout<<"Max0 "<<max_data_0_val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
-                <<" X "<<tess.GetMeshPoint(max_loc0)<<" sub_x "<<sub_x[max_loc0]<<std::endl; 
-            if(rank == max_data_1_id)
-                std::cout<<"Max1 "<<max_data_1_val<<" cell ID "<<cells[max_loc1].ID<<" density "<<cells[max_loc1].density<<" temperature "<<cells[max_loc1].temperature<<" Er "<<cells[max_loc1].Erad * cells[max_loc1].density
-                <<" X "<<tess.GetMeshPoint(max_loc1)<<" sub_x "<<sub_x[max_loc1]<<std::endl; 
         }
         total_iters = i;
 #ifdef RICH_MPI
@@ -188,8 +182,7 @@ namespace CG
         sub_x.resize(Nlocal);
         vec_lin_combo(1.0, b, -1.0, sub_a_times_p, sub_r);
         sub_x_solution.resize(Nlocal);
-        double sum_dx = 0, sum_dx_sign = 0, negative_x = 0;
-        std::vector<double> dx_vec(slice, 0);
+        double negative_x = 0;
         for(size_t k = 0; k < Nlocal; ++k)
         {
             // std::cout<<"subx["<<k<<"] "<<sub_x[k]<<std::endl;
@@ -199,42 +192,10 @@ namespace CG
             if(sub_x_solution[k] < 0)
             {
                 negative_x -= cell_volume * sub_x_solution[k];
-                sum_dx += cell_volume * (std::abs(sub_x[k]) * 0.1 - sub_x_solution[k]);
-                sum_dx_sign += cell_volume * (std::abs(sub_x[k]) * 0.1 - sub_x_solution[k]);
-                dx_vec[k%slice] += cell_volume * (std::abs(sub_x[k]) * 0.1 - sub_x_solution[k]);
-                // if(cell_volume * (std::abs(sub_x[k]) * 0.1 - sub_x_solution[k])>1e37)
-                //     std::cout<<"Large Erad change sub_x[k] "<<sub_x[k]<<" "<<cells[k/slice]<<std::endl;
-                sub_x_solution[k] = std::abs(sub_x[k]) * 0.1;
-            }
-            else
-            {
-                if(sub_x_solution[k] < sub_x[k] * 0.5 && sub_x_solution[k] >= 0 && sub_x[k] > 0)
-                {
-                    sum_dx += cell_volume * (std::abs(sub_x[k]) * 0.5 - sub_x_solution[k]);
-                    sum_dx_sign += cell_volume * (std::abs(sub_x[k]) * 0.5 - sub_x_solution[k]);
-                    dx_vec[k%slice] += cell_volume * (std::abs(sub_x[k]) * 0.5 - sub_x_solution[k]);
-                    sub_x_solution[k] = std::abs(sub_x[k]) * 0.5;
-                }
-                if(sub_x_solution[k] > std::abs(sub_x[k]) * 2 && sub_x[k] > 0)
-                {
-                    sum_dx += cell_volume * std::abs(sub_x[k] * 2 - sub_x_solution[k]);
-                    sum_dx_sign -= cell_volume * std::abs(sub_x[k] * 2 - sub_x_solution[k]);
-                    dx_vec[k%slice] -= cell_volume * std::abs(sub_x[k] * 2 - sub_x_solution[k]);
-                    sub_x_solution[k] = sub_x[k] * 2;
-                }
             }
         }
-        dx_vec.push_back(sum_dx);
-        dx_vec.push_back(sum_dx_sign);
-        dx_vec.push_back(negative_x);
-#ifdef RICH_MPI
-        MPI_Reduce(rank == 0 ? MPI_IN_PLACE : dx_vec.data(), dx_vec.data(), dx_vec.size(), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-#endif
-        if(rank == 0)
-        {
-            std::cout << "Energy change due to sub_x_solution " << dx_vec[slice] <<" with sign "<<dx_vec[slice + 1]<<" negative_x "<<dx_vec.back()<<std::endl;
-            // for(size_t i = 0; i < slice; ++i) std::cout << "energy change group " << i << " = " << dx_vec[i] << std::endl;
-        }
+        if (rank == 0 && negative_x > 0.0)
+            std::cout << "Negative raw radiation candidate energy " << negative_x << std::endl;
     }
     
     void build_M(const mat &sub_A_values, const size_t_mat &sub_A_indices, std::vector<double> &M)
@@ -429,12 +390,6 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
                 && max_data[1].val < 1e-5 && max_data[0].val < 1e-5 && (i > 250 || max_data[2].val < 0.5)) { // norm is just sqrt(dot product so don't need to use a separate norm fnc) // vector norm needs to use a all reduce!
                 if(rank == 0)
                     std:: cout << "Converged at iter = " << i <<" delta "<<sub_r_sqrd<<" negative value "<<max_data[2].val<<std::endl;
-                if(rank == max_data[0].mpi_id)
-                    std::cout<<"Max0 "<<max_data[0].val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
-                    <<" X "<<tess.GetMeshPoint(max_loc0).x<<" Y "<<tess.GetMeshPoint(max_loc0).y<<" Z "<<tess.GetMeshPoint(max_loc0).z<<std::endl; 
-                if(rank == max_data[1].mpi_id)
-                    std::cout<<"Max1 "<<max_data[1].val<<" cell ID "<<cells[max_loc1].ID<<" density "<<cells[max_loc1].density<<" temperature "<<cells[max_loc1].temperature<<" Er "<<cells[max_loc1].Erad * cells[max_loc1].density
-                    <<" X "<<tess.GetMeshPoint(max_loc1).x<<" Y "<<tess.GetMeshPoint(max_loc1).y<<" Z "<<tess.GetMeshPoint(max_loc1).z<<std::endl; 
                 total_iters = i;
                 good_end = true;
 #ifdef RICH_MPI
@@ -481,8 +436,6 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
                         max_volume = std::max(max_volume, volumes[neigh[k]]);
                     }
                 }
-                std::cout<<"Max0 "<<max_data[0].val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
-                <<" X "<<tess.GetMeshPoint(max_loc0).x<<" Y "<<tess.GetMeshPoint(max_loc0).y<<" Z "<<tess.GetMeshPoint(max_loc0).z<<" volume "<<tess.GetVolume(max_loc0)<<" max volume "<<max_volume<<" min volume "<<min_volume<<std::endl; 
             }
             if(rank == max_data[1].mpi_id)
             {
@@ -496,11 +449,8 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
                         max_volume = std::max(max_volume, volumes[neigh[k]]);
                     }
                 }
-                std::cout<<"Max1 "<<max_data[1].val<<" cell ID "<<cells[max_loc1].ID<<" density "<<cells[max_loc1].density<<" temperature "<<cells[max_loc1].temperature<<" Er "<<cells[max_loc1].Erad * cells[max_loc1].density
-                <<" X "<<tess.GetMeshPoint(max_loc1).x<<" Y "<<tess.GetMeshPoint(max_loc1).y<<" Z "<<tess.GetMeshPoint(max_loc1).z<<" volume "<<tess.GetVolume(max_loc1)<<" max volume "<<max_volume<<" min volume "<<min_volume<<std::endl; 
             }
 	    if(rank == max_data[2].mpi_id)
-	      std::cout<<"rank "<<rank<<" i "<<max_loc2<<" sub_x "<<sub_x[max_loc2]<<std::endl;
         std::fill_n(sub_x.begin(), sub_x.size(), -1.0);
 	    // throw UniversalError("CG did not converge");
         }
@@ -603,7 +553,6 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         std::vector<double> &sub_r0 = workspace.sub_r0;
         sub_p = sub_r;
         sub_r0 = sub_r;
-        std::vector<bool> fixed_negative_x(Nlocal, false);
         sub_p.resize(Nlocal);
         sub_x.resize(Nlocal);
         sub_r0.resize(Nlocal);
@@ -626,7 +575,6 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         scratch_rescale1.assign(Nlocal, 0);
         scratch_rescale2.assign(Nlocal, 0);
         old_x = sub_x; 
-        std::vector<double> org_x = sub_x;
         size_t Ntotal = Nlocal;
         double sub_r_sqrd = mpi_dot_product(sub_r, sub_p);
         double const delta_init = sub_r_sqrd;
@@ -754,7 +702,6 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
 #ifdef RICH_MPI
             MPI_Allreduce(MPI_IN_PLACE, &max_sub_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif
-            bool any_fixed_local = false;
             for(size_t j = 0; j < Nlocal; ++j)
             {
                 if(std::abs(sub_r[j]) > max_data[1].val * (std::abs(A_diag[j] * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * max0_factor * 0.5))))
@@ -764,44 +711,14 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
                 }
                 if(sub_x[j] < -max_sub_x * 1e-10)
                 {
-                    if(i > 20 && not fixed_negative_x[j])
-                    {
-                        fixed_negative_x[j] = true;
-                        sub_x[j] = 0.5 * org_x[j];
-                        any_fixed_local = true;
-                    }
-                    else
-                    {
-                        max_loc2 = j;
-                        max_data[2].val = 1;
-                    }
+                    max_loc2 = j;
+                    max_data[2].val = 1;
                 }
                 if(std::abs(sub_x[j] - old_x[j]) > max_data[0].val * (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * max0_factor))
                 {
                     max_data[0].val = std::abs(sub_x[j] - old_x[j]) / (std::abs(sub_x[j]) + std::numeric_limits<double>::min() * 100 + max_sub_x * max0_factor);
                     max_loc0 = j;
                 }
-            }
-            int any_fixed_global = any_fixed_local ? 1 : 0;
-#ifdef RICH_MPI
-            MPI_Allreduce(MPI_IN_PLACE, &any_fixed_global, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-#endif
-            if(any_fixed_global)
-            {
-#ifdef RICH_MPI
-                MPI_exchange_data(tess, sub_x, true, slice);
-#endif
-                matvec(sub_x, sub_a_times_p);
-                sub_x.resize(Nlocal);
-                vec_lin_combo(1.0, b, -1.0, sub_a_times_p, sub_r);
-                sub_r.resize(Nlocal);
-                sub_r0 = sub_r;
-                sub_p = sub_r;
-                rho0 = mpi_dot_product(sub_r0, sub_r);
-                vector_rescale(sub_r, M, scratch_rescale1);
-                sub_r_sqrd = mpi_dot_product(scratch_rescale1, sub_r);
-                error = sub_r_sqrd / scale_b;
-                continue;
             }
 #ifdef RICH_MPI
             MPI_Allreduce(MPI_IN_PLACE, max_data, 3, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
@@ -846,13 +763,8 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
             if(rank == 0)
 	            std:: cout <<"not good end, delta "<<sub_r_sqrd<<" maxdata2 "<<max_data[2].val<<" iterations "<<total_iters<<" scale_b "<<scale_b<<std::endl;
             if(rank == max_data[0].mpi_id)
-                std::cout<<"Max0 "<<max_data[0].val<<" cell ID "<<cells[max_loc0].ID<<" density "<<cells[max_loc0].density<<" temperature "<<cells[max_loc0].temperature<<" Er "<<cells[max_loc0].Erad * cells[max_loc0].density
-                <<" X "<<tess.GetMeshPoint(max_loc0).x<<" Y "<<tess.GetMeshPoint(max_loc0).y<<" Z "<<tess.GetMeshPoint(max_loc0).z<<" sub_x "<<sub_x[max_loc0]<<std::endl; 
             if(rank == max_data[1].mpi_id)
-                std::cout<<"Max1 "<<max_data[1].val<<" cell ID "<<cells[max_loc1].ID<<" density "<<cells[max_loc1].density<<" temperature "<<cells[max_loc1].temperature<<" Er "<<cells[max_loc1].Erad * cells[max_loc1].density
-                <<" X "<<tess.GetMeshPoint(max_loc1).x<<" Y "<<tess.GetMeshPoint(max_loc1).y<<" Z "<<tess.GetMeshPoint(max_loc1).z<<" sub_x "<<sub_x[max_loc1]<<std::endl; 
             if(rank == max_data[2].mpi_id)
-                std::cout<<"rank "<<rank<<" i "<<max_loc2 <<" sub_x "<<sub_x[max_loc2]<<std::endl;
             std::fill_n(sub_x.begin(), sub_x.size(), -1.0);
             // throw UniversalError("CG did not converge");
         }

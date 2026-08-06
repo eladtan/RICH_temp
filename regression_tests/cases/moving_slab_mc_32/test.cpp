@@ -551,7 +551,7 @@ int main(int argc, char *argv[])
             tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, imcParams);
 
         auto popControl =
-            std::make_shared<NoPopulationControl<Vector3D, Tessellation3D>>(tess);
+            std::make_shared<STORM::NoPopulationControl<Vector3D, Tessellation3D>>(tess);
 
         std::vector<MonteCarloParticle<Vector3D, Tessellation3D>> emptyParticles;
         auto mcStep = std::make_shared<RadiationMCStep>(

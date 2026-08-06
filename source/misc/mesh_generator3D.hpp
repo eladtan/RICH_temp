@@ -20,6 +20,8 @@ struct SphericalShellMeshOptions
 	Vector3D center = Vector3D(0, 0, 0);
 	double inner_radius = 0.05;
 	double outer_radius = 1.1;
+	// Optional exact active-shell radii. Empty keeps the geometric spacing path.
+	std::vector<double> shell_radii;
 	size_t angular_edge_count = 41;
 	size_t surface_iterations = 100;
 	size_t guard_shell_count = 2;
@@ -27,6 +29,8 @@ struct SphericalShellMeshOptions
 	double exterior_spacing_factor = 2.0;
 	bool fill_inner_core = true;
 	bool fill_outer_box = true;
+	bool antipodal_directions = true;
+	bool centered_cartesian_fill = true;
 };
 
 struct SphericalShellMeshDiagnostics
@@ -137,9 +141,30 @@ std::vector<Vector3D> RandSphereSurfaceRounded(double const Radius, size_t const
 /*! \brief Radial bin edges used by GenerateSphericalShellMesh3D active shells */
 std::vector<double> SphericalShellMeshActiveBinEdges(SphericalShellMeshOptions const& options);
 
+/*! \brief Generator radii used by GenerateSphericalShellMesh3D
+  \param options Spherical shell mesh options
+  \param include_guards Include inner and outer guard shells
+  \return Sorted list of shell generator radii
+ */
+std::vector<double> SphericalShellMeshRadii(SphericalShellMeshOptions const& options,
+	bool include_guards = true);
+
 /*! \brief Generate a deterministic spherical shell mesh with guard shells */
 std::vector<Vector3D> GenerateSphericalShellMesh3D(Vector3D const& ll, Vector3D const& ur,
 	SphericalShellMeshOptions const& options,
+	SphericalShellMeshDiagnostics* diagnostics = nullptr);
+
+/*! \brief Generate a spherical shell mesh from exact active radii
+  \param ll Lower-left corner of the box
+  \param ur Upper-right corner of the box
+  \param angular_edge_count Cube-edge angular resolution; directions are
+    generated as 6 * angular_edge_count^2 points
+  \param radii Exact active shell radii
+  \param diagnostics Optional shell diagnostics
+  \return Shell points plus two inner/outer guard shells and Cartesian fill
+ */
+std::vector<Vector3D> GenerateSphericalShellMesh3D(Vector3D const& ll, Vector3D const& ur,
+	size_t angular_edge_count, std::vector<double> const& radii,
 	SphericalShellMeshDiagnostics* diagnostics = nullptr);
 
 /*! \brief Measure per-shell cell-volume uniformity for a generated spherical shell mesh */

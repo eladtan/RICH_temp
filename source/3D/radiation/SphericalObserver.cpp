@@ -1,4 +1,5 @@
 #include "SphericalObserver.hpp"
+#include "PolarizationStatistics.hpp"
 #include "misc/mesh_generator3D.hpp"
 #include "utils/hdf5/HDF5Writer.hpp"
 #include "misc/universal_error.hpp"
@@ -94,6 +95,56 @@ std::vector<double> relativeError(std::vector<double> const& mean,
 double relativeError(double mean, double stderr)
 {
     return (mean != 0.0) ? stderr / std::abs(mean) : 0.0;
+}
+
+void writeVtkScalar(std::ofstream& file,
+                    std::string const& name,
+                    std::vector<double> const& values,
+                    size_t expectedSize)
+{
+    if (values.empty())
+        return;
+    if (values.size() != expectedSize)
+        throw UniversalError("SphericalObserver::writeVTK: scalar size mismatch for " + name);
+    file << "SCALARS " << name << " double 1\n";
+    file << "LOOKUP_TABLE default\n";
+    for (double value : values)
+        file << value << "\n";
+}
+
+void writeVtkScalar(std::ofstream& file,
+                    std::string const& name,
+                    std::vector<int> const& values,
+                    size_t expectedSize)
+{
+    if (values.empty())
+        return;
+    if (values.size() != expectedSize)
+        throw UniversalError("SphericalObserver::writeVTK: scalar size mismatch for " + name);
+    file << "SCALARS " << name << " double 1\n";
+    file << "LOOKUP_TABLE default\n";
+    for (int value : values)
+        file << static_cast<double>(value) << "\n";
+}
+
+std::vector<double> groupColumn(std::vector<std::vector<double>> const& values,
+                                size_t group)
+{
+    std::vector<double> column(values.size(), 0.0);
+    for (size_t i = 0; i < values.size(); ++i)
+        if (group < values[i].size())
+            column[i] = values[i][group];
+    return column;
+}
+
+std::vector<int> groupColumn(std::vector<std::vector<int>> const& values,
+                             size_t group)
+{
+    std::vector<int> column(values.size(), 0);
+    for (size_t i = 0; i < values.size(); ++i)
+        if (group < values[i].size())
+            column[i] = values[i][group];
+    return column;
 }
 
 void initMatrixStat(SphericalObserver::RunningMatrixStats& stat, size_t n, size_t m)
@@ -432,36 +483,113 @@ std::vector<Triangle> convexHullTriangulation(const std::vector<Vector3D>& pts)
     return result;
 }
 
+double sphericalTriangleArea(Vector3D const& a,
+                             Vector3D const& b,
+                             Vector3D const& c)
+{
+    double const numerator = std::abs(ScalarProd(a, CrossProduct(b, c)));
+    double const denominator = 1.0 + ScalarProd(a, b)
+                                   + ScalarProd(b, c)
+                                   + ScalarProd(c, a);
+    return 2.0 * std::atan2(numerator, denominator);
+}
+
+bool sphericalCircumcenter(Vector3D const& a,
+                           Vector3D const& b,
+                           Vector3D const& c,
+                           Vector3D& center)
+{
+    center = CrossProduct(b - a, c - a);
+    double const norm = abs(center);
+    if (!(norm > 0.0) || !std::isfinite(norm))
+        return false;
+    center *= 1.0 / norm;
+
+    // The two antipodal normals are both equidistant from a, b, and c.
+    // The outward hull normal is the spherical Delaunay circumcenter.
+    if (ScalarProd(center, a + b + c) < 0.0)
+        center *= -1.0;
+    return std::isfinite(center.x) && std::isfinite(center.y)
+        && std::isfinite(center.z);
+}
+
 std::vector<double> computePerObserverSolidAngles(
     const std::vector<Vector3D>& dirs, size_t N)
 {
     std::vector<double> solidAngles(N, 0.0);
-    double uniform = 4.0 * M_PI / static_cast<double>(N);
-
-    if (N < 4) {
-        for (auto& s : solidAngles) s = uniform;
+    double const fourPi = 4.0 * M_PI;
+    double const uniform = fourPi / static_cast<double>(N);
+    auto useUniform = [&]() {
+        std::fill(solidAngles.begin(), solidAngles.end(), uniform);
         return solidAngles;
-    }
+    };
 
-    std::vector<Triangle> tris = convexHullTriangulation(dirs);
-    size_t expectedMinFaces = 2 * (N - 2);
-    if (tris.size() < expectedMinFaces) {
-        for (auto& s : solidAngles) s = uniform;
-        return solidAngles;
-    }
+    if (N < 4)
+        return useUniform();
 
+    std::vector<Triangle> const tris = convexHullTriangulation(dirs);
+    size_t const expectedFaces = 2 * (N - 2);
+    if (tris.size() != expectedFaces)
+        return useUniform();
+
+    // Observer assignment uses the nearest direction on the unit sphere, so
+    // each bin is a spherical Voronoi cell. The convex-hull faces are the
+    // spherical Delaunay triangles; their circumcenters are Voronoi vertices.
+    std::vector<std::vector<Vector3D>> voronoiVertices(N);
     for (auto const& tri : tris) {
-        Vector3D cross = CrossProduct(dirs[tri.b] - dirs[tri.a],
-                                      dirs[tri.c] - dirs[tri.a]);
-        double area = 0.5 * abs(cross);
-        solidAngles[tri.a] += area / 3.0;
-        solidAngles[tri.b] += area / 3.0;
-        solidAngles[tri.c] += area / 3.0;
+        Vector3D center;
+        if (!sphericalCircumcenter(
+                dirs[tri.a], dirs[tri.b], dirs[tri.c], center))
+            return useUniform();
+        voronoiVertices[tri.a].push_back(center);
+        voronoiVertices[tri.b].push_back(center);
+        voronoiVertices[tri.c].push_back(center);
     }
 
-    for (size_t i = 0; i < N; ++i)
-        if (solidAngles[i] <= 0.0) solidAngles[i] = uniform;
+    for (size_t i = 0; i < N; ++i) {
+        auto& vertices = voronoiVertices[i];
+        if (vertices.size() < 3)
+            return useUniform();
 
+        Vector3D const& site = dirs[i];
+        Vector3D const reference = std::abs(site.z) < 0.9
+            ? Vector3D(0.0, 0.0, 1.0)
+            : Vector3D(1.0, 0.0, 0.0);
+        Vector3D tangentX = CrossProduct(reference, site);
+        double const tangentNorm = abs(tangentX);
+        if (!(tangentNorm > 0.0) || !std::isfinite(tangentNorm))
+            return useUniform();
+        tangentX *= 1.0 / tangentNorm;
+        Vector3D const tangentY = CrossProduct(site, tangentX);
+
+        std::sort(vertices.begin(), vertices.end(),
+                  [&](Vector3D const& lhs, Vector3D const& rhs) {
+            double const lhsAngle = std::atan2(
+                ScalarProd(lhs, tangentY), ScalarProd(lhs, tangentX));
+            double const rhsAngle = std::atan2(
+                ScalarProd(rhs, tangentY), ScalarProd(rhs, tangentX));
+            return lhsAngle < rhsAngle;
+        });
+
+        double area = 0.0;
+        for (size_t j = 0; j < vertices.size(); ++j) {
+            area += sphericalTriangleArea(
+                site, vertices[j], vertices[(j + 1) % vertices.size()]);
+        }
+        if (!(area > 0.0) || !std::isfinite(area))
+            return useUniform();
+        solidAngles[i] = area;
+    }
+
+    double const total = std::accumulate(
+        solidAngles.begin(), solidAngles.end(), 0.0);
+    if (!(total > 0.0) || !std::isfinite(total))
+        return useUniform();
+
+    // Remove only accumulated roundoff; the relative Voronoi areas are kept.
+    double const scale = fourPi / total;
+    for (double& omega : solidAngles)
+        omega *= scale;
     return solidAngles;
 }
 
@@ -846,6 +974,21 @@ void SphericalObserver::addAbsorbedEnergy(double energy) { absorbedEnergy_ += en
 void SphericalObserver::addBoxEscapeEnergy(double energy) { boxEscapeEnergy_ += energy; }
 void SphericalObserver::addTimedOutEnergy(double energy) { timedOutEnergy_ += energy; }
 void SphericalObserver::addCutoffEnergy(double energy) { cutoffEnergy_ += energy; }
+
+void SphericalObserver::setPhotosphereData(PhotosphereData data)
+{
+    photosphereData_ = std::move(data);
+}
+
+SphericalObserver::PhotosphereData const& SphericalObserver::getPhotosphereData() const
+{
+    return photosphereData_;
+}
+
+bool SphericalObserver::hasPhotosphereData() const
+{
+    return photosphereData_.hasAny();
+}
 
 void SphericalObserver::resetGenerationSourceCellEscapeStats()
 {
@@ -1564,14 +1707,28 @@ void SphericalObserver::writeHDF5(std::string const& filename,
         std::vector<double> polDegree(numObservers_), polAngle(numObservers_);
         std::vector<double> qLum(numObservers_), uLum(numObservers_);
         std::vector<double> qNorm(numObservers_), uNorm(numObservers_);
+        std::vector<double> polNeff(numObservers_, 0.0);
+        std::vector<double> polSigmaQ(numObservers_, 0.0);
+        std::vector<double> polSigmaU(numObservers_, 0.0);
+        std::vector<double> polSigmaP(numObservers_, 0.0);
+        std::vector<double> polSnr(numObservers_, 0.0);
+        std::vector<int> polSnrValid(numObservers_, 0);
         for (size_t i = 0; i < numObservers_; ++i) {
-            polDegree[i] = PolarizationDegree(observerEnergy_[i], observerStokesQ_[i], observerStokesU_[i]);
-            polAngle[i] = PolarizationAngle(observerStokesQ_[i], observerStokesU_[i]);
+            auto const quality = polarization_statistics::ComputeQuality(
+                observerEnergy_[i], observerStokesQ_[i], observerStokesU_[i],
+                observerSumWeightSq_[i], observerSumWQ2_[i], observerSumWU2_[i]);
+            polDegree[i] = quality.degree;
+            polAngle[i] = quality.angle;
+            qNorm[i] = quality.q;
+            uNorm[i] = quality.u;
             qLum[i] = observerStokesQ_[i] * invDt;
             uLum[i] = observerStokesU_[i] * invDt;
-            double const invI = (observerEnergy_[i] > 0.0) ? 1.0 / observerEnergy_[i] : 0.0;
-            qNorm[i] = observerStokesQ_[i] * invI;
-            uNorm[i] = observerStokesU_[i] * invI;
+            polNeff[i] = quality.effectivePackets;
+            polSigmaQ[i] = quality.sigmaQ;
+            polSigmaU[i] = quality.sigmaU;
+            polSigmaP[i] = quality.sigmaP;
+            polSnr[i] = quality.snr;
+            polSnrValid[i] = quality.uncertaintyValid ? 1 : 0;
         }
         writer.WriteElement("/tally/observer_stokes_Q", observerStokesQ_);
         writer.WriteElement("/tally/observer_stokes_U", observerStokesU_);
@@ -1581,6 +1738,12 @@ void SphericalObserver::writeHDF5(std::string const& filename,
         writer.WriteElement("/tally/observer_U_luminosity", uLum);
         writer.WriteElement("/tally/observer_polarization_degree", polDegree);
         writer.WriteElement("/tally/observer_polarization_angle", polAngle);
+        writer.WriteElement("/tally/observer_polarization_effective_packets", polNeff);
+        writer.WriteElement("/tally/observer_polarization_sigma_q", polSigmaQ);
+        writer.WriteElement("/tally/observer_polarization_sigma_u", polSigmaU);
+        writer.WriteElement("/tally/observer_polarization_sigma_p", polSigmaP);
+        writer.WriteElement("/tally/observer_polarization_snr", polSnr);
+        writer.WriteElement("/tally/observer_polarization_snr_valid", polSnrValid);
 
         std::vector<double> meanMismatch(numObservers_, 0.0);
         std::vector<double> rmsMismatch(numObservers_, 0.0);
@@ -1627,6 +1790,43 @@ void SphericalObserver::writeHDF5(std::string const& filename,
     writer.WriteElement("/tally/flux", flux);
     writer.WriteElement("/tally/log10_luminosity", log10Luminosity(lum));
 
+    if (photosphereData_.hasAny()) {
+        writer.WriteElement("/photosphere/tau_threshold", photosphereData_.tauThreshold);
+        writer.WriteElement("/photosphere/tau_total_threshold", photosphereData_.tauThreshold);
+        writer.WriteElement("/photosphere/thermalization_tau_threshold",
+                            photosphereData_.thermalizationTauThreshold);
+        if (photosphereData_.hasMG()) {
+            if (!photosphereData_.mgGroupRadiusTauTotal.empty()) {
+                writer.WriteElement("/photosphere/mg/group_radius_tau_total",
+                                    photosphereData_.mgGroupRadiusTauTotal);
+                writer.WriteElement("/photosphere/mg/group_radius_thermalization",
+                                    photosphereData_.mgGroupRadiusThermalization);
+                writer.WriteElement("/photosphere/mg/group_valid_tau_total",
+                                    photosphereData_.mgGroupValidTauTotal);
+                writer.WriteElement("/photosphere/mg/group_valid_thermalization",
+                                    photosphereData_.mgGroupValidThermalization);
+            }
+            writer.WriteElement("/photosphere/mg/integrated_radius_tau_total",
+                                photosphereData_.mgIntegratedRadiusTauTotal);
+            writer.WriteElement("/photosphere/mg/integrated_radius_thermalization",
+                                photosphereData_.mgIntegratedRadiusThermalization);
+            writer.WriteElement("/photosphere/mg/integrated_valid_tau_total",
+                                photosphereData_.mgIntegratedValidTauTotal);
+            writer.WriteElement("/photosphere/mg/integrated_valid_thermalization",
+                                photosphereData_.mgIntegratedValidThermalization);
+        }
+        if (photosphereData_.hasGrey()) {
+            writer.WriteElement("/photosphere/grey/radius_tau_total",
+                                photosphereData_.greyRadiusTauTotal);
+            writer.WriteElement("/photosphere/grey/radius_thermalization",
+                                photosphereData_.greyRadiusThermalization);
+            writer.WriteElement("/photosphere/grey/valid_tau_total",
+                                photosphereData_.greyValidTauTotal);
+            writer.WriteElement("/photosphere/grey/valid_thermalization",
+                                photosphereData_.greyValidThermalization);
+        }
+    }
+
     if (numGroups_ > 1) {
         writer.WriteElement("/tally/multigroup/group_boundaries", groupBoundaries_);
 
@@ -1643,15 +1843,29 @@ void SphericalObserver::writeHDF5(std::string const& filename,
             std::vector<std::vector<double>> gUNorm(numObservers_, std::vector<double>(numGroups_, 0.0));
             std::vector<std::vector<double>> gQLum(numObservers_, std::vector<double>(numGroups_, 0.0));
             std::vector<std::vector<double>> gULum(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<double>> gNeff(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<double>> gSigmaQ(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<double>> gSigmaU(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<double>> gSigmaP(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<double>> gSnr(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<int>> gSnrValid(numObservers_, std::vector<int>(numGroups_, 0));
             for (size_t i = 0; i < numObservers_; ++i) {
                 for (size_t g = 0; g < numGroups_; ++g) {
-                    gDegree[i][g] = PolarizationDegree(groupEnergy_[i][g], groupStokesQ_[i][g], groupStokesU_[i][g]);
-                    gAngle[i][g] = PolarizationAngle(groupStokesQ_[i][g], groupStokesU_[i][g]);
-                    double const invI = (groupEnergy_[i][g] > 0.0) ? 1.0 / groupEnergy_[i][g] : 0.0;
-                    gQNorm[i][g] = groupStokesQ_[i][g] * invI;
-                    gUNorm[i][g] = groupStokesU_[i][g] * invI;
+                    auto const quality = polarization_statistics::ComputeQuality(
+                        groupEnergy_[i][g], groupStokesQ_[i][g], groupStokesU_[i][g],
+                        groupEnergyWeightSq_[i][g], groupSumWQ2_[i][g], groupSumWU2_[i][g]);
+                    gDegree[i][g] = quality.degree;
+                    gAngle[i][g] = quality.angle;
+                    gQNorm[i][g] = quality.q;
+                    gUNorm[i][g] = quality.u;
                     gQLum[i][g] = groupStokesQ_[i][g] * invDt;
                     gULum[i][g] = groupStokesU_[i][g] * invDt;
+                    gNeff[i][g] = quality.effectivePackets;
+                    gSigmaQ[i][g] = quality.sigmaQ;
+                    gSigmaU[i][g] = quality.sigmaU;
+                    gSigmaP[i][g] = quality.sigmaP;
+                    gSnr[i][g] = quality.snr;
+                    gSnrValid[i][g] = quality.uncertaintyValid ? 1 : 0;
                 }
             }
             writer.WriteElement("/tally/multigroup/group_stokes_Q", groupStokesQ_);
@@ -1662,6 +1876,12 @@ void SphericalObserver::writeHDF5(std::string const& filename,
             writer.WriteElement("/tally/multigroup/group_U_luminosity", gULum);
             writer.WriteElement("/tally/multigroup/group_polarization_degree", gDegree);
             writer.WriteElement("/tally/multigroup/group_polarization_angle", gAngle);
+            writer.WriteElement("/tally/multigroup/group_polarization_effective_packets", gNeff);
+            writer.WriteElement("/tally/multigroup/group_polarization_sigma_q", gSigmaQ);
+            writer.WriteElement("/tally/multigroup/group_polarization_sigma_u", gSigmaU);
+            writer.WriteElement("/tally/multigroup/group_polarization_sigma_p", gSigmaP);
+            writer.WriteElement("/tally/multigroup/group_polarization_snr", gSnr);
+            writer.WriteElement("/tally/multigroup/group_polarization_snr_valid", gSnrValid);
         }
 #endif
     }
@@ -2021,6 +2241,42 @@ void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) c
     file << "LOOKUP_TABLE default\n";
     for (size_t i = 0; i < N; ++i)
         file << observerSolidAngle_[i] << "\n";
+
+    if (photosphereData_.hasMG()) {
+        writeVtkScalar(file, "photosphere_integrated_radius_tau_total",
+                       photosphereData_.mgIntegratedRadiusTauTotal, N);
+        writeVtkScalar(file, "photosphere_integrated_radius_thermalization",
+                       photosphereData_.mgIntegratedRadiusThermalization, N);
+        writeVtkScalar(file, "photosphere_integrated_valid_tau_total",
+                       photosphereData_.mgIntegratedValidTauTotal, N);
+        writeVtkScalar(file, "photosphere_integrated_valid_thermalization",
+                       photosphereData_.mgIntegratedValidThermalization, N);
+
+        size_t groupCount = 0;
+        if (!photosphereData_.mgGroupRadiusTauTotal.empty())
+            groupCount = photosphereData_.mgGroupRadiusTauTotal.front().size();
+        for (size_t g = 0; g < groupCount; ++g) {
+            writeVtkScalar(file, "photosphere_g" + std::to_string(g) + "_radius_tau_total",
+                           groupColumn(photosphereData_.mgGroupRadiusTauTotal, g), N);
+            writeVtkScalar(file, "photosphere_g" + std::to_string(g) + "_radius_thermalization",
+                           groupColumn(photosphereData_.mgGroupRadiusThermalization, g), N);
+            writeVtkScalar(file, "photosphere_g" + std::to_string(g) + "_valid_tau_total",
+                           groupColumn(photosphereData_.mgGroupValidTauTotal, g), N);
+            writeVtkScalar(file, "photosphere_g" + std::to_string(g) + "_valid_thermalization",
+                           groupColumn(photosphereData_.mgGroupValidThermalization, g), N);
+        }
+    }
+
+    if (photosphereData_.hasGrey()) {
+        writeVtkScalar(file, "photosphere_grey_radius_tau_total",
+                       photosphereData_.greyRadiusTauTotal, N);
+        writeVtkScalar(file, "photosphere_grey_radius_thermalization",
+                       photosphereData_.greyRadiusThermalization, N);
+        writeVtkScalar(file, "photosphere_grey_valid_tau_total",
+                       photosphereData_.greyValidTauTotal, N);
+        writeVtkScalar(file, "photosphere_grey_valid_thermalization",
+                       photosphereData_.greyValidThermalization, N);
+    }
 
 #ifdef MONTECARLO_POLARIZATION
     if(polarizationOutputEnabled_)

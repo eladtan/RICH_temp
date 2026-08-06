@@ -126,9 +126,6 @@ These files stay in RICH and can be merged normally. Major areas:
 
 ### Radiation / IMC (largest body of work)
 - **~10,400 lines added** across `source/3D/radiation/`
-- New reverse estimator framework: `ReverseAdjointTransport3D`, `ReverseDDMC`,
-  `ReverseDoppler`, `ReverseObserverTallies`, `ReversePolarizationMueller`,
-  `ReversePacket`, `ReverseEstimatorConfig`
 - New spherical observer: `SphericalObserver` (~2,700 lines)
 - IMC polarization: `IMCPolarization`
 - Fleck factor helpers, post-processing helpers

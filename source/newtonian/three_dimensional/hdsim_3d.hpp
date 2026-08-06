@@ -3,6 +3,7 @@
 
 #include <cassert>
 #include <chrono>
+#include <memory>
 #include <MeshDecomposer3D/hilbert/HilbertOrder3D.hpp>
 #include "misc/utils.hpp"
 #include "computational_cell.hpp"
@@ -24,6 +25,9 @@
   #include "mpi/mpi_commands.hpp"
   #include "mpi/ExchangeChain.hpp"
 #endif
+
+class SphericalShellProjector3D;
+class SphericalShellGeometry3D;
 
 //! \brief Three dimensional simulation
 class HDSim3D
@@ -126,6 +130,13 @@ public:
 
   void SetTimeStep(double dt) {this->tsc_.SetTimeStep(dt);}
 
+  void SetSphericalShellProjector(
+    std::shared_ptr<SphericalShellProjector3D> projector,
+    FluxCalculator3D const& perturbation_flux_calculator);
+
+  size_t GetSphericalPerturbationEvaluationCount(void) const
+  {return spherical_perturbation_evaluation_count_;}
+
   #ifdef RICH_MPI
     const ExchangeChain &GetExchangeChain(void) const {return this->exchange_chain_;}
   #endif // RICH_MPI
@@ -135,6 +146,24 @@ public:
   #endif // RICH_MPI
 
 private:
+  void RefreshSphericalShellGeometry(
+    char const* update_name,
+    bool always_report = false);
+
+  void ApplySphericalBackgroundCorrection(
+    vector<ComputationalCell3D> const& stage_input_cells,
+    vector<Conserved3D> const& stage_input_extensives,
+    vector<Vector3D> const& face_velocities,
+    vector<Vector3D> const& point_velocities,
+    double time,
+    double dt,
+    bool source_before_extensive_update,
+    vector<Conserved3D>& full_candidate);
+
+  FluxCalculator3D const& GetSphericalPerturbationFluxCalculator(void) const;
+
+  FluxCalculator3D const& GetFullStateFluxCalculator(void) const;
+
   Tessellation3D& tess_;
   const EquationOfState& eos_;
   vector<ComputationalCell3D> &cells_;
@@ -157,6 +186,10 @@ private:
   vector<Conserved3D> u3_scratch_;
   vector<size_t> hilbert_order_scratch_;
   std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > face_values_scratch_;
+  std::shared_ptr<SphericalShellGeometry3D> spherical_shell_geometry_;
+  std::shared_ptr<SphericalShellProjector3D> spherical_shell_projector_;
+  FluxCalculator3D const* spherical_perturbation_flux_calculator_ = nullptr;
+  size_t spherical_perturbation_evaluation_count_ = 0;
   #ifdef RICH_MPI
     ExchangeChain exchange_chain_;
   #endif // RICH_MPI

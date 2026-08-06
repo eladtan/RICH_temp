@@ -7,8 +7,6 @@
 #SBATCH --exclusive
 ##SBATCH --time=820:00:00
 #SBATCH --constraint="ib"
-##SBATCH --nodelist=l20g[73-114,116-122]
-##SBATCH --nodelist=l20g[73-102,104-122]
 #SBATCH --exclude=l19g[1-71],l20g[1-51]
 
 # run whatever you need here
@@ -32,9 +30,14 @@ lscpu
 #mpirun valgrind ./test.exe
 #mpirun -genv I_MPI_DEBUG=5 -genv I_MPI_SHM_LMT=shm ./test.exe
 #mpirun -genv I_MPI_FABRICS=shm:dapl ./test.exe
+RUN_TMP="${PWD}/tmp/${SLURM_JOB_ID:-manual}"
+mkdir -p "${RUN_TMP}"
+export TMPDIR="${RUN_TMP}"
+export TMP="${RUN_TMP}"
+export TEMP="${RUN_TMP}"
+export OMPI_MCA_orte_tmpdir_base="${RUN_TMP}"
 export UCX_TLS=ib
 mpirun -mca btl ^openib ./rich
 # mpirun ./rich
-
 
 

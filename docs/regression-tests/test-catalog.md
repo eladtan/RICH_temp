@@ -1,6 +1,6 @@
 # Regression Test Catalog
 
-This document describes all 29 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
+This document describes the regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
 
 ---
 
@@ -285,7 +285,7 @@ Tests hydrostatic equilibrium of a polytropic star (Lane-Emden solution with ind
 | Solver | HLLC, LinearGauss3D |
 | Mesh motion | Lagrangian + RoundCells |
 | Gravity | DistributedGravityTree |
-| SLURM | 64 tasks, `bigrun` partition |
+| SLURM | 512 tasks, `bigrun` partition |
 
 **Source:** `regression_tests/cases/lane_self_gravity/test.cpp`
 
@@ -309,6 +309,47 @@ The bash checker `check_lane_self_gravity_case` verifies that the mean density d
 
 - Lane, J. H. (1870). "On the theoretical temperature of the Sun." *Am. J. Sci.* 50, 57-74.
 - Emden, R. (1907). *Gaskugeln*. Teubner.
+
+---
+
+## 7b. lane_self_gravity_fmm -- Lane-Emden with FMM Self-Gravity
+
+**Tags:** `mpi`, `manual`, `benchmark`
+
+### Physics
+
+Same Lane-Emden hydrostatic equilibrium benchmark as `lane_self_gravity`, but gravity is computed with the distributed FMM solver (`FastMultipoleAcceleration3D`) at expansion order $P = 3$ and $\theta = 0.9$ instead of the quadrupole Barnes-Hut tree.
+
+### Configuration
+
+| Parameter | Value |
+|-----------|-------|
+| Polytrope index | n = 3/2 |
+| Lane-Emden tables | `data/xsi32.txt`, `data/theta32.txt` |
+| Domain | Sphere of radius R = 7e10 cm |
+| EOS | Ideal gas, gamma = 5/3 |
+| Solver | HLLC, LinearGauss3D |
+| Mesh motion | Lagrangian + RoundCells |
+| Gravity | Distributed FMM, P=3, theta=0.9 |
+| SLURM | 512 tasks, `bigrun` partition |
+
+**Source:** `regression_tests/cases/lane_self_gravity_fmm/test.cpp`
+
+### Output
+
+- `lane_gravity_metrics.txt` -- fields: `final_metric`, `pass`
+- `lane_profile.txt` -- radial density profile
+
+### Validation
+
+The bash checker `check_lane_self_gravity_fmm_case` verifies that the mean density deviation from the initial profile stays small.
+
+### Pass Criteria
+
+| Metric | Threshold | Environment Variable |
+|--------|-----------|---------------------|
+| \|final_metric\| | < 4e-2 | `LANE_GRAVITY_FMM_MAX_METRIC` (falls back to `LANE_GRAVITY_MAX_METRIC`) |
+| `pass` field | Must be `1` | -- |
 
 ---
 
@@ -533,6 +574,131 @@ Same as `gresho_euler`.
 
 ---
 
+## fmm_gravity_serial -- Serial Fast Multipole Gravity
+
+**Tags:** `serial`
+
+Validates analytic empty/one/two-body cases, complete solid-harmonic storage through the supported order, clustered-tree subdivision, explicit invalid-input failures, nonzero M2L use, reduced P2P work, potential/acceleration error against a long-double direct sum, and improvement with higher expansion order and tighter acceptance.
+
+**Source:** `regression_tests/cases/fmm_gravity_serial/test.cpp`
+
+### Pass Criteria
+
+| Metric | Threshold |
+|--------|-----------|
+| Scaled acceleration error | `< 2e-5` |
+| Relative positive-kernel potential error | `< 5e-5` |
+| M2L interactions | `> 0` |
+| Ordered P2P pairs | `< N(N-1)` |
+| Order convergence | order 6 error `<` order 2 error |
+
+---
+
+## fmm_gravity_mpi_guard -- Distributed FMM Adapter Guard
+
+**Tags:** `mpi`
+
+Builds `FastMultipoleAcceleration3D` after `MPI_Init` and verifies that the distributed backend is accepted. Because the acceleration adapter does not expose potential values, the same test also requires `computePotential=true` to be rejected collectively.
+
+**Source:** `regression_tests/cases/fmm_gravity_mpi_guard/test.cpp`
+
+### Pass Criteria
+
+| Metric | Required value |
+|--------|----------------|
+| Constructor accepted | `1` |
+| Unsupported potential option rejected | `1` |
+| `pass` | `1` |
+
+---
+
+## fmm_gravity_mpi -- Distributed FMM Numerical and Reuse Regression
+
+**Tags:** `mpi`
+
+Compares distributed FMM acceleration and positive-kernel potential with a direct reference, exercises duplicate application cell IDs and an empty rank, verifies that a mass-only update reuses the topology plan, forces a rank-local root breach and rebuild, and checks collective rejection of inconsistent domain bounds.
+
+**Source:** `regression_tests/cases/fmm_gravity_mpi/test.cpp`
+
+### Pass Criteria
+
+| Metric | Threshold / required value |
+|--------|----------------------------|
+| Maximum scaled acceleration or potential error | `< 2e-4` |
+| Mass-only topology epoch and rebuild count | unchanged |
+| Root-breach topology epoch | increases |
+| Finite timing, mass, and memory statistics | `1` |
+| Inconsistent domains rejected collectively | `1` |
+
+---
+
+## fmm_process_pair_coverage -- Distributed FMM Interaction Coverage
+
+**Tags:** `mpi`
+
+Runs several process-tree geometries on a non-power-of-two rank count and verifies that every ordered pair of active ranks is classified exactly once as process-level M2L, same-rank local work, or cross-rank LET work.
+
+**Source:** `regression_tests/cases/fmm_process_pair_coverage/test.cpp`
+
+### Pass Criteria
+
+| Metric | Required value |
+|--------|----------------|
+| MPI ranks | `> 1` |
+| Coverage cases | `3` |
+| Duplicate or missing ordered rank pairs | none |
+| `pass` | `1` |
+
+---
+
+## fmm_quadrupole_benchmark -- FMM/Quadrupole Accuracy and Runtime Sweep
+
+**Tags:** `serial`, `benchmark`
+
+Compares the serial FMM with RICH's production `GravityTree<Vector3D>` using quadrupole moments. Nested deterministic distributions at 256, 512, 1024, 2048, and 16384 particles are evaluated against the same long-double direct sum. Complete build+walk runtimes are the medians of five measurements after a warm-up, with method order alternated. The output also records scaled acceleration error, FMM M2L count, and exact near-field pair count for every resolution.
+
+**Source:** `regression_tests/cases/fmm_quadrupole_benchmark/test.cpp`
+
+### Pass Criteria
+
+| Metric | Threshold |
+|--------|-----------|
+| Resolution rows | `5` |
+| Maximum FMM scaled error | `< 5e-3` |
+| Maximum quadrupole scaled error | `< 5e-2` |
+| Largest-case FMM M2L interactions | `> 0` |
+| Largest-case FMM P2P pairs | `< N(N-1)` |
+| Runtime at `N=16384` | FMM `<= 1.25 *` quadrupole tree |
+| Runtime growth from `N=2048` to `N=16384` | FMM `<` quadrupole tree |
+| Scaled error at `N=16384` | FMM `<= 1.25 *` quadrupole tree |
+
+Runtime and relative accuracy wins are reported for every row. The two largest rows require the FMM to remain competitive and scale better without assuming that a compiler-independent crossover occurs at one fixed particle count.
+
+---
+
+## DDMC Zero-Cell and Cross-Rank MPI Validation
+
+**Tags:** `mpi`
+
+This test distributes two optically thick cells over eight MPI ranks, forcing
+most ranks to own zero cells while the only DDMC-DDMC face crosses a rank
+boundary.  It exercises resident-packet serialization, symmetric DDMC
+correspondents, ghost-cell opacity exchange, and face-flux reduction.
+
+The checker requires sampled remote DDMC leakage, at least one zero-cell rank,
+and conserved total packet weight.  It also verifies the cross-rank finite-
+volume identity
+
+```text
+V_i lambda_i_to_j = V_j lambda_j_to_i
+```
+
+from per-cell internal-rate and conductance diagnostics.
+
+**Source:** `regression_tests/cases/ddmc_mpi_zero_cell/test.cpp`
+
+---
+
 ## Summary Table
 
 | Test | Tags | Physics | Validation | Key Threshold |
@@ -544,6 +710,7 @@ Same as `gresho_euler`.
 | `amr_distributed_clip` | mpi | Distributed AMR clip conservation | Mass/energy sum | rel diff <= 1e-6 |
 | `voronoi_volume` | serial, mpi | Geometric accuracy | Volume sum | rel error < 1e-10 |
 | `lane_self_gravity` | mpi | Hydrostatic equilibrium | Density stability | metric < 4e-2 |
+| `lane_self_gravity_fmm` | mpi, manual, benchmark | Hydrostatic equilibrium (FMM) | Density stability | metric < 4e-2 |
 | `mach2_diffusion` | mpi | Radiative shock (grey) | NLTE solution | rel L1 <= 0.025 |
 | `mach2_multigroup` | mpi | Radiative shock (MG) | NLTE solution | rel L1 <= 0.025 |
 | `marshak_wave_1_diffusion` | serial | Marshak wave (non-eq) | Self-similar ODE | rel L1 <= 1e-2 |
@@ -552,3 +719,17 @@ Same as `gresho_euler`.
 | `marshak_wave_4_diffusion` | serial | Marshak wave (divergent) | Fitted profiles | rel L1 <= 1e-2 |
 | `gresho_euler` | serial | Gresho vortex (fixed) | IC comparison | rel L1 <= 0.1 |
 | `gresho_lagrangian` | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
+| `ddmc_static_invariants` | static | DDMC/hydro implementation invariants | Source-code guard script | script exits 0 |
+| `ddmc_mpi_zero_cell` | mpi | Zero-cell ranks and cross-rank DDMC | Remote leaks, reciprocity, weight conservation | errors <= 1e-10 |
+| `fmm_gravity_serial` | serial | Fast multipole self-gravity | Long-double direct sum and convergence | scaled error < 2e-5 |
+| `fmm_gravity_mpi_guard` | mpi | Distributed FMM adapter | MPI construction and option guard | guard exits 0 |
+| `fmm_gravity_mpi` | mpi | Distributed fast multipole self-gravity | Direct reference, empty rank, topology reuse/rebuild | scaled error < 2e-4 |
+| `fmm_process_pair_coverage` | mpi | Distributed FMM traversal partition | Ordered active-rank pair coverage | all pairs classified once |
+| `fmm_quadrupole_benchmark` | serial, benchmark | FMM versus quadrupole tree | Direct-sum accuracy and runtime sweep | finite timings; bounded errors |
+
+## Static Guards
+
+`ddmc_static_invariants` runs `regression_tests/lib/check_ddmc_static_invariants.sh`.
+It checks DDMC opacity-role bookkeeping, MPI face-flux reduction ordering,
+DDMC resident weight-frame lifecycle, remote-leak target tallying, and the
+`w/w0 > 8` diagnostic threshold before expensive transport regressions run.

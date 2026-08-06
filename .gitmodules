@@ -30,3 +30,12 @@
 	path = regression_tests/THUNDER
 	url = git@github.com:maormizrachi/THUNDER.git
 	branch = main
+[submodule "source/opt/r3d"]
+	path = source/opt/r3d
+	url = https://github.com/maormizrachi/r3d_rich
+[submodule "source/Radiation/planck_integral"]
+	path = source/Radiation/planck_integral
+	url = git@github.com:ItamarShmelo/planck_integral.git
+[submodule "source/Radiation/tau_matrix_calculator"]
+	path = source/Radiation/tau_matrix_calculator
+	url = git@github.com:ItamarShmelo/tau_matrix_calculator.git

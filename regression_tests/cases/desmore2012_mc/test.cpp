@@ -17,7 +17,7 @@
 #include "source/newtonian/three_dimensional/conserved_3d.hpp"
 #include "source/newtonian/three_dimensional/simulation/Simulation.hpp"
 #include "source/newtonian/three_dimensional/ManualTimeStep.hpp"
-#include "source/misc/mesh_generator3D.hpp"
+#include "../densmore2012_mesh.hpp"
 #include "source/3D/radiation/RadiationIMC.hpp"
 #include "source/3D/radiation/RadiationOpacity.hpp"
 #include "source/3D/radiation/PowerLawOpacity.hpp"
@@ -58,7 +58,11 @@ namespace
                          int rank = 0)
             : sigma0_left_(sigma0_left), sigma0_right_(sigma0_right),
               groupCenters_(groupCenters), groupBoundaries_(groupBoundaries)
-        {}
+        {
+            (void)rank;
+            this->energy_groups_center = groupCenters_;
+            this->energy_groups_boundary = groupBoundaries_;
+        }
 
         double CalcPlanckOpacity(const ComputationalCell3D &cell) const override
         {
@@ -154,7 +158,7 @@ int main(int argc, char *argv[])
 
   try
   {
-    constexpr size_t Nx = 256;
+    constexpr size_t Nx = densmore2012_mesh::cellCount;
     constexpr size_t newPhotonsPerCell = 50;
     constexpr size_t maxPhotonsPerCell = 200;
     constexpr bool   useRandomWalk = false;
@@ -185,7 +189,7 @@ int main(int argc, char *argv[])
     double const sigma_0_left  = 10.0   * std::pow(units::kev, 3.5);
     double const sigma_0_right = 1000.0 * std::pow(units::kev, 3.5);
 
-    constexpr double domainLength = 3.0;
+    constexpr double domainLength = densmore2012_mesh::domainLength;
     double const T_init = units::ev_kelvin;
     double const T_boundary = units::kev_kelvin;
 
@@ -193,13 +197,15 @@ int main(int argc, char *argv[])
     double const dt = 5e-12;
     size_t const iterations = static_cast<size_t>(tf / dt);
 
-    double const width = domainLength;
-    Vector3D ll(0, -0.5 * width / Nx, -0.5 * width / Nx);
-    Vector3D ur(width, 0.5 * width / Nx, 0.5 * width / Nx);
+    // The paper specifies only the one-dimensional x mesh.  Preserve the
+    // previous test's transverse extrusion so this patch changes only x.
+    constexpr double transverseWidth = 3.0 / 256.0;
+    Vector3D ll(0, -0.5 * transverseWidth, -0.5 * transverseWidth);
+    Vector3D ur(domainLength, 0.5 * transverseWidth, 0.5 * transverseWidth);
 
     std::vector<Vector3D> points;
     if(rank == 0)
-        points = CartesianMesh(Nx, 1, 1, ll, ur);
+        points = densmore2012_mesh::BuildVoronoiSites();
 
     points = MPI_Spread(points, 0, MPI_COMM_WORLD);
     MPI_Barrier(MPI_COMM_WORLD);
@@ -246,7 +252,7 @@ int main(int argc, char *argv[])
     constexpr size_t boundaryPhotonsPerCell = 100;
 
     std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond =
-        std::make_shared<SideTemperature<Vector3D, Tessellation3D>>(
+        std::make_shared<STORM::SideTemperature<Vector3D, Tessellation3D>>(
             tess, T_boundary, boundaryPhotonsPerCell, energy_groups_boundary);
 
     STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> radiationIMCParameters = {
@@ -261,7 +267,8 @@ int main(int argc, char *argv[])
         tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, radiationIMCParameters);
 
     std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
-        std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell, 5);
+        std::make_shared<STORM::CombPopulationControl<Vector3D, Tessellation3D>>(
+            tess, maxPhotonsPerCell, 5);
 
     std::vector<Particle3D> initialParticles;
     size_t initialParticlesPerCell = 0;
@@ -331,7 +338,9 @@ int main(int argc, char *argv[])
     std::vector<CellData> cellData(nPoints);
     for(size_t i = 0; i < nPoints; i++)
     {
-        cellData[i].x = tess.GetMeshPoint(i).x;
+        // The generators are chosen to place the Voronoi faces exactly at the
+        // paper's nonuniform cell edges; report the physical cell centroids.
+        cellData[i].x = tess.GetCellCM(i).x;
         cellData[i].temperature = cells[i].temperature;
     }
 #ifdef RICH_MPI

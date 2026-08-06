@@ -10,7 +10,17 @@
 #include "3D/tessellation/Tessellation3D.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 
-using namespace STORM;
+using STORM::BoundaryCondition;
+using STORM::dt_t;
+using STORM::MonteCarloConfig;
+using STORM::MonteCarloManagerSerial;
+using STORM::MonteCarloPhysics;
+using STORM::PopulationControl;
+#ifdef STORM_WITH_MPI
+using STORM::MonteCarloManagerLegacy;
+using STORM::RDMAMonteCarloManager;
+using STORM::TwoSidedMonteCarloManager;
+#endif
 
 class MonteCarloManager3D
 {

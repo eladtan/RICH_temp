@@ -85,6 +85,52 @@ is_finite_number() {
     awk -v v="$value" 'BEGIN { if (v == v) exit 0; exit 1 }'
 }
 
+check_radiation_direction_sampling_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/radiation_direction_sampling_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale radiation_direction_sampling_metrics.txt"
+        return 1
+    fi
+
+    local pure_fourth mixed_fourth chi_square voronoi_error omega_error pass_flag
+    pure_fourth=$(awk '$1 == "pure_fourth_moment_error" { print $2 }' "$metrics_file")
+    mixed_fourth=$(awk '$1 == "max_mixed_fourth_moment_error" { print $2 }' "$metrics_file")
+    chi_square=$(awk '$1 == "reduced_chi_square" { print $2 }' "$metrics_file")
+    voronoi_error=$(awk '$1 == "max_voronoi_area_rel_error" { print $2 }' "$metrics_file")
+    omega_error=$(awk '$1 == "solid_angle_rel_error" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$pure_fourth" || -z "$mixed_fourth" ||
+          -z "$chi_square" || -z "$voronoi_error" ||
+          -z "$omega_error" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse radiation direction sampling metrics"
+        return 1
+    fi
+    if ! is_finite_number "$pure_fourth" ||
+       ! is_finite_number "$mixed_fourth" ||
+       ! is_finite_number "$chi_square" ||
+       ! is_finite_number "$voronoi_error" ||
+       ! is_finite_number "$omega_error"; then
+        set_check_msg "radiation direction sampling metrics are not finite"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "radiation angular geometry test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "Radiation directions isotropic and observer Voronoi areas valid (pure4=${pure_fourth}, mixed4=${mixed_fourth}, chi2=${chi_square}, voronoi=${voronoi_error})"
+    return 0
+}
+
 check_sod_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
@@ -268,6 +314,12 @@ check_till_case() {
     return 0
 }
 
+check_till_mc_case() {
+    TILL_MAX_TEMP_REL_DIFF="${TILL_MC_MAX_TEMP_REL_DIFF:-2e-1}" \
+    TILL_MAX_ENERGY_REL_ERR="${TILL_MC_MAX_ENERGY_REL_ERR:-5e-2}" \
+    check_till_case "$@"
+}
+
 check_amr_random_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
@@ -277,6 +329,8 @@ check_amr_random_case() {
     local mode
     local max_drift
     local threshold
+    local max_volume_growth
+    local volume_growth_limit
     local pass_flag
     local expected_threshold
 
@@ -292,9 +346,12 @@ check_amr_random_case() {
     mode=$(awk '$1 == "mode" { print $2 }' "$metrics_file")
     max_drift=$(awk '$1 == "max_drift" { print $2 }' "$metrics_file")
     threshold=$(awk '$1 == "threshold" { print $2 }' "$metrics_file")
+    max_volume_growth=$(awk '$1 == "max_volume_growth" { print $2 }' "$metrics_file")
+    volume_growth_limit=$(awk '$1 == "volume_growth_limit" { print $2 }' "$metrics_file")
     pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
 
-    if [[ -z "$mode" || -z "$max_drift" || -z "$threshold" || -z "$pass_flag" ]]; then
+    if [[ -z "$mode" || -z "$max_drift" || -z "$threshold" ||
+          -z "$max_volume_growth" || -z "$volume_growth_limit" || -z "$pass_flag" ]]; then
         set_check_msg "failed to parse AMR random metrics"
         return 1
     fi
@@ -305,6 +362,14 @@ check_amr_random_case() {
     fi
     if ! is_finite_number "$threshold"; then
         set_check_msg "amr_random threshold is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$max_volume_growth" || ! is_finite_number "$volume_growth_limit"; then
+        set_check_msg "amr_random volume growth metric is not finite"
+        return 1
+    fi
+    if ! awk -v l="$volume_growth_limit" 'BEGIN { exit !(l == 3.0) }'; then
+        set_check_msg "amr_random expected volume growth limit 3, got ${volume_growth_limit}"
         return 1
     fi
     if [[ "$mode" != "serial" && "$mode" != "mpi" ]]; then
@@ -329,6 +394,12 @@ check_amr_random_case() {
 
     if ! awk -v d="$max_drift" -v t="$threshold" 'BEGIN { exit !(d <= t) }'; then
         set_check_msg "amr_random max_drift exceeds test-reported threshold (${max_drift} > ${threshold})"
+        return 1
+    fi
+
+    if ! awk -v g="$max_volume_growth" -v l="$volume_growth_limit" \
+        'BEGIN { exit !(g <= l * (1 + 1e-8)) }'; then
+        set_check_msg "amr_random volume growth exceeded limit (${max_volume_growth} > ${volume_growth_limit})"
         return 1
     fi
 
@@ -442,6 +513,58 @@ check_lane_self_gravity_case() {
     fi
 
     set_check_msg "Lane self-gravity equilibrium check passed (final_metric=${final_metric})"
+    return 0
+}
+
+check_lane_self_gravity_fmm_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/lane_gravity_metrics.txt"
+    local final_metric
+    local pass_flag
+    local max_metric
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale lane_gravity_metrics.txt"
+        return 1
+    fi
+
+    final_metric=$(awk '$1 == "final_metric" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$final_metric" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse lane self-gravity FMM metrics"
+        return 1
+    fi
+
+    if ! is_finite_number "$final_metric"; then
+        set_check_msg "lane_self_gravity_fmm final_metric is not finite"
+        return 1
+    fi
+    if [[ "$pass_flag" != "0" && "$pass_flag" != "1" ]]; then
+        set_check_msg "lane_self_gravity_fmm pass flag must be 0 or 1"
+        return 1
+    fi
+
+    max_metric="${LANE_GRAVITY_FMM_MAX_METRIC:-${LANE_GRAVITY_MAX_METRIC:-4e-2}}"
+
+    if ! awk -v m="$final_metric" -v t="$max_metric" 'BEGIN { am = (m < 0 ? -m : m); exit !(am < t) }'; then
+        set_check_msg "lane_self_gravity_fmm |final_metric| exceeds threshold (${final_metric}, threshold ${max_metric})"
+        return 1
+    fi
+
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "lane_self_gravity_fmm test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "Lane self-gravity FMM equilibrium check passed (final_metric=${final_metric})"
     return 0
 }
 
@@ -715,6 +838,7 @@ check_spherical_collapse_case() {
     local metrics_file="${run_dir}/collapse_metrics.txt"
     local max_density_scatter
     local max_velocity_scatter
+    local max_tangential_velocity_rms
     local pass_flag
 
     if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
@@ -728,9 +852,11 @@ check_spherical_collapse_case() {
 
     max_density_scatter=$(awk '$1 == "max_density_scatter" { print $2 }' "$metrics_file")
     max_velocity_scatter=$(awk '$1 == "max_velocity_scatter" { print $2 }' "$metrics_file")
+    max_tangential_velocity_rms=$(awk '$1 == "max_tangential_velocity_rms" { print $2 }' "$metrics_file")
     pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
 
-    if [[ -z "$max_density_scatter" || -z "$max_velocity_scatter" || -z "$pass_flag" ]]; then
+    if [[ -z "$max_density_scatter" || -z "$max_velocity_scatter" ||
+          -z "$max_tangential_velocity_rms" || -z "$pass_flag" ]]; then
         set_check_msg "failed to parse spherical collapse metrics"
         return 1
     fi
@@ -743,22 +869,32 @@ check_spherical_collapse_case() {
         set_check_msg "spherical_collapse max_velocity_scatter is not finite"
         return 1
     fi
+    if ! is_finite_number "$max_tangential_velocity_rms"; then
+        set_check_msg "spherical_collapse max_tangential_velocity_rms is not finite"
+        return 1
+    fi
     if [[ "$pass_flag" != "0" && "$pass_flag" != "1" ]]; then
         set_check_msg "spherical_collapse pass flag must be 0 or 1"
         return 1
     fi
 
-    local max_scatter="${COLLAPSE_MAX_DENSITY_SCATTER:-0.1}"
+    local max_scatter="${COLLAPSE_MAX_DENSITY_SCATTER:-1e-4}"
 
-    if ! awk -v d="$max_density_scatter" -v t="$max_scatter" 'BEGIN { exit !(d < t) }'; then
-        set_check_msg "spherical_collapse max_density_scatter exceeds threshold (${max_density_scatter} >= ${max_scatter})"
+    if ! awk -v d="$max_density_scatter" -v t="$max_scatter" 'BEGIN { exit !(d <= t) }'; then
+        set_check_msg "spherical_collapse max_density_scatter exceeds threshold (${max_density_scatter} > ${max_scatter})"
         return 1
     fi
 
-    local max_vel_scatter="${COLLAPSE_MAX_VELOCITY_SCATTER:-0.1}"
+    local max_vel_scatter="${COLLAPSE_MAX_VELOCITY_SCATTER:-1e-4}"
 
-    if ! awk -v v="$max_velocity_scatter" -v t="$max_vel_scatter" 'BEGIN { exit !(v < t) }'; then
-        set_check_msg "spherical_collapse max_velocity_scatter exceeds threshold (${max_velocity_scatter} >= ${max_vel_scatter})"
+    if ! awk -v v="$max_velocity_scatter" -v t="$max_vel_scatter" 'BEGIN { exit !(v <= t) }'; then
+        set_check_msg "spherical_collapse max_velocity_scatter exceeds threshold (${max_velocity_scatter} > ${max_vel_scatter})"
+        return 1
+    fi
+
+    local max_tangential="${COLLAPSE_MAX_TANGENTIAL_VELOCITY_RMS:-1e-4}"
+    if ! awk -v v="$max_tangential_velocity_rms" -v t="$max_tangential" 'BEGIN { exit !(v <= t) }'; then
+        set_check_msg "spherical_collapse max_tangential_velocity_rms exceeds threshold (${max_tangential_velocity_rms} > ${max_tangential})"
         return 1
     fi
 
@@ -767,7 +903,176 @@ check_spherical_collapse_case() {
         return 1
     fi
 
-    set_check_msg "Spherical collapse symmetry check passed (density_scatter=${max_density_scatter}, velocity_scatter=${max_velocity_scatter})"
+    set_check_msg "Spherical collapse symmetry check passed (density_scatter=${max_density_scatter}, velocity_scatter=${max_velocity_scatter}, tangential_rms=${max_tangential_velocity_rms})"
+    return 0
+}
+
+check_spherical_collapse_perturbed_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/collapse_perturbed_metrics.txt"
+    local reached_target
+    local injected_amplitude
+    local initial_amplitude
+    local initial_amplitude_error
+    local initial_amplitude_tolerance
+    local measured_shock_radius
+    local target_shock_radius
+    local velocity_amplitude
+    local minimum_imprint
+    local retained_fraction
+    local perturbation_evaluations
+    local mass_drift
+    local energy_drift
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale collapse_perturbed_metrics.txt"
+        return 1
+    fi
+
+    reached_target=$(awk '$1 == "reached_target_shock" { print $2 }' "$metrics_file")
+    injected_amplitude=$(awk '$1 == "injected_velocity_y33_amplitude" { print $2 }' "$metrics_file")
+    initial_amplitude=$(awk '$1 == "measured_initial_velocity_y33_amplitude" { print $2 }' "$metrics_file")
+    initial_amplitude_error=$(awk '$1 == "initial_amplitude_error" { print $2 }' "$metrics_file")
+    initial_amplitude_tolerance=$(awk '$1 == "initial_amplitude_tolerance" { print $2 }' "$metrics_file")
+    measured_shock_radius=$(awk '$1 == "measured_shock_radius" { print $2 }' "$metrics_file")
+    target_shock_radius=$(awk '$1 == "target_shock_radius" { print $2 }' "$metrics_file")
+    velocity_amplitude=$(awk '$1 == "shock_velocity_y33_amplitude" { print $2 }' "$metrics_file")
+    minimum_imprint=$(awk '$1 == "minimum_retained_imprint" { print $2 }' "$metrics_file")
+    retained_fraction=$(awk '$1 == "retained_velocity_fraction" { print $2 }' "$metrics_file")
+    perturbation_evaluations=$(awk '$1 == "perturbation_evaluation_count" { print $2 }' "$metrics_file")
+    mass_drift=$(awk '$1 == "max_mass_relative_drift" { print $2 }' "$metrics_file")
+    energy_drift=$(awk '$1 == "max_energy_relative_drift" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$reached_target" || -z "$injected_amplitude" ||
+          -z "$initial_amplitude" || -z "$initial_amplitude_error" ||
+          -z "$initial_amplitude_tolerance" || -z "$measured_shock_radius" ||
+          -z "$target_shock_radius" || -z "$velocity_amplitude" ||
+          -z "$minimum_imprint" || -z "$retained_fraction" ||
+          -z "$perturbation_evaluations" || -z "$mass_drift" ||
+          -z "$energy_drift" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse perturbed spherical collapse metrics"
+        return 1
+    fi
+
+    for value in "$injected_amplitude" "$initial_amplitude" \
+                 "$initial_amplitude_error" "$initial_amplitude_tolerance" \
+                 "$measured_shock_radius" "$target_shock_radius" \
+                 "$velocity_amplitude" "$minimum_imprint" \
+                 "$retained_fraction" "$perturbation_evaluations" \
+                 "$mass_drift" "$energy_drift"; do
+        if ! is_finite_number "$value"; then
+            set_check_msg "perturbed spherical collapse metric is not finite"
+            return 1
+        fi
+    done
+
+    if [[ "$reached_target" != "1" ]]; then
+        set_check_msg "perturbed spherical collapse did not reach the target shock radius"
+        return 1
+    fi
+    if ! awk -v e="$initial_amplitude_error" -v t="$initial_amplitude_tolerance" \
+        'BEGIN { exit !(e <= t) }'; then
+        set_check_msg "Y33 injection mismatch (requested=${injected_amplitude}, measured=${initial_amplitude})"
+        return 1
+    fi
+    if ! awk -v r="$measured_shock_radius" -v t="$target_shock_radius" \
+        'BEGIN { exit !(r <= t) }'; then
+        set_check_msg "perturbed spherical collapse stopped before shock radius ${target_shock_radius}"
+        return 1
+    fi
+    if ! awk -v a="$velocity_amplitude" -v t="$minimum_imprint" \
+        'BEGIN { exit !(a >= t) }'; then
+        set_check_msg "Y33 velocity imprint was erased (${velocity_amplitude} < ${minimum_imprint})"
+        return 1
+    fi
+    if ! awk -v n="$perturbation_evaluations" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "perturbed spherical operator was not evaluated"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "perturbed spherical collapse test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "Perturbed spherical collapse retained Y33 velocity imprint (amplitude=${velocity_amplitude}, fraction=${retained_fraction}, shock_r=${measured_shock_radius})"
+    return 0
+}
+
+check_spherical_shock_sensor_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/spherical_shock_sensor_metrics.txt"
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale spherical_shock_sensor_metrics.txt"
+        return 1
+    fi
+
+    local upstream downstream scalar smooth closure_weight closure_error smooth_order pass_flag
+    upstream=$(awk '$1 == "max_upstream_shock_weight" { print $2 }' "$metrics_file")
+    downstream=$(awk '$1 == "max_downstream_added_shock_weight" { print $2 }' "$metrics_file")
+    scalar=$(awk '$1 == "max_downstream_scalar_reference_error" { print $2 }' "$metrics_file")
+    smooth=$(awk '$1 == "max_smooth_compression_added_shock_weight" { print $2 }' "$metrics_file")
+    closure_weight=$(awk '$1 == "max_eos_closure_added_shock_weight" { print $2 }' "$metrics_file")
+    closure_error=$(awk '$1 == "max_eos_closure_monotonicity_error" { print $2 }' "$metrics_file")
+    smooth_order=$(awk '$1 == "min_smooth_limited_order" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    if [[ -z "$upstream" || -z "$downstream" || -z "$scalar" || -z "$smooth" ||
+          -z "$closure_weight" ||
+          -z "$closure_error" || -z "$smooth_order" || -z "$pass_flag" ]] ||
+       ! is_finite_number "$upstream" || ! is_finite_number "$downstream" ||
+       ! is_finite_number "$scalar" || ! is_finite_number "$smooth" ||
+       ! is_finite_number "$closure_weight" ||
+       ! is_finite_number "$closure_error" || ! is_finite_number "$smooth_order"; then
+        set_check_msg "failed to parse spherical shock sensor metrics"
+        return 1
+    fi
+    if ! awk -v x="$upstream" 'BEGIN { exit !(x >= 0.99) }'; then
+        set_check_msg "upstream shock weight is below 0.99"
+        return 1
+    fi
+    if ! awk -v x="$downstream" 'BEGIN { exit !(x <= 1e-12) }'; then
+        set_check_msg "downstream added shock weight exceeds 1e-12"
+        return 1
+    fi
+    if ! awk -v x="$scalar" 'BEGIN { exit !(x <= 1e-12) }'; then
+        set_check_msg "downstream scalar states differ from base-limiter reference"
+        return 1
+    fi
+    if ! awk -v x="$smooth" 'BEGIN { exit !(x <= 1e-12) }'; then
+        set_check_msg "smooth compression activated added shock limiting"
+        return 1
+    fi
+    if ! awk -v x="$closure_weight" 'BEGIN { exit !(x <= 1e-12) }'; then
+        set_check_msg "EOS base-limiter case activated added shock limiting"
+        return 1
+    fi
+    if ! awk -v x="$closure_error" 'BEGIN { exit !(x <= 1e-12) }'; then
+        set_check_msg "EOS-derived face state violates local monotonicity"
+        return 1
+    fi
+    if ! awk -v x="$smooth_order" 'BEGIN { exit !(x >= 1.8) }'; then
+        set_check_msg "smooth limited spherical interpolation order is below 1.8"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "spherical shock sensor test reported pass=0"
+        return 1
+    fi
+    set_check_msg "Spherical shock sensor checks passed"
     return 0
 }
 
@@ -891,6 +1196,47 @@ check_desmore2012_mc_case() {
     fi
 
     set_check_msg "Densmore 2012 MC gas temperature comparison passed"
+    return 0
+}
+
+check_desmore2012_mc_ddmc_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local profile_file="${run_dir}/desmore2012_mc_ddmc_profile.txt"
+    local reference_file="${REGRESSION_ROOT}/cases/desmore2012_mc/data/densmore2012_fig4_mc.csv"
+    local checker_stdout="${run_dir}/desmore2012_mc_ddmc_check.stdout.log"
+    local checker_stderr="${run_dir}/desmore2012_mc_ddmc_check.stderr.log"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$profile_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale desmore2012_mc_ddmc_profile.txt"
+        return 1
+    fi
+
+    if [[ ! -f "$reference_file" ]]; then
+        set_check_msg "missing reference file: ${reference_file}"
+        return 1
+    fi
+
+    # DDMC has a small additional interface/statistical error relative to the
+    # pure-MC variant.  Keep its independently configurable envelope above the
+    # two reproducible ~0.0534-keV L1 results while retaining a narrow bound.
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_desmore2012_mc.py" \
+        --profile "$profile_file" \
+        --reference "$reference_file" \
+        --max-tgas-l1 "${DESMORE2012_MC_DDMC_MAX_TGAS_L1:-0.06}" \
+        >"$checker_stdout" 2>"$checker_stderr"
+    if [[ $? -ne 0 ]]; then
+        set_check_msg "Densmore 2012 MC+DDMC gas temperature comparison failed"
+        return 1
+    fi
+
+    set_check_msg "Densmore 2012 MC+DDMC gas temperature comparison passed"
     return 0
 }
 
@@ -1080,16 +1426,11 @@ check_spherical_gauss_tangential_case() {
         return 1
     fi
 
-    local max_abs_allowed="${SPH_TANGENTIAL_MAX_ABS:-1e-8}"
-    local max_rel_allowed="${SPH_TANGENTIAL_MAX_REL:-1e-8}"
-    if ! awk -v e="$max_abs" -v t="$max_abs_allowed" 'BEGIN { exit !(e < t) }'; then
-        set_check_msg "spherical tangential abs error too large: ${max_abs} >= ${max_abs_allowed}"
-        return 1
-    fi
-    if ! awk -v e="$max_rel" -v t="$max_rel_allowed" 'BEGIN { exit !(e < t) }'; then
-        set_check_msg "spherical tangential rel error too large: ${max_rel} >= ${max_rel_allowed}"
-        return 1
-    fi
+	local max_abs_allowed="${SPH_TANGENTIAL_MAX_ABS:-1e-8}"
+	if ! awk -v e="$max_abs" -v t="$max_abs_allowed" 'BEGIN { exit !(e < t) }'; then
+		set_check_msg "spherical tangential abs error too large: ${max_abs} >= ${max_abs_allowed}"
+		return 1
+	fi
     if [[ "$pass_flag" != "1" ]]; then
         set_check_msg "spherical tangential test reported pass=0"
         return 1
@@ -1229,6 +1570,38 @@ check_rayleigh_taylor_case() {
 }
 
 
+check_moving_slab_mc_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local spectrum_file="${run_dir}/moving_slab_mc_spectrum.txt"
+    local checker_stdout="${run_dir}/moving_slab_mc_check.stdout.log"
+    local checker_stderr="${run_dir}/moving_slab_mc_check.stderr.log"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$spectrum_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale moving_slab_mc_spectrum.txt"
+        return 1
+    fi
+
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_moving_slab_mc.py" \
+        --spectrum "$spectrum_file" \
+        --max-ferror "${MOVING_SLAB_MC_MAX_FERROR:-0.30}" \
+        --plot-dir "$run_dir" \
+        >"$checker_stdout" 2>"$checker_stderr"
+    if [[ $? -ne 0 ]]; then
+        set_check_msg "Moving slab MC spectrum comparison failed"
+        return 1
+    fi
+
+    set_check_msg "Moving slab MC spectrum comparison passed"
+    return 0
+}
+
 check_moving_slab_mc_32_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
@@ -1315,5 +1688,883 @@ check_amr_distributed_clip_case() {
     fi
 
     set_check_msg "AMR distributed clip conservation check passed (mass_reldiff=${mass_reldiff}, energy_reldiff=${energy_reldiff})"
+    return 0
+}
+
+
+check_fmm_gravity_serial_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_gravity_serial_metrics.txt"
+    local max_scaled_error
+    local max_relative_potential_error
+    local m2l_count
+    local p2p_pairs
+    local order2_scaled_error
+    local order6_scaled_error
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_gravity_serial_metrics.txt"
+        return 1
+    fi
+
+    max_scaled_error=$(awk '$1 == "max_scaled_error" { print $2 }' "$metrics_file")
+    max_relative_potential_error=$(awk '$1 == "max_relative_potential_error" { print $2 }' "$metrics_file")
+    m2l_count=$(awk '$1 == "m2l_count" { print $2 }' "$metrics_file")
+    p2p_pairs=$(awk '$1 == "p2p_pairs" { print $2 }' "$metrics_file")
+    order2_scaled_error=$(awk '$1 == "order2_scaled_error" { print $2 }' "$metrics_file")
+    order6_scaled_error=$(awk '$1 == "order6_scaled_error" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$max_scaled_error" || -z "$max_relative_potential_error" || -z "$m2l_count" || -z "$p2p_pairs" || -z "$order2_scaled_error" || -z "$order6_scaled_error" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse fmm gravity serial metrics"
+        return 1
+    fi
+
+    if ! is_finite_number "$max_scaled_error" || ! is_finite_number "$max_relative_potential_error" || ! is_finite_number "$order2_scaled_error" || ! is_finite_number "$order6_scaled_error"; then
+        set_check_msg "fmm gravity serial metrics are not finite"
+        return 1
+    fi
+
+    if ! awk -v e="$max_scaled_error" 'BEGIN { exit !(e < 2e-5) }'; then
+        set_check_msg "fmm gravity serial max_scaled_error too large (${max_scaled_error})"
+        return 1
+    fi
+    if ! awk -v e="$max_relative_potential_error" 'BEGIN { exit !(e < 5e-5) }'; then
+        set_check_msg "fmm gravity serial max_relative_potential_error too large (${max_relative_potential_error})"
+        return 1
+    fi
+    if ! awk -v n="$m2l_count" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "fmm gravity serial did not exercise M2L (${m2l_count})"
+        return 1
+    fi
+    if ! awk -v n="$p2p_pairs" 'BEGIN { exit !(n < 552) }'; then
+        set_check_msg "fmm gravity serial remained all-P2P (${p2p_pairs})"
+        return 1
+    fi
+    if ! awk -v low="$order2_scaled_error" -v high="$order6_scaled_error" 'BEGIN { exit !(high < low) }'; then
+        set_check_msg "fmm gravity serial order convergence failed (p2=${order2_scaled_error}, p6=${order6_scaled_error})"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "fmm gravity serial test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "FMM gravity serial check passed"
+    return 0
+}
+
+check_fmm_gravity_mpi_guard_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_gravity_mpi_guard_metrics.txt"
+    local constructor_accepted
+    local potential_option_rejected
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_gravity_mpi_guard_metrics.txt"
+        return 1
+    fi
+
+    constructor_accepted=$(awk '$1 == "constructor_accepted" { print $2 }' "$metrics_file")
+    potential_option_rejected=$(awk '$1 == "potential_option_rejected" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$constructor_accepted" || -z "$potential_option_rejected" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse FMM MPI guard metrics"
+        return 1
+    fi
+    if [[ "$constructor_accepted" != "1" ]]; then
+        set_check_msg "FastMultipoleAcceleration3D MPI construction was not accepted"
+        return 1
+    fi
+    if [[ "$potential_option_rejected" != "1" ]]; then
+        set_check_msg "FastMultipoleAcceleration3D did not reject computePotential in MPI mode"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "FMM MPI guard test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "FMM MPI guard check passed (constructor accepted, potential option rejected)"
+    return 0
+}
+
+check_fmm_gravity_mpi_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_gravity_mpi_metrics.txt"
+    local ranks
+    local max_scaled_error
+    local ordinary_max_scaled_error
+    local persistent_split_error
+    local persistent_split_fresh_error
+    local persistent_split_vs_fresh
+    local ordinary_errors_within_tolerance
+    local persistent_split_direct_within_tolerance
+    local persistent_split_fresh_direct_within_tolerance
+    local persistent_split_matches_fresh
+    local first_epoch
+    local second_epoch
+    local third_epoch
+    local leaf_epoch
+    local error_within_tolerance
+    local topology_reused
+    local rebuild_count_reused
+    local leaf_topology_rebuilt
+    local topology_rebuilt
+    local leaf_only_rebuild
+    local root_process_rebuild
+    local finite_stats
+    local mismatched_domain_rejected
+    local leaf_storage_reused
+    local root_storage_reset
+    local count_only_topology_reused
+    local count_only_local_plan_reused
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_gravity_mpi_metrics.txt"
+        return 1
+    fi
+
+    ranks=$(awk '$1 == "ranks" { print $2 }' "$metrics_file")
+    max_scaled_error=$(awk '$1 == "max_scaled_error" { print $2 }' "$metrics_file")
+    ordinary_max_scaled_error=$(awk '$1 == "ordinary_max_scaled_error" { print $2 }' "$metrics_file")
+    persistent_split_error=$(awk '$1 == "scenario_error_persistent_split" { print $2 }' "$metrics_file")
+    persistent_split_fresh_error=$(awk '$1 == "persistent_split_fresh_error" { print $2 }' "$metrics_file")
+    persistent_split_vs_fresh=$(awk '$1 == "persistent_split_vs_fresh" { print $2 }' "$metrics_file")
+    ordinary_errors_within_tolerance=$(awk '$1 == "ordinary_errors_within_tolerance" { print $2 }' "$metrics_file")
+    persistent_split_direct_within_tolerance=$(awk '$1 == "persistent_split_direct_within_tolerance" { print $2 }' "$metrics_file")
+    persistent_split_fresh_direct_within_tolerance=$(awk '$1 == "persistent_split_fresh_direct_within_tolerance" { print $2 }' "$metrics_file")
+    persistent_split_matches_fresh=$(awk '$1 == "persistent_split_matches_fresh" { print $2 }' "$metrics_file")
+    first_epoch=$(awk '$1 == "first_epoch" { print $2 }' "$metrics_file")
+    second_epoch=$(awk '$1 == "second_epoch" { print $2 }' "$metrics_file")
+    third_epoch=$(awk '$1 == "third_epoch" { print $2 }' "$metrics_file")
+    leaf_epoch=$(awk '$1 == "leaf_epoch" { print $2 }' "$metrics_file")
+    error_within_tolerance=$(awk '$1 == "error_within_tolerance" { print $2 }' "$metrics_file")
+    topology_reused=$(awk '$1 == "topology_reused" { print $2 }' "$metrics_file")
+    rebuild_count_reused=$(awk '$1 == "rebuild_count_reused" { print $2 }' "$metrics_file")
+    leaf_topology_rebuilt=$(awk '$1 == "leaf_topology_rebuilt" { print $2 }' "$metrics_file")
+    topology_rebuilt=$(awk '$1 == "topology_rebuilt" { print $2 }' "$metrics_file")
+    leaf_only_rebuild=$(awk '$1 == "leaf_only_rebuild" { print $2 }' "$metrics_file")
+    root_process_rebuild=$(awk '$1 == "root_process_rebuild" { print $2 }' "$metrics_file")
+    finite_stats=$(awk '$1 == "finite_stats" { print $2 }' "$metrics_file")
+    mismatched_domain_rejected=$(awk '$1 == "mismatched_domain_rejected" { print $2 }' "$metrics_file")
+    leaf_storage_reused=$(awk '$1 == "leaf_storage_reused" { print $2 }' "$metrics_file")
+    root_storage_reset=$(awk '$1 == "root_storage_reset" { print $2 }' "$metrics_file")
+    count_only_topology_reused=$(awk '$1 == "count_only_topology_reused" { print $2 }' "$metrics_file")
+    count_only_local_plan_reused=$(awk '$1 == "count_only_local_plan_reused" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$ranks" || -z "$max_scaled_error" || -z "$first_epoch" ||
+          -z "$ordinary_max_scaled_error" || -z "$persistent_split_error" ||
+          -z "$persistent_split_fresh_error" ||
+          -z "$persistent_split_vs_fresh" ||
+          -z "$ordinary_errors_within_tolerance" ||
+          -z "$persistent_split_direct_within_tolerance" ||
+          -z "$persistent_split_fresh_direct_within_tolerance" ||
+          -z "$persistent_split_matches_fresh" ||
+          -z "$second_epoch" || -z "$leaf_epoch" || -z "$third_epoch" ||
+          -z "$error_within_tolerance" || -z "$topology_reused" ||
+          -z "$rebuild_count_reused" || -z "$leaf_topology_rebuilt" ||
+          -z "$topology_rebuilt" || -z "$leaf_only_rebuild" ||
+          -z "$root_process_rebuild" ||
+          -z "$count_only_topology_reused" ||
+          -z "$count_only_local_plan_reused" ||
+          -z "$leaf_storage_reused" || -z "$root_storage_reset" ||
+          -z "$finite_stats" || -z "$mismatched_domain_rejected" ||
+          -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse distributed FMM gravity metrics"
+        return 1
+    fi
+    if ! is_finite_number "$max_scaled_error"; then
+        set_check_msg "distributed FMM max_scaled_error is not finite"
+        return 1
+    fi
+    if ! is_finite_number "$ordinary_max_scaled_error" ||
+       ! is_finite_number "$persistent_split_error" ||
+       ! is_finite_number "$persistent_split_fresh_error" ||
+       ! is_finite_number "$persistent_split_vs_fresh"; then
+        set_check_msg "distributed FMM scenario accuracy metrics are not finite"
+        return 1
+    fi
+    if ! awk -v n="$ranks" 'BEGIN { exit !(n >= 3) }'; then
+        set_check_msg "distributed FMM test did not use enough ranks (${ranks})"
+        return 1
+    fi
+    if ! awk -v e="$ordinary_max_scaled_error" 'BEGIN { exit !(e < 1e-3) }' ||
+       [[ "$ordinary_errors_within_tolerance" != "1" ]]; then
+        set_check_msg "distributed FMM ordinary scenario error too large (${ordinary_max_scaled_error})"
+        return 1
+    fi
+    if ! awk -v e="$persistent_split_error" 'BEGIN { exit !(e < 1e-2) }' ||
+       [[ "$persistent_split_direct_within_tolerance" != "1" ]]; then
+        set_check_msg "distributed FMM persistent split direct error too large (${persistent_split_error})"
+        return 1
+    fi
+    if ! awk -v e="$persistent_split_fresh_error" 'BEGIN { exit !(e < 1e-2) }' ||
+       [[ "$persistent_split_fresh_direct_within_tolerance" != "1" ]]; then
+        set_check_msg "distributed FMM fresh split direct error too large (${persistent_split_fresh_error})"
+        return 1
+    fi
+    if ! awk -v e="$persistent_split_vs_fresh" 'BEGIN { exit !(e < 2e-4) }' ||
+       [[ "$persistent_split_matches_fresh" != "1" ]]; then
+        set_check_msg "distributed FMM persistent split disagrees with a fresh rebuild (${persistent_split_vs_fresh})"
+        return 1
+    fi
+    if [[ "$error_within_tolerance" != "1" ]]; then
+        set_check_msg "distributed FMM combined accuracy contract failed"
+        return 1
+    fi
+    if [[ "$first_epoch" != "$second_epoch" || "$topology_reused" != "1" ]]; then
+        set_check_msg "distributed FMM failed to reuse topology after a mass-only change (${first_epoch} -> ${second_epoch})"
+        return 1
+    fi
+    if [[ "$rebuild_count_reused" != "1" ]]; then
+        set_check_msg "distributed FMM rebuild count changed after a mass-only update"
+        return 1
+    fi
+    if ! awk -v second="$second_epoch" -v leaf="$leaf_epoch" 'BEGIN { exit !(leaf > second) }' ||
+       [[ "$leaf_topology_rebuilt" != "1" || "$leaf_only_rebuild" != "1" ]]; then
+        set_check_msg "distributed FMM failed the leaf-only LET rebuild (${second_epoch} -> ${leaf_epoch})"
+        return 1
+    fi
+    if ! awk -v leaf="$leaf_epoch" -v third="$third_epoch" 'BEGIN { exit !(third > leaf) }' ||
+       [[ "$topology_rebuilt" != "1" || "$root_process_rebuild" != "1" ]]; then
+        set_check_msg "distributed FMM failed the full rebuild after a root breach (${leaf_epoch} -> ${third_epoch})"
+        return 1
+    fi
+    if [[ "$leaf_storage_reused" != "1" ]]; then
+        set_check_msg "distributed FMM did not recycle LET build storage on a leaf-only rebuild"
+        return 1
+    fi
+    if [[ "$root_storage_reset" != "1" ]]; then
+        set_check_msg "distributed FMM did not reset LET build storage on a full process rebuild"
+        return 1
+    fi
+    if [[ "$count_only_topology_reused" != "1" ]]; then
+        set_check_msg "distributed FMM rebuilt topology after a count-only leaf occupancy change"
+        return 1
+    fi
+    if [[ "$count_only_local_plan_reused" != "1" ]]; then
+        set_check_msg "distributed FMM failed to reuse the local plan after a count-only change"
+        return 1
+    fi
+    if [[ "$finite_stats" != "1" ]]; then
+        set_check_msg "distributed FMM emitted invalid timing, mass, or memory statistics"
+        return 1
+    fi
+    if [[ "$mismatched_domain_rejected" != "1" ]]; then
+        set_check_msg "distributed FMM did not collectively reject mismatched domains"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "distributed FMM gravity test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "Distributed FMM gravity reuse passed (ranks=${ranks}, scaled_error=${max_scaled_error})"
+    return 0
+}
+
+check_fmm_process_pair_coverage_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_process_pair_coverage_metrics.txt"
+    local ranks
+    local cases
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_process_pair_coverage_metrics.txt"
+        return 1
+    fi
+
+    ranks=$(awk '$1 == "ranks" { print $2 }' "$metrics_file")
+    cases=$(awk '$1 == "cases" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$ranks" || -z "$cases" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse FMM process-pair coverage metrics"
+        return 1
+    fi
+    if ! awk -v n="$ranks" 'BEGIN { exit !(n > 1) }'; then
+        set_check_msg "FMM process-pair coverage test requires multiple ranks (${ranks})"
+        return 1
+    fi
+    if [[ "$cases" != "3" ]]; then
+        set_check_msg "FMM process-pair coverage did not run all cases (${cases})"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "FMM process-pair coverage test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "FMM process-pair coverage check passed (ranks=${ranks}, cases=${cases})"
+    return 0
+}
+
+check_fmm_peer_exchange_rebuild_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_peer_exchange_rebuild_metrics.txt"
+    local ranks
+    local patterns
+    local cycles
+    local repeats_per_pattern
+    local rounds
+    local rebuild_rounds
+    local reuse_rounds
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_peer_exchange_rebuild_metrics.txt"
+        return 1
+    fi
+
+    ranks=$(awk '$1 == "ranks" { print $2 }' "$metrics_file")
+    patterns=$(awk '$1 == "patterns" { print $2 }' "$metrics_file")
+    cycles=$(awk '$1 == "cycles" { print $2 }' "$metrics_file")
+    repeats_per_pattern=$(awk '$1 == "repeats_per_pattern" { print $2 }' "$metrics_file")
+    rounds=$(awk '$1 == "rounds" { print $2 }' "$metrics_file")
+    rebuild_rounds=$(awk '$1 == "rebuild_rounds" { print $2 }' "$metrics_file")
+    reuse_rounds=$(awk '$1 == "reuse_rounds" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$ranks" || -z "$patterns" || -z "$cycles" ||
+          -z "$repeats_per_pattern" || -z "$rounds" ||
+          -z "$rebuild_rounds" || -z "$reuse_rounds" ||
+          -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse FMM peer-exchange rebuild metrics"
+        return 1
+    fi
+    if ! awk -v n="$ranks" 'BEGIN { exit !(n > 1) }'; then
+        set_check_msg "FMM peer-exchange rebuild test requires multiple ranks (${ranks})"
+        return 1
+    fi
+    if [[ "$patterns" != "7" || "$cycles" != "4" ||
+          "$repeats_per_pattern" != "2" || "$rounds" != "56" ||
+          "$rebuild_rounds" != "28" || "$reuse_rounds" != "28" ]]; then
+        set_check_msg "FMM peer-exchange rebuild test did not run the full graph-transition matrix"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "FMM peer-exchange rebuild test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "FMM peer-exchange rebuild check passed (ranks=${ranks}, rounds=${rounds})"
+    return 0
+}
+
+check_fmm_operator_cache_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_operator_cache_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_operator_cache_metrics.txt"
+        return 1
+    fi
+
+    if ! awk '
+        function finite_number(v) {
+            return v ~ /^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$/ &&
+                   (v + 0) == (v + 0)
+        }
+        { value[$1] = $2 }
+        END {
+            required[1] = "particles"
+            required[2] = "cache_budget_bytes"
+            required[3] = "first_cache_bytes"
+            required[4] = "first_cache_entries"
+            required[5] = "first_cache_max_entries"
+            required[6] = "first_cache_misses"
+            required[7] = "first_cache_bypasses"
+            required[8] = "second_cache_hits"
+            required[9] = "zero_cache_bytes"
+            required[10] = "zero_cache_entries"
+            required[11] = "zero_cache_misses"
+            required[12] = "zero_cache_bypasses"
+            required[13] = "repeated_max_difference"
+            required[14] = "fallback_max_difference"
+            required[15] = "canonical_max_difference"
+            required[16] = "kernel_operator_relative_difference"
+            required[17] = "kernel_translation_relative_difference"
+            required[18] = "canonical_cache_entries"
+            required[19] = "canonical_cache_hits"
+            required[20] = "canonical_cache_misses"
+            required[21] = "canonical_cache_bypasses"
+            required[22] = "canonical_integer_hits"
+            required[23] = "canonical_integer_misses"
+            required[24] = "dyadic_root_aligned"
+            required[25] = "pass"
+            for (i = 1; i <= 25; ++i)
+                if (!(required[i] in value)) exit 1
+            if (!(value["particles"] > 0 && value["cache_budget_bytes"] > 0 &&
+                  value["first_cache_bytes"] <= value["cache_budget_bytes"] &&
+                  value["first_cache_entries"] <= value["first_cache_max_entries"] &&
+                  value["first_cache_misses"] > 0 &&
+                  value["first_cache_bypasses"] > 0 &&
+                  value["second_cache_hits"] > 0 &&
+                  value["zero_cache_bytes"] == 0 &&
+                  value["zero_cache_entries"] == 0 &&
+                  value["zero_cache_misses"] > 0 &&
+                  value["zero_cache_bypasses"] == value["zero_cache_misses"] &&
+                  value["canonical_cache_entries"] > 0 &&
+                  value["canonical_cache_hits"] > 0 &&
+                  value["canonical_cache_misses"] > 0 &&
+                  value["canonical_cache_bypasses"] == 0 &&
+                  value["canonical_integer_hits"] == value["canonical_cache_hits"] &&
+                  value["canonical_integer_misses"] == value["canonical_cache_misses"] &&
+                  value["dyadic_root_aligned"] == 1 &&
+                  finite_number(value["repeated_max_difference"]) &&
+                  finite_number(value["fallback_max_difference"]) &&
+                  finite_number(value["canonical_max_difference"]) &&
+                  finite_number(value["kernel_operator_relative_difference"]) &&
+                  finite_number(value["kernel_translation_relative_difference"]) &&
+                  value["repeated_max_difference"] <= 5e-12 &&
+                  value["fallback_max_difference"] <= 5e-12 &&
+                  value["canonical_max_difference"] <= 5e-12 &&
+                  value["kernel_operator_relative_difference"] <= 5e-12 &&
+                  value["kernel_translation_relative_difference"] <= 5e-12 &&
+                  value["pass"] == 1)) exit 1
+        }
+    ' "$metrics_file"; then
+        set_check_msg "bounded FMM operator-cache validation failed"
+        return 1
+    fi
+
+    local cache_bytes warm_hits bypasses
+    cache_bytes=$(awk '$1 == "first_cache_bytes" { print $2 }' "$metrics_file")
+    warm_hits=$(awk '$1 == "second_cache_hits" { print $2 }' "$metrics_file")
+    bypasses=$(awk '$1 == "first_cache_bypasses" { print $2 }' "$metrics_file")
+    set_check_msg "Bounded FMM operator cache passed (bytes=${cache_bytes}, warm_hits=${warm_hits}, bypasses=${bypasses})"
+    return 0
+}
+
+check_fmm_mpi_scaling_benchmark_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_mpi_scaling_benchmark_metrics.txt"
+    local row_count
+    local small_particles
+    local large_particles
+    local ranks_per_node
+    local pass_flag
+    local metric
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_mpi_scaling_benchmark_metrics.txt"
+        return 1
+    fi
+
+    row_count=$(awk '$1 == "row_count" { print $2 }' "$metrics_file")
+    small_particles=$(awk '$1 == "small_particles" { print $2 }' "$metrics_file")
+    large_particles=$(awk '$1 == "large_particles" { print $2 }' "$metrics_file")
+    ranks_per_node=$(awk '$1 == "ranks_per_node" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { value = $2 } END { print value }' "$metrics_file")
+
+    if [[ "$row_count" != "4" || "$small_particles" != "1000000" ||
+          "$large_particles" != "10000000" || -z "$ranks_per_node" ]] ||
+       ! awk -v n="$ranks_per_node" 'BEGIN { exit !(n >= 1 && int(n) == n) }'; then
+        set_check_msg "distributed FMM scaling benchmark matrix is incomplete"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "distributed FMM scaling benchmark reported pass=0"
+        return 1
+    fi
+
+    if ! awk '
+        function finite_number(v) {
+            return v ~ /^[-+]?[0-9]*\.?[0-9]+([eE][-+]?[0-9]+)?$/ &&
+                   (v + 0) == (v + 0)
+        }
+        $1 == "row" {
+            rows++
+            particles = $2 + 0
+            nodes = $3 + 0
+            ranks = $4 + 0
+            unique_nodes = $5 + 0
+            ranks_per_node = $6 + 0
+            repeats = $7 + 0
+            local_min = $8 + 0
+            local_max = $9 + 0
+            fmm_best = $10
+            fmm_mean = $11
+            quad_best = $12
+            quad_mean = $13
+            fmm_error = $14
+            quad_error = $15
+            speedup = $16
+            fmm_rate = $17
+            quad_rate = $18
+            quad_walk = $23
+            fmm_checksum = $24
+            quad_checksum = $25
+            finite_flag = $26
+            run_pass = $27
+            warm_best = $28
+            warm_mean = $29
+            cold_over_warm = $30
+            persistent_bytes = $31 + 0
+            local_tree_bytes = $32 + 0
+            local_multipole_bytes = $33 + 0
+            local_local_bytes = $34 + 0
+            let_plan_bytes = $35 + 0
+            operator_cache_bytes = $36 + 0
+            operator_cache_budget = $37 + 0
+            local_cache_bytes = $38 + 0
+            local_cache_entries = $39 + 0
+            local_cache_max_entries = $40 + 0
+            local_cache_hits = $41 + 0
+            local_cache_misses = $42 + 0
+            local_cache_bypasses = $43 + 0
+            let_cache_bytes = $44 + 0
+            let_cache_entries = $45 + 0
+            let_cache_max_entries = $46 + 0
+            let_cache_hits = $47 + 0
+            let_cache_misses = $48 + 0
+            let_cache_bypasses = $49 + 0
+            process_cache_misses = $50 + 0
+            process_cache_bypasses = $51 + 0
+            topology_reused = $52 + 0
+            probe_count = $53 + 0
+            fmm_mean_error = $54
+            quad_mean_error = $55
+
+            if (NF != 55 ||
+                !((particles == 1000000 || particles == 10000000) &&
+                  (nodes == 8 || nodes == 16))) bad = 1
+            key = particles ":" nodes
+            seen[key]++
+            if (!(ranks_per_node in rpn_seen)) rpn_count++
+            rpn_seen[ranks_per_node] = 1
+            if (ranks_per_node < 1 || repeats < 1 ||
+                ranks != nodes * ranks_per_node || unique_nodes != nodes ||
+                local_min <= 0 || local_max < local_min ||
+                local_max > 1.02 * local_min + 1) bad = 1
+            if (!finite_number(fmm_best) || !finite_number(fmm_mean) ||
+                !finite_number(quad_best) || !finite_number(quad_mean) ||
+                !finite_number(fmm_error) || !finite_number(quad_error) ||
+                !finite_number(speedup) || !finite_number(fmm_rate) ||
+                !finite_number(quad_rate) || !finite_number(quad_walk) ||
+                !finite_number(fmm_checksum) || !finite_number(quad_checksum) ||
+                !finite_number(warm_best) || !finite_number(warm_mean) ||
+                !finite_number(cold_over_warm) ||
+                !finite_number(fmm_mean_error) ||
+                !finite_number(quad_mean_error)) bad = 1
+            if (!(fmm_best > 0 && fmm_mean > 0 && warm_best > 0 &&
+                  warm_mean > 0 && cold_over_warm > 0 && quad_best > 0 &&
+                  quad_mean > 0 && speedup > 0 && fmm_rate > 0 &&
+                  quad_rate > 0 && quad_walk >= 0)) bad = 1
+            if (!(persistent_bytes > 0 && local_tree_bytes > 0 &&
+                  local_multipole_bytes > 0 && local_local_bytes > 0 &&
+                  let_plan_bytes > 0 && operator_cache_budget >= 0 &&
+                  operator_cache_bytes <= operator_cache_budget &&
+                  local_cache_bytes <= operator_cache_bytes &&
+                  let_cache_bytes <= operator_cache_bytes &&
+                  local_cache_entries <= local_cache_max_entries &&
+                  let_cache_entries <= let_cache_max_entries &&
+                  local_cache_hits >= 0 && local_cache_misses >= 0 &&
+                  local_cache_bypasses >= 0 &&
+                  local_cache_bypasses <= local_cache_misses &&
+                  let_cache_hits >= 0 && let_cache_misses >= 0 &&
+                  let_cache_bypasses >= 0 &&
+                  let_cache_bypasses <= let_cache_misses &&
+                  process_cache_misses >= 0 &&
+                  process_cache_bypasses == process_cache_misses)) bad = 1
+            if (!(fmm_error < 5e-3 && quad_error < 5e-2)) bad = 1
+            if (!(probe_count == 100 && fmm_mean_error >= 0 &&
+                  fmm_mean_error <= fmm_error && fmm_mean_error <= 1e-3 &&
+                  quad_mean_error >= 0 && quad_mean_error <= quad_error)) bad = 1
+            if (finite_flag != 1 || run_pass != 1 || topology_reused != 1) bad = 1
+        }
+        END {
+            complete = rows == 4 && rpn_count == 1 &&
+                seen["1000000:8"] == 1 && seen["1000000:16"] == 1 &&
+                seen["10000000:8"] == 1 && seen["10000000:16"] == 1
+            exit !(complete && !bad)
+        }
+    ' "$metrics_file"; then
+        set_check_msg "distributed FMM scaling benchmark row validation failed"
+        return 1
+    fi
+
+    for metric in \
+        fmm_small_8_to_16_speedup \
+        fmm_small_8_to_16_efficiency \
+        fmm_large_8_to_16_speedup \
+        fmm_large_8_to_16_efficiency \
+        quadrupole_small_8_to_16_speedup \
+        quadrupole_small_8_to_16_efficiency \
+        quadrupole_large_8_to_16_speedup \
+        quadrupole_large_8_to_16_efficiency \
+        fmm_warm_small_8_to_16_speedup \
+        fmm_warm_small_8_to_16_efficiency \
+        fmm_warm_large_8_to_16_speedup \
+        fmm_warm_large_8_to_16_efficiency \
+        fmm_small_8_cold_to_warm_speedup \
+        fmm_small_16_cold_to_warm_speedup \
+        fmm_large_8_cold_to_warm_speedup \
+        fmm_large_16_cold_to_warm_speedup; do
+        local value
+        value=$(awk -v key="$metric" '$1 == key { print $2 }' "$metrics_file")
+        if [[ -z "$value" ]] || ! is_finite_number "$value" ||
+           ! awk -v v="$value" 'BEGIN { exit !(v > 0) }'; then
+            set_check_msg "invalid scaling metric: ${metric}=${value:-missing}"
+            return 1
+        fi
+    done
+
+    set_check_msg "Distributed FMM/quadrupole scaling benchmark completed (1e6 and 1e7 particles on 8 and 16 nodes)"
+    return 0
+}
+
+check_fmm_quadrupole_benchmark_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_quadrupole_benchmark_metrics.txt"
+    local row_count
+    local largest_resolution
+    local timing_repeats
+    local large_reference_resolution
+    local largest_fmm_seconds
+    local largest_quadrupole_seconds
+    local largest_fmm_error
+    local largest_quadrupole_error
+    local max_fmm_error
+    local max_quadrupole_error
+    local largest_m2l
+    local largest_p2p_pairs
+    local fmm_large_runtime_growth
+    local quadrupole_large_runtime_growth
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_quadrupole_benchmark_metrics.txt"
+        return 1
+    fi
+
+    row_count=$(awk '$1 == "row_count" { print $2 }' "$metrics_file")
+    largest_resolution=$(awk '$1 == "largest_resolution" { print $2 }' "$metrics_file")
+    timing_repeats=$(awk '$1 == "timing_repeats" { print $2 }' "$metrics_file")
+    large_reference_resolution=$(awk '$1 == "large_reference_resolution" { print $2 }' "$metrics_file")
+    largest_fmm_seconds=$(awk '$1 == "largest_fmm_seconds" { print $2 }' "$metrics_file")
+    largest_quadrupole_seconds=$(awk '$1 == "largest_quadrupole_seconds" { print $2 }' "$metrics_file")
+    largest_fmm_error=$(awk '$1 == "largest_fmm_scaled_error" { print $2 }' "$metrics_file")
+    largest_quadrupole_error=$(awk '$1 == "largest_quadrupole_scaled_error" { print $2 }' "$metrics_file")
+    max_fmm_error=$(awk '$1 == "max_fmm_scaled_error" { print $2 }' "$metrics_file")
+    max_quadrupole_error=$(awk '$1 == "max_quadrupole_scaled_error" { print $2 }' "$metrics_file")
+    largest_m2l=$(awk '$1 == "largest_fmm_m2l" { print $2 }' "$metrics_file")
+    largest_p2p_pairs=$(awk '$1 == "largest_fmm_p2p_pairs" { print $2 }' "$metrics_file")
+    fmm_large_runtime_growth=$(awk '$1 == "fmm_large_runtime_growth" { print $2 }' "$metrics_file")
+    quadrupole_large_runtime_growth=$(awk '$1 == "quadrupole_large_runtime_growth" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ "$row_count" != "5" || "$largest_resolution" != "16384" ||
+          "$timing_repeats" != "5" || "$large_reference_resolution" != "2048" ]]; then
+        set_check_msg "FMM/quadrupole benchmark resolution sweep is incomplete"
+        return 1
+    fi
+    if ! is_finite_number "$largest_fmm_seconds" ||
+       ! is_finite_number "$largest_quadrupole_seconds" ||
+       ! is_finite_number "$largest_fmm_error" ||
+       ! is_finite_number "$largest_quadrupole_error" ||
+       ! is_finite_number "$max_fmm_error" ||
+       ! is_finite_number "$max_quadrupole_error" ||
+       ! is_finite_number "$fmm_large_runtime_growth" ||
+       ! is_finite_number "$quadrupole_large_runtime_growth"; then
+        set_check_msg "FMM/quadrupole benchmark emitted non-finite metrics"
+        return 1
+    fi
+    if ! awk -v t="$largest_fmm_seconds" 'BEGIN { exit !(t > 0) }' ||
+       ! awk -v t="$largest_quadrupole_seconds" 'BEGIN { exit !(t > 0) }'; then
+        set_check_msg "FMM/quadrupole benchmark emitted invalid runtimes"
+        return 1
+    fi
+    if ! awk -v e="$max_fmm_error" 'BEGIN { exit !(e < 5e-3) }'; then
+        set_check_msg "FMM benchmark scaled error too large (${max_fmm_error})"
+        return 1
+    fi
+    if ! awk -v e="$max_quadrupole_error" 'BEGIN { exit !(e < 5e-2) }'; then
+        set_check_msg "quadrupole benchmark scaled error too large (${max_quadrupole_error})"
+        return 1
+    fi
+    if ! awk -v fmm="$largest_fmm_seconds" -v tree="$largest_quadrupole_seconds" \
+        'BEGIN { exit !(fmm <= 1.25 * tree) }'; then
+        set_check_msg "FMM runtime is not competitive at N=16384 (${largest_fmm_seconds}s vs ${largest_quadrupole_seconds}s)"
+        return 1
+    fi
+    if ! awk -v fmm="$fmm_large_runtime_growth" -v tree="$quadrupole_large_runtime_growth" \
+        'BEGIN { exit !(fmm < tree) }'; then
+        set_check_msg "FMM does not scale better from N=2048 to N=16384 (${fmm_large_runtime_growth} vs ${quadrupole_large_runtime_growth})"
+        return 1
+    fi
+    if ! awk -v fmm="$largest_fmm_error" -v tree="$largest_quadrupole_error" \
+        'BEGIN { exit !(fmm <= 1.25 * tree) }'; then
+        set_check_msg "FMM accuracy is not comparable at N=16384 (${largest_fmm_error} vs ${largest_quadrupole_error})"
+        return 1
+    fi
+    if ! awk -v n="$largest_m2l" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "FMM benchmark did not exercise M2L"
+        return 1
+    fi
+    if ! awk -v n="$largest_p2p_pairs" 'BEGIN { exit !(n < 268419072) }'; then
+        set_check_msg "FMM benchmark remained all-P2P (${largest_p2p_pairs})"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "FMM/quadrupole benchmark reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "FMM/quadrupole benchmark check passed"
+    return 0
+}
+
+
+check_ddmc_mpi_zero_cell_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/ddmc_mpi_zero_cell_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale ddmc_mpi_zero_cell_metrics.txt"
+        return 1
+    fi
+
+    local zero_ranks cross_rank_faces remote_leaks flux_reductions
+    local invalid_geometry reciprocity_max cross_rank_reciprocity
+    local rate_conductance_consistency weight_rel_error pass_flag
+    zero_ranks=$(awk '$1 == "zero_rank_count" { print $2 }' "$metrics_file")
+    cross_rank_faces=$(awk '$1 == "cross_rank_faces" { print $2 }' "$metrics_file")
+    remote_leaks=$(awk '$1 == "remote_resident_leaks" { print $2 }' "$metrics_file")
+    flux_reductions=$(awk '$1 == "mpi_face_flux_reductions" { print $2 }' "$metrics_file")
+    invalid_geometry=$(awk '$1 == "invalid_geometry" { print $2 }' "$metrics_file")
+    reciprocity_max=$(awk '$1 == "reciprocity_max" { print $2 }' "$metrics_file")
+    cross_rank_reciprocity=$(awk '$1 == "cross_rank_reciprocity_rel_error" { print $2 }' "$metrics_file")
+    rate_conductance_consistency=$(awk '$1 == "rate_conductance_consistency_max" { print $2 }' "$metrics_file")
+    weight_rel_error=$(awk '$1 == "weight_rel_error" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$zero_ranks" || -z "$cross_rank_faces" ||
+          -z "$remote_leaks" || -z "$flux_reductions" ||
+          -z "$invalid_geometry" || -z "$reciprocity_max" ||
+          -z "$cross_rank_reciprocity" ||
+          -z "$rate_conductance_consistency" ||
+          -z "$weight_rel_error" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse DDMC zero-cell MPI metrics"
+        return 1
+    fi
+    if ! is_finite_number "$reciprocity_max" ||
+       ! is_finite_number "$cross_rank_reciprocity" ||
+       ! is_finite_number "$rate_conductance_consistency" ||
+       ! is_finite_number "$weight_rel_error"; then
+        set_check_msg "DDMC zero-cell MPI metrics are not finite"
+        return 1
+    fi
+
+    if ! awk -v n="$zero_ranks" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "DDMC zero-cell MPI test did not create an empty rank"
+        return 1
+    fi
+    if ! awk -v n="$cross_rank_faces" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "DDMC zero-cell MPI test found no cross-rank faces"
+        return 1
+    fi
+    if ! awk -v n="$remote_leaks" 'BEGIN { exit !(n > 0) }'; then
+        set_check_msg "DDMC zero-cell MPI test sampled no remote resident leaks"
+        return 1
+    fi
+    if [[ "$flux_reductions" != "0" ]]; then
+        set_check_msg "DDMC zero-cell MPI test unexpectedly performed face-flux reductions (${flux_reductions})"
+        return 1
+    fi
+    if [[ "$invalid_geometry" != "0" ]]; then
+        set_check_msg "DDMC zero-cell MPI test reported invalid leakage geometry (${invalid_geometry})"
+        return 1
+    fi
+
+    local max_reciprocity="${DDMC_MPI_MAX_RECIPROCITY_ERROR:-1e-10}"
+    local max_cross_rank_reciprocity="${DDMC_MPI_MAX_CROSS_RANK_RECIPROCITY_ERROR:-1e-12}"
+    local max_rate_consistency="${DDMC_MPI_MAX_RATE_CONDUCTANCE_ERROR:-1e-12}"
+    local max_weight_error="${DDMC_MPI_MAX_WEIGHT_REL_ERROR:-1e-10}"
+    if ! awk -v e="$reciprocity_max" -v t="$max_reciprocity" 'BEGIN { exit !(e <= t) }'; then
+        set_check_msg "DDMC MPI reciprocity error too large (${reciprocity_max} > ${max_reciprocity})"
+        return 1
+    fi
+    if ! awk -v e="$cross_rank_reciprocity" -v t="$max_cross_rank_reciprocity" 'BEGIN { exit !(e <= t) }'; then
+        set_check_msg "DDMC cross-rank reciprocity error too large (${cross_rank_reciprocity} > ${max_cross_rank_reciprocity})"
+        return 1
+    fi
+    if ! awk -v e="$rate_conductance_consistency" -v t="$max_rate_consistency" 'BEGIN { exit !(e <= t) }'; then
+        set_check_msg "DDMC rate/conductance mismatch too large (${rate_conductance_consistency} > ${max_rate_consistency})"
+        return 1
+    fi
+    if ! awk -v e="$weight_rel_error" -v t="$max_weight_error" 'BEGIN { exit !(e <= t) }'; then
+        set_check_msg "DDMC MPI particle weight is not conserved (${weight_rel_error} > ${max_weight_error})"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "DDMC zero-cell MPI executable reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "DDMC zero-cell/cross-rank MPI passed (zero_ranks=${zero_ranks}, cross_faces=${cross_rank_faces}, remote_leaks=${remote_leaks}, reciprocity=${cross_rank_reciprocity}, weight_error=${weight_rel_error})"
     return 0
 }

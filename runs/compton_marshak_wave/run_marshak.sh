@@ -17,8 +17,9 @@ echo "=== Running diffusion on SLURM (${NP} ranks) ==="
 sbatch --wait --exclusive --partition=bigrun --ntasks="${NP}" --time=15 \
     --output="${CASE_DIR}/slurm_diffusion.out" \
     --error="${CASE_DIR}/slurm_diffusion.err" \
-    --wrap "mpirun --timeout 600 -np ${NP} ./build/intelReleaseMPI/rich --diffusion" || true
-if [[ ! -f "${CASE_DIR}/Trad_diffusion.txt" ]]; then
+    --wrap "timeout 600 mpirun -np ${NP} ./build/intelReleaseMPI/rich --diffusion"
+sleep 5
+if [[ ! -f "${CASE_DIR}/Trad_diffusion.txt" ]] || ! grep -q "Done (diffusion)" "${CASE_DIR}/slurm_diffusion.out"; then
     echo "ERROR: diffusion run did not produce output" >&2; exit 1
 fi
 
@@ -27,8 +28,9 @@ echo "=== Running MC angle-dependent on SLURM (${NP} ranks) ==="
 sbatch --wait --exclusive --partition=bigrun --ntasks="${NP}" \
     --output="${CASE_DIR}/slurm_mc.out" \
     --error="${CASE_DIR}/slurm_mc.err" \
-    --wrap "mpirun --timeout 4600 -np ${NP} ./build/intelReleaseMPI/rich --mc" || true
-if [[ ! -f "${CASE_DIR}/Trad_mc.txt" ]]; then
+    --wrap "timeout 4600 mpirun -np ${NP} ./build/intelReleaseMPI/rich --mc"
+sleep 5
+if [[ ! -f "${CASE_DIR}/Trad_mc.txt" ]] || ! grep -q "Done (mc)" "${CASE_DIR}/slurm_mc.out"; then
     echo "ERROR: MC angle-dependent run did not produce output" >&2; exit 1
 fi
 
@@ -36,8 +38,9 @@ echo "=== Running MC isotropic on SLURM (${NP} ranks) ==="
 sbatch --wait --exclusive --partition=bigrun --ntasks="${NP}" \
     --output="${CASE_DIR}/slurm_mc_iso.out" \
     --error="${CASE_DIR}/slurm_mc_iso.err" \
-    --wrap "mpirun --timeout 4600 -np ${NP} ./build/intelReleaseMPI/rich --mc-isotropic" || true
-if [[ ! -f "${CASE_DIR}/Trad_mc_iso.txt" ]]; then
+    --wrap "timeout 4600 mpirun -np ${NP} ./build/intelReleaseMPI/rich --mc-isotropic"
+sleep 5
+if [[ ! -f "${CASE_DIR}/Trad_mc_iso.txt" ]] || ! grep -q "Done (mc_iso)" "${CASE_DIR}/slurm_mc_iso.out"; then
     echo "ERROR: MC isotropic run did not produce output" >&2; exit 1
 fi
 

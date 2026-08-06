@@ -8,6 +8,29 @@
 #include <cmath>
 #include <limits>
 
+namespace
+{
+    void SyncParticleCellIDs(
+        const std::vector<ComputationalCell3D> &cells,
+        std::vector<Particle3D> &particles,
+        const std::string &where)
+    {
+        for(Particle3D &p : particles)
+        {
+            if(p.cellIndex >= cells.size())
+            {
+                UniversalError eo(where + ": particle cellIndex out of cell range");
+                eo.addEntry("Particle", p);
+                eo.addEntry("cellIndex", p.cellIndex);
+                eo.addEntry("cells.size()", cells.size());
+                throw eo;
+            }
+
+            p.cellID = cells[p.cellIndex].ID;
+        }
+    }
+}
+
 RadiationMCStep::RadiationMCStep(const Tessellation3D &tess,
                                 std::vector<ComputationalCell3D> &cells,
                                 std::vector<Conserved3D> &extensives,
@@ -123,6 +146,8 @@ void RadiationMCStep::step(double dt)
 
     auto managerStart = std::chrono::high_resolution_clock::now();
     this->particles = this->manager->step(std::move(this->particles), this->cells, dt);
+    SyncParticleCellIDs(this->cells, this->particles,
+                        "RadiationMCStep::step after manager");
     double managerTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - managerStart).count();
 
     int rank = 0;
@@ -282,6 +307,8 @@ void RadiationMCStep::step(double dt)
     void RadiationMCStep::afterLB(void)
     {
         UpdateNewCellsAfterExchange(this->tess, this->particles);
+        SyncParticleCellIDs(this->cells, this->particles,
+                            "RadiationMCStep::afterLB");
     }
 
     void RadiationMCStep::dumpCost(size_t cycle) const

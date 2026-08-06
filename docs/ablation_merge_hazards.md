@@ -95,3 +95,126 @@
 8. `source/3D/tessellation/voronoi/Voronoi3D.hpp` — memory optimizations
 9. `source/mpi/mpi_commands.hpp` — verify nothing dropped vs mpi_utils
 10. `source/3D/gravity/DistributedGravityCalculator.hpp` — member name choice
+
+---
+
+## Integration execution: 2026-08-05
+
+This section records the decisions made while merging `8031e78e` into
+`78022104` from common base `c0c2aed3` on
+`codex/merge-ablation-20260805`.  It supersedes the speculative file-port
+notes above where the actual submodule interfaces differ from the legacy
+vendored layout.
+
+### Structural conflict decisions
+
+- The `rich_features` repository layout remains authoritative.  All 13
+  dependency paths remain mode-`160000` gitlinks; the legacy `source/monte`
+  directory and `source/monte~HEAD` were removed.
+- `source/monte` remains STORM.  `MeshDecomposer3D` remains a gitlink at its
+  current commit because its Hilbert empty-boundary fallback covers both the
+  ablation single-rank case and broader empty-boundary layouts.
+- Current CMake dependency targets, include paths, STORM integration, and
+  THUNDER wrapper were retained.  Only new RICH-owned FMM, spherical-shell,
+  radiation, test, and documentation sources were added.
+- `compile_commands.json` remains deleted.  `.gitignore` contains the union of
+  the current branch additions and ablation's `**/mpi_tmp*` rule.
+- The current STORM-adapted `gold_heat_wave_tau0_imc` case was retained.  It is
+  still referenced by current regression configuration and documentation.
+- `source/mpi/MPI_Particle3D_dtype.hpp` was restored exactly to the
+  `rich_features` side.  The merge does not add the ablation branch's legacy
+  flat DDMC members or a second `sourceCellID` entry to the MPI datatype, so the
+  current STORM particle serialization layout remains unchanged.
+- Ablation-era local includes and types in the new tests and retained runs were
+  migrated to the current CMMC, STORM, `MeshDecomposer3D`, population-control,
+  particle-status, and radiation-state interfaces.  A changed-source include
+  resolution scan found no unresolved quoted local includes.
+
+### Semantic ports into the current STORM adapter
+
+The current STORM particle layout and transport interfaces were kept.  No
+legacy Monte Carlo manager API or duplicate particle serialization format was
+restored.  The local `codex/ablation-port-20260805` STORM branch, commit
+`2b01032`, adds only the capabilities absent from the current transport
+facade:
+
+- adaptive postprocess source allocation, learned per-cell/per-group controls,
+  external surface-source registration, Planck sampling, and generation
+  diagnostics;
+- DDMC external-source face eligibility and thermalization, detailed
+  resident/transport/MPI counters, moving-interface controls, bounded `G_U`
+  handling, local corrected-weight packet splitting, and full per-face and
+  per-event diagnostic TSV contracts;
+- LTE temperature evaluation for Compton Planck fallback and derivative
+  scaling while retaining the current Compton and polarization machinery;
+- RICH facade conversions for postprocess control structures, source
+  diagnostics, external-source descriptors, and DDMC debug output.
+
+The TSV methods deliberately emit data rows only.  The Densmore diagnostic
+driver owns the headers and prefixes each row with step and time.  Emitting a
+second header or a one-line counter summary would corrupt the tracked analysis
+scripts' input schema.
+
+### Regression metadata migration
+
+The 14 ablation runner files were moved byte-for-byte to case-local
+`REGRESSION_INFO` files.  Their build arguments, ranks, SLURM resources, run
+commands, and check functions are unchanged.  THUNDER discovery found all 14,
+and a combined `--dry-run --verbose` resolved all serial and MPI build/run
+commands successfully.  The cluster's default `python3` initially could not
+locate `libpython3.12.so.1.0`; discovery was rerun with command-local `PATH`
+and `LD_LIBRARY_PATH` entries for the active Python runtime.
+No repository or shell configuration was changed for that workaround.
+
+### Both-side auto-merge audit
+
+All 22 files changed by both parents but merged automatically were audited.
+A line-retention comparison found no nontrivial addition from either parent
+missing in the integration result.  Manual semantic inspection covered the
+gravity tree/calculator, polarization and Lorentz transforms, spherical
+observer, opacity adapter, radiation-step particle identity resynchronization,
+Densmore cases, regression checks, report generators, plots, and mirrored
+regression documentation.  Generated report outputs themselves remain pending
+fresh run artifacts as described below.
+
+### Post-merge review fixes
+
+- Restored the current `runs/**/*.txt` ignore rule alongside ablation's
+  `**/mpi_tmp*` rule and removed stale links to the deleted monolithic IMC
+  Compton plans.
+- Added direct standard-library includes to new FMM, postprocess, spherical,
+  and Densmore headers so they do not depend on transitive include order.
+- Made controlled multigroup-diffusion failures transactional: every
+  reduced-timestep return restores the pre-attempt cells and extensives.  The
+  representative failure-cell sentinel now preserves legitimate cell ID `0`
+  and avoids attributing a remote MPI failure to a local cell `0`.
+- Corrected the regression overview to place `lane_self_gravity_fmm` in the
+  case-local THUNDER metadata layout rather than the legacy runner directory.
+- Classified the 512-rank `lane_self_gravity_fmm` case as a manual benchmark,
+  matching the validation policy that it receives discovery and dry-run checks
+  unless a dedicated allocation is explicitly provided.
+- Repaired the first GNU compile failures: the STORM namespace leak, the FMM
+  Hilbert template argument, both self-shadowing points-manager aliases, and
+  the obsolete Monte Carlo progress override.
+- Changed the VTK/MPI compatibility probe to use CMake's imported
+  `MPI::MPI_CXX` target instead of raw wrapper flags.  The direct shared-library
+  dependency check remains in place.
+
+### Remaining validation and publication risks
+
+- No RICH build or executable has been run by the merge integrator.  GNU
+  Release+MPI, Intel Release+MPI, the targeted cases, and the complete
+  non-manual THUNDER suite remain user-run gates.
+- The 512-rank `lane_self_gravity_fmm` case and 30-million-particle/64-node
+  FMM matrix are discovery/dry-run checks only unless resources are allocated.
+- Tracked generated reports must be regenerated from the returned fresh
+  validation artifacts.  They must not be updated from dry-run metadata or by
+  selecting either branch's pre-merge generated output.
+- Excluded the unreferenced 38,033-line `luminosity_grey.vtk` snapshot from the
+  merge because it is generated output, not a source or test input.  The
+  tracked gold heat-wave profile is likewise pending regeneration by the
+  merged regression before it can be accepted as validation evidence.
+- The superproject merge commit remains intentionally pending until required
+  build/run exit codes, scheduler states, logs, and generated artifacts have
+  been reviewed.  No submodule or superproject branch is to be pushed before
+  separate approval.

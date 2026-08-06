@@ -42,6 +42,7 @@ namespace fs = std::filesystem;
 #include <sstream>
 #include <MeshDecomposer3D/kernels/Rectangle.hpp>
 #include "source/newtonian/three_dimensional/Dissipation.hpp"
+#include "source/misc/utils.hpp"
 
 typedef std::array<double, 4> state_type;
 
@@ -91,13 +92,16 @@ namespace
 	class DissipationDiag: public DiagnosticAppendix3D
 	{
 		private:
-			Dissipation const& dissipation_;
+			LinearGauss3D const& interp_;
+			Hllc3D const& rs_;
+			EquationOfState const& eos_;
 		public:
-		DissipationDiag(Dissipation const& dissipation):dissipation_(dissipation){}
+		DissipationDiag(LinearGauss3D const& interp, Hllc3D const& rs, EquationOfState const& eos)
+			:interp_(interp), rs_(rs), eos_(eos){}
 
 		std::vector<double> operator()(const HDSim3D& sim) const
 		{
-			return dissipation_.CalcDissipation(sim);
+			return interp_.CalcDissipationStreamingFromPreparedSlopes(sim.getTesselation(), sim.getCells(), sim.getTime(), rs_, eos_);
 		}
 
 		std::string getName(void) const
@@ -116,7 +120,7 @@ namespace
 
 		std::vector<double> operator()(const HDSim3D& sim) const
 		{
-		    std::vector<Slope3D> slopes = interp_.GetSlopesUnlimited();
+		    const std::vector<Slope3D>& slopes = interp_.GetSlopesUnlimited();
 			size_t const N = sim.getTesselation().GetPointNo();
 			std::vector<double> res(N, 0);
 			switch(value_)
@@ -1261,8 +1265,7 @@ int main(void)
 	GradDiag diag21(2, 1, interp);
 	GradDiag diag22(2, 2, interp);
 	GradDiag diag3(0, 3, interp);
-	Dissipation dissipation(rs, eos);
-	DissipationDiag DissDiag(dissipation);
+	DissipationDiag DissDiag(interp, rs, eos);
 	appendices.push_back(&diag00);
 	appendices.push_back(&diag01);
 	appendices.push_back(&diag02);
@@ -1308,14 +1311,17 @@ int main(void)
 		{
 			if(rank == 0)
 				std::cout<<"Starting writing file "<<file_name + int2str(counter) + ".h5"<<std::endl;
-			interp(tess, sim->getCells(), 0, dissipation.face_values);
-			WriteSnapshot3D(*sim, file_name + int2str(counter) + ".h5", appendices, true);
+			interp.BuildSlopes(tess, sim->getCells(), sim->getTime());
+#ifdef RICH_MPI
+			WriteSnapshot3D(*sim, file_name + int2str(counter) + ".h5", appendices, true, false);
+#else
+			WriteSnapshot3D(*sim, file_name + int2str(counter) + ".h5", appendices, false);
+#endif
 			if (rank == 0)
 				write_int(counter, counter_name);
 			nextT = sim->getTime() + std::min(min_dt_output, mindt + 0.2 * std::pow(std::abs(sim->getTime()), 0.666666));
 			++counter;
-			dissipation.face_values.clear();
-			dissipation.face_values.shrink_to_fit();
+			rich_trim_after_rare_spike();
 		}
 		try
 		{
@@ -1331,10 +1337,13 @@ int main(void)
 			{
 				if(rank == 0)
 					std::cout<<"Starting writing file "<<run_directory + "restart.h5"<<std::endl;
-				interp(tess, sim->getCells(), 0, dissipation.face_values);
-				WriteSnapshot3D(*sim, run_directory + "restart.h5", appendices, true);
-				dissipation.face_values.clear();
-				dissipation.face_values.shrink_to_fit();
+				interp.BuildSlopes(tess, sim->getCells(), sim->getTime());
+#ifdef RICH_MPI
+				WriteSnapshot3D(*sim, run_directory + "restart.h5", appendices, true, false);
+#else
+				WriteSnapshot3D(*sim, run_directory + "restart.h5", appendices, false);
+#endif
+				rich_trim_after_rare_spike();
 				last_start = MPI_Wtime();
 			}
 			double step_tstart = MPI_Wtime();

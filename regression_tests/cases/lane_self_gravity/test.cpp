@@ -105,7 +105,7 @@ int main(void)
     double const G = 6.674e-8;
 
     const double width = 2 * R;
-    size_t np = static_cast<size_t>(1e6);
+    size_t np = static_cast<size_t>(2e6);
 
     Vector3D ll(-width, -width, -width), ur(width, width, width);
     Voronoi3D tess(ll, ur);

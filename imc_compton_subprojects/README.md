@@ -1,16 +1,14 @@
 # IMC Compton Subprojects
 
-This directory splits the root implementation plan into small projects with clear endpoints.
+This directory preserves the IMC Compton work as small projects with clear endpoints.
 
 Canonical references:
 
-- `../imc_compton_implementation_plan.md`
-- `../imc_compton_implementation_plan.tex`
 - `../source/3D/radiation/RadiationIMC.hpp`
 - `../source/3D/radiation/RadiationIMC.cpp`
 - `../source/Radiation/MultigroupDiffusion.cpp`
 
-The Markdown plan is the source of truth. The TeX file is a formatted duplicate reference.
+The numbered project files below are the retained implementation record.
 
 ## Dependency Order
 

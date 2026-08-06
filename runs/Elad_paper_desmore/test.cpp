@@ -21,7 +21,7 @@
 #include "source/3D/radiation/RadiationIMC.hpp"
 #include "source/3D/radiation/RadiationOpacity.hpp"
 #include "source/3D/radiation/PowerLawOpacity.hpp"
-#include "source/monte/population/Comb.hpp"
+#include "source/monte/population/CombPopulationControl.hpp"
 #include "source/monte/boundary/SideTemperature.hpp"
 #include "source/newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "source/3D/radiation/IMCCostCalculator.hpp"

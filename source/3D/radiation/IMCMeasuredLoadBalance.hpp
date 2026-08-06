@@ -22,6 +22,7 @@ struct Parameters {
     double floorCost = 1.0;
     double stepWeight = 1.0;
     double particleWeight = 0.0;
+    bool particleCostAfterClamp = false;
     double medianClampFactor = 30.0;
     double missingCellCost = 1.0;
     double predictiveWeight = 0.0;

@@ -30,7 +30,7 @@
 #include "source/3D/radiation/RadiationIMC.hpp"
 #include "source/3D/radiation/PowerLawOpacity.hpp"
 #include "source/monte/boundary/SideTemperature.hpp"
-#include "source/monte/population/Comb.hpp"
+#include "source/monte/population/CombPopulationControl.hpp"
 #include <boost/math/special_functions/pow.hpp>
 #include "source/monte/deps/CMMC/src/units/units.hpp"
 #include "source/3D/tessellation/utils/RandomOnFace.hpp"

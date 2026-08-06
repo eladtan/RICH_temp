@@ -32,11 +32,11 @@ fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 ax = axes[0]
 ax.set_title("Gas Temperature at t = 4 ns")
 if Tgas_diff is not None:
-    ax.plot(x_diff, Tgas_diff / kev_K, 'b-', lw=1.5, label='Diffusion')
+    ax.plot(x_diff, Tgas_diff / kev_K, 'b-', lw=2.0, label='Diffusion')
 if Tgas_mc is not None:
-    ax.plot(x_mc, Tgas_mc / kev_K, 'r-', lw=1.0, alpha=0.8, label='MC (angle-dep)')
+    ax.plot(x_mc, Tgas_mc / kev_K, 'r-', lw=2.0, alpha=0.8, label='MC (angle-dep)')
 if Tgas_iso is not None:
-    ax.plot(x_iso, Tgas_iso / kev_K, 'g--', lw=1.0, alpha=0.8, label='MC (isotropic)')
+    ax.plot(x_iso, Tgas_iso / kev_K, 'g--', lw=2.0, alpha=0.8, label='MC (isotropic)')
 ax.set_xlabel("x [cm]")
 ax.set_ylabel("T_gas [keV]")
 ax.legend()

@@ -192,6 +192,14 @@ int main(void)
 		double r1 = abs(cm1), r2 = abs(cm2);
 		if (r1 < 1.1 || r1 > 1.9 || r2 < 1.1 || r2 > 1.9)
 			continue;
+		SphCoords const cs1 = cart_to_sph(cm1);
+		SphCoords const cs2 = cart_to_sph(cm2);
+		// This case validates the spherical reconstruction itself.  Cells whose
+		// stencil reaches the polar axis intentionally use the Cartesian fallback
+		// and are covered by cartesian_gauss_linear instead.
+		if (r1 * std::abs(std::sin(cs1.theta)) <= 3.0 * tess.GetWidth(neigh.first) ||
+			r2 * std::abs(std::sin(cs2.theta)) <= 3.0 * tess.GetWidth(neigh.second))
+			continue;
 
 		Vector3D face_cm = tess.FaceCM(f);
 		SphCoords fs = cart_to_sph(face_cm);

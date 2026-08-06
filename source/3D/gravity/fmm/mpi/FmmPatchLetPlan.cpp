@@ -1,0 +1,3830 @@
+#include "3D/gravity/fmm/mpi/FmmPatchLetPlan.hpp"
+
+#ifdef RICH_MPI
+
+#include <algorithm>
+#include <array>
+#include <chrono>
+#include <cmath>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <limits>
+#include <set>
+#include <string>
+
+#include "3D/gravity/fmm/FmmKernels.hpp"
+#include "misc/universal_error.hpp"
+
+namespace
+{
+typedef std::chrono::steady_clock Clock;
+
+double elapsed(const Clock::time_point& start)
+{
+    return std::chrono::duration<double>(Clock::now() - start).count();
+}
+
+bool nonuniformDiagnosticsEnabled()
+{
+    const char* value = std::getenv("RICH_FMM_NONUNIFORM_DIAGNOSTICS");
+    return value != nullptr && value[0] != '\0' &&
+        !(value[0] == '0' && value[1] == '\0');
+}
+
+double nodeRadius(const FmmNode& node)
+{
+    return node.radius > 0.0 ? node.radius :
+                               std::sqrt(3.0) * node.halfSize;
+}
+
+double descriptorRadius(const FmmRemoteNodeDescriptor& descriptor)
+{
+    return descriptor.radius > 0.0 ? descriptor.radius :
+                                     std::sqrt(3.0) * descriptor.halfSize;
+}
+
+bool finiteVector(const Vector3D& value)
+{
+    return std::isfinite(value.x) && std::isfinite(value.y) &&
+           std::isfinite(value.z);
+}
+
+int bitCount(unsigned int value)
+{
+    int count = 0;
+    while(value != 0)
+    {
+        count += static_cast<int>(value & 1u);
+        value >>= 1u;
+    }
+    return count;
+}
+
+bool validRemoteDescriptor(const FmmRemoteNodeDescriptor& descriptor)
+{
+    const Vector3D center = descriptor.centerVector();
+    const double cubeRadius = std::sqrt(3.0) * descriptor.halfSize;
+    const double tolerance = 64.0 * std::numeric_limits<double>::epsilon() *
+        std::max(1.0, cubeRadius);
+    return finiteVector(center) && descriptor.halfSize > 0.0 &&
+        std::isfinite(descriptor.halfSize) && descriptor.radius >= 0.0 &&
+        std::isfinite(descriptor.radius) &&
+        descriptor.radius <= cubeRadius + tolerance &&
+        descriptor.spatialKey != 0 && descriptor.patchId != 0 &&
+        descriptor.sourceRank >= 0 &&
+        // Persistent full-octant trees deliberately expose empty leaf nodes so
+        // a later occupancy-only solve can reuse the same interaction plan.
+        // Empty internal nodes are never a valid retained topology state.
+        (descriptor.particleCount != 0 || descriptor.isLeaf != 0) &&
+        (descriptor.isLeaf == 0 || descriptor.isLeaf == 1) &&
+        descriptor.childMask >= 0 && descriptor.childMask <= 255 &&
+        ((descriptor.isLeaf != 0 && descriptor.childMask == 0) ||
+         (descriptor.isLeaf == 0 && descriptor.childMask != 0));
+}
+
+std::int64_t shiftCoordinate(std::int64_t center,
+                             std::uint64_t offset,
+                             bool positive)
+{
+    if(offset > static_cast<std::uint64_t>(
+                    std::numeric_limits<std::int64_t>::max()))
+        throw UniversalError("FmmPatchLetPlan: lattice offset overflow");
+    const std::int64_t delta = static_cast<std::int64_t>(offset);
+    if(positive)
+    {
+        if(center > std::numeric_limits<std::int64_t>::max() - delta)
+            throw UniversalError("FmmPatchLetPlan: lattice center overflow");
+        return center + delta;
+    }
+    if(center < std::numeric_limits<std::int64_t>::min() + delta)
+        throw UniversalError("FmmPatchLetPlan: lattice center overflow");
+    return center - delta;
+}
+
+void applyRemoteLatticeMetadata(std::uint64_t latticeId,
+                                const std::int64_t rootCenter[3],
+                                std::uint64_t rootHalfUnits,
+                                std::uint64_t spatialKey,
+                                FmmNode& node)
+{
+    if(latticeId == 0 || rootHalfUnits == 0 || spatialKey == 0)
+        throw UniversalError("FmmPatchLetPlan: invalid remote lattice metadata");
+
+    std::array<unsigned int, FMM_MAX_TREE_DEPTH> reversed{};
+    std::size_t depth = 0;
+    std::uint64_t cursor = spatialKey;
+    while(cursor != 1)
+    {
+        if(cursor == 0 || depth >= reversed.size())
+            throw UniversalError("FmmPatchLetPlan: malformed remote spatial key");
+        reversed[depth++] = static_cast<unsigned int>(cursor & 7u);
+        cursor >>= 3u;
+    }
+
+    std::int64_t coordinates[3] = {
+        rootCenter[0], rootCenter[1], rootCenter[2]};
+    std::uint64_t halfUnits = rootHalfUnits;
+    for(std::size_t reverse = depth; reverse > 0; --reverse)
+    {
+        if(halfUnits < 2 || (halfUnits & 1u) != 0)
+            throw UniversalError(
+                "FmmPatchLetPlan: indivisible remote lattice root");
+        halfUnits /= 2;
+        const unsigned int octant = reversed[reverse - 1];
+        coordinates[0] = shiftCoordinate(coordinates[0], halfUnits,
+                                         (octant & 4u) != 0);
+        coordinates[1] = shiftCoordinate(coordinates[1], halfUnits,
+                                         (octant & 2u) != 0);
+        coordinates[2] = shiftCoordinate(coordinates[2], halfUnits,
+                                         (octant & 1u) != 0);
+    }
+
+    node.latticeId = latticeId;
+    node.latticeCenterX = coordinates[0];
+    node.latticeCenterY = coordinates[1];
+    node.latticeCenterZ = coordinates[2];
+    node.latticeHalfUnits = halfUnits;
+    node.latticeAligned = 1;
+}
+
+std::size_t saturatingAdd(std::size_t first, std::size_t second)
+{
+    return second > std::numeric_limits<std::size_t>::max() - first ?
+        std::numeric_limits<std::size_t>::max() : first + second;
+}
+
+std::size_t saturatingMultiply(std::size_t first, std::size_t second)
+{
+    return first != 0 && second >
+        std::numeric_limits<std::size_t>::max() / first ?
+        std::numeric_limits<std::size_t>::max() : first * second;
+}
+
+std::size_t checkedAdd(std::size_t first,
+                       std::size_t second,
+                       const char* message)
+{
+    if(second > std::numeric_limits<std::size_t>::max() - first)
+        throw UniversalError(message);
+    return first + second;
+}
+
+std::size_t checkedMultiply(std::size_t first,
+                            std::size_t second,
+                            const char* message)
+{
+    if(first != 0 && second > std::numeric_limits<std::size_t>::max() / first)
+        throw UniversalError(message);
+    return first * second;
+}
+
+std::size_t payloadHandlerLane(std::uint64_t patchId,
+                               std::uint64_t spatialKey,
+                               int kind,
+                               std::size_t handlerCount)
+{
+    if(handlerCount == 0)
+        throw UniversalError("FmmPatchLetPlan: zero node payload handlers");
+    std::uint64_t hash = patchId + 0x9e3779b97f4a7c15ull;
+    hash ^= spatialKey + 0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
+    hash ^= static_cast<std::uint64_t>(static_cast<unsigned int>(kind)) +
+        0x9e3779b97f4a7c15ull + (hash << 6) + (hash >> 2);
+    return static_cast<std::size_t>(hash % handlerCount);
+}
+
+void collectiveRequire(bool localOk,
+                       const std::string& localMessage,
+                       const char* context,
+                       const MPI_Comm& comm)
+{
+    int local = localOk ? 1 : 0;
+    int global = 0;
+    MPI_Allreduce(&local, &global, 1, MPI_INT, MPI_LAND, comm);
+    if(global == 0)
+    {
+        if(localOk)
+            throw UniversalError(std::string(context) +
+                                 ": failed on another MPI rank");
+        throw UniversalError(localMessage.empty() ? std::string(context) :
+                                                   localMessage);
+    }
+}
+
+void requireMpiSuccess(int status, const char* operation)
+{
+    if(status == MPI_SUCCESS)
+        return;
+    char text[MPI_MAX_ERROR_STRING];
+    int length = 0;
+    MPI_Error_string(status, text, &length);
+    throw UniversalError(std::string(operation) + ": " +
+                         std::string(text, static_cast<std::size_t>(length)));
+}
+
+void addDirectRemoteParticles(FmmLocalPatch& targetPatch,
+                              const FmmNode& targetNode,
+                              const Vector3D& sourceCenter,
+                              const char* payload,
+                              std::size_t sourceCount,
+                              bool compactParticlePayload,
+                              FmmSolveStats& stats)
+{
+    const std::vector<std::size_t>& targetOrder =
+        targetPatch.tree.particleOrder();
+
+    // Validate each wire source once per block, rather than once for every
+    // target/source pair. The compact path intentionally stays in leaf-relative
+    // coordinates so it never reconstructs an absolute Vector3D in the hot
+    // loop. Double accumulation matches the local P2P kernel and is much faster
+    // than x87 extended arithmetic on Genoa.
+    if(compactParticlePayload)
+    {
+        for(std::size_t sourceIndex = 0; sourceIndex < sourceCount;
+            ++sourceIndex)
+        {
+            FmmCompactPatchWireParticle source;
+            std::memcpy(&source,
+                        payload + sourceIndex * sizeof(source),
+                        sizeof(source));
+            if(!std::isfinite(source.offset[0]) ||
+               !std::isfinite(source.offset[1]) ||
+               !std::isfinite(source.offset[2]) ||
+               !std::isfinite(source.mass))
+                throw UniversalError(
+                    "FmmPatchLetPlan::execute: malformed compact remote particle");
+        }
+    }
+    else
+    {
+        for(std::size_t sourceIndex = 0; sourceIndex < sourceCount;
+            ++sourceIndex)
+        {
+            FmmPatchWireParticle source;
+            std::memcpy(&source,
+                        payload + sourceIndex * sizeof(source),
+                        sizeof(source));
+            if(!finiteVector(source.positionVector()) ||
+               !std::isfinite(source.mass))
+                throw UniversalError(
+                    "FmmPatchLetPlan::execute: malformed remote particle");
+        }
+    }
+
+    for(std::size_t k = targetNode.particleBegin;
+        k < targetNode.particleEnd; ++k)
+    {
+        const std::size_t targetBody = targetOrder[k];
+        const Vector3D target = targetPatch.positions[targetBody];
+        double ax = 0.0;
+        double ay = 0.0;
+        double az = 0.0;
+        double potential = 0.0;
+        if(compactParticlePayload)
+        {
+            const double relativeX = target.x - sourceCenter.x;
+            const double relativeY = target.y - sourceCenter.y;
+            const double relativeZ = target.z - sourceCenter.z;
+            for(std::size_t sourceIndex = 0; sourceIndex < sourceCount;
+                ++sourceIndex)
+            {
+                FmmCompactPatchWireParticle source;
+                std::memcpy(&source,
+                            payload + sourceIndex * sizeof(source),
+                            sizeof(source));
+                const double dx = relativeX -
+                    static_cast<double>(source.offset[0]);
+                const double dy = relativeY -
+                    static_cast<double>(source.offset[1]);
+                const double dz = relativeZ -
+                    static_cast<double>(source.offset[2]);
+                const double r2 = dx * dx + dy * dy + dz * dz;
+                if(r2 == 0.0)
+                    continue;
+                const double invR = 1.0 / std::sqrt(r2);
+                const double factor = static_cast<double>(source.mass) *
+                    invR * invR * invR;
+                ax -= factor * dx;
+                ay -= factor * dy;
+                az -= factor * dz;
+                potential += static_cast<double>(source.mass) * invR;
+            }
+        }
+        else
+        {
+            for(std::size_t sourceIndex = 0; sourceIndex < sourceCount;
+                ++sourceIndex)
+            {
+                FmmPatchWireParticle source;
+                std::memcpy(&source,
+                            payload + sourceIndex * sizeof(source),
+                            sizeof(source));
+                const double dx = target.x - source.position[0];
+                const double dy = target.y - source.position[1];
+                const double dz = target.z - source.position[2];
+                const double r2 = dx * dx + dy * dy + dz * dz;
+                if(r2 == 0.0)
+                    continue;
+                const double invR = 1.0 / std::sqrt(r2);
+                const double factor = source.mass * invR * invR * invR;
+                ax -= factor * dx;
+                ay -= factor * dy;
+                az -= factor * dz;
+                potential += source.mass * invR;
+            }
+        }
+        targetPatch.acceleration[targetBody].x += ax;
+        targetPatch.acceleration[targetBody].y += ay;
+        targetPatch.acceleration[targetBody].z += az;
+        if(!targetPatch.potential.empty())
+            targetPatch.potential[targetBody] += potential;
+    }
+    ++stats.p2pBlockCount;
+    ++stats.letP2PBlockCount;
+    const std::uint64_t targetCount = static_cast<std::uint64_t>(
+        targetNode.particleCount());
+    const std::uint64_t sourceCount64 =
+        static_cast<std::uint64_t>(sourceCount);
+    if(targetCount != 0 && sourceCount64 >
+       std::numeric_limits<std::uint64_t>::max() / targetCount)
+        throw UniversalError("FmmPatchLetPlan: P2P pair count overflow");
+    const std::uint64_t pairs = targetCount * sourceCount64;
+    if(pairs > std::numeric_limits<std::uint64_t>::max() -
+                   stats.p2pPairCount ||
+       pairs > std::numeric_limits<std::uint64_t>::max() -
+                   stats.letP2PPairCount)
+        throw UniversalError("FmmPatchLetPlan: accumulated P2P count overflow");
+    stats.p2pPairCount += pairs;
+    stats.letP2PPairCount += pairs;
+}
+}
+
+FmmPatchLetPlan::FmmPatchLetPlan():
+    waveCount_(1), localWaveCount_(1), maxLetWaveBytes_(0),
+    thetaCritical_(0.0), multipoleCoefficientCount_(0),
+    maxParticlePayloadCount_(0), particlePayloadSlackFactor_(1.0),
+    particlePayloadSlackCount_(0), compactParticlePayload_(false),
+    sharePayloadsWithinNode_(false), configuredNodeHandlerCount_(1),
+    localNodeHandlerCount_(1), topologyEpoch_(0),
+    comm_(MPI_COMM_NULL), nodeComm_(MPI_COMM_NULL), rank_(0), nodeRank_(0),
+    nodeSize_(1), nodeLeader_(0), initialized_(false)
+{
+}
+
+FmmPatchLetPlan::~FmmPatchLetPlan()
+{
+    int mpiInitialized = 0;
+    int mpiFinalized = 0;
+    MPI_Initialized(&mpiInitialized);
+    if(mpiInitialized != 0)
+        MPI_Finalized(&mpiFinalized);
+    if(nodeComm_ != MPI_COMM_NULL && mpiInitialized != 0 && mpiFinalized == 0)
+        MPI_Comm_free(&nodeComm_);
+    nodeComm_ = MPI_COMM_NULL;
+}
+
+void FmmPatchLetPlan::initializeNodeSharing(const MPI_Comm& comm)
+{
+    int worldSize = 1;
+    requireMpiSuccess(MPI_Comm_size(comm, &worldSize),
+                      "FmmPatchLetPlan MPI_Comm_size node sharing");
+    if(nodeComm_ != MPI_COMM_NULL &&
+       nodeLeaderByRank_.size() == static_cast<std::size_t>(worldSize) &&
+       nodeHandlersByRank_.size() == static_cast<std::size_t>(worldSize) *
+           configuredNodeHandlerCount_)
+        return;
+
+    if(nodeComm_ != MPI_COMM_NULL)
+        requireMpiSuccess(MPI_Comm_free(&nodeComm_),
+                          "FmmPatchLetPlan MPI_Comm_free node sharing");
+    requireMpiSuccess(MPI_Comm_split_type(
+                          comm, MPI_COMM_TYPE_SHARED, rank_, MPI_INFO_NULL,
+                          &nodeComm_),
+                      "FmmPatchLetPlan MPI_Comm_split_type node sharing");
+    requireMpiSuccess(MPI_Comm_rank(nodeComm_, &nodeRank_),
+                      "FmmPatchLetPlan MPI_Comm_rank node sharing");
+    requireMpiSuccess(MPI_Comm_size(nodeComm_, &nodeSize_),
+                      "FmmPatchLetPlan MPI_Comm_size node sharing");
+
+    nodeLeader_ = nodeRank_ == 0 ? rank_ : -1;
+    requireMpiSuccess(MPI_Bcast(&nodeLeader_, 1, MPI_INT, 0, nodeComm_),
+                      "FmmPatchLetPlan MPI_Bcast node leader");
+    nodeLeaderByRank_.resize(static_cast<std::size_t>(worldSize));
+    requireMpiSuccess(MPI_Allgather(
+                          &nodeLeader_, 1, MPI_INT,
+                          nodeLeaderByRank_.data(), 1, MPI_INT, comm),
+                      "FmmPatchLetPlan MPI_Allgather node leaders");
+    nodeSizeByRank_.resize(static_cast<std::size_t>(worldSize));
+    requireMpiSuccess(MPI_Allgather(
+                          &nodeSize_, 1, MPI_INT,
+                          nodeSizeByRank_.data(), 1, MPI_INT, comm),
+                      "FmmPatchLetPlan MPI_Allgather node sizes");
+    localNodeHandlerCount_ = std::min(
+        configuredNodeHandlerCount_, static_cast<std::size_t>(nodeSize_));
+    std::vector<int> localNodeRanks(static_cast<std::size_t>(nodeSize_));
+    requireMpiSuccess(MPI_Allgather(
+                          &rank_, 1, MPI_INT, localNodeRanks.data(),
+                          1, MPI_INT, nodeComm_),
+                      "FmmPatchLetPlan MPI_Allgather local node ranks");
+    std::vector<int> localHandlers(configuredNodeHandlerCount_, -1);
+    std::copy(localNodeRanks.begin(),
+              localNodeRanks.begin() + localNodeHandlerCount_,
+              localHandlers.begin());
+    if(configuredNodeHandlerCount_ > static_cast<std::size_t>(
+           std::numeric_limits<int>::max()))
+        throw UniversalError(
+            "FmmPatchLetPlan: node handler count exceeds MPI int");
+    nodeHandlersByRank_.resize(
+        static_cast<std::size_t>(worldSize) * configuredNodeHandlerCount_);
+    requireMpiSuccess(MPI_Allgather(
+                          localHandlers.data(),
+                          static_cast<int>(configuredNodeHandlerCount_),
+                          MPI_INT, nodeHandlersByRank_.data(),
+                          static_cast<int>(configuredNodeHandlerCount_),
+                          MPI_INT, comm),
+                      "FmmPatchLetPlan MPI_Allgather node handlers");
+    for(int leader : nodeLeaderByRank_)
+    {
+        if(leader < 0 || leader >= worldSize)
+            throw UniversalError(
+                "FmmPatchLetPlan: invalid physical-node leader map");
+    }
+    for(int size : nodeSizeByRank_)
+        if(size <= 0)
+            throw UniversalError(
+                "FmmPatchLetPlan: invalid physical-node size map");
+}
+
+void FmmPatchLetPlan::buildNodeSubscriptions(
+    const FmmPatchForest& forest,
+    FmmSolveStats& stats)
+{
+    nodeSubscriptionsByWave_.clear();
+    if(!sharePayloadsWithinNode_)
+        return;
+    if(nodeComm_ == MPI_COMM_NULL || nodeLeaderByRank_.empty())
+        throw UniversalError(
+            "FmmPatchLetPlan: node sharing was not initialized");
+
+    nodeSubscriptionsByWave_.assign(
+        waveCount_, std::vector<NodeSubscriptionReference>());
+    typedef std::tuple<int, std::uint64_t, std::uint64_t, int, int>
+        NodeSubscriptionKey;
+    std::set<NodeSubscriptionKey> unique;
+    std::vector<int> outgoingLeaders;
+    for(const auto& peerEntry : subscriptionsReceived_)
+    {
+        if(peerEntry.first < 0 ||
+           static_cast<std::size_t>(peerEntry.first) >=
+               nodeLeaderByRank_.size())
+            throw UniversalError(
+                "FmmPatchLetPlan: subscription consumer rank is invalid");
+        const std::size_t consumerRank = static_cast<std::size_t>(
+            peerEntry.first);
+        const std::size_t handlerCount = std::min(
+            configuredNodeHandlerCount_,
+            static_cast<std::size_t>(nodeSizeByRank_[consumerRank]));
+        for(const FmmSubscription& subscription : peerEntry.second)
+        {
+            if(subscription.waveIndex < 0 ||
+               static_cast<std::size_t>(subscription.waveIndex) >= waveCount_)
+                throw UniversalError(
+                    "FmmPatchLetPlan: node subscription wave is invalid");
+            const std::size_t lane = payloadHandlerLane(
+                subscription.patchId, subscription.spatialKey,
+                subscription.kind, handlerCount);
+            const int handler = nodeHandlersByRank_[
+                consumerRank * configuredNodeHandlerCount_ + lane];
+            if(handler < 0)
+                throw UniversalError(
+                    "FmmPatchLetPlan: missing striped node handler");
+            const NodeSubscriptionKey key(
+                handler, subscription.patchId, subscription.spatialKey,
+                subscription.kind, subscription.waveIndex);
+            if(!unique.insert(key).second)
+                continue;
+            const std::size_t patchIndex = forest.findPatch(
+                subscription.patchId);
+            if(patchIndex == std::numeric_limits<std::size_t>::max() ||
+               patchIndex >= localNodeByPatch_.size())
+                throw UniversalError(
+                    "FmmPatchLetPlan: node subscription patch disappeared");
+            const auto node = localNodeByPatch_[patchIndex].find(
+                subscription.spatialKey);
+            if(node == localNodeByPatch_[patchIndex].end())
+                throw UniversalError(
+                    "FmmPatchLetPlan: node subscription source disappeared");
+            nodeSubscriptionsByWave_[static_cast<std::size_t>(
+                subscription.waveIndex)].push_back(
+                    NodeSubscriptionReference{
+                        handler, patchIndex, node->second, subscription});
+            if(handler != rank_)
+                outgoingLeaders.push_back(handler);
+        }
+    }
+    std::sort(outgoingLeaders.begin(), outgoingLeaders.end());
+    outgoingLeaders.erase(
+        std::unique(outgoingLeaders.begin(), outgoingLeaders.end()),
+        outgoingLeaders.end());
+    const bool rebuilt = nodePayloadExchange_.resetIfChanged(
+        comm_, outgoingLeaders);
+    stats.letCommunicatorReused = stats.letCommunicatorReused && !rebuilt;
+}
+
+FmmRemoteNodeDescriptor FmmPatchLetPlan::descriptorForNode(
+    const FmmNode& node,
+    const FmmPatchKey& patch,
+    std::uint64_t topologyEpoch)
+{
+    FmmRemoteNodeDescriptor descriptor;
+    descriptor.center[0] = node.center.x;
+    descriptor.center[1] = node.center.y;
+    descriptor.center[2] = node.center.z;
+    descriptor.halfSize = node.halfSize;
+    descriptor.radius = node.radius;
+    descriptor.spatialKey = node.spatialKey;
+    descriptor.patchId = patch.patchId;
+    descriptor.particleCount =
+        static_cast<std::uint64_t>(node.particleCount());
+    descriptor.topologyEpoch = topologyEpoch;
+    descriptor.sourceRank = patch.ownerRank;
+    descriptor.isLeaf = node.isLeaf() ? 1 : 0;
+    descriptor.childMask = static_cast<int>(node.childMask);
+    return descriptor;
+}
+
+bool FmmPatchLetPlan::admissible(const FmmNode& target,
+                                 const FmmRemoteNodeDescriptor& source,
+                                 double thetaCritical)
+{
+    const Vector3D delta = target.center - source.centerVector();
+    const double distanceSquared = delta.x * delta.x + delta.y * delta.y +
+                                   delta.z * delta.z;
+    const double radiusSum = nodeRadius(target) + descriptorRadius(source);
+    if(distanceSquared <= radiusSum * radiusSum)
+        return false;
+    const double distance = std::sqrt(distanceSquared);
+    return distance > 0.0 && radiusSum <= thetaCritical * distance;
+}
+
+bool FmmPatchLetPlan::m2pAdmissible(
+    const FmmNode& target,
+    const FmmRemoteNodeDescriptor& source,
+    const std::vector<std::size_t>& particleOrder,
+    const std::vector<Vector3D>& positions,
+    double thetaCritical)
+{
+    if(!target.isLeaf() || target.particleCount() == 0)
+        return false;
+    const Vector3D sourceCenter = source.centerVector();
+    const double sourceRadius = descriptorRadius(source);
+    for(std::size_t k = target.particleBegin; k < target.particleEnd; ++k)
+    {
+        const Vector3D delta = positions[particleOrder[k]] - sourceCenter;
+        const double distanceSquared =
+            delta.x * delta.x + delta.y * delta.y + delta.z * delta.z;
+        if(!(distanceSquared > 0.0) ||
+           sourceRadius > thetaCritical * std::sqrt(distanceSquared))
+            return false;
+    }
+    return true;
+}
+
+FmmNode FmmPatchLetPlan::sourceNodeFromDescriptor(
+    const FmmRemoteNodeDescriptor& descriptor,
+    const RemoteRootGeometry& root)
+{
+    FmmNode node;
+    node.center = descriptor.centerVector();
+    node.halfSize = descriptor.halfSize;
+    node.radius = descriptorRadius(descriptor);
+    node.spatialKey = descriptor.spatialKey;
+    applyRemoteLatticeMetadata(root.latticeId, root.center, root.halfUnits,
+                               descriptor.spatialKey, node);
+    return node;
+}
+
+std::size_t FmmPatchLetPlan::particlePayloadCapacity(
+    std::size_t currentCount) const
+{
+    if(!(particlePayloadSlackFactor_ >= 1.0) ||
+       !std::isfinite(particlePayloadSlackFactor_))
+        throw UniversalError(
+            "FmmPatchLetPlan: invalid particle payload slack factor");
+
+    const long double scaled = std::ceil(
+        static_cast<long double>(currentCount) *
+        static_cast<long double>(particlePayloadSlackFactor_));
+    if(!std::isfinite(static_cast<double>(scaled)) ||
+       scaled > static_cast<long double>(
+           std::numeric_limits<std::size_t>::max()))
+        throw UniversalError(
+            "FmmPatchLetPlan: particle payload capacity overflow");
+
+    std::size_t result = std::max(
+        maxParticlePayloadCount_, static_cast<std::size_t>(scaled));
+    result = std::max(result, currentCount);
+    if(particlePayloadSlackCount_ >
+       std::numeric_limits<std::size_t>::max() - currentCount)
+        throw UniversalError(
+            "FmmPatchLetPlan: particle payload additive slack overflow");
+    result = std::max(result, currentCount + particlePayloadSlackCount_);
+    return result;
+}
+
+std::size_t FmmPatchLetPlan::particleWireBytes() const
+{
+    return compactParticlePayload_ ? sizeof(FmmCompactPatchWireParticle) :
+                                     sizeof(FmmPatchWireParticle);
+}
+
+std::size_t FmmPatchLetPlan::sourceRecordBytes(
+    const SourceIdentity& source) const
+{
+    const FmmPatchKey patch = std::get<0>(source);
+    const std::uint64_t spatialKey = std::get<1>(source);
+    const int kind = std::get<2>(source);
+    const auto patchIt = remoteDescriptors_.find(patch);
+    if(patchIt == remoteDescriptors_.end())
+        throw UniversalError(
+            "FmmPatchLetPlan::sourceRecordBytes: missing remote patch");
+    const auto nodeIt = patchIt->second.find(spatialKey);
+    if(nodeIt == patchIt->second.end())
+        throw UniversalError(
+            "FmmPatchLetPlan::sourceRecordBytes: missing remote node");
+
+    std::size_t payload = 0;
+    if(kind == static_cast<int>(FmmSubscriptionKind::Multipole))
+    {
+        payload = checkedMultiply(multipoleCoefficientCount_, sizeof(double),
+                                  "FmmPatchLetPlan: multipole byte overflow");
+    }
+    else if(kind == static_cast<int>(FmmSubscriptionKind::Particles))
+    {
+        if(nodeIt->second.particleCount > static_cast<std::uint64_t>(
+               std::numeric_limits<std::size_t>::max()))
+            throw UniversalError(
+                "FmmPatchLetPlan: particle count exceeds size_t");
+        const std::size_t currentCount =
+            static_cast<std::size_t>(nodeIt->second.particleCount);
+        std::size_t plannedCount = particlePayloadCapacity(currentCount);
+        const auto retained = sourceParticlePayloadCaps_.find(
+            SourceIdentity(patch, spatialKey, kind));
+        if(retained != sourceParticlePayloadCaps_.end())
+            plannedCount = std::max(plannedCount, retained->second);
+        payload = checkedMultiply(
+            plannedCount, particleWireBytes(),
+            "FmmPatchLetPlan: particle byte overflow");
+    }
+    else
+    {
+        throw UniversalError("FmmPatchLetPlan: invalid source kind");
+    }
+    return checkedAdd(sizeof(FmmPayloadRecordHeader), payload,
+                      "FmmPatchLetPlan: source record byte overflow");
+}
+
+std::size_t FmmPatchLetPlan::sourceRecordBytes(
+    const SourceRecord& source) const
+{
+    std::size_t payload = 0;
+    if(source.kind == static_cast<int>(FmmSubscriptionKind::Multipole))
+    {
+        payload = checkedMultiply(multipoleCoefficientCount_, sizeof(double),
+                                  "FmmPatchLetPlan: multipole byte overflow");
+    }
+    else if(source.kind == static_cast<int>(FmmSubscriptionKind::Particles))
+    {
+        if(source.particlePayloadCapacity == 0)
+            throw UniversalError(
+                "FmmPatchLetPlan: particle source has zero payload capacity");
+        payload = checkedMultiply(
+            source.particlePayloadCapacity, particleWireBytes(),
+            "FmmPatchLetPlan: particle byte overflow");
+    }
+    else
+    {
+        throw UniversalError("FmmPatchLetPlan: invalid source kind");
+    }
+    return checkedAdd(sizeof(FmmPayloadRecordHeader), payload,
+                      "FmmPatchLetPlan: source record byte overflow");
+}
+
+std::size_t FmmPatchLetPlan::ensureSourceRecord(
+    std::size_t wave,
+    const SourceIdentity& identity,
+    std::map<WaveSourceIdentity, std::uint32_t>& sourceIndexByWave)
+{
+    const WaveSourceIdentity waveIdentity(wave, identity);
+    const auto found = sourceIndexByWave.find(waveIdentity);
+    if(found != sourceIndexByWave.end())
+        return found->second;
+    if(sources_.size() >= static_cast<std::size_t>(
+            std::numeric_limits<std::uint32_t>::max()))
+        throw UniversalError("FmmPatchLetPlan: too many wave source records");
+
+    const FmmPatchKey patch = std::get<0>(identity);
+    const std::uint64_t spatialKey = std::get<1>(identity);
+    const int kind = std::get<2>(identity);
+    const auto patchIt = remoteDescriptors_.find(patch);
+    if(patchIt == remoteDescriptors_.end())
+        throw UniversalError("FmmPatchLetPlan: missing source patch");
+    const auto descriptorIt = patchIt->second.find(spatialKey);
+    if(descriptorIt == patchIt->second.end())
+        throw UniversalError("FmmPatchLetPlan: missing source descriptor");
+    const auto rootIt = remoteRoots_.find(patch);
+    if(rootIt == remoteRoots_.end())
+        throw UniversalError("FmmPatchLetPlan: missing source lattice root");
+
+    SourceRecord record;
+    record.key.patch = patch;
+    record.key.spatialKey = spatialKey;
+    record.kind = kind;
+    record.wave = wave;
+    record.descriptor = descriptorIt->second;
+    if(kind == static_cast<int>(FmmSubscriptionKind::Particles))
+    {
+        if(record.descriptor.particleCount > static_cast<std::uint64_t>(
+               std::numeric_limits<std::size_t>::max()))
+            throw UniversalError(
+                "FmmPatchLetPlan: particle count exceeds size_t");
+        record.particlePayloadCapacity = particlePayloadCapacity(
+            static_cast<std::size_t>(record.descriptor.particleCount));
+        const auto retained = sourceParticlePayloadCaps_.find(identity);
+        if(retained != sourceParticlePayloadCaps_.end())
+            record.particlePayloadCapacity = std::max(
+                record.particlePayloadCapacity, retained->second);
+    }
+    record.sourceNode = sourceNodeFromDescriptor(record.descriptor,
+                                                 rootIt->second);
+    const std::uint32_t index = static_cast<std::uint32_t>(sources_.size());
+    sources_.push_back(record);
+    sourceIndexByWave.emplace(waveIdentity, index);
+    return index;
+}
+
+void FmmPatchLetPlan::buildWaveRanges()
+{
+    m2lWaveRanges_.assign(waveCount_, std::make_pair(std::size_t(0),
+                                                     std::size_t(0)));
+    p2pWaveRanges_.assign(waveCount_, std::make_pair(std::size_t(0),
+                                                     std::size_t(0)));
+    m2pWaveRanges_.assign(waveCount_, std::make_pair(std::size_t(0),
+                                                     std::size_t(0)));
+
+    std::stable_sort(m2lInteractions_.begin(), m2lInteractions_.end(),
+        [&](const FmmPatchLetM2LInteraction& first,
+            const FmmPatchLetM2LInteraction& second) {
+            const std::size_t firstWave = sources_[first.sourceIndex].wave;
+            const std::size_t secondWave = sources_[second.sourceIndex].wave;
+            return std::tie(firstWave, first.targetPatchIndex,
+                            first.targetNode, first.sourceIndex) <
+                   std::tie(secondWave, second.targetPatchIndex,
+                            second.targetNode, second.sourceIndex);
+        });
+    std::stable_sort(p2pInteractions_.begin(), p2pInteractions_.end(),
+        [&](const FmmPatchLetP2PInteraction& first,
+            const FmmPatchLetP2PInteraction& second) {
+            const std::size_t firstWave = sources_[first.sourceIndex].wave;
+            const std::size_t secondWave = sources_[second.sourceIndex].wave;
+            return std::tie(firstWave, first.targetPatchIndex,
+                            first.targetNode, first.sourceIndex) <
+                   std::tie(secondWave, second.targetPatchIndex,
+                            second.targetNode, second.sourceIndex);
+        });
+    std::stable_sort(m2pInteractions_.begin(), m2pInteractions_.end(),
+        [&](const FmmPatchLetM2PInteraction& first,
+            const FmmPatchLetM2PInteraction& second) {
+            const std::size_t firstWave = sources_[first.sourceIndex].wave;
+            const std::size_t secondWave = sources_[second.sourceIndex].wave;
+            return std::tie(firstWave, first.sourceIndex,
+                            first.targetPatchIndex, first.targetNode) <
+                   std::tie(secondWave, second.sourceIndex,
+                            second.targetPatchIndex, second.targetNode);
+        });
+
+    std::size_t cursor = 0;
+    for(std::size_t wave = 0; wave < waveCount_; ++wave)
+    {
+        const std::size_t begin = cursor;
+        while(cursor < m2lInteractions_.size() &&
+              sources_[m2lInteractions_[cursor].sourceIndex].wave == wave)
+            ++cursor;
+        m2lWaveRanges_[wave] = std::make_pair(begin, cursor);
+    }
+    if(cursor != m2lInteractions_.size())
+        throw UniversalError("FmmPatchLetPlan: invalid M2L wave ranges");
+
+    cursor = 0;
+    for(std::size_t wave = 0; wave < waveCount_; ++wave)
+    {
+        const std::size_t begin = cursor;
+        while(cursor < p2pInteractions_.size() &&
+              sources_[p2pInteractions_[cursor].sourceIndex].wave == wave)
+            ++cursor;
+        p2pWaveRanges_[wave] = std::make_pair(begin, cursor);
+    }
+    if(cursor != p2pInteractions_.size())
+        throw UniversalError("FmmPatchLetPlan: invalid P2P wave ranges");
+
+    cursor = 0;
+    for(std::size_t wave = 0; wave < waveCount_; ++wave)
+    {
+        const std::size_t begin = cursor;
+        while(cursor < m2pInteractions_.size() &&
+              sources_[m2pInteractions_[cursor].sourceIndex].wave == wave)
+            ++cursor;
+        m2pWaveRanges_[wave] = std::make_pair(begin, cursor);
+    }
+    if(cursor != m2pInteractions_.size())
+        throw UniversalError("FmmPatchLetPlan: invalid M2P wave ranges");
+}
+
+void FmmPatchLetPlan::build(
+    const FmmPatchForest& forest,
+    const std::vector<FmmPatchRootDescriptor>& globalDescriptors,
+    const FmmProcessPairPlan& processPlan,
+    double thetaCritical,
+    std::uint64_t topologyEpoch,
+    std::size_t maxLetWaveBytes,
+    std::size_t maxTargetPatchesPerWave,
+    std::size_t multipoleCoefficientCount,
+    std::size_t maxParticlePayloadCount,
+    double particlePayloadSlackFactor,
+    std::size_t particlePayloadSlackCount,
+    bool enableLeafM2P,
+    bool compactParticlePayload,
+    bool sharePayloadsWithinNode,
+    std::size_t payloadHandlersPerNode,
+    const MPI_Comm& comm,
+    FmmSolveStats& stats,
+    bool reuseUnaffectedTargetSubplans,
+    bool processTopologyRebuilt)
+{
+    const Clock::time_point buildStart = Clock::now();
+    if(!(thetaCritical > 0.0) || thetaCritical > 1.0 ||
+       !std::isfinite(thetaCritical))
+        throw UniversalError("FmmPatchLetPlan::build: invalid theta");
+    if(maxTargetPatchesPerWave == 0 || multipoleCoefficientCount == 0 ||
+       maxParticlePayloadCount == 0 ||
+       !(particlePayloadSlackFactor >= 1.0) ||
+       !std::isfinite(particlePayloadSlackFactor))
+        throw UniversalError("FmmPatchLetPlan::build: invalid wave configuration");
+
+    // Kept in the API for configuration compatibility. Patch waves are now
+    // source-centric: a remote payload is assigned to exactly one wave and may
+    // feed any number of target patches without retransmission.
+    (void) maxTargetPatchesPerWave;
+
+    std::map<FmmPatchKey, CachedTargetSubplan> previousTargetSubplans;
+    std::map<FmmPatchKey, std::uint64_t> previousSourceTopologyHashes;
+    std::map<FmmPatchKey, std::set<FmmPatchKey>>
+        previousTargetsDependingOnSourcePatch;
+    if(reuseUnaffectedTargetSubplans && initialized_)
+    {
+        previousTargetSubplans.swap(targetSubplans_);
+        previousSourceTopologyHashes.swap(sourceTopologyHashes_);
+        previousTargetsDependingOnSourcePatch.swap(
+            targetsDependingOnSourcePatch_);
+        stats.letBuildStorageReused = true;
+    }
+    else
+    {
+        targetSubplans_.clear();
+        sourceTopologyHashes_.clear();
+        targetsDependingOnSourcePatch_.clear();
+        reuseUnaffectedTargetSubplans = false;
+    }
+
+    comm_ = comm;
+    topologyEpoch_ = topologyEpoch;
+    maxLetWaveBytes_ = maxLetWaveBytes;
+    thetaCritical_ = thetaCritical;
+    multipoleCoefficientCount_ = multipoleCoefficientCount;
+    maxParticlePayloadCount_ = maxParticlePayloadCount;
+    particlePayloadSlackFactor_ = particlePayloadSlackFactor;
+    particlePayloadSlackCount_ = particlePayloadSlackCount;
+    compactParticlePayload_ = compactParticlePayload;
+    sharePayloadsWithinNode_ = sharePayloadsWithinNode;
+    configuredNodeHandlerCount_ = payloadHandlersPerNode;
+    if(sharePayloadsWithinNode_ && configuredNodeHandlerCount_ == 0)
+        throw UniversalError(
+            "FmmPatchLetPlan::build: zero payload handlers per node");
+    MPI_Comm_rank(comm_, &rank_);
+    if(sharePayloadsWithinNode_)
+        initializeNodeSharing(comm_);
+
+    const std::size_t previousM2LInteractionCount = m2lInteractions_.size();
+    const std::size_t previousP2PInteractionCount = p2pInteractions_.size();
+    const std::size_t previousM2PInteractionCount = m2pInteractions_.size();
+
+    localNodeByPatch_.clear();
+    remoteRoots_.clear();
+    remoteDescriptors_.clear();
+    sources_.clear();
+    m2lInteractions_.clear();
+    p2pInteractions_.clear();
+    m2pInteractions_.clear();
+    m2lGeometries_.clear();
+    m2lWaveRanges_.clear();
+    p2pWaveRanges_.clear();
+    m2pWaveRanges_.clear();
+    subscriptionsReceived_.clear();
+    subscriptionsByWave_.clear();
+    localParticlePayloadCaps_.clear();
+    sourceParticlePayloadCaps_.clear();
+    waveCount_ = 1;
+    localWaveCount_ = 1;
+
+    localNodeByPatch_.resize(forest.patches().size());
+    for(std::size_t patchIndex = 0; patchIndex < forest.patches().size();
+        ++patchIndex)
+    {
+        const FmmLocalPatch& patch = forest.patches()[patchIndex];
+        auto& lookup = localNodeByPatch_[patchIndex];
+        lookup.reserve(patch.tree.nodes().size());
+        for(std::size_t nodeIndex = 0; nodeIndex < patch.tree.nodes().size();
+            ++nodeIndex)
+        {
+            if(!lookup.emplace(patch.tree.nodes()[nodeIndex].spatialKey,
+                               nodeIndex).second)
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: duplicate local spatial key");
+        }
+    }
+
+    FmmPatchKey previousGlobalPatch;
+    bool havePreviousGlobalPatch = false;
+    for(const FmmPatchRootDescriptor& descriptor : globalDescriptors)
+    {
+        const FmmPatchKey key{descriptor.ownerRank, descriptor.patchId};
+        if(!key.valid() || descriptor.active != 1 ||
+           descriptor.epoch != topologyEpoch_ ||
+           descriptor.magic != FMM_MPI_PACKET_MAGIC ||
+           descriptor.version != FMM_MPI_PACKET_VERSION)
+            throw UniversalError(
+                "FmmPatchLetPlan::build: invalid global patch descriptor");
+        if(havePreviousGlobalPatch && !(previousGlobalPatch < key))
+            throw UniversalError(
+                "FmmPatchLetPlan::build: global descriptors are not sorted and unique");
+        previousGlobalPatch = key;
+        havePreviousGlobalPatch = true;
+    }
+    const auto findGlobalDescriptor = [&](const FmmPatchKey& key)
+        -> const FmmPatchRootDescriptor* {
+        const auto found = std::lower_bound(
+            globalDescriptors.begin(), globalDescriptors.end(), key,
+            [](const FmmPatchRootDescriptor& descriptor,
+               const FmmPatchKey& search) {
+                return FmmPatchKey{descriptor.ownerRank, descriptor.patchId} <
+                       search;
+            });
+        if(found == globalDescriptors.end() ||
+           FmmPatchKey{found->ownerRank, found->patchId} != key)
+            return nullptr;
+        return &*found;
+    };
+
+    std::vector<int> peers = processPlan.letSourceRanks;
+    peers.insert(peers.end(), processPlan.letTargetRanks.begin(),
+                 processPlan.letTargetRanks.end());
+    std::sort(peers.begin(), peers.end());
+    peers.erase(std::unique(peers.begin(), peers.end()), peers.end());
+    stats.letCommunicatorReused = !exchange_.resetIfChanged(comm_, peers);
+
+    bool targetPatchSetChanged =
+        previousTargetSubplans.size() != forest.patches().size();
+    if(!targetPatchSetChanged)
+    {
+        for(const FmmLocalPatch& patch : forest.patches())
+        {
+            if(previousTargetSubplans.find(patch.key) ==
+               previousTargetSubplans.end())
+            {
+                targetPatchSetChanged = true;
+                break;
+            }
+        }
+    }
+    const bool sourceSetsMayHaveChanged =
+        !reuseUnaffectedTargetSubplans || processTopologyRebuilt ||
+        targetPatchSetChanged;
+    std::map<FmmPatchKey, std::set<FmmPatchKey>> currentSourcesByTarget;
+    if(sourceSetsMayHaveChanged)
+    {
+        for(const FmmPatchPair& patchPair : processPlan.remoteLetPairs)
+        {
+            if(patchPair.target.ownerRank == rank_)
+                currentSourcesByTarget[patchPair.target].insert(
+                    patchPair.source);
+        }
+    }
+
+    const Clock::time_point invalidationStart = Clock::now();
+    std::set<FmmPatchKey> relevantSourcePatches;
+    if(sourceSetsMayHaveChanged)
+    {
+        for(const auto& target : currentSourcesByTarget)
+            relevantSourcePatches.insert(
+                target.second.begin(), target.second.end());
+    }
+    else
+    {
+        for(const auto& source : previousTargetsDependingOnSourcePatch)
+            relevantSourcePatches.insert(source.first);
+    }
+
+    std::map<FmmPatchKey, std::uint64_t> currentSourceTopologyHashes;
+    for(const FmmPatchKey& sourcePatch : relevantSourcePatches)
+    {
+        const FmmPatchRootDescriptor* descriptor =
+            findGlobalDescriptor(sourcePatch);
+        if(descriptor != nullptr)
+            currentSourceTopologyHashes.emplace(
+                sourcePatch, descriptor->topologyHash);
+    }
+
+    std::set<FmmPatchKey> generationKeys = relevantSourcePatches;
+    for(const auto& previous : previousSourceTopologyHashes)
+        generationKeys.insert(previous.first);
+    std::set<FmmPatchKey> changedSourcePatches;
+    if(reuseUnaffectedTargetSubplans)
+    {
+        for(const FmmPatchKey& sourcePatch : generationKeys)
+        {
+            ++stats.letSourceGenerationCheckCount;
+            const auto currentHash =
+                currentSourceTopologyHashes.find(sourcePatch);
+            const auto previousHash =
+                previousSourceTopologyHashes.find(sourcePatch);
+            if(currentHash == currentSourceTopologyHashes.end() ||
+               previousHash == previousSourceTopologyHashes.end() ||
+               currentHash->second != previousHash->second)
+                changedSourcePatches.insert(sourcePatch);
+        }
+    }
+    stats.letChangedSourcePatchCount = static_cast<std::uint64_t>(
+        changedSourcePatches.size());
+
+    std::set<FmmPatchKey> sourceInvalidatedTargets;
+    for(const FmmPatchKey& sourcePatch : changedSourcePatches)
+    {
+        ++stats.letReverseDependencyLookupCount;
+        const auto dependents = previousTargetsDependingOnSourcePatch.find(
+            sourcePatch);
+        if(dependents != previousTargetsDependingOnSourcePatch.end())
+            sourceInvalidatedTargets.insert(
+                dependents->second.begin(), dependents->second.end());
+    }
+    stats.letReverseDependencyTargetCount = static_cast<std::uint64_t>(
+        sourceInvalidatedTargets.size());
+
+    std::set<FmmPatchKey> reusableTargets;
+    std::vector<PendingInteraction> terminalM2L;
+    std::vector<PendingInteraction> terminalP2P;
+    std::vector<PendingInteraction> terminalM2P;
+    terminalM2L.reserve(previousM2LInteractionCount);
+    terminalP2P.reserve(previousP2PInteractionCount);
+    terminalM2P.reserve(previousM2PInteractionCount);
+    for(std::size_t targetPatchIndex = 0;
+        targetPatchIndex < forest.patches().size(); ++targetPatchIndex)
+    {
+        const FmmLocalPatch& targetPatch = forest.patches()[targetPatchIndex];
+        const auto previous = previousTargetSubplans.find(targetPatch.key);
+        const std::set<FmmPatchKey> emptySources;
+        const auto sources = currentSourcesByTarget.find(targetPatch.key);
+        const std::set<FmmPatchKey>& currentSources = sourceSetsMayHaveChanged ?
+            (sources == currentSourcesByTarget.end() ? emptySources :
+                                                       sources->second) :
+            (previous == previousTargetSubplans.end() ? emptySources :
+                                                       previous->second.sourcePatches);
+        const bool sourceSetChanged =
+            previous != previousTargetSubplans.end() &&
+            previous->second.sourcePatches != currentSources;
+        const bool sourceChanged = sourceSetChanged ||
+            sourceInvalidatedTargets.count(targetPatch.key) != 0;
+        bool reusable = reuseUnaffectedTargetSubplans &&
+            previous != previousTargetSubplans.end() &&
+            !targetPatch.rootGeometryChanged &&
+            !targetPatch.leafTopologyChanged &&
+            previous->second.targetTopologyHash == targetPatch.topologyHash &&
+            !sourceChanged;
+        // M2L and P2P terminals remain conservative while the retained target
+        // node geometry stays inside its persistent envelope. M2P is different:
+        // its acceptance test is pointwise at the current target particles.
+        // A moving mesh can therefore invalidate an M2P terminal without
+        // changing the target tree topology or its conservative node radius.
+        // Recheck every cached M2P terminal before accepting the target subplan.
+        if(reusable && !previous->second.m2p.empty())
+        {
+            for(const CachedTerminal& cached : previous->second.m2p)
+            {
+                const auto targetNode =
+                    localNodeByPatch_[targetPatchIndex].find(
+                        cached.targetSpatialKey);
+                const auto cachedSource =
+                    previous->second.sources.find(cached.source);
+                const bool multipoleSource =
+                    std::get<2>(cached.source) ==
+                    static_cast<int>(FmmSubscriptionKind::Multipole);
+                if(targetNode == localNodeByPatch_[targetPatchIndex].end() ||
+                   cachedSource == previous->second.sources.end() ||
+                   !multipoleSource ||
+                   !m2pAdmissible(
+                       targetPatch.tree.nodes()[targetNode->second],
+                       cachedSource->second.descriptor,
+                       targetPatch.tree.particleOrder(),
+                       targetPatch.positions, thetaCritical))
+                {
+                    reusable = false;
+                    break;
+                }
+            }
+        }
+        if(!reusable)
+        {
+            ++stats.letTargetSubplansRebuilt;
+            if(sourceChanged)
+                ++stats.letSourceTriggeredInvalidations;
+            continue;
+        }
+
+        reusableTargets.insert(targetPatch.key);
+        ++stats.letTargetSubplansReused;
+        ++stats.letDescriptorTraversalSkippedCount;
+        for(const auto& source : previous->second.sources)
+        {
+            CachedSource cached = source.second;
+            cached.descriptor.topologyEpoch = topologyEpoch_;
+            remoteRoots_[std::get<0>(source.first)] = cached.root;
+            remoteDescriptors_[std::get<0>(source.first)][
+                std::get<1>(source.first)] = cached.descriptor;
+        }
+        const auto appendCached = [&](const CachedTerminal& cached,
+                                      std::vector<PendingInteraction>& output) {
+            const auto targetNode = localNodeByPatch_[targetPatchIndex].find(
+                cached.targetSpatialKey);
+            if(targetNode == localNodeByPatch_[targetPatchIndex].end())
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: cached target node disappeared");
+            output.push_back(PendingInteraction{
+                targetPatchIndex, targetNode->second,
+                std::get<0>(cached.source), std::get<1>(cached.source),
+                std::get<2>(cached.source)});
+        };
+        for(const CachedTerminal& cached : previous->second.m2l)
+            appendCached(cached, terminalM2L);
+        for(const CachedTerminal& cached : previous->second.p2p)
+            appendCached(cached, terminalP2P);
+        for(const CachedTerminal& cached : previous->second.m2p)
+            appendCached(cached, terminalM2P);
+    }
+    stats.letInvalidationSeconds += elapsed(invalidationStart);
+    ++stats.letWavePlanRebuildCount;
+
+    std::vector<PendingPair> pending;
+    for(const FmmPatchPair& patchPair : processPlan.remoteLetPairs)
+    {
+        if(patchPair.target.ownerRank != rank_ ||
+           reusableTargets.count(patchPair.target) != 0)
+            continue;
+        const std::size_t targetPatchIndex =
+            forest.findPatch(patchPair.target.patchId);
+        if(targetPatchIndex == std::numeric_limits<std::size_t>::max())
+            throw UniversalError(
+                "FmmPatchLetPlan::build: missing local target patch");
+        const FmmLocalPatch& targetPatch =
+            forest.patches()[targetPatchIndex];
+        if(targetPatch.tree.nodes().empty())
+            throw UniversalError(
+                "FmmPatchLetPlan::build: target patch has no tree");
+
+        const FmmPatchRootDescriptor* rootPointer =
+            findGlobalDescriptor(patchPair.source);
+        if(rootPointer == nullptr)
+            throw UniversalError(
+                "FmmPatchLetPlan::build: missing remote source patch descriptor");
+        const FmmPatchRootDescriptor& root = *rootPointer;
+        RemoteRootGeometry remoteRoot;
+        remoteRoot.latticeId = root.latticeId;
+        remoteRoot.center[0] = root.latticeCenter[0];
+        remoteRoot.center[1] = root.latticeCenter[1];
+        remoteRoot.center[2] = root.latticeCenter[2];
+        remoteRoot.halfUnits = root.latticeHalfUnits;
+        remoteRoots_[patchPair.source] = remoteRoot;
+
+        FmmRemoteNodeDescriptor descriptor;
+        descriptor.center[0] = root.center[0];
+        descriptor.center[1] = root.center[1];
+        descriptor.center[2] = root.center[2];
+        descriptor.halfSize = root.halfSize;
+        descriptor.radius = root.radius;
+        descriptor.spatialKey = 1;
+        descriptor.patchId = root.patchId;
+        descriptor.particleCount = root.particleCount;
+        descriptor.topologyEpoch = topologyEpoch_;
+        descriptor.sourceRank = root.ownerRank;
+        descriptor.isLeaf = root.rootLeaf;
+        descriptor.childMask = root.childMask;
+        if(!validRemoteDescriptor(descriptor))
+            throw UniversalError(
+                "FmmPatchLetPlan::build: invalid remote root descriptor");
+        remoteDescriptors_[patchPair.source][1] = descriptor;
+        pending.push_back(PendingPair{
+            targetPatchIndex, 0, patchPair.source, 1});
+    }
+
+    const Clock::time_point descriptorStart = Clock::now();
+    int descriptorRound = 0;
+    while(true)
+    {
+        if(++descriptorRound > FMM_MAX_TREE_DEPTH + 2)
+            throw UniversalError(
+                "FmmPatchLetPlan::build: descriptor traversal exceeded maximum depth");
+
+        std::vector<PendingPair> work;
+        work.swap(pending);
+        std::vector<PendingPair> blocked;
+        std::unordered_map<int,
+            std::set<std::pair<std::uint64_t, std::uint64_t>>> requestSets;
+
+        while(!work.empty())
+        {
+            const PendingPair pair = work.back();
+            work.pop_back();
+            if(pair.targetPatchIndex >= forest.patches().size())
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: target patch index out of range");
+            const FmmLocalPatch& targetPatch =
+                forest.patches()[pair.targetPatchIndex];
+            if(pair.targetNode >= targetPatch.tree.nodes().size())
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: target node index out of range");
+            const FmmNode& target = targetPatch.tree.nodes()[pair.targetNode];
+
+            const auto patchIt = remoteDescriptors_.find(pair.sourcePatch);
+            if(patchIt == remoteDescriptors_.end())
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: missing remote patch cache");
+            const auto sourceIt = patchIt->second.find(pair.sourceKey);
+            if(sourceIt == patchIt->second.end())
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: missing remote descriptor");
+            const FmmRemoteNodeDescriptor& source = sourceIt->second;
+            if(source.topologyEpoch != topologyEpoch_ ||
+               source.sourceRank != pair.sourcePatch.ownerRank ||
+               source.patchId != pair.sourcePatch.patchId)
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: stale remote descriptor");
+
+            if(admissible(target, source, thetaCritical))
+            {
+                terminalM2L.push_back(PendingInteraction{
+                    pair.targetPatchIndex, pair.targetNode, pair.sourcePatch,
+                    pair.sourceKey,
+                    static_cast<int>(FmmSubscriptionKind::Multipole)});
+                continue;
+            }
+            if(enableLeafM2P && target.isLeaf() &&
+               m2pAdmissible(target, source,
+                             targetPatch.tree.particleOrder(),
+                             targetPatch.positions, thetaCritical))
+            {
+                terminalM2P.push_back(PendingInteraction{
+                    pair.targetPatchIndex, pair.targetNode, pair.sourcePatch,
+                    pair.sourceKey,
+                    static_cast<int>(FmmSubscriptionKind::Multipole)});
+                continue;
+            }
+            if(target.isLeaf() && source.isLeaf != 0)
+            {
+                terminalP2P.push_back(PendingInteraction{
+                    pair.targetPatchIndex, pair.targetNode, pair.sourcePatch,
+                    pair.sourceKey,
+                    static_cast<int>(FmmSubscriptionKind::Particles)});
+                continue;
+            }
+
+            const bool splitTarget = !target.isLeaf() &&
+                (source.isLeaf != 0 ||
+                 nodeRadius(target) >= descriptorRadius(source));
+            if(splitTarget)
+            {
+                for(int octant = 7; octant >= 0; --octant)
+                {
+                    const std::size_t child =
+                        targetPatch.tree.childIndex(target, octant);
+                    if(child != std::numeric_limits<std::size_t>::max())
+                        work.push_back(PendingPair{
+                            pair.targetPatchIndex, child, pair.sourcePatch,
+                            pair.sourceKey});
+                }
+                continue;
+            }
+
+            if(source.isLeaf != 0 || source.childMask == 0)
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: cannot split remote source");
+            bool haveAllChildren = true;
+            for(int octant = 0; octant < 8; ++octant)
+            {
+                if((source.childMask & (1 << octant)) == 0)
+                    continue;
+                const std::uint64_t childKey =
+                    (source.spatialKey << 3u) |
+                    static_cast<std::uint64_t>(octant);
+                if(patchIt->second.find(childKey) == patchIt->second.end())
+                    haveAllChildren = false;
+            }
+            if(!haveAllChildren)
+            {
+                requestSets[pair.sourcePatch.ownerRank].insert(
+                    std::make_pair(pair.sourcePatch.patchId,
+                                   pair.sourceKey));
+                blocked.push_back(pair);
+                continue;
+            }
+            for(int octant = 7; octant >= 0; --octant)
+            {
+                if((source.childMask & (1 << octant)) == 0)
+                    continue;
+                const std::uint64_t childKey =
+                    (source.spatialKey << 3u) |
+                    static_cast<std::uint64_t>(octant);
+                work.push_back(PendingPair{
+                    pair.targetPatchIndex, pair.targetNode,
+                    pair.sourcePatch, childKey});
+            }
+        }
+
+        unsigned long long localRequestCount = 0;
+        std::unordered_map<int, std::vector<char>> requestBuffers;
+        for(const auto& rankEntry : requestSets)
+        {
+            for(const auto& requestKey : rankEntry.second)
+            {
+                FmmDescriptorRequest request;
+                request.stamp = fmmPacketStamp(
+                    FmmPacketKind::DescriptorRequest, topologyEpoch_);
+                request.patchId = requestKey.first;
+                request.spatialKey = requestKey.second;
+                FmmPacketIO::appendPod(requestBuffers[rankEntry.first], request);
+                ++localRequestCount;
+            }
+        }
+        unsigned long long globalRequestCount = 0;
+        MPI_Allreduce(&localRequestCount, &globalRequestCount, 1,
+                      MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm_);
+        if(globalRequestCount == 0)
+        {
+            if(!blocked.empty())
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: blocked descriptor pairs without requests");
+            break;
+        }
+
+        FmmPeerExchangeResult receivedRequests = exchange_.exchangeBytes(
+            requestBuffers, &stats.bytesSent, &stats.bytesReceived);
+        std::unordered_map<int, std::vector<char>> replyBuffers;
+        for(const FmmReceivedMessage& message : receivedRequests.messages())
+        {
+            const FmmByteView view = receivedRequests.view(message);
+            std::size_t offset = 0;
+            while(offset < view.size)
+            {
+                const FmmDescriptorRequest request =
+                    FmmPacketIO::readPod<FmmDescriptorRequest>(view, offset);
+                validateFmmPacketStamp(
+                    request.stamp, FmmPacketKind::DescriptorRequest,
+                    topologyEpoch_,
+                    "FmmPatchLetPlan::build descriptor request");
+                const std::size_t localPatchIndex =
+                    forest.findPatch(request.patchId);
+                if(localPatchIndex == std::numeric_limits<std::size_t>::max())
+                    throw UniversalError(
+                        "FmmPatchLetPlan::build: request references missing local patch");
+                const FmmLocalPatch& patch =
+                    forest.patches()[localPatchIndex];
+                if(patch.key.ownerRank != rank_)
+                    throw UniversalError(
+                        "FmmPatchLetPlan::build: requested patch has wrong owner");
+                const auto nodeIt =
+                    localNodeByPatch_[localPatchIndex].find(request.spatialKey);
+                if(nodeIt == localNodeByPatch_[localPatchIndex].end())
+                    throw UniversalError(
+                        "FmmPatchLetPlan::build: request references missing local node");
+                const FmmNode& node = patch.tree.nodes()[nodeIt->second];
+                if(node.isLeaf())
+                    throw UniversalError(
+                        "FmmPatchLetPlan::build: received child request for leaf");
+
+                int childCount = 0;
+                for(int octant = 0; octant < 8; ++octant)
+                {
+                    if(patch.tree.childIndex(node, octant) !=
+                       std::numeric_limits<std::size_t>::max())
+                        ++childCount;
+                }
+                int ordinal = 0;
+                for(int octant = 0; octant < 8; ++octant)
+                {
+                    const std::size_t child =
+                        patch.tree.childIndex(node, octant);
+                    if(child == std::numeric_limits<std::size_t>::max())
+                        continue;
+                    FmmDescriptorReply reply;
+                    reply.stamp = fmmPacketStamp(
+                        FmmPacketKind::DescriptorReply, topologyEpoch_);
+                    reply.requestedParentKey = request.spatialKey;
+                    reply.child = descriptorForNode(
+                        patch.tree.nodes()[child], patch.key,
+                        topologyEpoch_);
+                    reply.childCount = childCount;
+                    reply.childOrdinal = ordinal++;
+                    FmmPacketIO::appendPod(replyBuffers[message.source], reply);
+                }
+            }
+        }
+        receivedRequests.releaseStorage();
+
+        FmmPeerExchangeResult receivedReplies = exchange_.exchangeBytes(
+            replyBuffers, &stats.bytesSent, &stats.bytesReceived);
+        std::map<std::tuple<int, std::uint64_t, std::uint64_t>,
+                 std::pair<int, std::set<int>>> coverage;
+        for(const FmmReceivedMessage& message : receivedReplies.messages())
+        {
+            const FmmByteView view = receivedReplies.view(message);
+            std::size_t offset = 0;
+            while(offset < view.size)
+            {
+                const FmmDescriptorReply reply =
+                    FmmPacketIO::readPod<FmmDescriptorReply>(view, offset);
+                validateFmmPacketStamp(
+                    reply.stamp, FmmPacketKind::DescriptorReply,
+                    topologyEpoch_,
+                    "FmmPatchLetPlan::build descriptor reply");
+                if(reply.childCount <= 0 || reply.childCount > 8 ||
+                   reply.childOrdinal < 0 ||
+                   reply.childOrdinal >= reply.childCount ||
+                   reply.child.sourceRank != message.source ||
+                   reply.child.topologyEpoch != topologyEpoch_ ||
+                   !validRemoteDescriptor(reply.child) ||
+                   (reply.child.spatialKey >> 3u) !=
+                       reply.requestedParentKey)
+                    throw UniversalError(
+                        "FmmPatchLetPlan::build: malformed descriptor reply");
+                const auto requestRank = requestSets.find(message.source);
+                if(requestRank == requestSets.end() ||
+                   requestRank->second.count(std::make_pair(
+                       reply.child.patchId,
+                       reply.requestedParentKey)) == 0)
+                    throw UniversalError(
+                        "FmmPatchLetPlan::build: unsolicited descriptor reply");
+                const FmmPatchKey sourcePatch{
+                    message.source, reply.child.patchId};
+                const auto parentPatch =
+                    remoteDescriptors_.find(sourcePatch);
+                if(parentPatch == remoteDescriptors_.end())
+                    throw UniversalError(
+                        "FmmPatchLetPlan::build: missing descriptor parent patch");
+                const auto parent = parentPatch->second.find(
+                    reply.requestedParentKey);
+                if(parent == parentPatch->second.end() ||
+                   parent->second.isLeaf != 0)
+                    throw UniversalError(
+                        "FmmPatchLetPlan::build: descriptor reply has invalid parent");
+                const unsigned int childBit = 1u <<
+                    static_cast<unsigned int>(reply.child.spatialKey & 7u);
+                if((static_cast<unsigned int>(parent->second.childMask) &
+                    childBit) == 0 ||
+                   bitCount(static_cast<unsigned int>(
+                       parent->second.childMask)) != reply.childCount)
+                    throw UniversalError(
+                        "FmmPatchLetPlan::build: descriptor reply contradicts parent");
+
+                auto& item = coverage[std::make_tuple(
+                    message.source, reply.child.patchId,
+                    reply.requestedParentKey)];
+                if(item.first == 0)
+                    item.first = reply.childCount;
+                if(item.first != reply.childCount ||
+                   !item.second.insert(reply.childOrdinal).second)
+                    throw UniversalError(
+                        "FmmPatchLetPlan::build: inconsistent descriptor reply set");
+                const auto inserted =
+                    remoteDescriptors_[sourcePatch].emplace(
+                        reply.child.spatialKey, reply.child);
+                if(!inserted.second)
+                {
+                    FmmRemoteNodeDescriptor& old =
+                        inserted.first->second;
+                    // Cached descriptors can legitimately carry the previous
+                    // solve's subtree occupancy. Particle count is payload
+                    // metadata, not descriptor topology: persistent leaves may
+                    // gain or lose particles while their spatial key, geometry,
+                    // child mask and topology generation remain unchanged.
+                    // Validate the immutable descriptor contract, then replace
+                    // the cached record with the current owner's authoritative
+                    // descriptor so later wave sizing and cache refresh use the
+                    // current occupancy.
+                    if(old.center[0] != reply.child.center[0] ||
+                       old.center[1] != reply.child.center[1] ||
+                       old.center[2] != reply.child.center[2] ||
+                       old.halfSize != reply.child.halfSize ||
+                       old.radius != reply.child.radius ||
+                       old.spatialKey != reply.child.spatialKey ||
+                       old.patchId != reply.child.patchId ||
+                       old.topologyEpoch != reply.child.topologyEpoch ||
+                       old.sourceRank != reply.child.sourceRank ||
+                       old.isLeaf != reply.child.isLeaf ||
+                       old.childMask != reply.child.childMask)
+                        throw UniversalError(
+                            "FmmPatchLetPlan::build: inconsistent duplicate descriptor");
+                    old = reply.child;
+                }
+            }
+        }
+        receivedReplies.releaseStorage();
+        for(const auto& requestRank : requestSets)
+        {
+            for(const auto& requestKey : requestRank.second)
+            {
+                const auto found = coverage.find(std::make_tuple(
+                    requestRank.first, requestKey.first,
+                    requestKey.second));
+                if(found == coverage.end() ||
+                   found->second.first !=
+                       static_cast<int>(found->second.second.size()))
+                    throw UniversalError(
+                        "FmmPatchLetPlan::build: incomplete descriptor reply set");
+            }
+        }
+        pending.swap(blocked);
+    }
+    stats.letDescriptorTraversalSeconds += elapsed(descriptorStart);
+
+    const auto interactionLess = [](const PendingInteraction& first,
+                                    const PendingInteraction& second) {
+        return std::tie(first.targetPatchIndex, first.targetNode,
+                        first.sourcePatch, first.sourceKey, first.kind) <
+               std::tie(second.targetPatchIndex, second.targetNode,
+                        second.sourcePatch, second.sourceKey, second.kind);
+    };
+    std::sort(terminalM2L.begin(), terminalM2L.end(), interactionLess);
+    std::sort(terminalP2P.begin(), terminalP2P.end(), interactionLess);
+    std::sort(terminalM2P.begin(), terminalM2P.end(), interactionLess);
+    if(std::adjacent_find(terminalM2L.begin(), terminalM2L.end(),
+        [&](const PendingInteraction& first,
+            const PendingInteraction& second) {
+            return !interactionLess(first, second) &&
+                   !interactionLess(second, first);
+        }) != terminalM2L.end())
+        throw UniversalError(
+            "FmmPatchLetPlan::build: duplicate M2L interaction");
+    if(std::adjacent_find(terminalP2P.begin(), terminalP2P.end(),
+        [&](const PendingInteraction& first,
+            const PendingInteraction& second) {
+            return !interactionLess(first, second) &&
+                   !interactionLess(second, first);
+        }) != terminalP2P.end())
+        throw UniversalError(
+            "FmmPatchLetPlan::build: duplicate P2P interaction");
+    if(std::adjacent_find(terminalM2P.begin(), terminalM2P.end(),
+        [&](const PendingInteraction& first,
+            const PendingInteraction& second) {
+            return !interactionLess(first, second) &&
+                   !interactionLess(second, first);
+        }) != terminalM2P.end())
+        throw UniversalError(
+            "FmmPatchLetPlan::build: duplicate M2P interaction");
+
+    const Clock::time_point compactionStart = Clock::now();
+    const std::size_t terminalCount = checkedAdd(
+        checkedAdd(terminalM2L.size(), terminalP2P.size(),
+                   "FmmPatchLetPlan::build: terminal count overflow"),
+        terminalM2P.size(),
+        "FmmPatchLetPlan::build: terminal count overflow");
+    std::vector<FmmRemoteNodeKey> retainedDescriptors;
+    retainedDescriptors.reserve(terminalCount);
+    for(const PendingInteraction& interaction : terminalM2L)
+        retainedDescriptors.push_back(FmmRemoteNodeKey{
+            interaction.sourcePatch, interaction.sourceKey});
+    for(const PendingInteraction& interaction : terminalP2P)
+        retainedDescriptors.push_back(FmmRemoteNodeKey{
+            interaction.sourcePatch, interaction.sourceKey});
+    for(const PendingInteraction& interaction : terminalM2P)
+        retainedDescriptors.push_back(FmmRemoteNodeKey{
+            interaction.sourcePatch, interaction.sourceKey});
+    std::sort(retainedDescriptors.begin(), retainedDescriptors.end());
+    retainedDescriptors.erase(
+        std::unique(retainedDescriptors.begin(), retainedDescriptors.end()),
+        retainedDescriptors.end());
+    for(auto patchIt = remoteDescriptors_.begin();
+        patchIt != remoteDescriptors_.end();)
+    {
+        auto& descriptors = patchIt->second;
+        for(auto nodeIt = descriptors.begin(); nodeIt != descriptors.end();)
+        {
+            if(!std::binary_search(
+                   retainedDescriptors.begin(), retainedDescriptors.end(),
+                   FmmRemoteNodeKey{patchIt->first, nodeIt->first}))
+                nodeIt = descriptors.erase(nodeIt);
+            else
+                ++nodeIt;
+        }
+        descriptors.rehash(0);
+        if(descriptors.empty())
+            patchIt = remoteDescriptors_.erase(patchIt);
+        else
+            ++patchIt;
+    }
+    for(auto rootIt = remoteRoots_.begin(); rootIt != remoteRoots_.end();)
+    {
+        if(remoteDescriptors_.find(rootIt->first) == remoteDescriptors_.end())
+            rootIt = remoteRoots_.erase(rootIt);
+        else
+            ++rootIt;
+    }
+    stats.letPruneCompactSeconds += elapsed(compactionStart);
+
+    targetSubplans_.clear();
+    for(const FmmLocalPatch& patch : forest.patches())
+    {
+        if(reusableTargets.count(patch.key) != 0)
+        {
+            const auto previous = previousTargetSubplans.find(patch.key);
+            if(previous == previousTargetSubplans.end())
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: reusable target cache disappeared");
+            CachedTargetSubplan subplan = std::move(previous->second);
+            subplan.targetPatch = patch.key;
+            subplan.targetTopologyHash = patch.topologyHash;
+            for(auto& source : subplan.sources)
+            {
+                const FmmPatchKey sourcePatch = std::get<0>(source.first);
+                const std::uint64_t sourceKey = std::get<1>(source.first);
+                const auto descriptorPatch = remoteDescriptors_.find(sourcePatch);
+                const auto root = remoteRoots_.find(sourcePatch);
+                if(descriptorPatch == remoteDescriptors_.end() ||
+                   root == remoteRoots_.end())
+                    throw UniversalError(
+                        "FmmPatchLetPlan::build: retained source geometry disappeared");
+                const auto descriptor = descriptorPatch->second.find(sourceKey);
+                if(descriptor == descriptorPatch->second.end())
+                    throw UniversalError(
+                        "FmmPatchLetPlan::build: retained source descriptor disappeared");
+                source.second.descriptor = descriptor->second;
+                source.second.root = root->second;
+            }
+            if(!targetSubplans_.emplace(
+                    patch.key, std::move(subplan)).second)
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: duplicate retained target cache");
+            continue;
+        }
+
+        CachedTargetSubplan subplan;
+        subplan.targetPatch = patch.key;
+        subplan.targetTopologyHash = patch.topologyHash;
+        if(sourceSetsMayHaveChanged)
+        {
+            const auto currentSources = currentSourcesByTarget.find(patch.key);
+            if(currentSources != currentSourcesByTarget.end())
+                subplan.sourcePatches = currentSources->second;
+        }
+        else
+        {
+            const auto previous = previousTargetSubplans.find(patch.key);
+            if(previous != previousTargetSubplans.end())
+                subplan.sourcePatches = previous->second.sourcePatches;
+        }
+        targetSubplans_.emplace(patch.key, std::move(subplan));
+    }
+    enum class CachedInteractionKind { M2L, P2P, M2P };
+    const auto cacheTerminal = [&](const PendingInteraction& interaction,
+                                   CachedInteractionKind kind) {
+        if(interaction.targetPatchIndex >= forest.patches().size())
+            throw UniversalError(
+                "FmmPatchLetPlan::build: cached target index out of range");
+        const FmmLocalPatch& targetPatch =
+            forest.patches()[interaction.targetPatchIndex];
+        if(interaction.targetNode >= targetPatch.tree.nodes().size())
+            throw UniversalError(
+                "FmmPatchLetPlan::build: cached target node out of range");
+        if(reusableTargets.count(targetPatch.key) != 0)
+            return;
+        const SourceIdentity identity(
+            interaction.sourcePatch, interaction.sourceKey, interaction.kind);
+        const auto descriptorPatch =
+            remoteDescriptors_.find(interaction.sourcePatch);
+        const auto root = remoteRoots_.find(interaction.sourcePatch);
+        if(descriptorPatch == remoteDescriptors_.end() ||
+           root == remoteRoots_.end())
+            throw UniversalError(
+                "FmmPatchLetPlan::build: missing cached source geometry");
+        const auto descriptor =
+            descriptorPatch->second.find(interaction.sourceKey);
+        if(descriptor == descriptorPatch->second.end())
+            throw UniversalError(
+                "FmmPatchLetPlan::build: missing cached source descriptor");
+        CachedTargetSubplan& subplan = targetSubplans_.at(targetPatch.key);
+        std::size_t cachedPayloadCapacity = 0;
+        if(interaction.kind ==
+           static_cast<int>(FmmSubscriptionKind::Particles))
+        {
+            if(descriptor->second.particleCount > static_cast<std::uint64_t>(
+                   std::numeric_limits<std::size_t>::max()))
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: cached particle count exceeds size_t");
+            cachedPayloadCapacity = particlePayloadCapacity(
+                static_cast<std::size_t>(descriptor->second.particleCount));
+        }
+        subplan.sources.emplace(identity, CachedSource{
+            descriptor->second, root->second, cachedPayloadCapacity});
+        CachedTerminal terminal;
+        terminal.targetSpatialKey =
+            targetPatch.tree.nodes()[interaction.targetNode].spatialKey;
+        terminal.source = identity;
+        if(kind == CachedInteractionKind::M2L)
+            subplan.m2l.push_back(terminal);
+        else if(kind == CachedInteractionKind::P2P)
+            subplan.p2p.push_back(terminal);
+        else
+            subplan.m2p.push_back(terminal);
+    };
+    for(const PendingInteraction& interaction : terminalM2L)
+        cacheTerminal(interaction, CachedInteractionKind::M2L);
+    for(const PendingInteraction& interaction : terminalP2P)
+        cacheTerminal(interaction, CachedInteractionKind::P2P);
+    for(const PendingInteraction& interaction : terminalM2P)
+        cacheTerminal(interaction, CachedInteractionKind::M2P);
+    for(const auto& target : targetSubplans_)
+    {
+        for(const auto& cached : target.second.sources)
+        {
+            if(std::get<2>(cached.first) !=
+               static_cast<int>(FmmSubscriptionKind::Particles))
+                continue;
+            if(cached.second.particlePayloadCapacity == 0)
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: cached particle capacity is zero");
+            std::size_t& retained = sourceParticlePayloadCaps_[cached.first];
+            retained = std::max(
+                retained, cached.second.particlePayloadCapacity);
+        }
+    }
+
+    targetsDependingOnSourcePatch_.clear();
+    std::uint64_t reverseDependencyEdges = 0;
+    for(const auto& target : targetSubplans_)
+    {
+        for(const FmmPatchKey& sourcePatch : target.second.sourcePatches)
+        {
+            if(reverseDependencyEdges ==
+               std::numeric_limits<std::uint64_t>::max())
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: reverse dependency edge overflow");
+            targetsDependingOnSourcePatch_[sourcePatch].insert(target.first);
+            ++reverseDependencyEdges;
+        }
+    }
+    stats.letReverseDependencyEdgeCount = reverseDependencyEdges;
+    sourceTopologyHashes_.swap(currentSourceTopologyHashes);
+    std::map<FmmPatchKey, CachedTargetSubplan>().swap(
+        previousTargetSubplans);
+    std::map<FmmPatchKey, std::uint64_t>().swap(
+        previousSourceTopologyHashes);
+    std::map<FmmPatchKey, std::set<FmmPatchKey>>().swap(
+        previousTargetsDependingOnSourcePatch);
+
+    std::vector<SourceIdentity> uniqueSources;
+    uniqueSources.reserve(terminalCount);
+    for(const PendingInteraction& interaction : terminalM2L)
+        uniqueSources.push_back(SourceIdentity(interaction.sourcePatch,
+                                               interaction.sourceKey,
+                                               interaction.kind));
+    for(const PendingInteraction& interaction : terminalP2P)
+        uniqueSources.push_back(SourceIdentity(interaction.sourcePatch,
+                                               interaction.sourceKey,
+                                               interaction.kind));
+    for(const PendingInteraction& interaction : terminalM2P)
+        uniqueSources.push_back(SourceIdentity(interaction.sourcePatch,
+                                               interaction.sourceKey,
+                                               interaction.kind));
+    std::sort(uniqueSources.begin(), uniqueSources.end());
+    uniqueSources.erase(
+        std::unique(uniqueSources.begin(), uniqueSources.end()),
+        uniqueSources.end());
+
+    std::map<SourceIdentity, std::size_t> waveBySource;
+    std::size_t wave = 0;
+    std::size_t waveBytes = 0;
+
+    bool localWavePlanOk = true;
+    std::string localWavePlanError;
+    try
+    {
+        for(const SourceIdentity& source : uniqueSources)
+        {
+            const std::size_t recordBytes = sourceRecordBytes(source);
+            if(maxLetWaveBytes_ != 0 && recordBytes > maxLetWaveBytes_)
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: one payload record exceeds maxLetWaveBytes");
+            if(maxLetWaveBytes_ != 0 && waveBytes != 0 &&
+               recordBytes > maxLetWaveBytes_ - waveBytes)
+            {
+                ++wave;
+                waveBytes = 0;
+            }
+            waveBySource.emplace(source, wave);
+            waveBytes = checkedAdd(
+                waveBytes, recordBytes,
+                "FmmPatchLetPlan::build: wave byte overflow");
+        }
+    }
+    catch(const UniversalError& error)
+    {
+        localWavePlanOk = false;
+        localWavePlanError = error.getErrorMessage();
+    }
+    collectiveRequire(localWavePlanOk, localWavePlanError,
+                      "FmmPatchLetPlan::build wave planning", comm_);
+    localWaveCount_ = uniqueSources.empty() ? 1 : wave + 1;
+    unsigned long long localWaves =
+        static_cast<unsigned long long>(localWaveCount_);
+    unsigned long long globalWaves = 0;
+    MPI_Allreduce(&localWaves, &globalWaves, 1,
+                  MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm_);
+    if(globalWaves == 0 || globalWaves > static_cast<unsigned long long>(
+            std::numeric_limits<std::size_t>::max()) ||
+       globalWaves > static_cast<unsigned long long>(
+            std::numeric_limits<int>::max()))
+        throw UniversalError(
+            "FmmPatchLetPlan::build: invalid global wave count");
+    waveCount_ = static_cast<std::size_t>(globalWaves);
+
+    std::map<WaveSourceIdentity, std::uint32_t> sourceIndexByWave;
+    typedef std::tuple<std::uint64_t, std::uint64_t, std::uint64_t,
+                       std::uint64_t, std::uint64_t> GeometryKey;
+    std::map<GeometryKey, std::uint32_t> geometryIndexByKey;
+    for(const PendingInteraction& interaction : terminalM2L)
+    {
+        const SourceIdentity source(interaction.sourcePatch,
+                                    interaction.sourceKey,
+                                    interaction.kind);
+        const auto waveIt = waveBySource.find(source);
+        if(waveIt == waveBySource.end())
+            throw UniversalError(
+                "FmmPatchLetPlan::build: M2L dependency has no wave");
+        const std::size_t sourceIndex = ensureSourceRecord(
+            waveIt->second, source, sourceIndexByWave);
+        if(interaction.targetPatchIndex >
+               std::numeric_limits<std::uint32_t>::max() ||
+           interaction.targetNode >
+               std::numeric_limits<std::uint32_t>::max())
+            throw UniversalError(
+                "FmmPatchLetPlan::build: M2L compact index overflow");
+        const FmmNode& targetNode =
+            forest.patches()[interaction.targetPatchIndex].tree.nodes()[
+                interaction.targetNode];
+        const FmmM2LOperatorCache::PreparedGeometry geometry =
+            FmmM2LOperatorCache::prepare(
+                sources_[sourceIndex].sourceNode, targetNode);
+        std::uint64_t inverseScaleBits = 0;
+        static_assert(sizeof(inverseScaleBits) ==
+                          sizeof(geometry.inverseScale),
+                      "M2L inverse scale must be 64-bit");
+        std::memcpy(&inverseScaleBits, &geometry.inverseScale,
+                    sizeof(inverseScaleBits));
+        const GeometryKey geometryKey = std::make_tuple(
+            geometry.keyX, geometry.keyY, geometry.keyZ,
+            geometry.keyKind, inverseScaleBits);
+        auto inserted = geometryIndexByKey.emplace(
+            geometryKey, static_cast<std::uint32_t>(
+                             m2lGeometries_.size()));
+        if(inserted.second)
+        {
+            if(m2lGeometries_.size() >= static_cast<std::size_t>(
+                   std::numeric_limits<std::uint32_t>::max()))
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: too many M2L geometries");
+            inserted.first->second = static_cast<std::uint32_t>(
+                m2lGeometries_.size());
+            m2lGeometries_.push_back(geometry);
+        }
+        m2lInteractions_.push_back(FmmPatchLetM2LInteraction{
+            static_cast<std::uint32_t>(interaction.targetPatchIndex),
+            static_cast<std::uint32_t>(interaction.targetNode),
+            static_cast<std::uint32_t>(sourceIndex),
+            inserted.first->second});
+    }
+    for(const PendingInteraction& interaction : terminalM2P)
+    {
+        const SourceIdentity source(interaction.sourcePatch,
+                                    interaction.sourceKey,
+                                    interaction.kind);
+        const auto waveIt = waveBySource.find(source);
+        if(waveIt == waveBySource.end())
+            throw UniversalError(
+                "FmmPatchLetPlan::build: M2P dependency has no wave");
+        const std::size_t sourceIndex = ensureSourceRecord(
+            waveIt->second, source, sourceIndexByWave);
+        if(interaction.targetPatchIndex >
+               std::numeric_limits<std::uint32_t>::max() ||
+           interaction.targetNode >
+               std::numeric_limits<std::uint32_t>::max())
+            throw UniversalError(
+                "FmmPatchLetPlan::build: M2P compact index overflow");
+        m2pInteractions_.push_back(FmmPatchLetM2PInteraction{
+            static_cast<std::uint32_t>(interaction.targetPatchIndex),
+            static_cast<std::uint32_t>(interaction.targetNode),
+            static_cast<std::uint32_t>(sourceIndex)});
+    }
+    for(const PendingInteraction& interaction : terminalP2P)
+    {
+        const SourceIdentity source(interaction.sourcePatch,
+                                    interaction.sourceKey,
+                                    interaction.kind);
+        const auto waveIt = waveBySource.find(source);
+        if(waveIt == waveBySource.end())
+            throw UniversalError(
+                "FmmPatchLetPlan::build: P2P dependency has no wave");
+        const std::size_t sourceIndex = ensureSourceRecord(
+            waveIt->second, source, sourceIndexByWave);
+        if(interaction.targetPatchIndex >
+               std::numeric_limits<std::uint32_t>::max() ||
+           interaction.targetNode >
+               std::numeric_limits<std::uint32_t>::max())
+            throw UniversalError(
+                "FmmPatchLetPlan::build: P2P compact index overflow");
+        p2pInteractions_.push_back(FmmPatchLetP2PInteraction{
+            static_cast<std::uint32_t>(interaction.targetPatchIndex),
+            static_cast<std::uint32_t>(interaction.targetNode),
+            static_cast<std::uint32_t>(sourceIndex)});
+    }
+    // SourceRecord now contains every terminal descriptor and reconstructed
+    // source node needed by warm execution. Release descriptor-pull state before
+    // subscriptions are exchanged so it cannot inflate steady LET memory.
+    decltype(remoteDescriptors_)().swap(remoteDescriptors_);
+    decltype(remoteRoots_)().swap(remoteRoots_);
+    buildWaveRanges();
+
+    const Clock::time_point subscriptionStart = Clock::now();
+    std::unordered_map<int, std::vector<char>> subscriptionBuffers;
+    for(const SourceRecord& source : sources_)
+    {
+        FmmSubscription subscription;
+        subscription.stamp = fmmPacketStamp(
+            FmmPacketKind::Subscription, topologyEpoch_);
+        subscription.patchId = source.key.patch.patchId;
+        subscription.spatialKey = source.key.spatialKey;
+        subscription.kind = source.kind;
+        subscription.waveIndex = static_cast<int>(source.wave);
+        FmmPacketIO::appendPod(
+            subscriptionBuffers[source.key.patch.ownerRank], subscription);
+    }
+    FmmPeerExchangeResult receivedSubscriptions = exchange_.exchangeBytes(
+        subscriptionBuffers, &stats.bytesSent, &stats.bytesReceived);
+    for(const FmmReceivedMessage& message : receivedSubscriptions.messages())
+    {
+        const FmmByteView view = receivedSubscriptions.view(message);
+        std::size_t offset = 0;
+        std::set<std::tuple<std::uint64_t, std::uint64_t, int, int>> unique;
+        while(offset < view.size)
+        {
+            const FmmSubscription subscription =
+                FmmPacketIO::readPod<FmmSubscription>(view, offset);
+            validateFmmPacketStamp(
+                subscription.stamp, FmmPacketKind::Subscription,
+                topologyEpoch_,
+                "FmmPatchLetPlan::build subscription");
+            if(subscription.waveIndex < 0 ||
+               static_cast<std::size_t>(subscription.waveIndex) >= waveCount_)
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: subscription wave out of range");
+            const std::size_t localPatchIndex =
+                forest.findPatch(subscription.patchId);
+            if(localPatchIndex == std::numeric_limits<std::size_t>::max())
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: subscription references missing local patch");
+            const auto nodeIt = localNodeByPatch_[localPatchIndex].find(
+                subscription.spatialKey);
+            if(nodeIt == localNodeByPatch_[localPatchIndex].end())
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: subscription references missing local node");
+            const FmmNode& node = forest.patches()[localPatchIndex].tree.nodes()[
+                nodeIt->second];
+            if(subscription.kind ==
+                   static_cast<int>(FmmSubscriptionKind::Particles))
+            {
+                if(!node.isLeaf())
+                    throw UniversalError(
+                        "FmmPatchLetPlan::build: particle subscription references non-leaf");
+                const auto payloadKey = std::make_pair(
+                    subscription.patchId, subscription.spatialKey);
+                const std::size_t plannedCount = particlePayloadCapacity(node.particleCount());
+                const auto inserted = localParticlePayloadCaps_.emplace(
+                    payloadKey, plannedCount);
+                if(!inserted.second && inserted.first->second != plannedCount)
+                    throw UniversalError(
+                        "FmmPatchLetPlan::build: inconsistent particle payload capacity");
+            }
+            if(subscription.kind !=
+                   static_cast<int>(FmmSubscriptionKind::Particles) &&
+               subscription.kind !=
+                   static_cast<int>(FmmSubscriptionKind::Multipole))
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: invalid subscription kind");
+            if(!unique.insert(std::make_tuple(
+                    subscription.patchId, subscription.spatialKey,
+                    subscription.kind, subscription.waveIndex)).second)
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: duplicate subscription");
+            subscriptionsReceived_[message.source].push_back(subscription);
+        }
+    }
+    receivedSubscriptions.releaseStorage();
+
+    // Resolve subscription ownership and local node indices once at build time.
+    // Warm execution then touches only the subscriptions belonging to one wave,
+    // avoiding a full scan plus patch/hash lookups for every payload wave.
+    subscriptionsByWave_.assign(waveCount_,
+        std::vector<SubscriptionReference>());
+    std::vector<std::size_t> subscriptionsPerWave(waveCount_, 0);
+    for(const auto& peerEntry : subscriptionsReceived_)
+        for(const FmmSubscription& subscription : peerEntry.second)
+            ++subscriptionsPerWave[static_cast<std::size_t>(
+                subscription.waveIndex)];
+    for(std::size_t waveIndex = 0; waveIndex < waveCount_; ++waveIndex)
+        subscriptionsByWave_[waveIndex].reserve(
+            subscriptionsPerWave[waveIndex]);
+
+    for(const auto& peerEntry : subscriptionsReceived_)
+    {
+        for(std::size_t subscriptionIndex = 0;
+            subscriptionIndex < peerEntry.second.size(); ++subscriptionIndex)
+        {
+            const FmmSubscription& subscription =
+                peerEntry.second[subscriptionIndex];
+            const std::size_t patchIndex = forest.findPatch(
+                subscription.patchId);
+            if(patchIndex == std::numeric_limits<std::size_t>::max() ||
+               patchIndex >= localNodeByPatch_.size())
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: indexed subscription patch disappeared");
+            const auto nodeIt = localNodeByPatch_[patchIndex].find(
+                subscription.spatialKey);
+            if(nodeIt == localNodeByPatch_[patchIndex].end())
+                throw UniversalError(
+                    "FmmPatchLetPlan::build: indexed subscription node disappeared");
+            subscriptionsByWave_[static_cast<std::size_t>(
+                subscription.waveIndex)].push_back(SubscriptionReference{
+                    peerEntry.first, subscriptionIndex, patchIndex,
+                    nodeIt->second});
+        }
+    }
+
+    buildNodeSubscriptions(forest, stats);
+
+    stats.letSubscriptionSeconds += elapsed(subscriptionStart);
+    stats.letWaveCount = waveCount_;
+    stats.letLocalWaveCount = localWaveCount_;
+    stats.letPlannedM2LCount =
+        static_cast<std::uint64_t>(m2lInteractions_.size());
+    stats.letPlannedP2PBlockCount =
+        static_cast<std::uint64_t>(p2pInteractions_.size());
+    stats.letPlanSeconds += elapsed(buildStart);
+    initialized_ = true;
+}
+
+bool FmmPatchLetPlan::localPayloadCapacityReusable(
+    const FmmPatchForest& forest) const
+{
+    if(!initialized_ || localNodeByPatch_.size() != forest.patches().size())
+        return false;
+    for(const auto& peer : subscriptionsReceived_)
+    {
+        for(const FmmSubscription& subscription : peer.second)
+        {
+            if(subscription.kind !=
+               static_cast<int>(FmmSubscriptionKind::Particles))
+                continue;
+            const std::size_t patchIndex =
+                forest.findPatch(subscription.patchId);
+            if(patchIndex == std::numeric_limits<std::size_t>::max() ||
+               patchIndex >= localNodeByPatch_.size())
+                return false;
+            const auto nodeIt = localNodeByPatch_[patchIndex].find(
+                subscription.spatialKey);
+            if(nodeIt == localNodeByPatch_[patchIndex].end() ||
+               nodeIt->second >= forest.patches()[patchIndex].tree.nodes().size())
+                return false;
+            const FmmNode& node = forest.patches()[patchIndex].tree.nodes()[
+                nodeIt->second];
+            const auto capacity = localParticlePayloadCaps_.find(
+                std::make_pair(subscription.patchId,
+                               subscription.spatialKey));
+            if(!node.isLeaf() || capacity == localParticlePayloadCaps_.end() ||
+               node.particleCount() > capacity->second)
+                return false;
+        }
+    }
+    return true;
+}
+
+bool FmmPatchLetPlan::localM2PTopologyReusable(
+    const FmmPatchForest& forest) const
+{
+    if(!initialized_ || localNodeByPatch_.size() != forest.patches().size())
+        return false;
+    // M2P admissibility is pointwise rather than node-radius based.  A retained
+    // radius envelope makes M2L/P2P topology conservative, but target particles
+    // may still move closer to an M2P source.  Revalidate those interactions
+    // before deciding to reuse the plan.
+    for(const FmmPatchLetM2PInteraction& interaction : m2pInteractions_)
+    {
+        if(interaction.targetPatchIndex >= forest.patches().size() ||
+           interaction.sourceIndex >= sources_.size())
+            return false;
+        const FmmLocalPatch& targetPatch =
+            forest.patches()[interaction.targetPatchIndex];
+        if(interaction.targetNode >= targetPatch.tree.nodes().size())
+            return false;
+        const FmmNode& targetNode =
+            targetPatch.tree.nodes()[interaction.targetNode];
+        if(targetNode.particleCount() != 0 &&
+           !m2pAdmissible(targetNode,
+                          sources_[interaction.sourceIndex].descriptor,
+                          targetPatch.tree.particleOrder(),
+                          targetPatch.positions, thetaCritical_))
+            return false;
+    }
+    return true;
+}
+
+void FmmPatchLetPlan::refreshPayloadLayout(
+    const FmmPatchForest& forest,
+    std::uint64_t topologyEpoch,
+    FmmSolveStats& stats)
+{
+    const Clock::time_point refreshStart = Clock::now();
+    if(!initialized_)
+        throw UniversalError(
+            "FmmPatchLetPlan::refreshPayloadLayout: plan is not initialized");
+    if(topologyEpoch != topologyEpoch_)
+        throw UniversalError(
+            "FmmPatchLetPlan::refreshPayloadLayout: topology epoch changed");
+    if(localNodeByPatch_.size() != forest.patches().size())
+        throw UniversalError(
+            "FmmPatchLetPlan::refreshPayloadLayout: local patch count changed");
+    if(!localM2PTopologyReusable(forest))
+        throw UniversalError(
+            "FmmPatchLetPlan::refreshPayloadLayout: M2P topology is stale");
+
+    // Source owners push only capacities that have actually overflowed.  The
+    // receiving target can then preserve every unaffected source and wave.
+    std::unordered_map<int, std::vector<char>> capacityBuffers;
+    for(const auto& peerEntry : subscriptionsReceived_)
+    {
+        for(const FmmSubscription& subscription : peerEntry.second)
+        {
+            if(subscription.kind !=
+               static_cast<int>(FmmSubscriptionKind::Particles))
+                continue;
+            const std::size_t patchIndex = forest.findPatch(
+                subscription.patchId);
+            if(patchIndex == std::numeric_limits<std::size_t>::max() ||
+               patchIndex >= localNodeByPatch_.size())
+                throw UniversalError(
+                    "FmmPatchLetPlan::refreshPayloadLayout: subscribed patch disappeared");
+            const auto nodeIt = localNodeByPatch_[patchIndex].find(
+                subscription.spatialKey);
+            if(nodeIt == localNodeByPatch_[patchIndex].end() ||
+               nodeIt->second >= forest.patches()[patchIndex].tree.nodes().size())
+                throw UniversalError(
+                    "FmmPatchLetPlan::refreshPayloadLayout: subscribed node disappeared");
+            const FmmNode& node = forest.patches()[patchIndex].tree.nodes()[
+                nodeIt->second];
+            const auto capacity = localParticlePayloadCaps_.find(
+                std::make_pair(subscription.patchId,
+                               subscription.spatialKey));
+            if(!node.isLeaf() || capacity == localParticlePayloadCaps_.end())
+                throw UniversalError(
+                    "FmmPatchLetPlan::refreshPayloadLayout: invalid particle capacity state");
+            if(node.particleCount() <= capacity->second)
+                continue;
+
+            FmmPayloadCapacity update;
+            update.stamp = fmmPacketStamp(
+                FmmPacketKind::PayloadCapacity, topologyEpoch_);
+            update.patchId = subscription.patchId;
+            update.spatialKey = subscription.spatialKey;
+            update.particleCount = static_cast<std::uint64_t>(
+                node.particleCount());
+            FmmPacketIO::appendPod(capacityBuffers[peerEntry.first], update);
+        }
+    }
+
+    FmmPeerExchangeResult receivedCapacities = exchange_.exchangeBytes(
+        capacityBuffers, &stats.bytesSent, &stats.bytesReceived);
+    std::map<SourceIdentity, std::size_t> sourceIndexByIdentity;
+    for(std::size_t sourceIndex = 0; sourceIndex < sources_.size();
+        ++sourceIndex)
+    {
+        const SourceRecord& source = sources_[sourceIndex];
+        const SourceIdentity identity(
+            source.key.patch, source.key.spatialKey, source.kind);
+        if(!sourceIndexByIdentity.emplace(identity, sourceIndex).second)
+            throw UniversalError(
+                "FmmPatchLetPlan::refreshPayloadLayout: duplicate source identity");
+    }
+
+    std::vector<unsigned char> sourceUpdated(sources_.size(), 0);
+    std::uint64_t localCapacityUpdates = 0;
+    for(const FmmReceivedMessage& message : receivedCapacities.messages())
+    {
+        const FmmByteView view = receivedCapacities.view(message);
+        std::size_t offset = 0;
+        while(offset < view.size)
+        {
+            const FmmPayloadCapacity update =
+                FmmPacketIO::readPod<FmmPayloadCapacity>(view, offset);
+            validateFmmPacketStamp(
+                update.stamp, FmmPacketKind::PayloadCapacity, topologyEpoch_,
+                "FmmPatchLetPlan::refreshPayloadLayout capacity");
+            if(update.patchId == 0 || update.spatialKey == 0 ||
+               update.particleCount > static_cast<std::uint64_t>(
+                   std::numeric_limits<std::size_t>::max()))
+                throw UniversalError(
+                    "FmmPatchLetPlan::refreshPayloadLayout: malformed capacity update");
+            const SourceIdentity identity(
+                FmmPatchKey{message.source, update.patchId},
+                update.spatialKey,
+                static_cast<int>(FmmSubscriptionKind::Particles));
+            const auto found = sourceIndexByIdentity.find(identity);
+            if(found == sourceIndexByIdentity.end())
+                throw UniversalError(
+                    "FmmPatchLetPlan::refreshPayloadLayout: unsolicited capacity update");
+            SourceRecord& source = sources_[found->second];
+            const std::size_t particleCount = static_cast<std::size_t>(
+                update.particleCount);
+            if(particleCount <= source.particlePayloadCapacity ||
+               sourceUpdated[found->second] != 0)
+                throw UniversalError(
+                    "FmmPatchLetPlan::refreshPayloadLayout: duplicate or non-growing capacity update");
+            source.particlePayloadCapacity = particlePayloadCapacity(
+                particleCount);
+            source.descriptor.particleCount = update.particleCount;
+            source.sourceNode.particleBegin = 0;
+            source.sourceNode.particleEnd = particleCount;
+            sourceParticlePayloadCaps_[identity] =
+                source.particlePayloadCapacity;
+            for(auto& target : targetSubplans_)
+            {
+                const auto cached = target.second.sources.find(identity);
+                if(cached == target.second.sources.end())
+                    continue;
+                cached->second.descriptor.particleCount = update.particleCount;
+                cached->second.particlePayloadCapacity = std::max(
+                    cached->second.particlePayloadCapacity,
+                    source.particlePayloadCapacity);
+            }
+            sourceUpdated[found->second] = 1;
+            ++localCapacityUpdates;
+        }
+    }
+    receivedCapacities.releaseStorage();
+
+    unsigned long long localUpdates = static_cast<unsigned long long>(
+        localCapacityUpdates);
+    unsigned long long globalUpdates = 0;
+    MPI_Allreduce(&localUpdates, &globalUpdates, 1,
+                  MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm_);
+    if(globalUpdates == 0)
+        throw UniversalError(
+            "FmmPatchLetPlan::refreshPayloadLayout: refresh requested without an overflowing source");
+
+    std::size_t firstAffectedWave = waveCount_;
+    for(std::size_t sourceIndex = 0; sourceIndex < sources_.size();
+        ++sourceIndex)
+    {
+        if(sourceUpdated[sourceIndex] != 0)
+            firstAffectedWave = std::min(
+                firstAffectedWave, sources_[sourceIndex].wave);
+    }
+
+    std::uint64_t localRepackedSources = 0;
+    if(firstAffectedWave < waveCount_)
+    {
+        std::vector<std::size_t> sourceOrder(sources_.size());
+        for(std::size_t index = 0; index < sourceOrder.size(); ++index)
+            sourceOrder[index] = index;
+        std::sort(sourceOrder.begin(), sourceOrder.end(),
+            [&](std::size_t first, std::size_t second) {
+                const SourceRecord& a = sources_[first];
+                const SourceRecord& b = sources_[second];
+                return std::tie(a.key.patch, a.key.spatialKey, a.kind) <
+                       std::tie(b.key.patch, b.key.spatialKey, b.kind);
+            });
+
+        std::size_t wave = firstAffectedWave;
+        std::size_t waveBytes = 0;
+        bool haveAffectedSuffix = false;
+        for(std::size_t sourceIndex : sourceOrder)
+        {
+            SourceRecord& source = sources_[sourceIndex];
+            if(source.wave < firstAffectedWave)
+                continue;
+            haveAffectedSuffix = true;
+            const std::size_t recordBytes = sourceRecordBytes(source);
+            if(maxLetWaveBytes_ != 0 && recordBytes > maxLetWaveBytes_)
+                throw UniversalError(
+                    "FmmPatchLetPlan::refreshPayloadLayout: one payload record exceeds maxLetWaveBytes");
+            if(maxLetWaveBytes_ != 0 && waveBytes != 0 &&
+               recordBytes > maxLetWaveBytes_ - waveBytes)
+            {
+                ++wave;
+                waveBytes = 0;
+            }
+            source.wave = wave;
+            waveBytes = checkedAdd(
+                waveBytes, recordBytes,
+                "FmmPatchLetPlan::refreshPayloadLayout: wave byte overflow");
+            ++localRepackedSources;
+        }
+        if(!haveAffectedSuffix)
+            throw UniversalError(
+                "FmmPatchLetPlan::refreshPayloadLayout: affected wave has no sources");
+        localWaveCount_ = wave + 1;
+    }
+
+    unsigned long long localWaves = static_cast<unsigned long long>(
+        localWaveCount_);
+    unsigned long long globalWaves = 0;
+    MPI_Allreduce(&localWaves, &globalWaves, 1,
+                  MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm_);
+    if(globalWaves == 0 || globalWaves > static_cast<unsigned long long>(
+           std::numeric_limits<std::size_t>::max()) ||
+       globalWaves > static_cast<unsigned long long>(
+           std::numeric_limits<int>::max()))
+        throw UniversalError(
+            "FmmPatchLetPlan::refreshPayloadLayout: invalid global wave count");
+    waveCount_ = static_cast<std::size_t>(globalWaves);
+    buildWaveRanges();
+
+    // Wave indices are the only subscription field that changes.  Re-exchange
+    // the compact subscription set and rebuild its source-side index without
+    // touching descriptors or terminal interactions.
+    const Clock::time_point subscriptionStart = Clock::now();
+    const auto previousPayloadCaps = localParticlePayloadCaps_;
+    subscriptionsReceived_.clear();
+    subscriptionsByWave_.clear();
+    localParticlePayloadCaps_.clear();
+    std::unordered_map<int, std::vector<char>> subscriptionBuffers;
+    for(const SourceRecord& source : sources_)
+    {
+        FmmSubscription subscription;
+        subscription.stamp = fmmPacketStamp(
+            FmmPacketKind::Subscription, topologyEpoch_);
+        subscription.patchId = source.key.patch.patchId;
+        subscription.spatialKey = source.key.spatialKey;
+        subscription.kind = source.kind;
+        subscription.waveIndex = static_cast<int>(source.wave);
+        FmmPacketIO::appendPod(
+            subscriptionBuffers[source.key.patch.ownerRank], subscription);
+    }
+    FmmPeerExchangeResult receivedSubscriptions = exchange_.exchangeBytes(
+        subscriptionBuffers, &stats.bytesSent, &stats.bytesReceived);
+    for(const FmmReceivedMessage& message : receivedSubscriptions.messages())
+    {
+        const FmmByteView view = receivedSubscriptions.view(message);
+        std::size_t offset = 0;
+        std::set<std::tuple<std::uint64_t, std::uint64_t, int, int>> unique;
+        while(offset < view.size)
+        {
+            const FmmSubscription subscription =
+                FmmPacketIO::readPod<FmmSubscription>(view, offset);
+            validateFmmPacketStamp(
+                subscription.stamp, FmmPacketKind::Subscription,
+                topologyEpoch_,
+                "FmmPatchLetPlan::refreshPayloadLayout subscription");
+            if(subscription.waveIndex < 0 ||
+               static_cast<std::size_t>(subscription.waveIndex) >= waveCount_)
+                throw UniversalError(
+                    "FmmPatchLetPlan::refreshPayloadLayout: subscription wave out of range");
+            const std::size_t patchIndex = forest.findPatch(
+                subscription.patchId);
+            if(patchIndex == std::numeric_limits<std::size_t>::max() ||
+               patchIndex >= localNodeByPatch_.size())
+                throw UniversalError(
+                    "FmmPatchLetPlan::refreshPayloadLayout: subscription patch disappeared");
+            const auto nodeIt = localNodeByPatch_[patchIndex].find(
+                subscription.spatialKey);
+            if(nodeIt == localNodeByPatch_[patchIndex].end())
+                throw UniversalError(
+                    "FmmPatchLetPlan::refreshPayloadLayout: subscription node disappeared");
+            const FmmNode& node = forest.patches()[patchIndex].tree.nodes()[
+                nodeIt->second];
+            if(subscription.kind ==
+               static_cast<int>(FmmSubscriptionKind::Particles))
+            {
+                if(!node.isLeaf())
+                    throw UniversalError(
+                        "FmmPatchLetPlan::refreshPayloadLayout: particle subscription references non-leaf");
+                const auto payloadKey = std::make_pair(
+                    subscription.patchId, subscription.spatialKey);
+                std::size_t plannedCount = particlePayloadCapacity(
+                    node.particleCount());
+                const auto previous = previousPayloadCaps.find(payloadKey);
+                if(previous != previousPayloadCaps.end())
+                    plannedCount = std::max(plannedCount, previous->second);
+                const auto inserted = localParticlePayloadCaps_.emplace(
+                    payloadKey, plannedCount);
+                if(!inserted.second && inserted.first->second != plannedCount)
+                    throw UniversalError(
+                        "FmmPatchLetPlan::refreshPayloadLayout: inconsistent particle capacity");
+            }
+            if(subscription.kind !=
+                   static_cast<int>(FmmSubscriptionKind::Particles) &&
+               subscription.kind !=
+                   static_cast<int>(FmmSubscriptionKind::Multipole))
+                throw UniversalError(
+                    "FmmPatchLetPlan::refreshPayloadLayout: invalid subscription kind");
+            if(!unique.insert(std::make_tuple(
+                    subscription.patchId, subscription.spatialKey,
+                    subscription.kind, subscription.waveIndex)).second)
+                throw UniversalError(
+                    "FmmPatchLetPlan::refreshPayloadLayout: duplicate subscription");
+            subscriptionsReceived_[message.source].push_back(subscription);
+        }
+    }
+    receivedSubscriptions.releaseStorage();
+
+    subscriptionsByWave_.assign(
+        waveCount_, std::vector<SubscriptionReference>());
+    std::vector<std::size_t> subscriptionsPerWave(waveCount_, 0);
+    for(const auto& peerEntry : subscriptionsReceived_)
+        for(const FmmSubscription& subscription : peerEntry.second)
+            ++subscriptionsPerWave[static_cast<std::size_t>(
+                subscription.waveIndex)];
+    for(std::size_t waveIndex = 0; waveIndex < waveCount_; ++waveIndex)
+        subscriptionsByWave_[waveIndex].reserve(
+            subscriptionsPerWave[waveIndex]);
+    for(const auto& peerEntry : subscriptionsReceived_)
+    {
+        for(std::size_t subscriptionIndex = 0;
+            subscriptionIndex < peerEntry.second.size(); ++subscriptionIndex)
+        {
+            const FmmSubscription& subscription =
+                peerEntry.second[subscriptionIndex];
+            const std::size_t patchIndex = forest.findPatch(
+                subscription.patchId);
+            const auto nodeIt = localNodeByPatch_[patchIndex].find(
+                subscription.spatialKey);
+            subscriptionsByWave_[static_cast<std::size_t>(
+                subscription.waveIndex)].push_back(SubscriptionReference{
+                    peerEntry.first, subscriptionIndex, patchIndex,
+                    nodeIt->second});
+        }
+    }
+    buildNodeSubscriptions(forest, stats);
+    if(!localPayloadCapacityReusable(forest))
+        throw UniversalError(
+            "FmmPatchLetPlan::refreshPayloadLayout: refreshed capacity is stale");
+
+    stats.letCommunicatorReused = true;
+    stats.letBuildStorageReused = true;
+    stats.letPayloadLayoutRefreshed = true;
+    stats.letPayloadCapacityUpdateCount = localCapacityUpdates;
+    stats.letPayloadSourceRepackCount = localRepackedSources;
+    ++stats.letWavePlanRebuildCount;
+    stats.letTargetSubplansReused = static_cast<std::uint64_t>(
+        forest.patches().size());
+    stats.letDescriptorTraversalSkippedCount = static_cast<std::uint64_t>(
+        forest.patches().size());
+    stats.letWaveCount = waveCount_;
+    stats.letLocalWaveCount = localWaveCount_;
+    stats.letPlannedM2LCount = static_cast<std::uint64_t>(
+        m2lInteractions_.size());
+    stats.letPlannedP2PBlockCount = static_cast<std::uint64_t>(
+        p2pInteractions_.size());
+    stats.letSubscriptionSeconds += elapsed(subscriptionStart);
+    stats.letPayloadLayoutRefreshSeconds += elapsed(refreshStart);
+    stats.letPlanSeconds += elapsed(refreshStart);
+}
+
+void FmmPatchLetPlan::reuse(
+    const FmmPatchForest& forest,
+    std::uint64_t topologyEpoch,
+    FmmSolveStats& stats)
+{
+    if(!initialized_)
+        throw UniversalError("FmmPatchLetPlan::reuse: plan is not initialized");
+    if(topologyEpoch != topologyEpoch_)
+        throw UniversalError("FmmPatchLetPlan::reuse: topology epoch changed");
+    if(localNodeByPatch_.size() != forest.patches().size())
+        throw UniversalError("FmmPatchLetPlan::reuse: local patch count changed");
+    if(!localPayloadCapacityReusable(forest))
+        throw UniversalError(
+            "FmmPatchLetPlan::reuse: retained payload capacity is stale");
+    if(!localM2PTopologyReusable(forest))
+        throw UniversalError(
+            "FmmPatchLetPlan::reuse: retained M2P topology is stale");
+
+    for(std::size_t patchIndex = 0; patchIndex < forest.patches().size();
+        ++patchIndex)
+    {
+        const FmmLocalPatch& patch = forest.patches()[patchIndex];
+        const auto& lookup = localNodeByPatch_[patchIndex];
+        if(lookup.size() != patch.tree.nodes().size())
+            throw UniversalError(
+                "FmmPatchLetPlan::reuse: local node count changed");
+        for(std::size_t nodeIndex = 0; nodeIndex < patch.tree.nodes().size();
+            ++nodeIndex)
+        {
+            const auto found = lookup.find(
+                patch.tree.nodes()[nodeIndex].spatialKey);
+            if(found == lookup.end() || found->second != nodeIndex)
+                throw UniversalError(
+                    "FmmPatchLetPlan::reuse: local node identity changed");
+        }
+    }
+
+    for(const FmmPatchLetM2LInteraction& interaction : m2lInteractions_)
+    {
+        if(interaction.targetPatchIndex >= forest.patches().size() ||
+           interaction.targetNode >= forest.patches()[
+               interaction.targetPatchIndex].tree.nodes().size() ||
+           interaction.sourceIndex >= sources_.size() ||
+           interaction.geometryIndex >= m2lGeometries_.size())
+            throw UniversalError(
+                "FmmPatchLetPlan::reuse: invalid retained M2L interaction");
+    }
+    for(const FmmPatchLetP2PInteraction& interaction : p2pInteractions_)
+    {
+        if(interaction.targetPatchIndex >= forest.patches().size() ||
+           interaction.targetNode >= forest.patches()[
+               interaction.targetPatchIndex].tree.nodes().size() ||
+           interaction.sourceIndex >= sources_.size())
+            throw UniversalError(
+                "FmmPatchLetPlan::reuse: invalid retained P2P interaction");
+    }
+    for(const FmmPatchLetM2PInteraction& interaction : m2pInteractions_)
+    {
+        if(interaction.targetPatchIndex >= forest.patches().size() ||
+           interaction.targetNode >= forest.patches()[
+               interaction.targetPatchIndex].tree.nodes().size() ||
+           interaction.sourceIndex >= sources_.size())
+            throw UniversalError(
+                "FmmPatchLetPlan::reuse: invalid retained M2P interaction");
+    }
+    for(const auto& peer : subscriptionsReceived_)
+    {
+        for(const FmmSubscription& subscription : peer.second)
+        {
+            const std::size_t patchIndex =
+                forest.findPatch(subscription.patchId);
+            if(patchIndex == std::numeric_limits<std::size_t>::max() ||
+               localNodeByPatch_[patchIndex].find(
+                   subscription.spatialKey) ==
+                   localNodeByPatch_[patchIndex].end())
+                throw UniversalError(
+                    "FmmPatchLetPlan::reuse: retained subscription is stale");
+        }
+    }
+
+    stats.letCommunicatorReused = true;
+    stats.letBuildStorageReused = true;
+    stats.letWaveCount = waveCount_;
+    stats.letLocalWaveCount = localWaveCount_;
+    stats.letPlannedM2LCount =
+        static_cast<std::uint64_t>(m2lInteractions_.size());
+    stats.letPlannedP2PBlockCount =
+        static_cast<std::uint64_t>(p2pInteractions_.size());
+    stats.letTargetSubplansReused =
+        static_cast<std::uint64_t>(forest.patches().size());
+    stats.letDescriptorTraversalSkippedCount =
+        static_cast<std::uint64_t>(forest.patches().size());
+}
+
+void FmmPatchLetPlan::executeWave(
+    std::size_t wave,
+    FmmPatchForest& forest,
+    const FmmTaylorExpansion& layout,
+    FmmM2LOperatorCache& operatorCache,
+    std::size_t maxRemoteBytes,
+    FmmSolveStats& stats)
+{
+    if(wave >= waveCount_)
+        throw UniversalError("FmmPatchLetPlan::executeWave: wave out of range");
+    const Clock::time_point exchangeStart = Clock::now();
+
+    if(wave >= subscriptionsByWave_.size() ||
+       (sharePayloadsWithinNode_ &&
+        wave >= nodeSubscriptionsByWave_.size()))
+        throw UniversalError(
+            "FmmPatchLetPlan::executeWave: missing indexed subscriptions");
+
+    // Exact pre-reservation avoids repeated growth/copying of large peer
+    // buffers.  The solver already performed one collective payload-shape check
+    // before entering execution, so repeating it for every wave was redundant.
+    const auto packedRecordBytes = [&](std::size_t patchIndex,
+                                       std::size_t nodeIndex,
+                                       const FmmSubscription& subscription) {
+        if(patchIndex >= forest.patches().size() ||
+           nodeIndex >= forest.patches()[patchIndex].tree.nodes().size())
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: indexed source node disappeared");
+        const FmmNode& node =
+            forest.patches()[patchIndex].tree.nodes()[nodeIndex];
+        std::size_t recordBytes = sizeof(FmmPayloadRecordHeader);
+        if(subscription.kind ==
+           static_cast<int>(FmmSubscriptionKind::Multipole))
+            recordBytes = checkedAdd(recordBytes,
+                checkedMultiply(layout.coefficientCount(), sizeof(double),
+                    "FmmPatchLetPlan::executeWave: multipole reserve overflow"),
+                "FmmPatchLetPlan::executeWave: multipole record overflow");
+        else if(subscription.kind ==
+                static_cast<int>(FmmSubscriptionKind::Particles))
+            recordBytes = checkedAdd(recordBytes,
+                checkedMultiply(node.particleCount(),
+                    particleWireBytes(),
+                    "FmmPatchLetPlan::executeWave: particle reserve overflow"),
+                "FmmPatchLetPlan::executeWave: particle record overflow");
+        else
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: invalid indexed subscription kind");
+        return recordBytes;
+    };
+
+    std::unordered_map<int, std::size_t> peerReserveBytes;
+    if(sharePayloadsWithinNode_)
+    {
+        for(const NodeSubscriptionReference& reference :
+            nodeSubscriptionsByWave_[wave])
+            peerReserveBytes[reference.nodeHandler] = checkedAdd(
+                peerReserveBytes[reference.nodeHandler],
+                packedRecordBytes(reference.patchIndex, reference.nodeIndex,
+                                  reference.subscription),
+                "FmmPatchLetPlan::executeWave: node reserve overflow");
+    }
+    else
+    {
+        for(const SubscriptionReference& reference :
+            subscriptionsByWave_[wave])
+        {
+            const auto peer = subscriptionsReceived_.find(reference.peer);
+            if(peer == subscriptionsReceived_.end() ||
+               reference.subscriptionIndex >= peer->second.size())
+                throw UniversalError(
+                    "FmmPatchLetPlan::executeWave: invalid indexed subscription");
+            peerReserveBytes[reference.peer] = checkedAdd(
+                peerReserveBytes[reference.peer],
+                packedRecordBytes(reference.patchIndex, reference.nodeIndex,
+                                  peer->second[reference.subscriptionIndex]),
+                "FmmPatchLetPlan::executeWave: peer reserve overflow");
+        }
+    }
+
+    std::unordered_map<int, std::vector<char>> sendBuffers;
+    for(const auto& peerBytes : peerReserveBytes)
+        if(!sharePayloadsWithinNode_ || peerBytes.first != rank_)
+            sendBuffers[peerBytes.first].reserve(peerBytes.second);
+    std::vector<char> nodeLeaderLocalBuffer;
+    if(sharePayloadsWithinNode_)
+    {
+        const auto localBytes = peerReserveBytes.find(rank_);
+        if(localBytes != peerReserveBytes.end())
+            nodeLeaderLocalBuffer.reserve(localBytes->second);
+    }
+
+    const auto appendRecord = [&](std::vector<char>& buffer,
+                                  std::size_t patchIndex,
+                                  std::size_t nodeIndex,
+                                  const FmmSubscription& subscription) {
+        FmmLocalPatch& patch = forest.patches()[patchIndex];
+        if(patch.key.ownerRank != rank_ ||
+           patch.key.patchId != subscription.patchId)
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: source patch identity mismatch");
+        const FmmNode& node = patch.tree.nodes()[nodeIndex];
+
+        FmmPayloadRecordHeader header;
+        header.stamp = fmmPacketStamp(FmmPacketKind::LetPayload,
+                                      topologyEpoch_);
+        header.patchId = subscription.patchId;
+        header.spatialKey = subscription.spatialKey;
+        header.kind = subscription.kind;
+        header.waveIndex = subscription.waveIndex;
+        if(subscription.kind ==
+           static_cast<int>(FmmSubscriptionKind::Multipole))
+        {
+            header.count = static_cast<std::uint64_t>(
+                layout.coefficientCount());
+            FmmPacketIO::appendPod(buffer, header);
+            FmmPacketIO::appendDoubles(
+                buffer,
+                patch.multipoles.data() + node.multipoleOffset,
+                layout.coefficientCount());
+        }
+        else if(subscription.kind ==
+                static_cast<int>(FmmSubscriptionKind::Particles))
+        {
+            if(!node.isLeaf())
+                throw UniversalError(
+                    "FmmPatchLetPlan::executeWave: particle source is not a leaf");
+            header.count = static_cast<std::uint64_t>(node.particleCount());
+            FmmPacketIO::appendPod(buffer, header);
+            for(std::size_t k = node.particleBegin;
+                k < node.particleEnd; ++k)
+            {
+                const std::size_t body = patch.tree.particleOrder()[k];
+                if(compactParticlePayload_)
+                {
+                    const Vector3D offset = patch.positions[body] - node.center;
+                    FmmCompactPatchWireParticle particle;
+                    particle.offset[0] = static_cast<float>(offset.x);
+                    particle.offset[1] = static_cast<float>(offset.y);
+                    particle.offset[2] = static_cast<float>(offset.z);
+                    particle.mass = static_cast<float>(patch.masses[body]);
+                    if(!std::isfinite(particle.offset[0]) ||
+                       !std::isfinite(particle.offset[1]) ||
+                       !std::isfinite(particle.offset[2]) ||
+                       !std::isfinite(particle.mass) ||
+                       (patch.masses[body] != 0.0 && particle.mass == 0.0f))
+                        throw UniversalError(
+                            "FmmPatchLetPlan::executeWave: compact particle "
+                            "cannot represent source values");
+                    FmmPacketIO::appendPod(buffer, particle);
+                }
+                else
+                {
+                    FmmPatchWireParticle particle;
+                    particle.position[0] = patch.positions[body].x;
+                    particle.position[1] = patch.positions[body].y;
+                    particle.position[2] = patch.positions[body].z;
+                    particle.mass = patch.masses[body];
+                    FmmPacketIO::appendPod(buffer, particle);
+                }
+            }
+        }
+        else
+        {
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: invalid subscription kind");
+        }
+    };
+
+    if(sharePayloadsWithinNode_)
+    {
+        for(const NodeSubscriptionReference& reference :
+            nodeSubscriptionsByWave_[wave])
+        {
+            std::vector<char>& buffer = reference.nodeHandler == rank_ ?
+                nodeLeaderLocalBuffer : sendBuffers[reference.nodeHandler];
+            appendRecord(buffer, reference.patchIndex, reference.nodeIndex,
+                         reference.subscription);
+        }
+    }
+    else
+    {
+        for(const SubscriptionReference& reference :
+            subscriptionsByWave_[wave])
+        {
+            const auto peer = subscriptionsReceived_.find(reference.peer);
+            appendRecord(sendBuffers[reference.peer], reference.patchIndex,
+                         reference.nodeIndex,
+                         peer->second[reference.subscriptionIndex]);
+        }
+    }
+
+    std::size_t totalSendBytes = 0;
+    for(const auto& peerEntry : sendBuffers)
+        totalSendBytes = checkedAdd(totalSendBytes, peerEntry.second.size(),
+            "FmmPatchLetPlan::executeWave: total send byte overflow");
+    totalSendBytes = checkedAdd(
+        totalSendBytes, nodeLeaderLocalBuffer.size(),
+        "FmmPatchLetPlan::executeWave: local node payload overflow");
+
+    std::size_t sendCapacityBytes = 0;
+    for(const auto& peerEntry : sendBuffers)
+    {
+        sendCapacityBytes = checkedAdd(
+            sendCapacityBytes, peerEntry.second.capacity(),
+            "FmmPatchLetPlan::executeWave: send capacity overflow");
+    }
+    sendCapacityBytes = checkedAdd(
+        sendCapacityBytes, nodeLeaderLocalBuffer.capacity(),
+        "FmmPatchLetPlan::executeWave: local node capacity overflow");
+    const bool localOutgoingOk =
+        totalSendBytes <= maxRemoteBytes / 2 &&
+        sendCapacityBytes <= maxRemoteBytes - totalSendBytes;
+    collectiveRequire(
+        localOutgoingOk,
+        localOutgoingOk ? std::string() :
+            "FmmPatchLetPlan::executeWave: outgoing wave exceeds memory budget",
+        "FmmPatchLetPlan::executeWave outgoing preflight", comm_);
+
+    const std::size_t receiveLimit = std::min(
+        maxRemoteBytes - sendCapacityBytes - totalSendBytes,
+        maxRemoteBytes / 2);
+    FmmPeerExchangeRequest request;
+    request.clear();
+    const FmmPeerExchange& payloadExchange = sharePayloadsWithinNode_ ?
+        nodePayloadExchange_ : exchange_;
+    payloadExchange.beginExchangeBytes(
+        sendBuffers, request, receiveLimit,
+        maxRemoteBytes - sendCapacityBytes);
+    const std::size_t launchBytes =
+        request.bytesOwned() >
+            std::numeric_limits<std::size_t>::max() - sendCapacityBytes ?
+        std::numeric_limits<std::size_t>::max() :
+        sendCapacityBytes + request.bytesOwned();
+    stats.peakRemoteBytes = std::max(stats.peakRemoteBytes, launchBytes);
+    std::unordered_map<int, std::vector<char>>().swap(sendBuffers);
+
+    FmmPeerExchangeResult received = request.wait(
+        &stats.bytesSent, &stats.bytesReceived);
+    const bool wireOverflow = received.bytesOwned() >
+        std::numeric_limits<std::size_t>::max() - request.bytesOwned();
+    const std::size_t wireBytes = wireOverflow ?
+        std::numeric_limits<std::size_t>::max() :
+        request.bytesOwned() + received.bytesOwned();
+    const bool localReceiveOk = !wireOverflow && wireBytes <= maxRemoteBytes &&
+        (sharePayloadsWithinNode_ || maxLetWaveBytes_ == 0 ||
+         received.totalBytes() <= maxLetWaveBytes_);
+    collectiveRequire(
+        localReceiveOk,
+        localReceiveOk ? std::string() :
+            "FmmPatchLetPlan::executeWave: received wave exceeds its memory budget",
+        "FmmPatchLetPlan::executeWave receive preflight", comm_);
+    stats.peakRemoteBytes = std::max(stats.peakRemoteBytes, wireBytes);
+    stats.letMaxWavePayloadBytes = std::max(
+        stats.letMaxWavePayloadBytes, received.totalBytes());
+    stats.letExchangeSeconds += elapsed(exchangeStart);
+
+    typedef std::tuple<FmmPatchKey, std::uint64_t, int> PayloadKey;
+    struct ExpectedPayload
+    {
+        PayloadKey key;
+        const SourceRecord* source = nullptr;
+    };
+    struct ReceivedPayload
+    {
+        PayloadKey key;
+        PayloadView view;
+    };
+
+    std::size_t expectedCount = 0;
+    for(const SourceRecord& source : sources_)
+    {
+        if(source.wave == wave)
+            ++expectedCount;
+    }
+    const std::size_t estimatedTableBytes = saturatingAdd(
+        saturatingMultiply(expectedCount, sizeof(ExpectedPayload)),
+        saturatingMultiply(expectedCount, sizeof(ReceivedPayload)));
+    const bool localEstimatedTablesOk =
+        estimatedTableBytes != std::numeric_limits<std::size_t>::max() &&
+        estimatedTableBytes <= maxRemoteBytes - wireBytes;
+    collectiveRequire(
+        localEstimatedTablesOk,
+        localEstimatedTablesOk ? std::string() :
+            "FmmPatchLetPlan::executeWave: payload tables exceed memory budget",
+        "FmmPatchLetPlan::executeWave table preflight", comm_);
+
+    std::vector<ExpectedPayload> expected;
+    std::vector<ReceivedPayload> payloads;
+    expected.reserve(expectedCount);
+    payloads.reserve(expectedCount);
+    const std::size_t tableBytes = saturatingAdd(
+        saturatingMultiply(expected.capacity(), sizeof(ExpectedPayload)),
+        saturatingMultiply(payloads.capacity(), sizeof(ReceivedPayload)));
+    const bool localAllocatedTablesOk =
+        tableBytes != std::numeric_limits<std::size_t>::max() &&
+        tableBytes <= maxRemoteBytes - wireBytes;
+    collectiveRequire(
+        localAllocatedTablesOk,
+        localAllocatedTablesOk ? std::string() :
+            "FmmPatchLetPlan::executeWave: allocated payload tables exceed memory budget",
+        "FmmPatchLetPlan::executeWave allocated table preflight", comm_);
+    for(const SourceRecord& source : sources_)
+    {
+        if(source.wave != wave)
+            continue;
+        expected.push_back(ExpectedPayload{
+            PayloadKey(source.key.patch, source.key.spatialKey, source.kind),
+            &source});
+    }
+    std::sort(expected.begin(), expected.end(),
+        [](const ExpectedPayload& first, const ExpectedPayload& second) {
+            return first.key < second.key;
+        });
+    if(std::adjacent_find(expected.begin(), expected.end(),
+        [](const ExpectedPayload& first, const ExpectedPayload& second) {
+            return first.key == second.key;
+        }) != expected.end())
+        throw UniversalError(
+            "FmmPatchLetPlan::executeWave: duplicate expected payload");
+
+    const auto findExpected = [&](const PayloadKey& key)
+        -> const ExpectedPayload* {
+        const auto found = std::lower_bound(
+            expected.begin(), expected.end(), key,
+            [](const ExpectedPayload& value, const PayloadKey& search) {
+                return value.key < search;
+            });
+        return found == expected.end() || found->key != key ? nullptr :
+                                                               &*found;
+    };
+
+    MPI_Win sharedPayloadWindow = MPI_WIN_NULL;
+    char* sharedPayloadBase = nullptr;
+    std::size_t sharedPayloadBytes = 0;
+    if(!sharePayloadsWithinNode_)
+    {
+        for(const FmmReceivedMessage& message : received.messages())
+        {
+            const FmmByteView view = received.view(message);
+            std::size_t offset = 0;
+            while(offset < view.size)
+            {
+                const FmmPayloadRecordHeader header =
+                    FmmPacketIO::readPod<FmmPayloadRecordHeader>(view, offset);
+                validateFmmPacketStamp(
+                    header.stamp, FmmPacketKind::LetPayload,
+                    topologyEpoch_,
+                    "FmmPatchLetPlan::executeWave payload");
+                if(header.waveIndex < 0 ||
+                   static_cast<std::size_t>(header.waveIndex) != wave ||
+                   header.patchId == 0 || header.spatialKey == 0)
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: invalid payload identity");
+                const PayloadKey key(
+                    FmmPatchKey{message.source, header.patchId},
+                    header.spatialKey, header.kind);
+                const ExpectedPayload* expectedPayload = findExpected(key);
+                if(expectedPayload == nullptr ||
+                   expectedPayload->source == nullptr)
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: unsolicited payload record");
+
+                std::size_t elementBytes = 0;
+                if(header.kind ==
+                   static_cast<int>(FmmSubscriptionKind::Multipole))
+                {
+                    if(header.count != static_cast<std::uint64_t>(
+                           layout.coefficientCount()))
+                        throw UniversalError(
+                            "FmmPatchLetPlan::executeWave: multipole count mismatch");
+                    elementBytes = sizeof(double);
+                }
+                else if(header.kind ==
+                        static_cast<int>(FmmSubscriptionKind::Particles))
+                {
+                    if(expectedPayload->source->descriptor.isLeaf == 0)
+                        throw UniversalError(
+                            "FmmPatchLetPlan::executeWave: particle payload for non-leaf");
+                    elementBytes = particleWireBytes();
+                }
+                else
+                {
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: invalid payload kind");
+                }
+                if(header.count > static_cast<std::uint64_t>(
+                        std::numeric_limits<std::size_t>::max()))
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: payload count overflow");
+                const std::size_t count = static_cast<std::size_t>(
+                    header.count);
+                const std::size_t bytes = checkedMultiply(
+                    count, elementBytes,
+                    "FmmPatchLetPlan::executeWave: payload byte overflow");
+                if(bytes > FmmPacketIO::remaining(view, offset))
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: truncated payload");
+                if(payloads.size() >= expectedCount)
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: excessive payload records");
+                payloads.push_back(ReceivedPayload{
+                    key, PayloadView{view.data + offset, count}});
+                offset += bytes;
+            }
+        }
+    }
+    else
+    {
+        struct LeaderPayloadRecord
+        {
+            SharedPayloadDirectoryEntry entry;
+            const char* data = nullptr;
+            std::size_t bytes = 0;
+        };
+        std::vector<LeaderPayloadRecord> leaderRecords;
+        std::size_t leaderBodyBytes = 0;
+        const auto appendLeaderMessage = [&](int sourceRank,
+                                             const FmmByteView& view) {
+            std::size_t offset = 0;
+            while(offset < view.size)
+            {
+                const FmmPayloadRecordHeader header =
+                    FmmPacketIO::readPod<FmmPayloadRecordHeader>(view, offset);
+                validateFmmPacketStamp(
+                    header.stamp, FmmPacketKind::LetPayload,
+                    topologyEpoch_,
+                    "FmmPatchLetPlan::executeWave shared payload");
+                if(header.waveIndex < 0 ||
+                   static_cast<std::size_t>(header.waveIndex) != wave ||
+                   header.patchId == 0 || header.spatialKey == 0 ||
+                   sourceRank < 0)
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: invalid shared payload identity");
+                std::size_t elementBytes = 0;
+                if(header.kind ==
+                   static_cast<int>(FmmSubscriptionKind::Multipole))
+                {
+                    if(header.count != static_cast<std::uint64_t>(
+                           layout.coefficientCount()))
+                        throw UniversalError(
+                            "FmmPatchLetPlan::executeWave: shared multipole count mismatch");
+                    elementBytes = sizeof(double);
+                }
+                else if(header.kind ==
+                        static_cast<int>(FmmSubscriptionKind::Particles))
+                {
+                    if(header.count > static_cast<std::uint64_t>(
+                           maxParticlePayloadCount_))
+                        throw UniversalError(
+                            "FmmPatchLetPlan::executeWave: shared particle count exceeds leaf limit");
+                    elementBytes = particleWireBytes();
+                }
+                else
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: invalid shared payload kind");
+                if(header.count > static_cast<std::uint64_t>(
+                       std::numeric_limits<std::size_t>::max()))
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: shared count overflow");
+                const std::size_t count = static_cast<std::size_t>(
+                    header.count);
+                const std::size_t bytes = checkedMultiply(
+                    count, elementBytes,
+                    "FmmPatchLetPlan::executeWave: shared payload overflow");
+                if(bytes > FmmPacketIO::remaining(view, offset))
+                    throw UniversalError(
+                        "FmmPatchLetPlan::executeWave: truncated shared payload");
+                leaderRecords.push_back(LeaderPayloadRecord{
+                    SharedPayloadDirectoryEntry{
+                        sourceRank, header.kind, header.patchId,
+                        header.spatialKey, header.count, 0},
+                    view.data + offset, bytes});
+                leaderBodyBytes = checkedAdd(
+                    leaderBodyBytes, bytes,
+                    "FmmPatchLetPlan::executeWave: shared body overflow");
+                offset += bytes;
+            }
+        };
+
+        const bool localHandler = static_cast<std::size_t>(nodeRank_) <
+            localNodeHandlerCount_;
+        if(localHandler)
+        {
+            for(const FmmReceivedMessage& message : received.messages())
+                appendLeaderMessage(message.source, received.view(message));
+            if(!nodeLeaderLocalBuffer.empty())
+                appendLeaderMessage(
+                    rank_, FmmByteView{nodeLeaderLocalBuffer.data(),
+                                       nodeLeaderLocalBuffer.size()});
+            const auto entryLess = [](
+                const LeaderPayloadRecord& first,
+                const LeaderPayloadRecord& second) {
+                return std::tie(first.entry.sourceRank,
+                                first.entry.patchId,
+                                first.entry.spatialKey,
+                                first.entry.kind) <
+                       std::tie(second.entry.sourceRank,
+                                second.entry.patchId,
+                                second.entry.spatialKey,
+                                second.entry.kind);
+            };
+            std::sort(leaderRecords.begin(), leaderRecords.end(), entryLess);
+            if(std::adjacent_find(
+                   leaderRecords.begin(), leaderRecords.end(),
+                   [&](const LeaderPayloadRecord& first,
+                       const LeaderPayloadRecord& second) {
+                       return !entryLess(first, second) &&
+                              !entryLess(second, first);
+                   }) != leaderRecords.end())
+                throw UniversalError(
+                    "FmmPatchLetPlan::executeWave: duplicate node-shared payload");
+        }
+        else if(!received.messages().empty() || !nodeLeaderLocalBuffer.empty())
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: nonhandler received node payload");
+
+        const unsigned long long localSharedShape[2] = {
+            static_cast<unsigned long long>(leaderRecords.size()),
+            static_cast<unsigned long long>(leaderBodyBytes)};
+        std::vector<unsigned long long> sharedShapes(
+            static_cast<std::size_t>(2 * nodeSize_), 0);
+        requireMpiSuccess(MPI_Allgather(
+                              localSharedShape, 2, MPI_UNSIGNED_LONG_LONG,
+                              sharedShapes.data(), 2,
+                              MPI_UNSIGNED_LONG_LONG, nodeComm_),
+                          "FmmPatchLetPlan MPI_Allgather shared payload shapes");
+        std::vector<std::size_t> handlerDirectoryCounts(
+            localNodeHandlerCount_, 0);
+        std::vector<std::size_t> handlerArenaBytes(
+            localNodeHandlerCount_, 0);
+        for(std::size_t handler = 0; handler < localNodeHandlerCount_;
+            ++handler)
+        {
+            if(sharedShapes[2 * handler] >
+                   static_cast<unsigned long long>(
+                       std::numeric_limits<std::size_t>::max()) ||
+               sharedShapes[2 * handler + 1] >
+                   static_cast<unsigned long long>(
+                       std::numeric_limits<std::size_t>::max()))
+                throw UniversalError(
+                    "FmmPatchLetPlan::executeWave: shared payload shape overflow");
+            handlerDirectoryCounts[handler] = static_cast<std::size_t>(
+                sharedShapes[2 * handler]);
+            const std::size_t handlerDirectoryBytes = checkedMultiply(
+                handlerDirectoryCounts[handler],
+                sizeof(SharedPayloadDirectoryEntry),
+                "FmmPatchLetPlan::executeWave: shared directory overflow");
+            handlerArenaBytes[handler] = checkedAdd(
+                handlerDirectoryBytes,
+                static_cast<std::size_t>(sharedShapes[2 * handler + 1]),
+                "FmmPatchLetPlan::executeWave: shared handler arena overflow");
+            sharedPayloadBytes = checkedAdd(
+                sharedPayloadBytes, handlerArenaBytes[handler],
+                "FmmPatchLetPlan::executeWave: shared node arena overflow");
+        }
+        const std::size_t localHandlerArenaBytes = localHandler ?
+            handlerArenaBytes[static_cast<std::size_t>(nodeRank_)] : 0;
+        const bool localSharedBudgetOk = sharedPayloadBytes <= maxRemoteBytes &&
+            localHandlerArenaBytes <= maxRemoteBytes &&
+            wireBytes <= maxRemoteBytes - localHandlerArenaBytes;
+        collectiveRequire(
+            localSharedBudgetOk,
+            localSharedBudgetOk ? std::string() :
+                "FmmPatchLetPlan::executeWave: node-shared arena exceeds memory budget",
+            "FmmPatchLetPlan::executeWave shared arena preflight", comm_);
+        if(localHandlerArenaBytes > static_cast<std::size_t>(
+               std::numeric_limits<MPI_Aint>::max()))
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: shared arena exceeds MPI_Aint");
+
+        void* localSharedBase = nullptr;
+        const MPI_Aint localAllocation = static_cast<MPI_Aint>(
+            localHandlerArenaBytes);
+        requireMpiSuccess(MPI_Win_allocate_shared(
+                              localAllocation, 1, MPI_INFO_NULL, nodeComm_,
+                              &localSharedBase, &sharedPayloadWindow),
+                          "FmmPatchLetPlan MPI_Win_allocate_shared payload");
+        std::vector<char*> handlerBases(localNodeHandlerCount_, nullptr);
+        for(std::size_t handler = 0; handler < localNodeHandlerCount_;
+            ++handler)
+        {
+            MPI_Aint queriedSize = 0;
+            int displacementUnit = 0;
+            requireMpiSuccess(MPI_Win_shared_query(
+                                  sharedPayloadWindow,
+                                  static_cast<int>(handler), &queriedSize,
+                                  &displacementUnit,
+                                  reinterpret_cast<void**>(
+                                      &handlerBases[handler])),
+                              "FmmPatchLetPlan MPI_Win_shared_query payload");
+            if(queriedSize != static_cast<MPI_Aint>(
+                   handlerArenaBytes[handler]) ||
+               displacementUnit != 1 ||
+               (handlerArenaBytes[handler] != 0 &&
+                handlerBases[handler] == nullptr))
+                throw UniversalError(
+                    "FmmPatchLetPlan::executeWave: invalid shared handler mapping");
+        }
+
+        if(localHandler)
+        {
+            sharedPayloadBase = handlerBases[static_cast<std::size_t>(
+                nodeRank_)];
+            const std::size_t directoryBytes = checkedMultiply(
+                leaderRecords.size(), sizeof(SharedPayloadDirectoryEntry),
+                "FmmPatchLetPlan::executeWave: local handler directory overflow");
+            SharedPayloadDirectoryEntry* directory =
+                reinterpret_cast<SharedPayloadDirectoryEntry*>(
+                    sharedPayloadBase);
+            std::size_t bodyOffset = directoryBytes;
+            for(std::size_t index = 0; index < leaderRecords.size(); ++index)
+            {
+                leaderRecords[index].entry.byteOffset =
+                    static_cast<std::uint64_t>(bodyOffset);
+                directory[index] = leaderRecords[index].entry;
+                if(leaderRecords[index].bytes != 0)
+                    std::memcpy(sharedPayloadBase + bodyOffset,
+                                leaderRecords[index].data,
+                                leaderRecords[index].bytes);
+                bodyOffset += leaderRecords[index].bytes;
+            }
+            if(bodyOffset != localHandlerArenaBytes)
+                throw UniversalError(
+                    "FmmPatchLetPlan::executeWave: shared arena fill mismatch");
+        }
+        requireMpiSuccess(MPI_Win_sync(sharedPayloadWindow),
+                          "FmmPatchLetPlan MPI_Win_sync shared payload");
+        requireMpiSuccess(MPI_Barrier(nodeComm_),
+                          "FmmPatchLetPlan MPI_Barrier publish shared payload");
+
+        const auto sharedEntryLess = [](
+            const SharedPayloadDirectoryEntry& entry,
+            const PayloadKey& key) {
+            return std::tie(entry.sourceRank, entry.patchId,
+                            entry.spatialKey, entry.kind) <
+                   std::tie(std::get<0>(key).ownerRank,
+                            std::get<0>(key).patchId,
+                            std::get<1>(key), std::get<2>(key));
+        };
+        for(const ExpectedPayload& wanted : expected)
+        {
+            const std::size_t handler = payloadHandlerLane(
+                std::get<0>(wanted.key).patchId,
+                std::get<1>(wanted.key), std::get<2>(wanted.key),
+                localNodeHandlerCount_);
+            const std::size_t directoryCount =
+                handlerDirectoryCounts[handler];
+            const char* handlerBase = handlerBases[handler];
+            const SharedPayloadDirectoryEntry* directory =
+                reinterpret_cast<const SharedPayloadDirectoryEntry*>(
+                    handlerBase);
+            const SharedPayloadDirectoryEntry* found = std::lower_bound(
+                directory, directory + directoryCount, wanted.key,
+                sharedEntryLess);
+            if(found == directory + directoryCount ||
+               found->sourceRank != std::get<0>(wanted.key).ownerRank ||
+               found->patchId != std::get<0>(wanted.key).patchId ||
+               found->spatialKey != std::get<1>(wanted.key) ||
+               found->kind != std::get<2>(wanted.key) ||
+               found->count > static_cast<std::uint64_t>(
+                   std::numeric_limits<std::size_t>::max()))
+                throw UniversalError(
+                    "FmmPatchLetPlan::executeWave: missing node-shared payload");
+            const std::size_t count = static_cast<std::size_t>(found->count);
+            const std::size_t elementBytes = found->kind ==
+                static_cast<int>(FmmSubscriptionKind::Multipole) ?
+                sizeof(double) : particleWireBytes();
+            const std::size_t bytes = checkedMultiply(
+                count, elementBytes,
+                "FmmPatchLetPlan::executeWave: shared view overflow");
+            if(found->byteOffset > handlerArenaBytes[handler] ||
+               bytes > handlerArenaBytes[handler] -
+                   static_cast<std::size_t>(found->byteOffset))
+                throw UniversalError(
+                    "FmmPatchLetPlan::executeWave: invalid node-shared view");
+            payloads.push_back(ReceivedPayload{
+                wanted.key,
+                PayloadView{handlerBase + found->byteOffset, count}});
+        }
+        received.releaseStorage();
+        request.clear();
+        stats.peakRemoteBytes = std::max(
+            stats.peakRemoteBytes,
+            saturatingAdd(wireBytes, sharedPayloadBytes));
+        stats.letMaxWavePayloadBytes = std::max(
+            stats.letMaxWavePayloadBytes, sharedPayloadBytes);
+    }
+    std::sort(payloads.begin(), payloads.end(),
+        [](const ReceivedPayload& first, const ReceivedPayload& second) {
+            return first.key < second.key;
+        });
+    if(payloads.size() != expected.size())
+        throw UniversalError(
+            "FmmPatchLetPlan::executeWave: missing or excessive payload records");
+    for(std::size_t index = 0; index < expected.size(); ++index)
+    {
+        if(payloads[index].key != expected[index].key ||
+           (index != 0 && payloads[index - 1].key == payloads[index].key))
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: missing or duplicate payload record");
+    }
+    stats.peakRemoteBytes = std::max(
+        stats.peakRemoteBytes, saturatingAdd(wireBytes, tableBytes));
+
+    const auto findPayload = [&](const PayloadKey& key)
+        -> const ReceivedPayload* {
+        const auto found = std::lower_bound(
+            payloads.begin(), payloads.end(), key,
+            [](const ReceivedPayload& value, const PayloadKey& search) {
+                return value.key < search;
+            });
+        return found == payloads.end() || found->key != key ? nullptr :
+                                                               &*found;
+    };
+
+    std::vector<double> derivativeScratch;
+    std::vector<double> operatorScratch;
+    std::vector<double> coefficientScratch(layout.coefficientCount(), 0.0);
+
+    const Clock::time_point m2lStart = Clock::now();
+    const std::pair<std::size_t, std::size_t> m2lRange =
+        m2lWaveRanges_[wave];
+    for(std::size_t interactionIndex = m2lRange.first;
+        interactionIndex < m2lRange.second; ++interactionIndex)
+    {
+        const FmmPatchLetM2LInteraction& interaction =
+            m2lInteractions_[interactionIndex];
+        if(interaction.targetPatchIndex >= forest.patches().size() ||
+           interaction.sourceIndex >= sources_.size() ||
+           interaction.geometryIndex >= m2lGeometries_.size())
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: invalid M2L interaction");
+        FmmLocalPatch& targetPatch =
+            forest.patches()[interaction.targetPatchIndex];
+        if(interaction.targetNode >= targetPatch.tree.nodes().size())
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: invalid M2L target node");
+        const SourceRecord& source = sources_[interaction.sourceIndex];
+        if(source.wave != wave || source.kind !=
+           static_cast<int>(FmmSubscriptionKind::Multipole))
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: M2L source assigned to wrong wave");
+        const PayloadKey key(source.key.patch, source.key.spatialKey,
+                             source.kind);
+        const ReceivedPayload* payload = findPayload(key);
+        if(payload == nullptr ||
+           payload->view.count != layout.coefficientCount())
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: missing M2L payload");
+        std::memcpy(coefficientScratch.data(), payload->view.data,
+                    layout.coefficientCount() * sizeof(double));
+        const FmmNode& targetNode =
+            targetPatch.tree.nodes()[interaction.targetNode];
+        const FmmM2LOperatorCache::Lookup lookup =
+            operatorCache.getPrepared(
+                m2lGeometries_[interaction.geometryIndex], layout,
+                derivativeScratch, operatorScratch);
+        if(lookup.coefficients == nullptr)
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: missing M2L operator");
+        FmmKernels::translateM2LRaw(
+            source.sourceNode, targetNode, layout,
+            coefficientScratch.data(), targetPatch.locals,
+            *lookup.coefficients, lookup.inverseScale);
+        ++stats.m2lCount;
+        ++stats.letM2LCount;
+    }
+    stats.letM2LSeconds += elapsed(m2lStart);
+
+    const Clock::time_point m2pStart = Clock::now();
+    const std::pair<std::size_t, std::size_t> m2pRange =
+        m2pWaveRanges_[wave];
+    std::uint32_t currentM2PSource =
+        std::numeric_limits<std::uint32_t>::max();
+    const ReceivedPayload* currentM2PPayload = nullptr;
+    std::vector<double> m2pLocals(layout.coefficientCount(), 0.0);
+    for(std::size_t interactionIndex = m2pRange.first;
+        interactionIndex < m2pRange.second; ++interactionIndex)
+    {
+        const FmmPatchLetM2PInteraction& interaction =
+            m2pInteractions_[interactionIndex];
+        if(interaction.targetPatchIndex >= forest.patches().size() ||
+           interaction.sourceIndex >= sources_.size())
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: invalid M2P interaction");
+        FmmLocalPatch& targetPatch =
+            forest.patches()[interaction.targetPatchIndex];
+        if(interaction.targetNode >= targetPatch.tree.nodes().size())
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: invalid M2P target node");
+        const FmmNode& targetNode =
+            targetPatch.tree.nodes()[interaction.targetNode];
+        if(!targetNode.isLeaf())
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: M2P target is not a leaf");
+        const SourceRecord& source = sources_[interaction.sourceIndex];
+        if(source.wave != wave || source.kind !=
+           static_cast<int>(FmmSubscriptionKind::Multipole))
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: M2P source assigned to wrong wave");
+        if(currentM2PSource != interaction.sourceIndex)
+        {
+            currentM2PSource = interaction.sourceIndex;
+            currentM2PPayload = findPayload(PayloadKey(
+                source.key.patch, source.key.spatialKey, source.kind));
+            if(currentM2PPayload == nullptr ||
+               currentM2PPayload->view.count != layout.coefficientCount())
+                throw UniversalError(
+                    "FmmPatchLetPlan::executeWave: missing M2P payload");
+            std::memcpy(coefficientScratch.data(),
+                        currentM2PPayload->view.data,
+                        layout.coefficientCount() * sizeof(double));
+        }
+        std::vector<double>* potential =
+            targetPatch.potential.empty() ? nullptr : &targetPatch.potential;
+        for(std::size_t k = targetNode.particleBegin;
+            k < targetNode.particleEnd; ++k)
+        {
+            const std::size_t body = targetPatch.tree.particleOrder()[k];
+            FmmNode pointTarget;
+            pointTarget.center = targetPatch.positions[body];
+            pointTarget.particleBegin = k;
+            pointTarget.particleEnd = k + 1;
+            pointTarget.localOffset = 0;
+            const Vector3D displacement =
+                pointTarget.center - source.sourceNode.center;
+            FmmKernels::computeM2LOperator(
+                displacement, layout, derivativeScratch, operatorScratch);
+            std::fill(m2pLocals.begin(), m2pLocals.end(), 0.0);
+            FmmKernels::translateM2LRaw(
+                source.sourceNode, pointTarget, layout,
+                coefficientScratch.data(), m2pLocals, operatorScratch, 1.0);
+            FmmKernels::evaluateL2P(
+                pointTarget, targetPatch.positions,
+                targetPatch.tree.particleOrder(), layout, m2pLocals,
+                targetPatch.acceleration, potential);
+            ++stats.letM2PCount;
+        }
+    }
+    stats.letM2PSeconds += elapsed(m2pStart);
+
+    const Clock::time_point p2pStart = Clock::now();
+    const std::pair<std::size_t, std::size_t> p2pRange =
+        p2pWaveRanges_[wave];
+    for(std::size_t interactionIndex = p2pRange.first;
+        interactionIndex < p2pRange.second; ++interactionIndex)
+    {
+        const FmmPatchLetP2PInteraction& interaction =
+            p2pInteractions_[interactionIndex];
+        if(interaction.targetPatchIndex >= forest.patches().size() ||
+           interaction.sourceIndex >= sources_.size())
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: invalid P2P interaction");
+        FmmLocalPatch& targetPatch =
+            forest.patches()[interaction.targetPatchIndex];
+        if(interaction.targetNode >= targetPatch.tree.nodes().size())
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: invalid P2P target node");
+        const FmmNode& targetNode =
+            targetPatch.tree.nodes()[interaction.targetNode];
+        if(!targetNode.isLeaf())
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: P2P target is not a leaf");
+        const SourceRecord& source = sources_[interaction.sourceIndex];
+        if(source.wave != wave || source.kind !=
+           static_cast<int>(FmmSubscriptionKind::Particles))
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: P2P source assigned to wrong wave");
+        const PayloadKey key(source.key.patch, source.key.spatialKey,
+                             source.kind);
+        const ReceivedPayload* payload = findPayload(key);
+        if(payload == nullptr)
+            throw UniversalError(
+                "FmmPatchLetPlan::executeWave: missing P2P payload");
+        addDirectRemoteParticles(targetPatch, targetNode,
+                                 source.sourceNode.center,
+                                 payload->view.data,
+                                 payload->view.count,
+                                 compactParticlePayload_,
+                                 stats);
+    }
+    stats.letP2PSeconds += elapsed(p2pStart);
+    if(sharedPayloadWindow != MPI_WIN_NULL)
+    {
+        // No handler may recycle its segment until every local rank has
+        // finished evaluating the views it obtained from that segment.
+        requireMpiSuccess(MPI_Barrier(nodeComm_),
+                          "FmmPatchLetPlan MPI_Barrier consume shared payload");
+        requireMpiSuccess(MPI_Win_free(&sharedPayloadWindow),
+                          "FmmPatchLetPlan MPI_Win_free shared payload");
+    }
+    received.releaseStorage();
+    request.clear();
+}
+
+void FmmPatchLetPlan::execute(
+    FmmPatchForest& forest,
+    const FmmTaylorExpansion& layout,
+    FmmM2LOperatorCache& operatorCache,
+    std::size_t maxRemoteBytes,
+    std::size_t maxOperatorCacheBytes,
+    FmmSolveStats& stats)
+{
+    const Clock::time_point start = Clock::now();
+    if(maxRemoteBytes < 2)
+        throw UniversalError("FmmPatchLetPlan::execute: remote budget too small");
+    operatorCache.configure(maxOperatorCacheBytes, layout.m2lTerms().size(),
+                            m2lGeometries_.size());
+    operatorCache.beginPhase();
+    for(std::size_t wave = 0; wave < waveCount_; ++wave)
+        executeWave(wave, forest, layout, operatorCache, maxRemoteBytes, stats);
+    stats.letOperatorCacheBytes = operatorCache.bytesOwned();
+    stats.letOperatorCacheEntries = operatorCache.entries();
+    stats.letOperatorCacheMaxEntries = operatorCache.maxEntries();
+    stats.letOperatorCacheHits = operatorCache.hits();
+    stats.letOperatorCacheMisses = operatorCache.misses();
+    stats.letOperatorCacheBypasses = operatorCache.bypasses();
+    stats.letOperatorIntegerKeyHits = operatorCache.integerKeyHits();
+    stats.letOperatorIntegerKeyMisses = operatorCache.integerKeyMisses();
+    stats.letExecuteSeconds += elapsed(start);
+}
+
+void FmmPatchLetPlan::emitNonuniformityDiagnostics(
+    const FmmPatchForest& forest,
+    std::uint64_t call) const
+{
+    if(!nonuniformDiagnosticsEnabled())
+        return;
+
+    int rank = 0;
+    int size = 1;
+    MPI_Comm_rank(comm_, &rank);
+    MPI_Comm_size(comm_, &size);
+
+    typedef std::tuple<std::uint64_t, std::uint64_t, int> DiagnosticSource;
+    std::map<DiagnosticSource, std::size_t> fanoutBySource;
+
+    unsigned long long localTotals[10] = {};
+    // 0 all subscriptions, 1 particle subscriptions, 2 multipole subscriptions,
+    // 3 source records, 4 particle source records, 5 multipole source records,
+    // 6 record-header bytes, 7 particle payload bytes,
+    // 8 multipole payload bytes, 9 complete estimated payload bytes.
+    for(const auto& peerEntry : subscriptionsReceived_)
+    {
+        for(const FmmSubscription& subscription : peerEntry.second)
+        {
+            ++localTotals[0];
+            if(subscription.kind ==
+               static_cast<int>(FmmSubscriptionKind::Particles))
+                ++localTotals[1];
+            else
+                ++localTotals[2];
+
+            ++fanoutBySource[DiagnosticSource(
+                subscription.patchId, subscription.spatialKey,
+                subscription.kind)];
+
+            const std::size_t patchIndex = forest.findPatch(
+                subscription.patchId);
+            if(patchIndex == std::numeric_limits<std::size_t>::max() ||
+               patchIndex >= localNodeByPatch_.size())
+                throw UniversalError(
+                    "FmmPatchLetPlan diagnostics: missing subscribed patch");
+            const auto nodeIt = localNodeByPatch_[patchIndex].find(
+                subscription.spatialKey);
+            if(nodeIt == localNodeByPatch_[patchIndex].end() ||
+               nodeIt->second >= forest.patches()[patchIndex].tree.nodes().size())
+                throw UniversalError(
+                    "FmmPatchLetPlan diagnostics: missing subscribed node");
+            const FmmNode& node = forest.patches()[patchIndex].tree.nodes()[
+                nodeIt->second];
+
+            const unsigned long long headerBytes =
+                static_cast<unsigned long long>(sizeof(FmmPayloadRecordHeader));
+            localTotals[6] += headerBytes;
+            unsigned long long payloadBytes = 0;
+            if(subscription.kind ==
+               static_cast<int>(FmmSubscriptionKind::Particles))
+            {
+                payloadBytes = static_cast<unsigned long long>(
+                    node.particleCount()) * static_cast<unsigned long long>(
+                        particleWireBytes());
+                localTotals[7] += payloadBytes;
+            }
+            else if(subscription.kind ==
+                    static_cast<int>(FmmSubscriptionKind::Multipole))
+            {
+                payloadBytes = static_cast<unsigned long long>(
+                    multipoleCoefficientCount_) *
+                    static_cast<unsigned long long>(sizeof(double));
+                localTotals[8] += payloadBytes;
+            }
+            else
+            {
+                throw UniversalError(
+                    "FmmPatchLetPlan diagnostics: invalid subscription kind");
+            }
+            localTotals[9] += headerBytes + payloadBytes;
+        }
+    }
+
+    std::vector<unsigned long long> localHistogram(
+        static_cast<std::size_t>(size) + 1, 0);
+    for(const auto& entry : fanoutBySource)
+    {
+        const std::size_t fanout = entry.second;
+        if(fanout == 0 || fanout > static_cast<std::size_t>(size))
+            throw UniversalError(
+                "FmmPatchLetPlan diagnostics: invalid source fanout");
+        ++localHistogram[fanout];
+        ++localTotals[3];
+        if(std::get<2>(entry.first) ==
+           static_cast<int>(FmmSubscriptionKind::Particles))
+            ++localTotals[4];
+        else
+            ++localTotals[5];
+    }
+
+    unsigned long long globalTotals[10] = {};
+    std::vector<unsigned long long> globalHistogram(
+        static_cast<std::size_t>(size) + 1, 0);
+    MPI_Reduce(localTotals, globalTotals, 10, MPI_UNSIGNED_LONG_LONG,
+               MPI_SUM, 0, comm_);
+    MPI_Reduce(localHistogram.data(), globalHistogram.data(), size + 1,
+               MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, comm_);
+
+    const unsigned long long localRankValues[4] = {
+        static_cast<unsigned long long>(subscriptionsReceived_.size()),
+        localTotals[0], localTotals[7], localTotals[8]};
+    std::vector<unsigned long long> gatheredRankValues;
+    if(rank == 0)
+        gatheredRankValues.resize(static_cast<std::size_t>(size) * 4);
+    MPI_Gather(localRankValues, 4, MPI_UNSIGNED_LONG_LONG,
+               rank == 0 ? gatheredRankValues.data() : nullptr, 4,
+               MPI_UNSIGNED_LONG_LONG, 0, comm_);
+
+    if(rank != 0)
+        return;
+
+    const auto histogramPercentile = [&](double fraction) {
+        unsigned long long total = 0;
+        for(unsigned long long value : globalHistogram)
+            total += value;
+        if(total == 0)
+            return std::size_t(0);
+        const unsigned long long threshold = static_cast<unsigned long long>(
+            std::ceil(fraction * static_cast<double>(total)));
+        unsigned long long running = 0;
+        for(std::size_t i = 0; i < globalHistogram.size(); ++i)
+        {
+            running += globalHistogram[i];
+            if(running >= std::max<unsigned long long>(1, threshold))
+                return i;
+        }
+        return globalHistogram.size() - 1;
+    };
+    const auto gatheredPercentile = [&](int column, double fraction) {
+        std::vector<unsigned long long> values;
+        values.reserve(static_cast<std::size_t>(size));
+        for(int r = 0; r < size; ++r)
+            values.push_back(gatheredRankValues[
+                static_cast<std::size_t>(4 * r + column)]);
+        std::sort(values.begin(), values.end());
+        const std::size_t index = std::min(
+            values.size() - 1, static_cast<std::size_t>(
+                std::ceil(fraction * static_cast<double>(values.size()))) - 1);
+        return values[index];
+    };
+
+    std::fprintf(stdout,
+        "fmm_nonuniform_let call=%llu source_records=%llu "
+        "particle_sources=%llu multipole_sources=%llu subscriptions=%llu "
+        "particle_subscriptions=%llu multipole_subscriptions=%llu "
+        "fanout_p50=%zu fanout_p95=%zu fanout_p99=%zu fanout_max=%zu "
+        "requester_peers_p50=%llu requester_peers_p95=%llu "
+        "requester_peers_p99=%llu requester_peers_max=%llu "
+        "header_bytes=%llu particle_payload_bytes=%llu "
+        "multipole_payload_bytes=%llu estimated_payload_bytes=%llu\n",
+        static_cast<unsigned long long>(call),
+        globalTotals[3], globalTotals[4], globalTotals[5], globalTotals[0],
+        globalTotals[1], globalTotals[2],
+        histogramPercentile(0.50), histogramPercentile(0.95),
+        histogramPercentile(0.99), histogramPercentile(1.0),
+        gatheredPercentile(0, 0.50), gatheredPercentile(0, 0.95),
+        gatheredPercentile(0, 0.99), gatheredPercentile(0, 1.0),
+        globalTotals[6], globalTotals[7], globalTotals[8], globalTotals[9]);
+    std::fflush(stdout);
+}
+
+std::size_t FmmPatchLetPlan::bytesOwned() const
+{
+    std::size_t result = saturatingAdd(
+        exchange_.bytesOwned(), nodePayloadExchange_.bytesOwned());
+    const auto add = [&](std::size_t bytes) {
+        if(bytes > std::numeric_limits<std::size_t>::max() - result)
+            result = std::numeric_limits<std::size_t>::max();
+        else
+            result += bytes;
+    };
+    const auto multiply = [](std::size_t count, std::size_t elementSize) {
+        return count != 0 && elementSize >
+            std::numeric_limits<std::size_t>::max() / count ?
+            std::numeric_limits<std::size_t>::max() : count * elementSize;
+    };
+
+    add(multiply(sources_.capacity(), sizeof(SourceRecord)));
+    add(multiply(m2lInteractions_.capacity(),
+                 sizeof(FmmPatchLetM2LInteraction)));
+    add(multiply(p2pInteractions_.capacity(),
+                 sizeof(FmmPatchLetP2PInteraction)));
+    add(multiply(m2pInteractions_.capacity(),
+                 sizeof(FmmPatchLetM2PInteraction)));
+    add(multiply(m2lGeometries_.capacity(),
+                 sizeof(FmmM2LOperatorCache::PreparedGeometry)));
+    add(multiply(m2lWaveRanges_.capacity(),
+                 sizeof(std::pair<std::size_t, std::size_t>)));
+    add(multiply(p2pWaveRanges_.capacity(),
+                 sizeof(std::pair<std::size_t, std::size_t>)));
+    add(multiply(m2pWaveRanges_.capacity(),
+                 sizeof(std::pair<std::size_t, std::size_t>)));
+
+    add(multiply(localNodeByPatch_.capacity(),
+                 sizeof(std::unordered_map<std::uint64_t, std::size_t>)));
+    const std::size_t localEntryBytes =
+        sizeof(std::pair<const std::uint64_t, std::size_t>) +
+        2 * sizeof(void*);
+    for(const auto& lookup : localNodeByPatch_)
+    {
+        add(multiply(lookup.bucket_count(), sizeof(void*)));
+        add(multiply(lookup.size(), localEntryBytes));
+    }
+
+    const std::size_t rootEntryBytes =
+        sizeof(std::pair<const FmmPatchKey, RemoteRootGeometry>) +
+        2 * sizeof(void*);
+    add(multiply(remoteRoots_.size(), rootEntryBytes));
+
+    const std::size_t remoteOuterEntryBytes =
+        sizeof(std::pair<const FmmPatchKey,
+            std::unordered_map<std::uint64_t, FmmRemoteNodeDescriptor>>) +
+        2 * sizeof(void*);
+    const std::size_t remoteInnerEntryBytes =
+        sizeof(std::pair<const std::uint64_t, FmmRemoteNodeDescriptor>) +
+        2 * sizeof(void*);
+    add(multiply(remoteDescriptors_.size(), remoteOuterEntryBytes));
+    for(const auto& patch : remoteDescriptors_)
+    {
+        add(multiply(patch.second.bucket_count(), sizeof(void*)));
+        add(multiply(patch.second.size(), remoteInnerEntryBytes));
+    }
+
+    const std::size_t sourcePayloadCapEntryBytes =
+        sizeof(std::pair<const SourceIdentity, std::size_t>) +
+        2 * sizeof(void*);
+    add(multiply(sourceParticlePayloadCaps_.size(),
+                 sourcePayloadCapEntryBytes));
+
+    const std::size_t reverseDependencyEntryBytes =
+        sizeof(std::pair<const FmmPatchKey, std::set<FmmPatchKey>>) +
+        2 * sizeof(void*);
+    const std::size_t reverseDependencyTargetEntryBytes =
+        sizeof(FmmPatchKey) + 3 * sizeof(void*);
+    add(multiply(targetsDependingOnSourcePatch_.size(),
+                 reverseDependencyEntryBytes));
+    for(const auto& dependency : targetsDependingOnSourcePatch_)
+        add(multiply(dependency.second.size(),
+                     reverseDependencyTargetEntryBytes));
+
+    const std::size_t targetSubplanEntryBytes =
+        sizeof(std::pair<const FmmPatchKey, CachedTargetSubplan>) +
+        2 * sizeof(void*);
+    const std::size_t cachedSourceEntryBytes =
+        sizeof(std::pair<const SourceIdentity, CachedSource>) +
+        2 * sizeof(void*);
+    const std::size_t patchSetEntryBytes = sizeof(FmmPatchKey) +
+        3 * sizeof(void*);
+    add(multiply(targetSubplans_.size(), targetSubplanEntryBytes));
+    for(const auto& target : targetSubplans_)
+    {
+        add(multiply(target.second.sourcePatches.size(), patchSetEntryBytes));
+        add(multiply(target.second.sources.size(), cachedSourceEntryBytes));
+        add(multiply(target.second.m2l.capacity(), sizeof(CachedTerminal)));
+        add(multiply(target.second.p2p.capacity(), sizeof(CachedTerminal)));
+        add(multiply(target.second.m2p.capacity(), sizeof(CachedTerminal)));
+    }
+    const std::size_t sourceHashEntryBytes =
+        sizeof(std::pair<const FmmPatchKey, std::uint64_t>) +
+        2 * sizeof(void*);
+    add(multiply(sourceTopologyHashes_.size(), sourceHashEntryBytes));
+
+    const std::size_t payloadCapEntryBytes =
+        sizeof(std::pair<const std::pair<std::uint64_t, std::uint64_t>,
+                         std::size_t>) + 2 * sizeof(void*);
+    add(multiply(localParticlePayloadCaps_.size(), payloadCapEntryBytes));
+
+    const std::size_t subscriptionMapEntryBytes =
+        sizeof(std::pair<const int, std::vector<FmmSubscription>>) +
+        2 * sizeof(void*);
+    add(multiply(subscriptionsReceived_.bucket_count(), sizeof(void*)));
+    add(multiply(subscriptionsReceived_.size(), subscriptionMapEntryBytes));
+    for(const auto& subscriptions : subscriptionsReceived_)
+        add(multiply(subscriptions.second.capacity(),
+                     sizeof(FmmSubscription)));
+
+    add(multiply(subscriptionsByWave_.capacity(),
+                 sizeof(std::vector<SubscriptionReference>)));
+    for(const auto& wave : subscriptionsByWave_)
+        add(multiply(wave.capacity(), sizeof(SubscriptionReference)));
+
+    add(multiply(nodeSubscriptionsByWave_.capacity(),
+                 sizeof(std::vector<NodeSubscriptionReference>)));
+    for(const auto& wave : nodeSubscriptionsByWave_)
+        add(multiply(wave.capacity(), sizeof(NodeSubscriptionReference)));
+    add(multiply(nodeLeaderByRank_.capacity(), sizeof(int)));
+    add(multiply(nodeSizeByRank_.capacity(), sizeof(int)));
+    add(multiply(nodeHandlersByRank_.capacity(), sizeof(int)));
+
+    return result;
+}
+
+#endif // RICH_MPI

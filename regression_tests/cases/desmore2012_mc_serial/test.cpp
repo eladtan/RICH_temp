@@ -42,7 +42,10 @@ namespace
                          const std::vector<double> &groupBoundaries)
             : sigma0_left_(sigma0_left), sigma0_right_(sigma0_right),
               groupCenters_(groupCenters), groupBoundaries_(groupBoundaries)
-        {}
+        {
+            this->energy_groups_center = groupCenters_;
+            this->energy_groups_boundary = groupBoundaries_;
+        }
 
         double CalcPlanckOpacity(const ComputationalCell3D &cell) const override
         {
@@ -186,7 +189,7 @@ int main(int /*argc*/, char * /*argv*/[])
     constexpr size_t boundaryPhotonsPerCell = 100;
 
     std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond =
-        std::make_shared<SideTemperature<Vector3D, Tessellation3D>>(
+        std::make_shared<STORM::SideTemperature<Vector3D, Tessellation3D>>(
             tess, T_boundary, boundaryPhotonsPerCell, energy_groups_boundary);
 
     STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> radiationIMCParameters = {
@@ -201,7 +204,8 @@ int main(int /*argc*/, char * /*argv*/[])
         tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, radiationIMCParameters);
 
     std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
-        std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell, 5);
+        std::make_shared<STORM::CombPopulationControl<Vector3D, Tessellation3D>>(
+            tess, maxPhotonsPerCell, 5);
 
     std::vector<Particle3D> initialParticles;
     size_t initialParticlesPerCell = 0;

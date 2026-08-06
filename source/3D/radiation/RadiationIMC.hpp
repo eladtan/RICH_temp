@@ -4,10 +4,12 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <cmath>
 #include <limits>
 #include <memory>
 #include <random>
+#include <string>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -17,9 +19,14 @@
 #include "monte/utils/LinearInterpolation.hpp"
 #include "monte/radiation/RadiationIMC.hpp"
 #include "SphericalObserver.hpp"
+#include "postprocess/IMCPostProcessControl.hpp"
 #include "CMMC/src/planck_integral/planck_integral.hpp"
 
 class SphericalObserver;
+
+using RadiationIMCParameters =
+    STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM>;
+using ComptonInducedMode = STORM::ComptonInducedMode;
 
 class RICHRadiationOpacityAdapter final
     : public STORM::RadiationOpacityModel<Vector3D, Tessellation3D, ComputationalCell3D, ENERGY_GROUPS_NUM>
@@ -300,8 +307,11 @@ public:
                                      ENERGY_GROUPS_NUM,
                                      RICHRadiationIMCTraits,
                                      RICHRadiationPositionSampler>;
-    using SourceAllocationSummary = typename Impl::SourceAllocationSummary;
-    using GroupSamplingDiagnostics = typename Impl::GroupSamplingDiagnostics;
+    using ImplSourceAllocationSummary = typename Impl::SourceAllocationSummary;
+    using ImplGroupSamplingDiagnostics = typename Impl::GroupSamplingDiagnostics;
+    using PostProcessExternalSource = IMCPostProcessExternalSource;
+    using SourceAllocationSummary = IMCSourceAllocationSummary;
+    using GroupSamplingDiagnostics = IMCGroupSamplingDiagnostics;
     using ComptonCellData = typename Impl::ComptonCellData;
     using Parameters = typename Impl::Parameters;
 
@@ -452,19 +462,78 @@ public:
 
     void setNewPhotonsPerCell(std::size_t n) { this->impl_.setNewPhotonsPerCell(n); }
 
+    void reseedRNG(std::uint64_t seed)
+    {
+        MonteCarloRadiationPhysics3D::reseedRNG(seed);
+        this->impl_.reseedRNG(seed);
+    }
+
+    std::size_t getRandomWalkStepCount() const override
+    {
+        return this->impl_.getRandomWalkStepCount();
+    }
+
+    std::size_t getDDMCStepCount() const override
+    {
+        return this->impl_.getDDMCStepCount();
+    }
+
+    std::size_t getDDMCLeakCount() const override
+    {
+        return this->impl_.getDDMCLeakCount();
+    }
+
+    std::size_t getDDMCCensusCount() const override
+    {
+        return this->impl_.getDDMCCensusCount();
+    }
+
+    std::size_t getDDMCUpscatterCount() const override
+    {
+        return this->impl_.getDDMCUpscatterCount();
+    }
+
+    std::size_t getDDMCFallbackCount() const override
+    {
+        return this->impl_.getDDMCFallbackCount();
+    }
+
+    std::string getAccelerationDebugInfo(
+        std::size_t cellIndex, double frequency) const override
+    {
+        return this->impl_.getAccelerationDebugInfo(cellIndex, frequency);
+    }
+
+    std::string getDDMCFaceDiagnosticsTSV(double xMin, double xMax) const
+    {
+        return this->impl_.getDDMCFaceDiagnosticsTSV(xMin, xMax);
+    }
+
+    std::string getDDMCInterfaceEventDiagnosticsTSV(
+        double xMin, double xMax) const
+    {
+        return this->impl_.getDDMCInterfaceEventDiagnosticsTSV(xMin, xMax);
+    }
+
     void setAdaptiveSourceCellScores(std::unordered_map<std::size_t, double> scores,
                                      double strength,
                                      double maxFactor,
                                      double learnedReserveFrac,
                                      double learnedMinFactor,
-                                     double observerBudgetMultiplier)
+                                     double observerBudgetMultiplier,
+                                     std::size_t learnedMinPhotons = 0,
+                                     std::size_t learnedMaxPhotons = 0,
+                                     double scorePower = 1.0)
     {
         this->impl_.setAdaptiveSourceCellScores(std::move(scores),
                                                 strength,
                                                 maxFactor,
                                                 learnedReserveFrac,
                                                 learnedMinFactor,
-                                                observerBudgetMultiplier);
+                                                observerBudgetMultiplier,
+                                                learnedMinPhotons,
+                                                learnedMaxPhotons,
+                                                scorePower);
     }
 
     void clearAdaptiveSourceCellScores()
@@ -492,7 +561,8 @@ public:
 
     GroupSamplingDiagnostics getLastGroupSamplingDiagnostics() const
     {
-        return this->impl_.getLastGroupSamplingDiagnostics();
+        return convertGroupSamplingDiagnostics(
+            this->impl_.getLastGroupSamplingDiagnostics());
     }
 
     void setSourceEmissionControl(bool useLearnedScores,
@@ -515,7 +585,8 @@ public:
 
     SourceAllocationSummary getLastSourceAllocationSummary() const
     {
-        return this->impl_.getLastSourceAllocationSummary();
+        return convertSourceAllocationSummary(
+            this->impl_.getLastSourceAllocationSummary());
     }
 
     const std::vector<std::size_t> &getLastSourcePhotonsPerCell() const
@@ -523,7 +594,160 @@ public:
         return this->impl_.getLastSourcePhotonsPerCell();
     }
 
+    void setPostProcessExternalSources(
+        std::vector<PostProcessExternalSource> sources)
+    {
+        std::vector<typename Impl::PostProcessExternalSource> converted;
+        converted.reserve(sources.size());
+        for(PostProcessExternalSource const &source : sources)
+        {
+            typename Impl::PostProcessExternalSource target;
+            target.faceIndex = source.faceIndex;
+            target.cellID = source.cellID;
+            target.interiorCellID = source.interiorCellID;
+            target.location = source.location;
+            target.outwardNormal = source.outwardNormal;
+            target.luminosity = source.luminosity;
+            converted.push_back(target);
+        }
+        this->impl_.setPostProcessExternalSources(std::move(converted));
+    }
+
+    void clearPostProcessExternalSources()
+    {
+        this->impl_.clearPostProcessExternalSources();
+    }
+
+    bool hasPostProcessExternalSources() const
+    {
+        return this->impl_.hasPostProcessExternalSources();
+    }
+
+    void configurePostProcessControl(IMCPostProcessControl control)
+    {
+        if(control.adaptiveCells.enabled)
+        {
+            this->setAdaptiveSourceCellScores(
+                std::move(control.adaptiveCells.scores),
+                control.adaptiveCells.strength,
+                control.adaptiveCells.maxFactor,
+                control.adaptiveCells.learnedReserveFraction,
+                control.adaptiveCells.learnedMinFactor,
+                control.adaptiveCells.observerBudgetMultiplier,
+                control.adaptiveCells.learnedMinPhotons,
+                control.adaptiveCells.learnedMaxPhotons,
+                control.adaptiveCells.scorePower);
+        }
+        else
+        {
+            this->clearAdaptiveSourceCellScores();
+        }
+
+        if(control.adaptiveGroups.enabled)
+        {
+            this->setAdaptiveSourceCellGroupScores(
+                std::move(control.adaptiveGroups.scores),
+                control.adaptiveGroups.strength,
+                control.adaptiveGroups.pdfFloor,
+                control.adaptiveGroups.maxBias,
+                control.adaptiveGroups.maxWeightCorrection);
+        }
+        else
+        {
+            this->clearAdaptiveSourceCellGroupScores();
+        }
+
+        if(control.emission.enabled)
+        {
+            this->setSourceEmissionControl(
+                control.emission.useLearnedScores,
+                control.emission.includeUniformBase,
+                control.emission.baseMultiplier,
+                control.emission.learnedBoostFactor,
+                control.emission.learnedExtraBudget);
+        }
+        else
+        {
+            this->clearSourceEmissionControl();
+        }
+
+        if(control.externalSources.empty())
+        {
+            this->clearPostProcessExternalSources();
+        }
+        else
+        {
+            this->setPostProcessExternalSources(
+                std::move(control.externalSources));
+        }
+    }
+
+    IMCPostProcessGenerationDiagnostics
+    getPostProcessGenerationDiagnostics() const
+    {
+        IMCPostProcessGenerationDiagnostics diagnostics;
+        diagnostics.sourceAllocation =
+            this->getLastSourceAllocationSummary();
+        diagnostics.groupSampling =
+            this->getLastGroupSamplingDiagnostics();
+        diagnostics.sourcePhotonsPerCell =
+            this->getLastSourcePhotonsPerCell();
+        return diagnostics;
+    }
+
 private:
+    static SourceAllocationSummary convertSourceAllocationSummary(
+        ImplSourceAllocationSummary const &source)
+    {
+        SourceAllocationSummary target;
+        target.adaptiveEnabled = source.adaptiveEnabled;
+        target.totalPhotons = source.totalPhotons;
+        target.sourceCells = source.sourceCells;
+        target.boostedCells = source.boostedCells;
+        target.learnedCells = source.learnedCells;
+        target.learnedBoostedCells = source.learnedBoostedCells;
+        target.learnedPhotons = source.learnedPhotons;
+        target.learnedExtraPhotons = source.learnedExtraPhotons;
+        target.minPhotons = source.minPhotons;
+        target.maxPhotons = source.maxPhotons;
+        target.learnedMinPhotons = source.learnedMinPhotons;
+        target.learnedMaxPhotons = source.learnedMaxPhotons;
+        target.adaptiveScoreSum = source.adaptiveScoreSum;
+        target.adaptiveScoreP05 = source.adaptiveScoreP05;
+        target.adaptiveScoreP50 = source.adaptiveScoreP50;
+        target.adaptiveScoreP95 = source.adaptiveScoreP95;
+        target.adaptiveScoreMax = source.adaptiveScoreMax;
+        target.adaptiveScoreSpanLow = source.adaptiveScoreSpanLow;
+        target.adaptiveScoreSpanHigh = source.adaptiveScoreSpanHigh;
+        target.learnedPhotonsAtLeast1000 =
+            source.learnedPhotonsAtLeast1000;
+        target.learnedPhotonsAtLeast2000 =
+            source.learnedPhotonsAtLeast2000;
+        return target;
+    }
+
+    static GroupSamplingDiagnostics convertGroupSamplingDiagnostics(
+        ImplGroupSamplingDiagnostics const &source)
+    {
+        GroupSamplingDiagnostics target;
+        target.totalSampled = source.totalSampled;
+        target.cellsWithGroupScores = source.cellsWithGroupScores;
+        target.weightCorrectionMin = source.weightCorrectionMin;
+        target.weightCorrectionMax = source.weightCorrectionMax;
+        target.weightCorrectionSum = source.weightCorrectionSum;
+        target.weightCorrectionCount = source.weightCorrectionCount;
+        target.weightCorrectionCapped = source.weightCorrectionCapped;
+        target.weightCorrectionFallback = source.weightCorrectionFallback;
+        target.invalidPdfFallback = source.invalidPdfFallback;
+        target.invalidPdfFallbackPackets = source.invalidPdfFallbackPackets;
+        target.sampledEnergy = source.sampledEnergy;
+        target.cappedEnergy = source.cappedEnergy;
+        target.cappedEnergyFraction = source.cappedEnergyFraction;
+        target.estimatorPotentiallyBiased =
+            source.estimatorPotentiallyBiased;
+        return target;
+    }
+
     static Parameters makeParameters(std::size_t newPhotonsPerCell)
     {
         Parameters parameters;

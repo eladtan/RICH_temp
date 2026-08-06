@@ -33,6 +33,38 @@ endif()
 
 # ==================== Find VTK package ====================
 
+# Some VTK component graphs depend on MPI even for a serial RICH build (for
+# example FiltersGeneral -> ParallelDIY -> VTK::mpi).  Seed that transitive
+# FindMPI call from the active wrappers so an Intel compiler environment does
+# not silently select Intel MPI while an OpenMPI-backed VTK is loaded.
+if(NOT DEFINED MPI)
+    get_cmake_property(_rich_vtk_cache_variables CACHE_VARIABLES)
+    foreach(_rich_vtk_cache_variable IN LISTS _rich_vtk_cache_variables)
+        if(_rich_vtk_cache_variable MATCHES "^MPI_.*_(LIBRARY|WORKS)$" OR
+           _rich_vtk_cache_variable MATCHES
+               "^MPI_(C|CXX|Fortran)_(COMPILER_INCLUDE_DIRS|HEADER_DIR|F77_HEADER_DIR|MODULE_DIR|LIB_NAMES|LINK_FLAGS)$")
+            unset("${_rich_vtk_cache_variable}" CACHE)
+        endif()
+    endforeach()
+    unset(_rich_vtk_cache_variable)
+    unset(_rich_vtk_cache_variables)
+
+    foreach(_rich_vtk_mpi_tool IN ITEMS MPIEXEC_EXECUTABLE MPI_C_COMPILER MPI_CXX_COMPILER MPI_Fortran_COMPILER)
+        unset("${_rich_vtk_mpi_tool}" CACHE)
+        unset("${_rich_vtk_mpi_tool}")
+    endforeach()
+    find_program(MPIEXEC_EXECUTABLE NAMES mpiexec mpirun
+        NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH NO_CMAKE_SYSTEM_PATH)
+    find_program(MPI_C_COMPILER NAMES mpicc
+        NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH NO_CMAKE_SYSTEM_PATH)
+    find_program(MPI_CXX_COMPILER NAMES mpicxx mpic++ mpiCC
+        NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH NO_CMAKE_SYSTEM_PATH)
+    find_program(MPI_Fortran_COMPILER NAMES mpifort mpif90
+        NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH NO_CMAKE_SYSTEM_PATH)
+    message(STATUS
+        "VTK transitive MPI wrappers: ${MPI_C_COMPILER}; ${MPI_CXX_COMPILER}; ${MPI_Fortran_COMPILER}")
+endif()
+
 set(VTK_COMPONENTS
     CommonCore
     CommonColor
@@ -68,39 +100,14 @@ endif()
 # ==================== VTK-MPI compatibility ====================
 
 if(DEFINED MPI)
-    # Verify that VTK was compiled with the same MPI implementation.
-    set(_test_src "${CMAKE_BINARY_DIR}/CMakeFiles/vtk_mpi_check.cpp")
-    file(WRITE "${_test_src}" [=[
-        #include <mpi.h>
-        #include <vtkMPI.h>
-        int main() {
-            MPI_Comm comm;
-            vtkMPICommunicatorOpaqueComm opaqueComm(&comm);
-            (void)opaqueComm;
-            return 0;
-        }
-        ]=])
-
-    separate_arguments(mpi_link_flags UNIX_COMMAND "${MPI_LINK_FLAGS}")
-    try_compile(_vtk_mpi_ok
-        "${CMAKE_BINARY_DIR}/CMakeFiles/_vtk_mpi_check"
-        "${_test_src}"
-        LINK_LIBRARIES ${VTK_LIBRARIES} ${mpi_link_flags}
-        CMAKE_FLAGS "-DCMAKE_CXX_FLAGS=${MPI_COMPILE_FLAGS}"
-        CXX_STANDARD 17
-        OUTPUT_VARIABLE _vtk_mpi_output
-    )
-
-    if(NOT _vtk_mpi_ok)
-        message(FATAL_ERROR
-            "VTK MPI ABI check failed. VTK_DIRECTORY=${VTK_DIRECTORY}; "
-            "MPI wrapper=${MPI_CXX_COMPILER}. The VTK build and selected MPI "
-            "must use the same MPI implementation.\n${_vtk_mpi_output}")
-    endif()
+    find_package(MPI REQUIRED COMPONENTS CXX)
 
     # VTK::ParallelMPI is a shared imported target. Inspect its direct MPI
-    # dependency as well: a successful CMake link can still load a second MPI
-    # implementation at runtime through VTK.
+    # dependency: a C++ probe based on vtkMPICommunicatorOpaqueComm is not
+    # reliable because VTK intentionally exports vendor-neutral MPI compile
+    # definitions, which can change that private wrapper's apparent signature
+    # in an isolated try_compile.  The shared-library dependency is the actual
+    # MPI implementation that VTK will load at runtime.
     if(MPI_IMPL STREQUAL "OpenMPI")
         set(_vtk_parallel_mpi_library "")
         foreach(_vtk_imported_config "" "_RELEASE" "_RELWITHDEBINFO" "_DEBUG")
@@ -116,22 +123,34 @@ if(DEFINED MPI)
                 "Could not resolve VTK::ParallelMPI's shared library for OpenMPI validation")
         endif()
 
-        find_program(_rich_readelf readelf REQUIRED)
-        execute_process(
-            COMMAND ${_rich_readelf} -d "${_vtk_parallel_mpi_library}"
-            OUTPUT_VARIABLE _vtk_dynamic_dependencies
-            RESULT_VARIABLE _vtk_readelf_result
-            ERROR_VARIABLE _vtk_readelf_error
-        )
-        if(NOT _vtk_readelf_result EQUAL 0)
-            message(FATAL_ERROR
-                "Could not inspect ${_vtk_parallel_mpi_library}: ${_vtk_readelf_error}")
+        # Prefer the binary inspector supplied by CMake's active toolchain.
+        # Fall back to a PATH lookup, but do not make an ELF-only utility a
+        # prerequisite on platforms where this compatibility check is not
+        # available.
+        set(_rich_readelf "${CMAKE_READELF}")
+        if(NOT _rich_readelf)
+            find_program(_rich_readelf NAMES readelf llvm-readelf)
         endif()
-        if(_vtk_dynamic_dependencies MATCHES "libmpi\\.so\\.12" OR
-           _vtk_dynamic_dependencies MATCHES "intel/OneApi/.*/mpi")
-            message(FATAL_ERROR
-                "VTK::ParallelMPI at ${_vtk_parallel_mpi_library} requires Intel MPI. "
-                "intelReleaseMPI with OpenMPI requires a VTK built against OpenMPI only.")
+        if(_rich_readelf)
+            execute_process(
+                COMMAND "${_rich_readelf}" -d "${_vtk_parallel_mpi_library}"
+                OUTPUT_VARIABLE _vtk_dynamic_dependencies
+                RESULT_VARIABLE _vtk_readelf_result
+                ERROR_VARIABLE _vtk_readelf_error
+            )
+            if(NOT _vtk_readelf_result EQUAL 0)
+                message(FATAL_ERROR
+                    "Could not inspect ${_vtk_parallel_mpi_library}: ${_vtk_readelf_error}")
+            endif()
+            if(_vtk_dynamic_dependencies MATCHES "libmpi\\.so\\.12")
+                message(FATAL_ERROR
+                    "VTK::ParallelMPI at ${_vtk_parallel_mpi_library} requires "
+                    "libmpi.so.12, which is incompatible with the selected OpenMPI toolchain.")
+            endif()
+        else()
+            message(WARNING
+                "No readelf-compatible binary inspector is available; skipping "
+                "the optional VTK/OpenMPI shared-library dependency check")
         endif()
     endif()
 else()

@@ -225,9 +225,17 @@ void reportError(UniversalError const& eo, std::ostream& os)
 {
   std::string prefix = "";
   #ifdef RICH_MPI
-    int rank;
-    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    prefix = "============" + to_string(rank) + "============ ";
+    int initialized = 0;
+    int finalized = 0;
+    MPI_Initialized(&initialized);
+    if(initialized)
+      MPI_Finalized(&finalized);
+    if(initialized && !finalized)
+    {
+      int rank = 0;
+      MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+      prefix = "============" + to_string(rank) + "============ ";
+    }
   #endif // RICH_MPI
   os.precision(14);
   os << prefix << eo.getErrorMessage() << std::endl;

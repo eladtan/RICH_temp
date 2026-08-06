@@ -1,1 +1,0 @@
-../spherical_collapse/test.cpp

@@ -98,6 +98,7 @@ Available test IDs:
 | `eulerian_diffusion_freefree_multigroup_suite` | mpi |
 | `sedov_3d_mpi` | mpi |
 | `lane_self_gravity` | mpi |
+| `lane_self_gravity_fmm` | mpi, manual, benchmark |
 | `mach2_diffusion` | mpi |
 | `mach2_multigroup` | mpi |
 
@@ -199,6 +200,7 @@ You can tune pass/fail thresholds via environment variables:
 | `AMR_DISTRIBUTED_CLIP_THRESHOLD` | `1e-6` | amr_distributed_clip |
 | `VORONOI_VOLUME_MAX_REL_ERROR` | `1e-10` | voronoi_volume |
 | `LANE_GRAVITY_MAX_METRIC` | `4e-2` | lane_self_gravity |
+| `LANE_GRAVITY_FMM_MAX_METRIC` | `4e-2` | lane_self_gravity_fmm |
 | `MACH2_MAX_DENSITY_REL_L1` | `0.025` | mach2_diffusion, mach2_multigroup |
 | `MACH2_MAX_TEMPERATURE_REL_L1` | `0.025` | mach2_diffusion, mach2_multigroup |
 | `MARSHAK_MAX_TGAS_REL_L1` | `1e-2` | marshak_wave_1_diffusion through _4 |

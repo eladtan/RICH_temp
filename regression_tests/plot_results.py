@@ -215,22 +215,45 @@ def plot_sedov(root: Path, out_dir: Path) -> bool:
 
 def plot_lane(root: Path, out_dir: Path) -> bool:
     """Lane-Emden: density vs r compared to initial (analytic) Lane-Emden profile."""
-    profile = root / "regression_tests" / "cases" / "lane_self_gravity" / "lane_profile.txt"
-    if not profile.exists():
-        print(f"  [lane_self_gravity] profile not found: {profile}")
+    quad_profile = root / "regression_tests" / "cases" / "lane_self_gravity" / "lane_profile.txt"
+    fmm_profile = root / "regression_tests" / "cases" / "lane_self_gravity_fmm" / "lane_profile.txt"
+
+    if not quad_profile.exists() and not fmm_profile.exists():
+        print(f"  [lane_self_gravity] no lane profile found under {root / 'regression_tests' / 'cases'}")
         return False
 
-    raw = np.loadtxt(str(profile))
-    if raw.ndim == 1:
-        raw = np.expand_dims(raw, axis=0)
-    r = raw[:, 0]
-    density = raw[:, 1]
-    density_analytic = raw[:, 2]
+    def _load_profile(path: Path):
+        raw = np.loadtxt(str(path))
+        if raw.ndim == 1:
+            raw = np.expand_dims(raw, axis=0)
+        return raw[:, 0], raw[:, 1], raw[:, 2]
 
     plt = _get_plt()
     fig, ax = plt.subplots(figsize=(8, 5))
-    ax.plot(r, density, "k.", markersize=3, label="Numeric (binned)")
-    ax.plot(r, density_analytic, "r-", linewidth=1.5, label="Initial (Lane-Emden)")
+
+    plotted = False
+    if quad_profile.exists():
+        r, density, density_analytic = _load_profile(quad_profile)
+        ax.plot(r, density, "k.", markersize=3, label="Quadrupole tree (binned)")
+        plotted = True
+    else:
+        density_analytic = None
+
+    if fmm_profile.exists():
+        r_fmm, density_fmm, density_analytic_fmm = _load_profile(fmm_profile)
+        ax.plot(r_fmm, density_fmm, "b.", markersize=3, label="FMM P=3, θ=0.9 (binned)")
+        if density_analytic is None:
+            density_analytic = density_analytic_fmm
+            r = r_fmm
+        plotted = True
+
+    if density_analytic is not None:
+        analytic_r = r if quad_profile.exists() else r_fmm
+        ax.plot(analytic_r, density_analytic, "r-", linewidth=1.5, label="Initial (Lane-Emden)")
+
+    if not plotted:
+        return False
+
     ax.set_xlabel("r [cm]")
     ax.set_ylabel("Density [g/cm$^3$]")
     ax.set_title("Lane-Emden Self-Gravity -- Density")
@@ -656,14 +679,15 @@ def plot_gresho_lagrangian(root: Path, out_dir: Path) -> bool:
 
 
 def plot_desmore2012_mc(root: Path, out_dir: Path) -> bool:
-    """Densmore 2012 heterogeneous MC: both MPI (no RW) and serial (RW) vs reference."""
+    """Densmore 2012 heterogeneous MC: MPI (no RW), serial (RW), DDMC vs reference."""
     cases = root / "regression_tests" / "cases"
     profile_mpi = cases / "desmore2012_mc" / "desmore2012_mc_profile.txt"
     profile_serial = cases / "desmore2012_mc_serial" / "desmore2012_mc_serial_profile.txt"
+    profile_ddmc = cases / "desmore2012_mc_ddmc" / "desmore2012_mc_ddmc_profile.txt"
     ref_file = cases / "desmore2012_mc" / "data" / "densmore2012_fig4_mc.csv"
 
-    if not profile_mpi.exists() and not profile_serial.exists():
-        print(f"  [desmore2012_mc] no profile found for either MPI or serial variant")
+    if not profile_mpi.exists() and not profile_serial.exists() and not profile_ddmc.exists():
+        print(f"  [desmore2012_mc] no profile found for any variant")
         return False
 
     keV_K = 1.602176634e-9 / 1.380649e-16
@@ -689,6 +713,13 @@ def plot_desmore2012_mc(root: Path, out_dir: Path) -> bool:
             raw = np.expand_dims(raw, axis=0)
         ax.plot(raw[:, 0], raw[:, 1] / keV_K, "rx", markersize=3,
                 label="RICH MC (serial, RW)")
+
+    if profile_ddmc.exists():
+        raw = np.loadtxt(str(profile_ddmc))
+        if raw.ndim == 1:
+            raw = np.expand_dims(raw, axis=0)
+        ax.plot(raw[:, 0], raw[:, 1] / keV_K, "gs", markersize=3,
+                markerfacecolor="none", label="RICH MC (MPI, DDMC)")
 
     ax.set_xlabel("x [cm]")
     ax.set_ylabel("Material Temperature [keV]")
@@ -1074,6 +1105,7 @@ ALL_PLOTTERS = {
     "sod_1d": plot_sod,
     "sedov_3d_mpi": plot_sedov,
     "lane_self_gravity": plot_lane,
+    "lane_self_gravity_fmm": plot_lane,
     "till_compton": plot_till,
     "mach2_diffusion": plot_mach2_diffusion,
     "mach2_multigroup": plot_mach2_multigroup,
@@ -1085,6 +1117,7 @@ ALL_PLOTTERS = {
     "gresho_lagrangian": plot_gresho_lagrangian,
     "desmore2012_mc": plot_desmore2012_mc,
     "desmore2012_mc_serial": plot_desmore2012_mc,
+    "desmore2012_mc_ddmc": plot_desmore2012_mc,
     "yee_vortex_64": plot_yee_isentropic_vortex,
     "yee_vortex_128": plot_yee_isentropic_vortex,
     "rayleigh_taylor_mpi": plot_rayleigh_taylor,

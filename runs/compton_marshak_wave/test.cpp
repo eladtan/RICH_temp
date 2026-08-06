@@ -18,7 +18,7 @@
 #include "source/misc/mesh_generator3D.hpp"
 #include "source/misc/simple_io.hpp"
 #include "source/monte/boundary/SideTemperature.hpp"
-#include "source/monte/population/Comb.hpp"
+#include "source/monte/population/CombPopulationControl.hpp"
 #include "source/newtonian/common/ideal_gas.hpp"
 #include "source/newtonian/three_dimensional/ManualTimeStep.hpp"
 #include "source/newtonian/three_dimensional/computational_cell.hpp"

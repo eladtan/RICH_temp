@@ -127,3 +127,24 @@ The Lane-Emden regression test (`regression_tests/cases/lane_self_gravity/test.c
 - The opening angle parameter controls the accuracy/speed trade-off in the tree. Smaller angles are more accurate but slower.
 - `DistributedGravityTree` scales well with MPI processes for large particle counts.
 - Gravity computation is typically the most expensive part of self-gravitating simulations.
+
+## Serial FMM Stage 1
+
+The serial Fast Multipole Method backend is available as a separate acceleration object:
+
+```cpp
+#include "source/newtonian/three_dimensional/FastMultipoleAcceleration3D.hpp"
+
+FmmGravityOptions options;
+options.expansionOrder = 4;
+options.thetaCritical = 0.5;
+options.leafCapacity = 32;
+options.computePotential = false;
+
+FastMultipoleAcceleration3D acceleration(options, G);
+ConservativeForce3D force(acceleration, false);
+```
+
+Stage 1 runs a serial adaptive dual-tree FMM with exact P2P near-field interactions and Taylor P2M/M2M/M2L/L2L/L2P far-field interactions. `expansionOrder` controls truncation accuracy, while smaller `thetaCritical` values accept fewer far-field node pairs and approach the direct-sum limit. The solver rebuilds the tree each call, uses the same unsoftened Newtonian sign convention as `GravityAcceleration3D`, multiplies by `G` only in the adapter, and exposes phase timings and interaction counters through `getLastStats()`.
+
+This backend is serial-only. In an MPI build, `FastMultipoleAcceleration3D` throws rather than computing gravity from rank-local masses. Distributed FMM source exchange is a later stage.

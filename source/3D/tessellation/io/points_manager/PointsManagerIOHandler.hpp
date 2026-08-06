@@ -15,7 +15,7 @@ class HDF5Reader;
 class PointsManagerIOHandler
 {
 public:
-    using PointsManager = PointsManager<Vector3D,MadVoro::VoronoiPayload<Vector3D>>;
+    using PointsManager = ::PointsManager<Vector3D, MadVoro::VoronoiPayload<Vector3D>>;
 
     virtual ~PointsManagerIOHandler() = default;
 

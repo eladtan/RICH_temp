@@ -49,7 +49,7 @@ regression_tests/
 │   ├── check_mach2_profile.py    # Mach 2 shock vs NLTE analytical solution
 │   ├── check_marshak_wave.py     # Marshak wave vs self-similar solutions
 │   └── check_gresho_profile.py   # Gresho vortex vs azimuthal velocity IC
-├── tests/                        # One .sh file per test defining metadata
+├── tests/                        # Legacy .sh metadata for pre-migration tests
 │   ├── sod_1d.sh
 │   ├── sedov_3d_mpi.sh
 │   ├── till_compton.sh
@@ -67,6 +67,9 @@ regression_tests/
 │   ├── sedov_3d_mpi/test.cpp
 │   ├── till_compton/test.cpp
 │   │   └── data/                 # Reference data (McGraw et al. 2023)
+│   ├── lane_self_gravity_fmm/
+│   │   ├── test.cpp
+│   │   └── REGRESSION_INFO       # THUNDER case-local metadata
 │   └── ... (one directory per test)
 ├── plot_results.py               # Plot profiles vs analytical solutions
 └── generate_test_report.py       # Generate LaTeX/PDF test report
@@ -74,7 +77,9 @@ regression_tests/
 
 ## Test Definitions
 
-Each test is defined by a `.sh` file under `regression_tests/tests/`. These files are sourced by `run_all.sh` and set the following variables:
+THUNDER discovers migrated tests from case-local `REGRESSION_INFO` files.
+Pre-migration tests may still use `.sh` metadata under `regression_tests/tests/`;
+both formats define the following variables:
 
 | Variable | Required | Description |
 |----------|----------|-------------|

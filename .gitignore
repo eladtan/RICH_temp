@@ -46,7 +46,7 @@ output_*
 !.cursor/skills/rich-self-gravity/
 !.cursor/skills/rich-self-gravity/**
 runs/clemon*
-runs/**/*.txt 
+runs/**/*.txt
 /regression_results
 regression_tests/cases/*/*.txt
 *.png
@@ -59,3 +59,4 @@ IMC_paper/
 RDMA_paper/
 compilation/runs/*/rich*
 runs/*/rich_*
+**/mpi_tmp*

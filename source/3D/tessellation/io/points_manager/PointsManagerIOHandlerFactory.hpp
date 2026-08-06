@@ -13,7 +13,7 @@
 
 namespace PointsManagerIO
 {
-    using PointsManager = PointsManager<Vector3D, MadVoro::VoronoiPayload<Vector3D>>;
+    using PointsManager = ::PointsManager<Vector3D, MadVoro::VoronoiPayload<Vector3D>>;
 
     inline std::map<std::string, std::unique_ptr<PointsManagerIOHandler>> registry;
 

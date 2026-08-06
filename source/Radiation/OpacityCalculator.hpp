@@ -1,6 +1,7 @@
 #ifndef OPACITY_CALCULATOR_HPP
 #define OPACITY_CALCULATOR_HPP
 
+#include <cmath>
 #include <vector>
 #include <random>
 #include <algorithm>
@@ -49,13 +50,18 @@ public:
     virtual double CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const
     { throw UniversalError("CalcDiffusionCoefficient(energy) not implemented"); }
 
-    virtual Vector3D getRandomVelocity(ComputationalCell3D const& cell) const
+    virtual Vector3D getRandomVelocity(ComputationalCell3D const& /*cell*/) const
     {
-        static std::uniform_real_distribution<double> dist(-1 + EPSILON, 1 - EPSILON);
-        double x = dist(rng_);
-        double y = dist(rng_);
-        double z = dist(rng_);
-        return normalize(Vector3D(x, y, z)) * units::clight;
+        // Sampling three Cartesian components uniformly and normalizing maps a
+        // cube onto the sphere, overpopulating the body diagonals. Uniform
+        // solid angle requires uniform mu = cos(theta) and azimuth.
+        std::uniform_real_distribution<double> unit(0.0, 1.0);
+        double const mu = 1.0 - 2.0 * unit(rng_);
+        double const phi = 2.0 * std::acos(-1.0) * unit(rng_);
+        double const sinTheta = std::sqrt(std::max(0.0, 1.0 - mu * mu));
+        return Vector3D(sinTheta * std::cos(phi),
+                        sinTheta * std::sin(phi),
+                        mu) * units::clight;
     }
 
     virtual Vector3D getNewScatterVelocity(ComputationalCell3D const& cell, MCParticle& particle) const
