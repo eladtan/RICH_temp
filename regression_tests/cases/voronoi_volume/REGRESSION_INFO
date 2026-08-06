@@ -1,6 +1,7 @@
 # THUNDER regression metadata migrated from regression_tests/tests/voronoi_volume.sh.sh
 TEST_ID="voronoi_volume"
 TAGS="serial mpi"
+CATEGORY="code_correctness"
 BUILD_TEST_NAME="regression_tests/cases/voronoi_volume"
 RUN_DIR_REL="regression_tests/cases/voronoi_volume"
 CHECK_FUNCTION="check_voronoi_volume_case"

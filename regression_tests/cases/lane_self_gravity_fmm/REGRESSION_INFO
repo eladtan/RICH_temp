@@ -2,6 +2,7 @@
 
 TEST_ID="lane_self_gravity_fmm"
 TAGS="mpi manual benchmark"
+CATEGORY="physics"
 BUILD_TEST_NAME="regression_tests/cases/lane_self_gravity_fmm"
 RUN_DIR_REL="regression_tests/cases/lane_self_gravity_fmm"
 CHECK_FUNCTION="check_lane_self_gravity_fmm_case"

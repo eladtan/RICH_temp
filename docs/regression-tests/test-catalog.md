@@ -2,6 +2,52 @@
 
 This document describes the regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
 
+## Category Inventory
+
+The unified runner discovers 56 tests. Every test belongs to exactly one
+primary category; execution tags such as `serial`, `mpi`, `manual`, and
+`benchmark` remain independent.
+
+### Physics (39)
+
+- **RICH (31):** `desmore2012_mc`, `desmore2012_mc_ddmc`,
+  `desmore2012_mc_serial`, `eulerian_diffusion_freefree_1d`,
+  `eulerian_diffusion_freefree_1d_32`,
+  `eulerian_diffusion_freefree_1d_32_limited`,
+  `eulerian_diffusion_freefree_1d_512_limited`,
+  `eulerian_diffusion_freefree_multigroup_1d`,
+  `eulerian_diffusion_freefree_multigroup_1d_32`,
+  `eulerian_diffusion_freefree_multigroup_1d_32_limited`,
+  `eulerian_diffusion_freefree_multigroup_1d_512_limited`,
+  `eulerian_diffusion_freefree_multigroup_suite`,
+  `eulerian_diffusion_freefree_suite`, `gresho_euler`, `gresho_lagrangian`,
+  `lane_self_gravity`, `lane_self_gravity_fmm`, `mach2_diffusion`,
+  `mach2_multigroup`, `marshak_wave_1_diffusion`,
+  `marshak_wave_2_diffusion`, `marshak_wave_3_diffusion`,
+  `marshak_wave_4_diffusion`, `moving_slab_mc_32`, `rayleigh_taylor_mpi`,
+  `sedov_3d_mpi`, `sod_1d`, `spherical_collapse`, `till_compton`,
+  `yee_vortex_64`, and `yee_vortex_128`.
+- **Embedded STORM (8):** `densmore2012`, `hohlraum_parallel`,
+  `marshak_wave_1`, `marshak_wave_2`, `marshak_wave_3`, `marshak_wave_4`,
+  `moving_slab`, and `till_compton_mc`.
+
+### Code Correctness (17)
+
+- **RICH (15):** `amr_distributed_clip`, `amr_random`,
+  `cartesian_gauss_linear`, `ddmc_mpi_zero_cell`, `fmm_gravity_mpi`,
+  `fmm_gravity_mpi_guard`, `fmm_gravity_serial`, `fmm_operator_cache`,
+  `fmm_peer_exchange_rebuild`, `fmm_process_pair_coverage`,
+  `fmm_quadrupole_benchmark`, `radiation_direction_sampling`,
+  `spherical_gauss_linear`, `spherical_gauss_tangential`, and
+  `voronoi_volume`.
+- **Embedded STORM (2):** `cartesian_parallel_check` and
+  `serial_cartesian`.
+
+The boundary is intentional: `spherical_collapse` and `hohlraum_parallel` are
+classified by their physical scenarios; all seven FMM algorithm regressions
+are code correctness, while the Lane-Emden `lane_self_gravity_fmm` benchmark
+is physics.
+
 ---
 
 ## 1. sod_1d -- 1D Sod Shock Tube
@@ -701,31 +747,31 @@ from per-cell internal-rate and conductance diagnostics.
 
 ## Summary Table
 
-| Test | Tags | Physics | Validation | Key Threshold |
-|------|------|---------|------------|---------------|
-| `sod_1d` | serial | 1D Riemann problem | Exact Riemann solver | GOF <= 0.02 |
-| `sedov_3d_mpi` | mpi | 3D blast wave | Sedov-Taylor ODE | rel L1 <= 0.30 |
-| `till_compton` | serial | Compton equilibration | Temperature convergence | |Tgas-Trad| < 1% |
-| `amr_random` | serial, mpi | AMR conservation | Extensive drift | drift <= 1e-8 (serial) |
-| `amr_distributed_clip` | mpi | Distributed AMR clip conservation | Mass/energy sum | rel diff <= 1e-6 |
-| `voronoi_volume` | serial, mpi | Geometric accuracy | Volume sum | rel error < 1e-10 |
-| `lane_self_gravity` | mpi | Hydrostatic equilibrium | Density stability | metric < 4e-2 |
-| `lane_self_gravity_fmm` | mpi, manual, benchmark | Hydrostatic equilibrium (FMM) | Density stability | metric < 4e-2 |
-| `mach2_diffusion` | mpi | Radiative shock (grey) | NLTE solution | rel L1 <= 0.025 |
-| `mach2_multigroup` | mpi | Radiative shock (MG) | NLTE solution | rel L1 <= 0.025 |
-| `marshak_wave_1_diffusion` | serial | Marshak wave (non-eq) | Self-similar ODE | rel L1 <= 1e-2 |
-| `marshak_wave_2_diffusion` | serial | Marshak wave (eq limit) | Self-similar ODE | rel L1 <= 1e-2 |
-| `marshak_wave_3_diffusion` | serial | Marshak wave (non-uniform) | Fitted profiles | rel L1 <= 1e-2 |
-| `marshak_wave_4_diffusion` | serial | Marshak wave (divergent) | Fitted profiles | rel L1 <= 1e-2 |
-| `gresho_euler` | serial | Gresho vortex (fixed) | IC comparison | rel L1 <= 0.1 |
-| `gresho_lagrangian` | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
-| `ddmc_static_invariants` | static | DDMC/hydro implementation invariants | Source-code guard script | script exits 0 |
-| `ddmc_mpi_zero_cell` | mpi | Zero-cell ranks and cross-rank DDMC | Remote leaks, reciprocity, weight conservation | errors <= 1e-10 |
-| `fmm_gravity_serial` | serial | Fast multipole self-gravity | Long-double direct sum and convergence | scaled error < 2e-5 |
-| `fmm_gravity_mpi_guard` | mpi | Distributed FMM adapter | MPI construction and option guard | guard exits 0 |
-| `fmm_gravity_mpi` | mpi | Distributed fast multipole self-gravity | Direct reference, empty rank, topology reuse/rebuild | scaled error < 2e-4 |
-| `fmm_process_pair_coverage` | mpi | Distributed FMM traversal partition | Ordered active-rank pair coverage | all pairs classified once |
-| `fmm_quadrupole_benchmark` | serial, benchmark | FMM versus quadrupole tree | Direct-sum accuracy and runtime sweep | finite timings; bounded errors |
+| Test | Category | Tags | Physics/Purpose | Validation | Key Threshold |
+|------|----------|------|-----------------|------------|---------------|
+| `sod_1d` | physics | serial | 1D Riemann problem | Exact Riemann solver | GOF <= 0.02 |
+| `sedov_3d_mpi` | physics | mpi | 3D blast wave | Sedov-Taylor ODE | rel L1 <= 0.30 |
+| `till_compton` | physics | serial | Compton equilibration | Temperature convergence | \|Tgas-Trad\| < 1% |
+| `amr_random` | code_correctness | serial, mpi | AMR conservation | Extensive drift | drift <= 1e-8 (serial) |
+| `amr_distributed_clip` | code_correctness | mpi | Distributed AMR clip conservation | Mass/energy sum | rel diff <= 1e-6 |
+| `voronoi_volume` | code_correctness | serial, mpi | Geometric accuracy | Volume sum | rel error < 1e-10 |
+| `lane_self_gravity` | physics | mpi | Hydrostatic equilibrium | Density stability | metric < 4e-2 |
+| `lane_self_gravity_fmm` | physics | mpi, manual, benchmark | Hydrostatic equilibrium (FMM) | Density stability | metric < 4e-2 |
+| `mach2_diffusion` | physics | mpi | Radiative shock (grey) | NLTE solution | rel L1 <= 0.025 |
+| `mach2_multigroup` | physics | mpi | Radiative shock (MG) | NLTE solution | rel L1 <= 0.025 |
+| `marshak_wave_1_diffusion` | physics | serial | Marshak wave (non-eq) | Self-similar ODE | rel L1 <= 1e-2 |
+| `marshak_wave_2_diffusion` | physics | serial | Marshak wave (eq limit) | Self-similar ODE | rel L1 <= 1e-2 |
+| `marshak_wave_3_diffusion` | physics | serial | Marshak wave (non-uniform) | Fitted profiles | rel L1 <= 1e-2 |
+| `marshak_wave_4_diffusion` | physics | serial | Marshak wave (divergent) | Fitted profiles | rel L1 <= 1e-2 |
+| `gresho_euler` | physics | serial | Gresho vortex (fixed) | IC comparison | rel L1 <= 0.1 |
+| `gresho_lagrangian` | physics | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
+| `ddmc_static_invariants` | code_correctness | static | DDMC/hydro implementation invariants | Source-code guard script | script exits 0 |
+| `ddmc_mpi_zero_cell` | code_correctness | mpi | Zero-cell ranks and cross-rank DDMC | Remote leaks, reciprocity, weight conservation | errors <= 1e-10 |
+| `fmm_gravity_serial` | code_correctness | serial | Fast multipole self-gravity | Long-double direct sum and convergence | scaled error < 2e-5 |
+| `fmm_gravity_mpi_guard` | code_correctness | mpi | Distributed FMM adapter | MPI construction and option guard | guard exits 0 |
+| `fmm_gravity_mpi` | code_correctness | mpi | Distributed fast multipole self-gravity | Direct reference, empty rank, topology reuse/rebuild | scaled error < 2e-4 |
+| `fmm_process_pair_coverage` | code_correctness | mpi | Distributed FMM traversal partition | Ordered active-rank pair coverage | all pairs classified once |
+| `fmm_quadrupole_benchmark` | code_correctness | serial, benchmark | FMM versus quadrupole tree | Direct-sum accuracy and runtime sweep | finite timings; bounded errors |
 
 ## Static Guards
 

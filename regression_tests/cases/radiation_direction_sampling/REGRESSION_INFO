@@ -2,6 +2,7 @@
 
 TEST_ID="radiation_direction_sampling"
 TAGS="serial"
+CATEGORY="code_correctness"
 BUILD_TEST_NAME="regression_tests/cases/radiation_direction_sampling"
 RUN_DIR_REL="regression_tests/cases/radiation_direction_sampling"
 RUN_MODE="direct"

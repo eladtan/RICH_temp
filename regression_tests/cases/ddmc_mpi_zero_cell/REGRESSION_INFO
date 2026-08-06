@@ -2,6 +2,7 @@
 
 TEST_ID="ddmc_mpi_zero_cell"
 TAGS="mpi"
+CATEGORY="code_correctness"
 BUILD_TEST_NAME="regression_tests/cases/ddmc_mpi_zero_cell"
 RUN_DIR_REL="regression_tests/cases/ddmc_mpi_zero_cell"
 CHECK_FUNCTION="check_ddmc_mpi_zero_cell_case"

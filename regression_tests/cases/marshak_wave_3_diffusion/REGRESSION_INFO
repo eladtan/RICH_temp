@@ -1,6 +1,7 @@
 # THUNDER regression metadata migrated from regression_tests/tests/marshak_wave_3_diffusion.sh.sh
 TEST_ID="marshak_wave_3_diffusion"
 TAGS="serial"
+CATEGORY="physics"
 BUILD_TEST_NAME="regression_tests/cases/marshak_wave_3_diffusion"
 RUN_DIR_REL="regression_tests/cases/marshak_wave_3_diffusion"
 RUN_COMMAND="\"${RICH_BIN}\""

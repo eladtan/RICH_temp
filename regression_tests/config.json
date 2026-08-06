@@ -3,6 +3,7 @@
   "description": "RICH and embedded STORM regression tests",
   "project_root": "..",
   "artifact_root": "regression_results",
+  "test_categories": ["physics", "code_correctness"],
   "discovery": {
     "metadata": "REGRESSION_INFO",
     "test_roots": [

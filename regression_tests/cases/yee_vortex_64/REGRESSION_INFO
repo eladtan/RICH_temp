@@ -1,6 +1,7 @@
 # THUNDER regression metadata migrated from regression_tests/tests/yee_vortex_64.sh.sh
 TEST_ID="yee_vortex_64"
 TAGS="mpi"
+CATEGORY="physics"
 BUILD_TEST_NAME="regression_tests/cases/yee_vortex_64"
 RUN_DIR_REL="regression_tests/cases/yee_vortex_64"
 RUN_COMMAND="mpirun -np ${SLURM_NTASKS} \"${RICH_BIN}\""

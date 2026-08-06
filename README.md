@@ -160,11 +160,16 @@ setup and output handling.
 ## Regression tests
 
 RICH uses the embedded THUNDER framework. Test metadata lives beside each case,
-and artifacts are collected under `regression_results/`.
+and artifacts are collected under `regression_results/`. The unified RICH and
+STORM inventory contains 56 tests split into 39 `physics` tests and 17
+`code_correctness` tests; every discovered case declares exactly one category.
 
 ```bash
 # List the tests discovered from current metadata
 ./regression_tests/run_all.sh --list-tests
+
+# List only physics tests
+./regression_tests/run_all.sh --list-tests --category physics
 
 # Resolve builds and launches without executing them
 ./regression_tests/run_all.sh --dry-run --verbose
@@ -175,6 +180,9 @@ and artifacts are collected under `regression_results/`.
 # Run MPI tests through the configured scheduler
 ./regression_tests/run_all.sh --mode mpi
 
+# Run code-correctness tests through serial and MPI phases
+./regression_tests/run_all.sh --category code_correctness --mode serial_then_mpi
+
 # Run MPI tests directly on the local host
 ./regression_tests/run_all.sh --mode mpi --local
 
@@ -184,7 +192,10 @@ and artifacts are collected under `regression_results/`.
 
 Use `--partition`, `--project`, and `--exclude` for scheduler settings;
 `--concurrent` or `--no-concurrent` for orchestration; and `--artifact-dir` or
-`--keep-artifacts` for result retention. The authoritative case list is the
+`--keep-artifacts` for result retention. `--category` intersects with `--mode`
+and `--test`; dependency expansion may include a prerequisite from the other
+category. `--list-tests` appends the category after its existing four columns.
+The authoritative case list is the
 [regression catalog](docs/regression-tests/test-catalog.md) and the live
 metadata under [`regression_tests/cases/`](regression_tests/cases/).
 

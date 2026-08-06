@@ -1,6 +1,7 @@
 # THUNDER regression metadata migrated from regression_tests/tests/till_compton.sh.sh
 TEST_ID="till_compton"
 TAGS="serial"
+CATEGORY="physics"
 BUILD_TEST_NAME="regression_tests/cases/till_compton"
 BUILD_ARGS="--energy_groups_num=32"
 RUN_DIR_REL="regression_tests/cases/till_compton"

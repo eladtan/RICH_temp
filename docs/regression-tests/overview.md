@@ -1,6 +1,15 @@
 # Regression Tests: Framework Overview
 
-RICH includes a comprehensive regression testing framework that builds, runs, and validates physics benchmarks against analytical solutions. The framework lives under `regression_tests/` and is driven by the script `regression_tests/run_all.sh`.
+RICH includes a comprehensive regression testing framework that builds, runs,
+and validates both physics benchmarks and code-correctness checks. The
+framework lives under `regression_tests/` and is driven by
+`regression_tests/run_all.sh`.
+
+The unified RICH and STORM inventory contains 39 `physics` tests and 17
+`code_correctness` tests. Every discovered `REGRESSION_INFO` declares exactly
+one category. `physics` covers physical scenarios and benchmarks;
+`code_correctness` covers algorithm, mesh, geometry, MPI, sampling, cache,
+guard, and invariant checks.
 
 ## Architecture
 
@@ -77,14 +86,14 @@ regression_tests/
 
 ## Test Definitions
 
-THUNDER discovers migrated tests from case-local `REGRESSION_INFO` files.
-Pre-migration tests may still use `.sh` metadata under `regression_tests/tests/`;
-both formats define the following variables:
+THUNDER discovers tests from case-local `REGRESSION_INFO` files. They define
+the following variables:
 
 | Variable | Required | Description |
 |----------|----------|-------------|
 | `TEST_ID` | Yes | Unique test identifier |
 | `TAGS` | No | Space-separated tags: `serial`, `mpi`, or both (default: `serial`) |
+| `CATEGORY` | Yes | Exactly one of `physics` or `code_correctness` |
 | `BUILD_TEST_NAME` | Yes | Path to the test directory (passed to `--test_name=`) |
 | `RUN_DIR_REL` | Yes | Relative path to the run directory |
 | `RUN_COMMAND` | Yes | Shell command to execute the test binary |
@@ -101,6 +110,7 @@ both formats define the following variables:
 #!/usr/bin/env bash
 TEST_ID="sod_1d"
 TAGS="serial"
+CATEGORY="physics"
 BUILD_TEST_NAME="regression_tests/cases/sod_1d"
 RUN_DIR_REL="regression_tests/cases/sod_1d"
 RUN_COMMAND='"${RICH_BIN}"'
@@ -113,6 +123,7 @@ CHECK_FUNCTION="check_sod_case"
 #!/usr/bin/env bash
 TEST_ID="sedov_3d_mpi"
 TAGS="mpi"
+CATEGORY="physics"
 BUILD_TEST_NAME="regression_tests/cases/sedov_3d_mpi"
 RUN_DIR_REL="regression_tests/cases/sedov_3d_mpi"
 CHECK_FUNCTION="check_sedov_case"
@@ -160,11 +171,11 @@ regression_results/20260219_143000/
 
 1. **Create a case directory** under `regression_tests/cases/<your_test>/` with a `test.cpp` that produces a text-based output file (avoid HDF5 snapshots in regression tests for speed).
 
-2. **Create a test definition** at `regression_tests/tests/<your_test>.sh`:
+2. **Create `REGRESSION_INFO`** in the case directory:
    ```bash
-   #!/usr/bin/env bash
    TEST_ID="your_test"
    TAGS="serial"  # or "mpi" or "serial mpi"
+   CATEGORY="code_correctness"  # or "physics"
    BUILD_TEST_NAME="regression_tests/cases/your_test"
    RUN_DIR_REL="regression_tests/cases/your_test"
    RUN_COMMAND='"${RICH_BIN}"'

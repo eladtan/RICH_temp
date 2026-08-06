@@ -5,10 +5,11 @@
 Run the full regression suite:
 
 ```bash
-./regression_tests/run_all.sh
+./regression_tests/run_all.sh --mode all
 ```
 
-This builds and runs all 14 tests with the default `gnuReleaseMPI` configuration.
+This selects all 56 discovered tests: 39 physics tests and 17 code-correctness
+tests. Normal execution submits work through SLURM.
 
 ## Command Reference
 
@@ -16,7 +17,8 @@ This builds and runs all 14 tests with the default `gnuReleaseMPI` configuration
 Usage: run_all.sh [options]
 
 Options:
-  --mode <mode>            Run mode (default: all)
+  --mode <mode>            Run mode (project default: serial)
+  --category <category>    Run physics or code_correctness tests
   --config <name>          Build configuration (auto-derived from --mode if omitted)
   --mpi-np <N>             MPI ranks for MPI tests (default: 4)
   --test <id>              Run only one test
@@ -38,6 +40,11 @@ The `--mode` flag controls which tests are executed based on their tags:
 | `all` | All tests | `gnuReleaseMPI` | Every test regardless of tag |
 | `serial_then_mpi` | All tests | `gnuRelease` then `gnuReleaseMPI` | Two-pass: serial first, then MPI |
 
+`--category physics` and `--category code_correctness` select one of the two
+disjoint primary categories. The category filter intersects with `--mode` and
+`--test`. Dependencies are still expanded, so a selected test may bring in a
+prerequisite from the other category.
+
 ### Examples
 
 ```bash
@@ -53,8 +60,17 @@ The `--mode` flag controls which tests are executed based on their tags:
 # Two-pass mode: serial (gnuRelease) then MPI (gnuReleaseMPI)
 ./regression_tests/run_all.sh --mode serial_then_mpi
 
-# Run all tests (default)
-./regression_tests/run_all.sh
+# Run all tests across both execution modes
+./regression_tests/run_all.sh --mode all
+
+# Run all physics regressions
+./regression_tests/run_all.sh --category physics
+
+# Run MPI code-correctness regressions
+./regression_tests/run_all.sh --category code_correctness --mode mpi
+
+# List physics tests without submitting work
+./regression_tests/run_all.sh --list-tests --category physics
 ```
 
 ## Running a Single Test
@@ -75,26 +91,10 @@ Use `--test <id>` to run just one benchmark:
 ./regression_tests/run_all.sh --test sod_1d --config gnuRelease --verbose
 ```
 
-Available test IDs:
-
-| Test ID | Tags |
-|---------|------|
-| `sod_1d` | serial |
-| `till_compton` | serial |
-| `amr_random` | serial, mpi |
-| `amr_distributed_clip` | mpi |
-| `voronoi_volume` | serial, mpi |
-| `marshak_wave_1_diffusion` | serial |
-| `marshak_wave_2_diffusion` | serial |
-| `marshak_wave_3_diffusion` | serial |
-| `marshak_wave_4_diffusion` | serial |
-| `gresho_euler` | serial |
-| `gresho_lagrangian` | mpi |
-| `sedov_3d_mpi` | mpi |
-| `lane_self_gravity` | mpi |
-| `lane_self_gravity_fmm` | mpi, manual, benchmark |
-| `mach2_diffusion` | mpi |
-| `mach2_multigroup` | mpi |
+Use `./regression_tests/run_all.sh --list-tests` for the authoritative test
+inventory. Each tab-separated row contains test ID, tags, case directory,
+metadata path, and category. The grouped category inventory is also maintained
+in the [test catalog](test-catalog.md).
 
 ## Interpreting Output
 

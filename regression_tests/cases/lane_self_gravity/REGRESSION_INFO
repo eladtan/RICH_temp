@@ -1,6 +1,7 @@
 # THUNDER regression metadata migrated from regression_tests/tests/lane_self_gravity.sh.sh
 TEST_ID="lane_self_gravity"
 TAGS="mpi"
+CATEGORY="physics"
 BUILD_TEST_NAME="regression_tests/cases/lane_self_gravity"
 RUN_DIR_REL="regression_tests/cases/lane_self_gravity"
 RUN_COMMAND="mpirun -np ${SLURM_NTASKS} \"${RICH_BIN}\""

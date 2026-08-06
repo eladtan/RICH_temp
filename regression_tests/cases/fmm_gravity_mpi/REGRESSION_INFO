@@ -2,6 +2,7 @@
 
 TEST_ID="fmm_gravity_mpi"
 TAGS="mpi"
+CATEGORY="code_correctness"
 BUILD_TEST_NAME="regression_tests/cases/fmm_gravity_mpi"
 RUN_DIR_REL="regression_tests/cases/fmm_gravity_mpi"
 CHECK_FUNCTION="check_fmm_gravity_mpi_case"

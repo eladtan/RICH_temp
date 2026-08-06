@@ -1,5 +1,6 @@
 TEST_ID="eulerian_diffusion_freefree_1d"
 TAGS="mpi"
+CATEGORY="physics"
 BUILD_TEST_NAME="regression_tests/cases/eulerian_diffusion_freefree_1d"
 RUN_DIR_REL="regression_tests/cases/eulerian_diffusion_freefree_1d"
 RUN_COMMAND='rm -f temperature_profile.txt shock_position.txt && mpirun -np ${SLURM_NTASKS} "${RICH_BIN}"'

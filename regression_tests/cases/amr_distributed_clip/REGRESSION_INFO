@@ -1,6 +1,7 @@
 # THUNDER regression metadata migrated from regression_tests/tests/amr_distributed_clip.sh.sh
 TEST_ID="amr_distributed_clip"
 TAGS="mpi"
+CATEGORY="code_correctness"
 BUILD_TEST_NAME="regression_tests/cases/amr_distributed_clip"
 RUN_DIR_REL="regression_tests/cases/amr_distributed_clip"
 RUN_COMMAND="mpirun -np ${SLURM_NTASKS} \"${RICH_BIN}\""
