@@ -42,15 +42,6 @@ Start with the [documentation index](docs/README.md). The most useful guides are
 
 The repository also contains GitLab-wiki-ready pages under [`wiki/`](wiki/).
 
-### Integration notes
-
-For the history and technical decisions behind the ablation integration, see:
-
-- [Ablation branch changes](docs/ablation_branch_changes.md)
-- [Ablation merge hazards and resolutions](docs/ablation_merge_hazards.md)
-- [DDMC moving-interface design](docs/radiation/ddmc_wollaeger_interface.md)
-- [Distributed MPI FMM](docs/architecture/mpi-fmm-gravity.md)
-
 ## Requirements
 
 ### Required
