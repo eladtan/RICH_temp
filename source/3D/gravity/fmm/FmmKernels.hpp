@@ -67,6 +67,24 @@ void accumulateM2POrder2(const Vector3D& displacement,
                          Vector3D& acceleration,
                          double* positiveKernelPotential);
 
+// Closed-form order-three evaluation. This retains monopole, dipole, and
+// quadrupole contributions to acceleration and all order-three contributions
+// to the optional potential.
+void accumulateM2POrder3(const Vector3D& displacement,
+                         const double* sourceCoefficients,
+                         Vector3D& acceleration,
+                         double* positiveKernelPotential);
+
+// Evaluate a general-order multipole directly at a zero-radius target.  Only
+// the constant and first-degree local coefficients can contribute at that
+// point, so avoid constructing the unused remainder of the local expansion.
+void accumulateM2P(const Vector3D& displacement,
+                   const FmmTaylorExpansion& layout,
+                   const double* sourceCoefficients,
+                   Vector3D& acceleration,
+                   double* positiveKernelPotential,
+                   std::vector<double>& derivativeScratch);
+
 void accumulateP2P(const std::vector<Vector3D>& targetPositions,
                    const std::vector<Vector3D>& sourcePositions,
                    const std::vector<double>& sourceMasses,

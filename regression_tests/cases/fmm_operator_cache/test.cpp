@@ -276,6 +276,135 @@ bool checkLocalPlanGeometryGuard()
     return firstTree.nodes().size() == shiftedTree.nodes().size() &&
            !FmmDualTreeTraversal::localPlanReusable(shiftedTree, plan);
 }
+
+double checkDirectM2P()
+{
+    double maximumDifference = 0.0;
+    const Vector3D displacements[] = {
+        Vector3D(1.25, -0.75, 0.5),
+        Vector3D(-2.0, 0.375, 1.125)};
+    for(int order = 3; order <= 5; ++order)
+    {
+        const FmmTaylorExpansion layout(order);
+        std::vector<double> sourceCoefficients(layout.coefficientCount());
+        for(std::size_t i = 0; i < sourceCoefficients.size(); ++i)
+            sourceCoefficients[i] =
+                (i % 2 == 0 ? 1.0 : -1.0) /
+                static_cast<double>(i + 2);
+
+        for(const Vector3D& displacement : displacements)
+        {
+            std::vector<double> derivativeScratch;
+            std::vector<double> translationOperator;
+            FmmKernels::computeM2LOperator(
+                displacement, layout, derivativeScratch,
+                translationOperator);
+            FmmNode source;
+            source.center = Vector3D();
+            FmmNode pointTarget;
+            pointTarget.center = displacement;
+            pointTarget.localOffset = 0;
+            std::vector<double> referenceLocals(
+                layout.coefficientCount(), 0.0);
+            FmmKernels::translateM2LRaw(
+                source, pointTarget, layout, sourceCoefficients.data(),
+                referenceLocals, translationOperator, 1.0);
+
+            Vector3D directAcceleration;
+            double directPotential = 0.0;
+            FmmKernels::accumulateM2P(
+                displacement, layout, sourceCoefficients.data(),
+                directAcceleration, &directPotential, derivativeScratch);
+            maximumDifference = std::max(maximumDifference,
+                std::abs(directPotential -
+                         referenceLocals[layout.index(0, 0, 0)]));
+            maximumDifference = std::max(maximumDifference,
+                std::abs(directAcceleration.x -
+                         referenceLocals[layout.index(1, 0, 0)]));
+            maximumDifference = std::max(maximumDifference,
+                std::abs(directAcceleration.y -
+                         referenceLocals[layout.index(0, 1, 0)]));
+            maximumDifference = std::max(maximumDifference,
+                std::abs(directAcceleration.z -
+                         referenceLocals[layout.index(0, 0, 1)]));
+            if(order == 3)
+            {
+                Vector3D closedFormAcceleration;
+                double closedFormPotential = 0.0;
+                FmmKernels::accumulateM2POrder3(
+                    displacement, sourceCoefficients.data(),
+                    closedFormAcceleration, &closedFormPotential);
+                maximumDifference = std::max(maximumDifference,
+                    std::abs(closedFormPotential -
+                             referenceLocals[layout.index(0, 0, 0)]));
+                maximumDifference = std::max(maximumDifference,
+                    std::abs(closedFormAcceleration.x -
+                             referenceLocals[layout.index(1, 0, 0)]));
+                maximumDifference = std::max(maximumDifference,
+                    std::abs(closedFormAcceleration.y -
+                             referenceLocals[layout.index(0, 1, 0)]));
+                maximumDifference = std::max(maximumDifference,
+                    std::abs(closedFormAcceleration.z -
+                             referenceLocals[layout.index(0, 0, 1)]));
+            }
+        }
+    }
+    return maximumDifference;
+}
+
+double checkOrder3M2L()
+{
+    const FmmTaylorExpansion layout(3);
+    const Vector3D displacement(1.25, -0.75, 0.5);
+    std::vector<double> derivativeScratch;
+    std::vector<double> translationOperator;
+    FmmKernels::computeM2LOperator(
+        displacement, layout, derivativeScratch, translationOperator);
+    std::vector<double> sourceCoefficients(layout.coefficientCount());
+    for(std::size_t i = 0; i < sourceCoefficients.size(); ++i)
+        sourceCoefficients[i] =
+            (i % 2 == 0 ? 1.0 : -1.0) /
+            static_cast<double>(i + 2);
+
+    FmmNode source;
+    FmmNode target;
+    target.localOffset = 0;
+    double maximumDifference = 0.0;
+    const double inverseScales[] = {0.375, 1.0, 2.25};
+    for(double inverseScale : inverseScales)
+    {
+        std::vector<double> optimized(layout.coefficientCount(), 0.0);
+        FmmKernels::translateM2LRaw(
+            source, target, layout, sourceCoefficients.data(), optimized,
+            translationOperator, inverseScale);
+
+        std::vector<double> reference(layout.coefficientCount(), 0.0);
+        std::vector<double> inversePowers(
+            static_cast<std::size_t>(layout.order() + 2), 1.0);
+        for(std::size_t i = 1; i < inversePowers.size(); ++i)
+            inversePowers[i] = inversePowers[i - 1] * inverseScale;
+        const std::vector<std::size_t>& offsets = layout.m2lOffsets();
+        const std::vector<FmmM2LTerm>& terms = layout.m2lTerms();
+        for(std::size_t targetIndex = 0;
+            targetIndex < layout.coefficientCount(); ++targetIndex)
+        {
+            double translated = 0.0;
+            for(std::size_t termIndex = offsets[targetIndex];
+                termIndex < offsets[targetIndex + 1]; ++termIndex)
+            {
+                const FmmM2LTerm& term = terms[termIndex];
+                translated += translationOperator[termIndex] *
+                    inversePowers[term.inverseScalePower] *
+                    sourceCoefficients[term.sourceIndex];
+            }
+            reference[targetIndex] =
+                layout.inverseFactorial(targetIndex) * translated;
+            maximumDifference = std::max(maximumDifference,
+                std::abs(optimized[targetIndex] - reference[targetIndex]));
+        }
+    }
+    return maximumDifference;
+}
 }
 
 int main()
@@ -333,6 +462,8 @@ int main()
             checkPreparedBatchResolution();
         const bool localPlanGeometryPass =
             checkLocalPlanGeometryGuard();
+        const double directM2PDifference = checkDirectM2P();
+        const double order3M2LDifference = checkOrder3M2L();
         const bool boundedPass =
             firstStats.m2lCount > 0 &&
             firstStats.localOperatorCacheBytes <= cacheBudget &&
@@ -383,7 +514,9 @@ int main()
                                    fallbackDifference <= 5e-12 &&
                                    canonicalDifference <= 5e-12 &&
                                    kernelDifferences.first <= 5e-12 &&
-                                   kernelDifferences.second <= 5e-12;
+                                   kernelDifferences.second <= 5e-12 &&
+                                   directM2PDifference <= 5e-12 &&
+                                   order3M2LDifference <= 5e-12;
         const bool passed = boundedPass && zeroPass && canonicalPass &&
                             reconfigurePreserved && preparedBatchPass &&
                             localPlanGeometryPass &&
@@ -421,6 +554,10 @@ int main()
                << kernelDifferences.first << "\n";
         output << "kernel_translation_relative_difference "
                << kernelDifferences.second << "\n";
+        output << "direct_m2p_max_difference "
+               << directM2PDifference << "\n";
+        output << "order3_m2l_max_difference "
+               << order3M2LDifference << "\n";
         output << "canonical_cache_entries "
                << canonicalStats.localOperatorCacheEntries << "\n";
         output << "canonical_cache_hits "

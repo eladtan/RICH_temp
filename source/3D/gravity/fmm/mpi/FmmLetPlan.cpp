@@ -2817,9 +2817,7 @@ void FmmLetPlan::finishExecute(
     // the accuracy bound. Runs before the multipole payloads are released.
     const Clock::time_point m2pStart = Clock::now();
     const bool directOrder2M2P = layout.order() == 2;
-    std::vector<double> m2pLocals;
-    if(!directOrder2M2P)
-        m2pLocals.resize(layout.coefficientCount(), 0.0);
+    const bool directOrder3M2P = layout.order() == 3;
     for(std::uint32_t interactionIndex : activeM2PInteractionIndices_)
     {
         const FmmLetM2PInteraction& interaction =
@@ -2854,26 +2852,23 @@ void FmmLetPlan::finishExecute(
                 continue;
             }
 
-            // A zero-radius single-particle target centred on the body turns
-            // the existing M2L plus L2P pair into a direct evaluation.
-            FmmNode pointTarget;
-            pointTarget.center = positions[body];
-            pointTarget.halfSize = 0.0;
-            pointTarget.radius = 0.0;
-            pointTarget.particleBegin = k;
-            pointTarget.particleEnd = k + 1;
-            pointTarget.localOffset = 0;
-            FmmKernels::computeM2LOperator(displacement, layout,
-                                           derivativeScratch, uncachedOperator);
-            std::fill(m2pLocals.begin(), m2pLocals.end(), 0.0);
-            FmmKernels::translateM2LRaw(
-                source, pointTarget, layout,
-                remoteMultipoleCoefficients[sourceIndex], m2pLocals,
-                uncachedOperator, 1.0);
-            FmmKernels::evaluateL2P(pointTarget, positions,
-                                    localTree.particleOrder(), layout,
-                                    m2pLocals, acceleration,
-                                    positiveKernelPotential);
+            if(directOrder3M2P)
+            {
+                double* bodyPotential = positiveKernelPotential == nullptr ?
+                    nullptr : &(*positiveKernelPotential)[body];
+                FmmKernels::accumulateM2POrder3(
+                    displacement, remoteMultipoleCoefficients[sourceIndex],
+                    acceleration[body], bodyPotential);
+                ++stats.letM2PCount;
+                continue;
+            }
+
+            double* bodyPotential = positiveKernelPotential == nullptr ?
+                nullptr : &(*positiveKernelPotential)[body];
+            FmmKernels::accumulateM2P(
+                displacement, layout,
+                remoteMultipoleCoefficients[sourceIndex], acceleration[body],
+                bodyPotential, derivativeScratch);
             ++stats.letM2PCount;
         }
     }
