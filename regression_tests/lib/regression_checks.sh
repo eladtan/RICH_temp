@@ -1529,6 +1529,55 @@ check_cartesian_gauss_linear_case() {
     return 0
 }
 
+check_radiation_pressure_gradient_3d_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/radiation_pressure_gradient_3d_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale radiation_pressure_gradient_3d_metrics.txt"
+        return 1
+    fi
+
+    local threshold="${RADIATION_PRESSURE_GRADIENT_3D_MAX_ABS:-1e-10}"
+    local mode error cells
+    for mode in imc mmc ddmc; do
+        error=$(awk -v key="${mode}_max_abs" '$1 == key { print $2 }' "$metrics_file")
+        cells=$(awk -v key="${mode}_cells" '$1 == key { print $2 }' "$metrics_file")
+        if [[ -z "$error" || -z "$cells" ]]; then
+            set_check_msg "failed to parse ${mode} 3D pressure-gradient metrics"
+            return 1
+        fi
+        if ! is_finite_number "$error"; then
+            set_check_msg "${mode}_max_abs is not finite"
+            return 1
+        fi
+        if ! awk -v e="$error" -v t="$threshold" 'BEGIN { exit !(e < t) }'; then
+            set_check_msg "${mode}_max_abs exceeds threshold (${error} >= ${threshold})"
+            return 1
+        fi
+        if ! awk -v n="$cells" 'BEGIN { exit !(n > 0) }'; then
+            set_check_msg "${mode} checked zero 3D pressure-gradient cells"
+            return 1
+        fi
+    done
+
+    local pass_flag
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "3D pressure-gradient regression reported pass=${pass_flag:-missing}"
+        return 1
+    fi
+
+    set_check_msg "3D radiation pressure-gradient postStep passed for IMC, MMC, and DDMC"
+    return 0
+}
+
 check_rayleigh_taylor_case() {
     local run_dir="$1"
     local run_start_epoch="$2"

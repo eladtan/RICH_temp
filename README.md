@@ -196,7 +196,7 @@ setup and output handling.
 
 RICH uses the embedded THUNDER framework. Test metadata lives beside each case,
 and artifacts are collected under `regression_results/`. The unified RICH and
-STORM inventory contains 56 tests split into 39 `physics` tests and 17
+STORM inventory contains 57 tests split into 39 `physics` tests and 18
 `code_correctness` tests; every discovered case declares exactly one category.
 
 The root wrapper clears `CPATH`, then invokes THUNDER with
@@ -316,6 +316,7 @@ reject fatal markers and missing or stale artifacts.
 | `marshak_wave_4_diffusion` | Physics; serial | Diffusion Marshak problem 4 with the same `1e-2` limits. |
 | `moving_slab_mc_32` | Physics; MPI 32 on 8 nodes; 32 groups | Moving-slab MC spectrum; F-error at most `0.30`. |
 | `radiation_direction_sampling` | Correctness; serial | Isotropic direction moments, angular chi-square, and observer Voronoi-area closure; requires executable pass. |
+| `radiation_pressure_gradient_3d` | Correctness; serial | Seeds a linear 3D radiation-energy tally and verifies the full vector momentum impulse from `RadiationIMC::postStep` in IMC, MMC, and DDMC modes; maximum component error below `1e-10`. |
 | `rayleigh_taylor_mpi` | Physics; MPI 128 | Rayleigh-Taylor growth from kinetic-energy/density data; relative growth-rate error at most `0.25`. |
 | `sedov_3d_mpi` | Physics; MPI 128 | Sedov exact-ODE profile; relative L1 limits: density `0.50`, pressure `0.30`, velocity `0.60`. |
 | `sod_1d` | Physics; serial | Sod exact Riemann profile; density and pressure goodness-of-fit at most `2e-2`. |

@@ -1,0 +1,243 @@
+diff --git a/tests/test_thunder.py b/tests/test_thunder.py
+index 1128e6d45ba7589c1b9c390ddd4dac3b80aa22c9..c8d83ee8cc56e9c12dc41ae0fd8eed62f1738f98 100644
+--- a/tests/test_thunder.py
++++ b/tests/test_thunder.py
+@@ -164,6 +164,24 @@ class DependencyTests(unittest.TestCase):
+ 
+ 
+ class SlurmWaitTests(unittest.TestCase):
++    def test_fast_build_and_run_advance_from_queued_to_checking(self):
++        def fake_run(command, **_kwargs):
++            if command[0] == "squeue":
++                return SimpleNamespace(stdout="", stderr="", returncode=0)
++            if command[0] == "sacct" and "--format=State" in command:
++                return SimpleNamespace(stdout="COMPLETED\n", stderr="", returncode=0)
++            raise AssertionError(f"unexpected command: {command}")
++
++        job = {
++            "status": thunder.STATUS_QUEUED,
++            "build_job_id": "100_0",
++            "run_job_id": "101",
++        }
++        with mock.patch.object(thunder.subprocess, "run", side_effect=fake_run):
++            thunder.poll_job_states([job])
++
++        self.assertEqual(job["status"], thunder.STATUS_CHECKING)
++
+     def test_cancelled_job_with_zero_exit_code_is_failure(self):
+         def fake_run(command, **_kwargs):
+             if command[0] == "squeue":
+@@ -180,6 +198,32 @@ class SlurmWaitTests(unittest.TestCase):
+             self.assertEqual(thunder.wait_for_job("123", "smoke", "Building"), 1)
+ 
+ 
++class SlurmTimeLimitTests(unittest.TestCase):
++    def test_metadata_time_limit_overrides_generic_mpi_default(self):
++        info = {"TAGS": "mpi", "SLURM_TIME_LIMIT": "02:00:00"}
++        self.assertEqual(
++            thunder.test_timeout_seconds(info, "sedov_3d_mpi", "mpi"),
++            2 * 60 * 60,
++        )
++
++    def test_mode_specific_day_time_limit_is_supported(self):
++        info = {"TAGS": "mpi", "SLURM_TIME_LIMIT_MPI": "1-02:03:04"}
++        self.assertEqual(
++            thunder.test_timeout_seconds(info, "long_case", "mpi"),
++            93784,
++        )
++
++    def test_timeout_seconds_remains_the_explicit_override(self):
++        info = {
++            "TAGS": "mpi",
++            "TIMEOUT": "60",
++            "SLURM_TIME_LIMIT": "02:00:00",
++        }
++        self.assertEqual(
++            thunder.test_timeout_seconds(info, "short_case", "mpi"), 60
++        )
++
++
+ class BuildFreeTests(unittest.TestCase):
+     def test_prepare_slurm_commands_omits_build_and_binary_check(self):
+         with tempfile.TemporaryDirectory() as temporary_directory:
+@@ -230,6 +274,47 @@ class BuildFreeTests(unittest.TestCase):
+             self.assertIn("echo aggregate", wrapped_run)
+ 
+ 
++class IsolatedBuildDirectoryTests(unittest.TestCase):
++    def test_grouped_slurm_builds_are_isolated_by_profile_and_test(self):
++        with tempfile.TemporaryDirectory() as temporary_directory:
++            root = Path(temporary_directory)
++            test = {
++                "id": "nested/smoke",
++                "directory": root / "smoke",
++                "relative": "nested/smoke",
++                "metadata": root / "smoke" / "REGRESSION_INFO",
++                "info": {"BUILD_TARGET": "smoke"},
++            }
++            build = {
++                "mode": "grouped",
++                "build_dir": "build",
++                "binary": "{build_dir}/rich_{config}",
++                "configure_command": ["cmake", "-B", "{build_dir}"],
++                "build_command": ["cmake", "--build", "{build_dir}"],
++            }
++
++            def plan(profile):
++                args = SimpleNamespace(
++                    config=profile, mode="mpi", nproc=8, compile_jobs=4
++                )
++                return thunder.build_plan({}, args, root, test, build, True)
++
++            gnu_configure, _, gnu_binary = plan("gnuReleaseMPI")
++            intel_configure, _, intel_binary = plan("intelReleaseMPI")
++
++            self.assertIn(
++                str(root / "build" / "thunder_jobs" / "gnuReleaseMPI" /
++                    "nested__smoke"),
++                gnu_configure,
++            )
++            self.assertIn(
++                str(root / "build" / "thunder_jobs" / "intelReleaseMPI" /
++                    "nested__smoke"),
++                intel_configure,
++            )
++            self.assertNotEqual(gnu_binary, intel_binary)
++
++
+ class RunDirectoryTests(unittest.TestCase):
+     def test_input_directory_uses_run_dir_rel(self):
+         root = Path("/tmp/project")
+diff --git a/thunder.py b/thunder.py
+index af200f1e59df306d43d3446ffb5976c7996dea5a..95e0f67afea1906f4b877e9632de481641927581 100644
+--- a/thunder.py
++++ b/thunder.py
+@@ -10,6 +10,7 @@ from datetime import datetime
+ import json
+ import math
+ import os
++import re
+ import signal
+ import shlex
+ import shutil
+@@ -364,11 +365,64 @@ def format_slurm_time(value: Any) -> str:
+     return f"{hours:02d}:{minutes:02d}:{seconds:02d}"
+ 
+ 
++def parse_slurm_time_limit(value: Any) -> int:
++    """Parse a Slurm time limit into seconds.
++
++    Slurm accepts ``minutes``, ``minutes:seconds``, ``hours:minutes:seconds``,
++    and the corresponding ``days-...`` forms.
++    """
++    text = str(value).strip()
++    if not text:
++        raise ThunderError("SLURM_TIME_LIMIT must not be empty")
++
++    days = 0
++    clock = text
++    has_days = "-" in text
++    if has_days:
++        day_text, clock = text.split("-", 1)
++        if not day_text.isdigit():
++            raise ThunderError(f"Invalid SLURM_TIME_LIMIT: {text!r}")
++        days = int(day_text)
++
++    fields = clock.split(":")
++    if not all(field.isdigit() for field in fields):
++        raise ThunderError(f"Invalid SLURM_TIME_LIMIT: {text!r}")
++    numbers = [int(field) for field in fields]
++    if has_days:
++        if len(numbers) == 1:
++            hours, minutes, seconds = numbers[0], 0, 0
++        elif len(numbers) == 2:
++            hours, minutes, seconds = numbers[0], numbers[1], 0
++        elif len(numbers) == 3:
++            hours, minutes, seconds = numbers
++        else:
++            raise ThunderError(f"Invalid SLURM_TIME_LIMIT: {text!r}")
++    else:
++        if len(numbers) == 1:
++            hours, minutes, seconds = 0, numbers[0], 0
++        elif len(numbers) == 2:
++            hours, minutes, seconds = 0, numbers[0], numbers[1]
++        elif len(numbers) == 3:
++            hours, minutes, seconds = numbers
++        else:
++            raise ThunderError(f"Invalid SLURM_TIME_LIMIT: {text!r}")
++
++    if minutes >= 60 or seconds >= 60:
++        raise ThunderError(f"Invalid SLURM_TIME_LIMIT: {text!r}")
++    total = days * 86400 + hours * 3600 + minutes * 60 + seconds
++    if total <= 0:
++        raise ThunderError("SLURM_TIME_LIMIT must be positive")
++    return total
++
++
+ def test_timeout_seconds(info: Dict[str, Any], test_id: str, mode: str) -> int:
+     """Return the running-time limit for a test in seconds."""
+     explicit = metadata_value(info, "TIMEOUT", mode)
+     if explicit is not None and str(explicit).strip() != "":
+         return max(1, int(math.ceil(float(explicit))))
++    scheduler_limit = metadata_value(info, "SLURM_TIME_LIMIT", mode)
++    if scheduler_limit is not None and str(scheduler_limit).strip() != "":
++        return parse_slurm_time_limit(scheduler_limit)
+     tags = {tag.lower() for tag in str(info.get("TAGS", "")).split()}
+     if test_id.rsplit("/", 1)[-1] == "moving_slab":
+         return 90 * 60
+@@ -963,6 +1017,19 @@ def resolve_build_directory(project_root: Path, build_dir: str) -> Path:
+     return path.resolve()
+ 
+ 
++def isolated_build_directory(project_root: Path, build: Dict[str, Any],
++                             test: Dict[str, Any], args: argparse.Namespace) -> Path:
++    """Return a per-profile, per-test directory for an isolated grouped build."""
++    build_directory = resolve_build_directory(
++        project_root, str(build.get("build_dir", "build_regression"))
++    )
++    profile = getattr(args, "config", None) or getattr(args, "profile", None) or "default"
++    isolated_profile = re.sub(r"[^A-Za-z0-9_.-]+", "_", str(profile)).strip("._-")
++    isolated_id = re.sub(r"[^A-Za-z0-9_.-]+", "__", str(test["id"])).strip("._-")
++    return build_directory / "thunder_jobs" / (isolated_profile or "default") / \
++        (isolated_id or "test")
++
++
+ def build_plan(config: Dict[str, Any], args: argparse.Namespace, project_root: Path,
+                test: Dict[str, Any], build: Dict[str, Any],
+                isolated_job: bool = False) -> Tuple[List[str], List[str], Path]:
+@@ -970,8 +1037,7 @@ def build_plan(config: Dict[str, Any], args: argparse.Namespace, project_root: P
+         project_root, str(build.get("build_dir", "build_regression"))
+     )
+     if isolated_job and str(build.get("mode", "grouped")) == "grouped":
+-        isolated_id = str(test["id"]).replace("/", "__")
+-        build_directory = build_directory / "thunder_jobs" / isolated_id
++        build_directory = isolated_build_directory(project_root, build, test, args)
+     nproc = getattr(args, "compile_jobs", args.nproc) if isolated_job else args.nproc
+     binary_template = str(build.get("binary", "{build_dir}/examples/{build_target}"))
+     mapping = placeholders(
+@@ -1641,9 +1707,12 @@ def prepare_slurm_commands(config: Dict[str, Any], args: argparse.Namespace,
+             config, args, project_root, test, build, True
+         )
+     run_command = run_command_value(info, run, args.mode)
+-    build_directory = resolve_build_directory(
+-        project_root, str(build.get("build_dir", "build_regression"))
+-    )
++    if not skip_build and str(build.get("mode", "grouped")) == "grouped":
++        build_directory = isolated_build_directory(project_root, build, test, args)
++    else:
++        build_directory = resolve_build_directory(
++            project_root, str(build.get("build_dir", "build_regression"))
++        )
+     mapping = placeholders(project_root, build_directory, test, binary, args)
+     command = shell_command(run_command, mapping)
+     run_arguments = metadata_value(info, "RUN_ARGS", args.mode)
+@@ -2062,7 +2131,8 @@ def poll_job_states(jobs: List[Dict[str, Any]]) -> None:
+                                       completed_slurm_exit_code(run_id))
+                     set_job_status(job, STATUS_FAIL)
+                 elif run_id and not run_state and job["status"] in (
+-                        STATUS_BUILDING, STATUS_WAIT_RUN, STATUS_RUNNING):
++                        STATUS_QUEUED, STATUS_BUILDING, STATUS_WAIT_RUN,
++                        STATUS_RUNNING):
+                     completed_state = completed_slurm_state(run_id)
+                     if completed_state == "TIMEOUT":
+                         job["failure_stage"] = "runtime"

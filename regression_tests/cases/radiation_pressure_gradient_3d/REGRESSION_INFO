@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+
+TEST_ID="radiation_pressure_gradient_3d"
+TAGS="serial"
+CATEGORY="code_correctness"
+BUILD_TEST_NAME="regression_tests/cases/radiation_pressure_gradient_3d"
+RUN_DIR_REL="regression_tests/cases/radiation_pressure_gradient_3d"
+RUN_MODE="direct"
+RUN_COMMAND='"${RICH_BIN}"'
+CHECK_FUNCTION="check_radiation_pressure_gradient_3d_case"

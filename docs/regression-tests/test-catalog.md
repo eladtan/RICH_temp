@@ -31,13 +31,14 @@ primary category; execution tags such as `serial`, `mpi`, `manual`, and
   `marshak_wave_1`, `marshak_wave_2`, `marshak_wave_3`, `marshak_wave_4`,
   `moving_slab`, and `till_compton_mc`.
 
-### Code Correctness (17)
+### Code Correctness (18)
 
-- **RICH (15):** `amr_distributed_clip`, `amr_random`,
+- **RICH (16):** `amr_distributed_clip`, `amr_random`,
   `cartesian_gauss_linear`, `ddmc_mpi_zero_cell`, `fmm_gravity_mpi`,
   `fmm_gravity_mpi_guard`, `fmm_gravity_serial`, `fmm_operator_cache`,
   `fmm_peer_exchange_rebuild`, `fmm_process_pair_coverage`,
   `fmm_quadrupole_benchmark`, `radiation_direction_sampling`,
+  `radiation_pressure_gradient_3d`,
   `spherical_gauss_linear`, `spherical_gauss_tangential`, and
   `voronoi_volume`.
 - **Embedded STORM (2):** `cartesian_parallel_check` and

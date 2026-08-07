@@ -703,21 +703,22 @@ equation of state then recovers temperature and pressure:
   p_i = {\rm EOS}(\rho_i,e_i,\hbox{tracers}).
 \]
 
-Third, if \texttt{diffusionPressureGradient} is active, the code computes a
-one-dimensional estimate of \(\partial_x\langle E_{\rm r}\rangle_t\) and
-applies
+Third, if \texttt{diffusionPressureGradient} is active, the code reconstructs
+the full three-dimensional gradient of \(\langle E_{\rm r}\rangle_t\) from
+directional differences between face-neighbor cell centers and applies
 \begin{equation}
-  \Delta p_{x,i}
+  \Delta \boldsymbol{p}_i
   =
   -\dt\,V_i\,\frac{1}{3}\,
-  \partial_x\langle E_{\rm r}\rangle_{t,i}.
+  \nabla\langle E_{\rm r}\rangle_{t,i}.
   \label{eq:pressure-gradient}
 \end{equation}
-The implementation searches for left and right neighbors by comparing neighbor
-directions with the \(x\)-axis. At physical boundaries it falls back to a
-one-sided difference. The source comments mark this pressure-gradient branch as
-currently one-dimensional, even though the rest of the transport is fully
-three-dimensional.
+The reconstruction is a directional least-squares solve.  A rank-aware local
+basis retains the identifiable gradient on one- or two-dimensional meshes
+embedded at any orientation in three dimensions.  Physical-boundary mirror
+points are omitted, giving a one-sided fit there, while exchanged MPI halo
+values participate normally.  The gradient is reconstructed and applied one
+cell at a time, so no cell-sized gradient array is allocated.
 
 Fourth, the code reconstructs radiation energies from census packets. It zeroes
 \texttt{conserved[i].Erad} and, in multigroup mode, \texttt{conserved[i].Eg[g]}.
