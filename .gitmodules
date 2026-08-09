@@ -19,7 +19,7 @@
 [submodule "source/3D/tessellation/voronoi"]
 	path = source/3D/tessellation/voronoi
 	url = git@github.com:maormizrachi/MadVoro.git
-	branch = cmake
+	branch = master
 [submodule "source/3D/tessellation/cartesian"]
 	path = source/3D/tessellation/cartesian
 	url = git@github.com:maormizrachi/MadCart.git
