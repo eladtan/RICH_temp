@@ -1,0 +1,11 @@
+TEST_ID="compton_marshak_wave_diffusion_no_compton"
+TAGS="mpi"
+CATEGORY="physics"
+BUILD_TEST_NAME="regression_tests/cases/compton_marshak_wave_diffusion_no_compton"
+BUILD_ARGS="--energy_groups_num=32"
+RUN_DIR_REL="regression_tests/cases/compton_marshak_wave_diffusion_no_compton"
+RUN_COMMAND="mpirun -np ${SLURM_NTASKS} \"${RICH_BIN}\" --diffusion-no-compton"
+CHECK_FUNCTION="check_compton_marshak_wave_diffusion_no_compton_case"
+SLURM_NTASKS="16"
+SLURM_TIME_LIMIT="02:00:00"
+

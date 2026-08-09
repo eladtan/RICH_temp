@@ -30,7 +30,7 @@
 
 #ifdef RICH_MPI
 #include <mpi.h>
-#include "source/mpi/serialize/mpi_commands.hpp"
+#include <mpi_utils/mpi_collectives.hpp>
 #endif
 
 namespace fs = std::filesystem;
@@ -70,15 +70,16 @@ public:
 
 };
 
-enum class Mode { MC, MCIsotropic, Diffusion };
+enum class Mode { MC, MCIsotropic, Diffusion, DiffusionNoCompton };
 
 Mode parse_mode(int argc, char* argv[])
 {
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
-        if (arg == "--diffusion")    return Mode::Diffusion;
-        if (arg == "--mc-isotropic") return Mode::MCIsotropic;
-        if (arg == "--mc")           return Mode::MC;
+        if (arg == "--diffusion-no-compton") return Mode::DiffusionNoCompton;
+        if (arg == "--diffusion")             return Mode::Diffusion;
+        if (arg == "--mc-isotropic")          return Mode::MCIsotropic;
+        if (arg == "--mc")                    return Mode::MC;
     }
     return Mode::MC;
 }
@@ -89,6 +90,7 @@ std::string mode_string(Mode m)
         case Mode::MC:          return "mc";
         case Mode::MCIsotropic: return "mc_iso";
         case Mode::Diffusion:   return "diffusion";
+        case Mode::DiffusionNoCompton: return "diffusion_no_compton";
     }
     return "mc";
 }
@@ -134,9 +136,9 @@ int main(int argc, char* argv[])
         double constexpr cv = 1e8;
         IdealGas eos(5.0 / 3.0, cv, 1.0, 0.0);
 
-        // Mesh: 256 cells in x over 0 cm, 1 cell in y and z
-        constexpr std::size_t Nx = 256;
-        double const Lx = 200.0;
+        // Mesh: 1024 cells over 50 cm in x, 1 cell in y and z
+        constexpr std::size_t Nx = 1024;
+        double const Lx = 50.0;
         double const dy = Lx / Nx;
         Vector3D ll(0.0, -0.5 * dy, -0.5 * dy);
         Vector3D ur(Lx,   0.5 * dy,  0.5 * dy);
@@ -190,7 +192,7 @@ int main(int argc, char* argv[])
         std::unique_ptr<MultigroupDiffusionSideBoundary> D_boundary;
         std::unique_ptr<MultigroupDiffusion> diffusion;
 
-        double dt = 1e-14;
+        double dt = 1e-13;
         double dt_max = 1e-11;
         if (mode == Mode::MC || mode == Mode::MCIsotropic) {
             constexpr std::size_t new_photons   = 50;
@@ -199,8 +201,8 @@ int main(int argc, char* argv[])
 
             auto opacity_ptr = std::make_shared<FreeFreeOpacityMC>(
                 1.0, energy_groups_center, energy_groups_boundary);
-            auto boundary_cond = std::make_shared<SideTemperature<Vector3D, Tessellation3D>>(
-                tess, cells, T_bath, bdy_photons, true);
+            auto boundary_cond = std::make_shared<STORM::SideTemperature<Vector3D, Tessellation3D>>(
+                tess, T_bath, bdy_photons, energy_groups_boundary);
 
             STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> imc_params = {
                 .newPhotonsPerCell = new_photons,
@@ -224,7 +226,7 @@ int main(int argc, char* argv[])
             auto group_classifier = [opacity_ptr](const Particle3D& particle) -> std::size_t {
                 return opacity_ptr->findGroup(particle.frequency);
             };
-            auto pop_control = std::make_shared<StratifiedCombPopulationControl<Vector3D, Tessellation3D>>(
+            auto pop_control = std::make_shared<STORM::StratifiedCombPopulationControl<Vector3D, Tessellation3D>>(
                 tess, ENERGY_GROUPS_NUM, group_classifier, 1000, 2.0, 2);
             std::vector<Particle3D> initial_particles;
             auto mc_step = std::make_shared<RadiationMCStep>(
@@ -233,15 +235,15 @@ int main(int argc, char* argv[])
             simulation.addPhysics(mc_step);
 
         } else {
-            // dt_max = 1e-11;
             diff_opacity = std::make_unique<FreeFreeOpacityMC>(
                 1.0, energy_groups_center, energy_groups_boundary);
             D_boundary = std::make_unique<MultigroupDiffusionSideBoundary>(
                 T_bath, energy_groups_center, energy_groups_boundary);
+            bool const compton_on = mode == Mode::Diffusion;
             diffusion = std::make_unique<MultigroupDiffusion>(
                 energy_groups_center, energy_groups_boundary,
                 *diff_opacity, *D_boundary, eos, std::vector<std::string>(),
-                true, false, true, false, -1, false);
+                true, false, compton_on, false, -1, false);
 
             auto radStep = std::make_shared<RadiationStep>(
                 tess, simulation.getCells(), simulation.getExtensives(),
@@ -253,7 +255,7 @@ int main(int argc, char* argv[])
             simulation.addPhysics(radStep);
         }
 
-        double const tf = 4e-9;
+        double const tf = 1e-9;
 
         while (simulation.GetTime() < tf) {
             double const dt_step = std::min(dt, tf - simulation.GetTime());
@@ -335,7 +337,10 @@ int main(int argc, char* argv[])
 #endif
 
         if (rank == 0) {
-            std::string const case_dir = fs::path(__FILE__).parent_path().string();
+            char const* artifact_dir = std::getenv("THUNDER_ARTIFACT_DIR");
+            std::string const case_dir = artifact_dir && artifact_dir[0] != '\0'
+                ? std::string(artifact_dir)
+                : fs::path(__FILE__).parent_path().string();
             std::string const suffix = "_" + mode_str;
             write_vector(x_all,      case_dir + "/x_pos" + suffix + ".txt");
             write_vector(Tgas_all,   case_dir + "/Tgas" + suffix + ".txt");

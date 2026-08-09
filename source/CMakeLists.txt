@@ -247,8 +247,6 @@ endif()
 # =============================================
 if(DEFINED MPI)
     find_package(MPI REQUIRED COMPONENTS CXX)
-    separate_arguments(mpi_compile_flags UNIX_COMMAND "${MPI_COMPILE_FLAGS}")
-    separate_arguments(mpi_link_flags UNIX_COMMAND "${MPI_LINK_FLAGS}")
 endif()
 
 # =============================================
@@ -329,8 +327,7 @@ target_link_libraries(
 target_link_options(${EXE_NAME} PRIVATE -rdynamic)
 
 if(DEFINED MPI)
-    target_compile_options(${EXE_NAME} PRIVATE ${mpi_compile_flags})
-    target_link_options(${EXE_NAME} PRIVATE ${mpi_link_flags})
+    target_link_libraries(${EXE_NAME} PRIVATE MPI::MPI_CXX)
 endif()
 
 if(DEFINED JSONCPP_LIB)

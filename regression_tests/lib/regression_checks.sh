@@ -2617,3 +2617,106 @@ check_ddmc_mpi_zero_cell_case() {
     set_check_msg "DDMC zero-cell/cross-rank MPI passed (zero_ranks=${zero_ranks}, cross_faces=${cross_rank_faces}, remote_leaks=${remote_leaks}, reciprocity=${cross_rank_reciprocity}, weight_error=${weight_rel_error})"
     return 0
 }
+
+check_compton_marshak_wave_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local checker_stdout="${run_dir}/compton_marshak_check.stdout.log"
+    local checker_stderr="${run_dir}/compton_marshak_check.stderr.log"
+    local required_file
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    for required_file in x_pos_mc.txt Tgas_mc.txt Trad_mc.txt min_fleck.txt; do
+        if ! is_nonempty_and_newer "${run_dir}/${required_file}" "$run_start_epoch"; then
+            set_check_msg "missing or stale ${required_file}"
+            return 1
+        fi
+    done
+
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_compton_marshak_wave.py" \
+        --x "${run_dir}/x_pos_mc.txt" \
+        --tgas "${run_dir}/Tgas_mc.txt" \
+        --trad "${run_dir}/Trad_mc.txt" \
+        --fleck "${run_dir}/min_fleck.txt" \
+        >"$checker_stdout" 2>"$checker_stderr"
+    if [[ $? -ne 0 ]]; then
+        set_check_msg "Compton Marshak wave invariant check failed"
+        return 1
+    fi
+
+    set_check_msg "Compton Marshak wave profiles and Fleck factors passed"
+    return 0
+}
+
+check_compton_marshak_wave_diffusion_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local checker_stdout="${run_dir}/compton_marshak_diffusion_check.stdout.log"
+    local checker_stderr="${run_dir}/compton_marshak_diffusion_check.stderr.log"
+    local required_file
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    for required_file in x_pos_diffusion.txt Tgas_diffusion.txt Trad_diffusion.txt; do
+        if ! is_nonempty_and_newer "${run_dir}/${required_file}" "$run_start_epoch"; then
+            set_check_msg "missing or stale ${required_file}"
+            return 1
+        fi
+    done
+
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_compton_marshak_wave.py" \
+        --x "${run_dir}/x_pos_diffusion.txt" \
+        --tgas "${run_dir}/Tgas_diffusion.txt" \
+        --trad "${run_dir}/Trad_diffusion.txt" \
+        >"$checker_stdout" 2>"$checker_stderr"
+    if [[ $? -ne 0 ]]; then
+        set_check_msg "Compton Marshak multigroup-diffusion invariant check failed"
+        return 1
+    fi
+
+    set_check_msg "Compton Marshak multigroup-diffusion profiles passed"
+    return 0
+}
+
+check_compton_marshak_wave_diffusion_no_compton_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local checker_stdout="${run_dir}/marshak_diffusion_no_compton_check.stdout.log"
+    local checker_stderr="${run_dir}/marshak_diffusion_no_compton_check.stderr.log"
+    local required_file
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    for required_file in x_pos_diffusion_no_compton.txt Tgas_diffusion_no_compton.txt Trad_diffusion_no_compton.txt; do
+        if ! is_nonempty_and_newer "${run_dir}/${required_file}" "$run_start_epoch"; then
+            set_check_msg "missing or stale ${required_file}"
+            return 1
+        fi
+    done
+
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_compton_marshak_wave.py" \
+        --x "${run_dir}/x_pos_diffusion_no_compton.txt" \
+        --tgas "${run_dir}/Tgas_diffusion_no_compton.txt" \
+        --trad "${run_dir}/Trad_diffusion_no_compton.txt" \
+        >"$checker_stdout" 2>"$checker_stderr"
+    if [[ $? -ne 0 ]]; then
+        set_check_msg "Marshak diffusion-without-Compton invariant check failed"
+        return 1
+    fi
+
+    set_check_msg "Marshak diffusion-without-Compton profiles passed"
+    return 0
+}

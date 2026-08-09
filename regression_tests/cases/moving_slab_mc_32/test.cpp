@@ -28,7 +28,7 @@
 #include "source/monte/boundary/RigidBoundary.hpp"
 #include "source/monte/boundary/BoundaryCondition.hpp"
 #include "source/newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
-#include "source/3D/radiation/IMCMemoryCostCalculator.hpp"
+#include "source/3D/radiation/IMCCostCalculator.hpp"
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
 #include "source/newtonian/three_dimensional/eulerian_3d.hpp"
 #include "source/newtonian/three_dimensional/default_cell_updater.hpp"
@@ -40,6 +40,48 @@ namespace fs = std::filesystem;
 
 namespace
 {
+
+#ifdef RICH_MPI
+class MovingSlabCostCalculator final : public CostCalculator3D
+{
+public:
+    explicit MovingSlabCostCalculator(
+        const std::shared_ptr<MonteCarloManager3D> &manager)
+        : workCost_(manager)
+    {}
+
+    std::vector<double> CalculateCost(
+        const Tessellation3D &tess,
+        const vector<ComputationalCell3D> &cells) const override
+    {
+        std::vector<double> weights = workCost_.CalculateCost(tess, cells);
+        const double localWeight =
+            std::accumulate(weights.begin(), weights.end(), 0.0);
+        const unsigned long long localCells =
+            static_cast<unsigned long long>(weights.size());
+        double totalWeight = 0.0;
+        unsigned long long totalCells = 0;
+        MPI_Allreduce(&localWeight, &totalWeight, 1, MPI_DOUBLE, MPI_SUM,
+                      MPI_COMM_WORLD);
+        MPI_Allreduce(&localCells, &totalCells, 1, MPI_UNSIGNED_LONG_LONG,
+                      MPI_SUM, MPI_COMM_WORLD);
+
+        if(totalCells == 0)
+            return weights;
+
+        const double averageWeight =
+            totalWeight / static_cast<double>(totalCells);
+        const double minWeight = 0.1 * averageWeight;
+        const double maxWeight = 20.0 * averageWeight;
+        for(double &weight : weights)
+            weight = std::clamp(weight, minWeight, maxWeight);
+        return weights;
+    }
+
+private:
+    IMCCostCalculator workCost_;
+};
+#endif
 
 class NullFluxCalculator : public FluxCalculator3D
 {
@@ -564,8 +606,10 @@ int main(int argc, char *argv[])
 
         sim.addPhysics(mcStep);
 #ifdef RICH_MPI
-        mcStep->setCost(std::make_shared<IMCMemoryCostCalculator>(mcStep->getManager()));
+        mcStep->setCost(
+            std::make_shared<MovingSlabCostCalculator>(mcStep->getManager()));
         sim.PresetLoadBalance("radiation-mc");
+        sim.addMigrationBuffer(mcStep->getManager()->GetCellsStepsCounters());
 #endif
 
         // --- Time stepping: dt starts at 1e-3 ns, ramps by 1.1x, max 0.1 ns ---
