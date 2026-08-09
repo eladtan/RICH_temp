@@ -33,36 +33,11 @@ endif()
 
 # ==================== Find VTK package ====================
 
-# Some VTK component graphs depend on MPI even for a serial RICH build (for
-# example FiltersGeneral -> ParallelDIY -> VTK::mpi).  Seed that transitive
-# FindMPI call from the active wrappers so an Intel compiler environment does
-# not silently select Intel MPI while an OpenMPI-backed VTK is loaded.
+# Some VTK component graphs depend on MPI even for a serial RICH build.  Seed
+# that transitive FindMPI call with one coherent wrapper suite.
 if(NOT DEFINED MPI)
-    get_cmake_property(_rich_vtk_cache_variables CACHE_VARIABLES)
-    foreach(_rich_vtk_cache_variable IN LISTS _rich_vtk_cache_variables)
-        if(_rich_vtk_cache_variable MATCHES "^MPI_.*_(LIBRARY|WORKS)$" OR
-           _rich_vtk_cache_variable MATCHES
-               "^MPI_(C|CXX|Fortran)_(COMPILER_INCLUDE_DIRS|HEADER_DIR|F77_HEADER_DIR|MODULE_DIR|LIB_NAMES|LINK_FLAGS)$")
-            unset("${_rich_vtk_cache_variable}" CACHE)
-        endif()
-    endforeach()
-    unset(_rich_vtk_cache_variable)
-    unset(_rich_vtk_cache_variables)
-
-    foreach(_rich_vtk_mpi_tool IN ITEMS MPIEXEC_EXECUTABLE MPI_C_COMPILER MPI_CXX_COMPILER MPI_Fortran_COMPILER)
-        unset("${_rich_vtk_mpi_tool}" CACHE)
-        unset("${_rich_vtk_mpi_tool}")
-    endforeach()
-    find_program(MPIEXEC_EXECUTABLE NAMES mpiexec mpirun
-        NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH NO_CMAKE_SYSTEM_PATH)
-    find_program(MPI_C_COMPILER NAMES mpicc
-        NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH NO_CMAKE_SYSTEM_PATH)
-    find_program(MPI_CXX_COMPILER NAMES mpicxx mpic++ mpiCC
-        NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH NO_CMAKE_SYSTEM_PATH)
-    find_program(MPI_Fortran_COMPILER NAMES mpifort mpif90
-        NO_CMAKE_PATH NO_CMAKE_ENVIRONMENT_PATH NO_CMAKE_SYSTEM_PATH)
-    message(STATUS
-        "VTK transitive MPI wrappers: ${MPI_C_COMPILER}; ${MPI_CXX_COMPILER}; ${MPI_Fortran_COMPILER}")
+    include(${CMAKE_CURRENT_LIST_DIR}/select_mpi.cmake)
+    rich_select_mpi_toolchain()
 endif()
 
 set(VTK_COMPONENTS
@@ -101,6 +76,7 @@ endif()
 
 if(DEFINED MPI)
     find_package(MPI REQUIRED COMPONENTS CXX)
+    rich_validate_mpi_toolchain()
 
     # VTK::ParallelMPI is a shared imported target. Inspect its direct MPI
     # dependency: a C++ probe based on vtkMPICommunicatorOpaqueComm is not
