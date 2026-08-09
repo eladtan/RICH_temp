@@ -2,6 +2,7 @@
 #include <chrono>
 #include <fstream>
 #include <iostream>
+#include <map>
 #include <vector>
 #include <string>
 #include <cmath>
@@ -42,6 +43,47 @@ namespace
 {
 
 #ifdef RICH_MPI
+void PrintRankPlacement(int rank, int worldSize)
+{
+    constexpr int nameStride = MPI_MAX_PROCESSOR_NAME + 1;
+    std::array<char, nameStride> localName{};
+    int nameLength = 0;
+    MPI_Get_processor_name(localName.data(), &nameLength);
+    localName[static_cast<size_t>(nameLength)] = '\0';
+
+    std::vector<char> allNames;
+    if(rank == 0)
+        allNames.resize(static_cast<size_t>(worldSize) * nameStride);
+    MPI_Gather(localName.data(), nameStride, MPI_CHAR,
+               rank == 0 ? allNames.data() : nullptr, nameStride, MPI_CHAR, 0,
+               MPI_COMM_WORLD);
+
+    if(rank != 0)
+        return;
+
+    std::map<std::string, std::vector<int>> ranksByNode;
+    for(int currentRank = 0; currentRank < worldSize; ++currentRank)
+    {
+        const char *name = allNames.data() +
+            static_cast<size_t>(currentRank) * nameStride;
+        ranksByNode[name].push_back(currentRank);
+    }
+
+    std::cout << "MPI rank placement:";
+    for(const auto &[node, ranks] : ranksByNode)
+    {
+        std::cout << " " << node << "=[";
+        for(size_t i = 0; i < ranks.size(); ++i)
+        {
+            if(i > 0)
+                std::cout << ',';
+            std::cout << ranks[i];
+        }
+        std::cout << ']';
+    }
+    std::cout << std::endl;
+}
+
 class MovingSlabCostCalculator final : public CostCalculator3D
 {
 public:
@@ -392,6 +434,7 @@ int main(int argc, char *argv[])
     MPI_Init(&argc, &argv);
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &worldSize);
+    PrintRankPlacement(rank, worldSize);
 #else
     (void)argc;
     (void)argv;
@@ -722,14 +765,26 @@ int main(int argc, char *argv[])
                     }
                     localPoints[i] = p;
                 }
+                tess.BuildParallel(localPoints, true);
+
+                auto exchangeCellData = [&]()
+                {
+                    MPI_exchange_data(tess, cells, false);
+                    MPI_exchange_data(tess, extensives, false);
+                    MPI_exchange_data(
+                        tess, mcStep->getManager()->GetCellsStepsCounters(),
+                        false);
+                    MPI_exchange_data(
+                        tess, mcStep->getManager()->GetBeginningParticleCount(),
+                        false);
+                };
+                exchangeCellData();
+
                 if(savedLB != nullptr)
                 {
-                    tess.PresetLoadBalancer(savedLB);
-                }
-                tess.BuildParallel(localPoints, true);
-                if (savedLB != nullptr)
-                {
-                    tess.PresetLoadBalancer(savedLB);
+                    savedLB->changeBox({newLL, ur});
+                    tess.SetLoadBalancer(savedLB);
+                    exchangeCellData();
                 }
                 {
                     auto dupProcs = tess.GetDuplicatedProcs();
@@ -744,9 +799,6 @@ int main(int argc, char *argv[])
                               << " step=" << stepCount
                               << std::endl;
                 }
-                MPI_exchange_data(tess, cells, false);
-                MPI_exchange_data(tess, mcStep->getManager()->GetCellsStepsCounters(), false);
-                MPI_exchange_data(tess, mcStep->getManager()->GetBeginningParticleCount(), false);
             }
 #else
             points = buildAllPoints(t_new);

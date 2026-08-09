@@ -1815,7 +1815,6 @@ namespace
 		std::vector<size_t> neigh, temp2;
 		point_vec temp;
 		std::vector<std::vector<int> > i_temp;
-		// r3d_poly poly, poly2;
 		boost::container::flat_set<size_t> checked;
 		std::stack<size_t> tocheck;
 			size_t Norg = tess.GetPointNo() - ToRefine.size();

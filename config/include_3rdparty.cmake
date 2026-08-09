@@ -1,5 +1,3 @@
-set(R3D_INCLUDE "${CMAKE_SOURCE_DIR}/opt/r3d/src")
-
 set(VCL_INCLUDE "${CMAKE_SOURCE_DIR}/opt/vcl")
 
 # vcl

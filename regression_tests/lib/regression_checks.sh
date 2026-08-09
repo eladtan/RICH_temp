@@ -1664,6 +1664,13 @@ check_moving_slab_mc_32_case() {
         return 1
     fi
 
+    if ! grep -Eq \
+        'MC particle counts:.*active_after_prestep_max=.*\(rank [0-9]+\).*active_after_prestep_avg=.*max/avg=' \
+        "$stdout_log"; then
+        set_check_msg "missing per-rank particle distribution diagnostic"
+        return 1
+    fi
+
     if ! is_nonempty_and_newer "$spectrum_file" "$run_start_epoch"; then
         set_check_msg "missing or stale moving_slab_mc_32_spectrum.txt"
         return 1

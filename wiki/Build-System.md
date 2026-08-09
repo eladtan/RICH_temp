@@ -169,7 +169,6 @@ The CMake build system is defined in `source/CMakeLists.txt` with configuration 
 
 | Library | Location | Purpose |
 |---------|----------|---------|
-| r3d | `source/opt/r3d` | Polytope clipping and volume computation |
 | VCL | `source/opt/vcl` | Vector Class Library (SIMD) |
 | Clipper | `source/opt/clipper` | Polygon clipping |
 

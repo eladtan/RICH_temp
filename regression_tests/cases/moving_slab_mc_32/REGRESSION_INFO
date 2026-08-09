@@ -5,7 +5,7 @@ CATEGORY="physics"
 BUILD_TEST_NAME="regression_tests/cases/moving_slab_mc_32"
 BUILD_ARGS="--energy_groups_num=32"
 RUN_DIR_REL="regression_tests/cases/moving_slab_mc_32"
-RUN_COMMAND="mpirun -np ${SLURM_NTASKS} \"${RICH_BIN}\""
+RUN_COMMAND="mpirun --map-by node -np ${SLURM_NTASKS} \"${RICH_BIN}\""
 CHECK_FUNCTION="check_moving_slab_mc_32_case"
 RUN_MODE="slurm"
 SLURM_NTASKS=32
@@ -13,4 +13,5 @@ SLURM_NODES=8
 SLURM_PARTITION="bigrun"
 SLURM_EXCLUSIVE=1
 SLURM_MEM_PER_CPU="10G"
+SBATCH_ARGS="--distribution=cyclic"
 TIMEOUT=5400

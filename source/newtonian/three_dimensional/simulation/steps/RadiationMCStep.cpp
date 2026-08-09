@@ -6,7 +6,9 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <iterator>
 #include <limits>
+#include <vector>
 
 namespace
 {
@@ -151,15 +153,37 @@ void RadiationMCStep::step(double dt)
     double managerTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - managerStart).count();
 
     int rank = 0;
+    int worldSize = 1;
     #ifdef RICH_MPI
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &worldSize);
     #endif
 
     unsigned long long initialParticles = static_cast<unsigned long long>(this->manager->GetInitialParticleCount());
     unsigned long long preStepParticles = static_cast<unsigned long long>(this->manager->GetPreStepParticleCount());
     unsigned long long activeAfterPreStepParticles = static_cast<unsigned long long>(this->manager->GetStartParticleCount());
     unsigned long long censusParticles = static_cast<unsigned long long>(this->manager->GetEndParticleCount());
+    const unsigned long long localActiveAfterPreStepParticles = activeAfterPreStepParticles;
+    unsigned long long maxActiveAfterPreStepParticles = localActiveAfterPreStepParticles;
+    int maxActiveAfterPreStepRank = rank;
     #ifdef RICH_MPI
+        std::vector<unsigned long long> activeAfterPreStepByRank;
+        if(rank == 0)
+        {
+            activeAfterPreStepByRank.resize(static_cast<size_t>(worldSize));
+        }
+        MPI_Gather(&localActiveAfterPreStepParticles, 1, MPI_UNSIGNED_LONG_LONG,
+                   rank == 0 ? activeAfterPreStepByRank.data() : nullptr, 1,
+                   MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+        if(rank == 0)
+        {
+            const auto maxParticleIt = std::max_element(
+                activeAfterPreStepByRank.cbegin(),
+                activeAfterPreStepByRank.cend());
+            maxActiveAfterPreStepParticles = *maxParticleIt;
+            maxActiveAfterPreStepRank = static_cast<int>(std::distance(
+                activeAfterPreStepByRank.cbegin(), maxParticleIt));
+        }
         MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &initialParticles, &initialParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
         MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &preStepParticles, &preStepParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
         MPI_Reduce((rank == 0) ? MPI_IN_PLACE : &activeAfterPreStepParticles, &activeAfterPreStepParticles, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
@@ -167,11 +191,22 @@ void RadiationMCStep::step(double dt)
     #endif
     if(rank == 0)
     {
+        const double averageActiveAfterPreStepParticles =
+            static_cast<double>(activeAfterPreStepParticles) /
+            static_cast<double>(worldSize);
+        const double maxToAverage = averageActiveAfterPreStepParticles > 0
+            ? static_cast<double>(maxActiveAfterPreStepParticles) /
+                averageActiveAfterPreStepParticles
+            : 0.0;
         std::cout << "MC particle counts:"
                   << " initial=" << initialParticles
                   << " prestep_generated=" << preStepParticles
                   << " active_after_prestep=" << activeAfterPreStepParticles
                   << " census=" << censusParticles
+                  << " active_after_prestep_max=" << maxActiveAfterPreStepParticles
+                  << " (rank " << maxActiveAfterPreStepRank << ")"
+                  << " active_after_prestep_avg=" << averageActiveAfterPreStepParticles
+                  << " max/avg=" << maxToAverage
                   << std::endl;
     }
 
