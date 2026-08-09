@@ -610,6 +610,7 @@ int main(int argc, char *argv[])
             std::make_shared<MovingSlabCostCalculator>(mcStep->getManager()));
         sim.PresetLoadBalance("radiation-mc");
         sim.addMigrationBuffer(mcStep->getManager()->GetCellsStepsCounters());
+        sim.addMigrationBuffer(mcStep->getManager()->GetBeginningParticleCount());
 #endif
 
         // --- Time stepping: dt starts at 1e-3 ns, ramps by 1.1x, max 0.1 ns ---
@@ -745,6 +746,7 @@ int main(int argc, char *argv[])
                 }
                 MPI_exchange_data(tess, cells, false);
                 MPI_exchange_data(tess, mcStep->getManager()->GetCellsStepsCounters(), false);
+                MPI_exchange_data(tess, mcStep->getManager()->GetBeginningParticleCount(), false);
             }
 #else
             points = buildAllPoints(t_new);

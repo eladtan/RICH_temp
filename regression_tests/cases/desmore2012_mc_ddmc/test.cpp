@@ -278,6 +278,7 @@ int main(int argc, char *argv[])
     mcStep->setCost(std::make_shared<IMCCostCalculator>(mcStep->getManager()));
     sim.setForceRebalanceSteps(4);
     sim.addMigrationBuffer(mcStep->getManager()->GetCellsStepsCounters());
+    sim.addMigrationBuffer(mcStep->getManager()->GetBeginningParticleCount());
 #endif
     sim.SetTimeStep(dt);
 

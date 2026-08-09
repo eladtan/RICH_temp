@@ -838,6 +838,8 @@ namespace densmore2012_interface_test
             simulation.setForceRebalanceSteps(4);
             simulation.addMigrationBuffer(
                 radiationStep->getManager()->GetCellsStepsCounters());
+            simulation.addMigrationBuffer(
+                radiationStep->getManager()->GetBeginningParticleCount());
 #endif
             simulation.SetTimeStep(dt);
 
