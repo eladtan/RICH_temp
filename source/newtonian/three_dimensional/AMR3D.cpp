@@ -21,6 +21,8 @@ namespace
 {
 	const size_t removal_target_order = 2;
 	const double removal_volume_growth_limit = 3.0;
+	const double removal_source_geometry_consistency_limit = 1e-10;
+	const double removal_partition_correction_limit = 1e-5;
 
 		const std::vector<Plane> &CachedPolyPlanes(Tessellation3D const& tess, size_t cell_index,
 			std::unordered_map<size_t, std::vector<Plane> > &cache)
@@ -739,10 +741,12 @@ namespace
 		out.push_back(static_cast<double>(planes.size()));
 		for (const Plane &p : planes)
 		{
-			out.push_back(ScalarProd(p.normal, p.point));
 			out.push_back(p.normal.x);
 			out.push_back(p.normal.y);
 			out.push_back(p.normal.z);
+			out.push_back(p.point.x);
+			out.push_back(p.point.y);
+			out.push_back(p.point.z);
 		}
 	}
 
@@ -752,16 +756,12 @@ namespace
 		planes.resize(nplanes);
 		for (size_t i = 0; i < nplanes; ++i)
 		{
-			double d = data[offset++];
 			planes[i].normal.x = data[offset++];
 			planes[i].normal.y = data[offset++];
 			planes[i].normal.z = data[offset++];
-			if (std::abs(planes[i].normal.x) > 0.1)
-				planes[i].point = Vector3D(d / planes[i].normal.x, 0.0, 0.0);
-			else if (std::abs(planes[i].normal.y) > 0.1)
-				planes[i].point = Vector3D(0.0, d / planes[i].normal.y, 0.0);
-			else
-				planes[i].point = Vector3D(0.0, 0.0, d / planes[i].normal.z);
+			planes[i].point.x = data[offset++];
+			planes[i].point.y = data[offset++];
+			planes[i].point.z = data[offset++];
 		}
 	}
 
@@ -872,7 +872,7 @@ namespace
 					}
 					size_t nplanes = static_cast<size_t>(packed_tasks[task_offset]);
 					task_offset++;
-					task_offset += nplanes * 4;
+					task_offset += nplanes * 6;
 					task_offset += 7; // source bounds
 					task_offset += 7; // target bounds
 				}
@@ -1514,7 +1514,7 @@ namespace
 		ComputationalCell3D cell;
 		Slope3D slope;
 		Vector3D source_cm;
-		std::vector<Plane> planes;
+		std::vector<double> SourcePolyhedron;
 		std::vector<size_t> target_old_indices;
 
 		RemovalSourcePacket(void): source_index(0), source_id(0), source_volume(0) {}
@@ -1528,7 +1528,7 @@ namespace
 			bytes += serializer->insert(cell);
 			bytes += serializer->insert(slope);
 			bytes += serializer->insert(source_cm);
-			bytes += serializer->insert(planes);
+			bytes += serializer->insert(SourcePolyhedron);
 			bytes += serializer->insert(target_old_indices);
 			return bytes;
 		}
@@ -1542,7 +1542,7 @@ namespace
 			bytes += serializer->extract(cell, offset + bytes);
 			bytes += serializer->extract(slope, offset + bytes);
 			bytes += serializer->extract(source_cm, offset + bytes);
-			bytes += serializer->extract(planes, offset + bytes);
+			bytes += serializer->extract(SourcePolyhedron, offset + bytes);
 			bytes += serializer->extract(target_old_indices, offset + bytes);
 			return bytes;
 		}
@@ -1553,8 +1553,63 @@ namespace
 		size_t source_index;
 		size_t source_id;
 		double volume;
+		double moment_x;
+		double moment_y;
+		double moment_z;
+	};
+
+	struct RemovalOverlapCorrection
+	{
+		size_t source_index;
+		size_t source_id;
+		double volume_scale;
+		double center_shift_x;
+		double center_shift_y;
+		double center_shift_z;
 	};
 #endif
+
+	void ShiftPolyhedron(std::vector<Face> &Polyhedron, Vector3D const& Shift)
+	{
+		for (Face &CurrentFace : Polyhedron)
+			for (Vector3D &Vertex : CurrentFace.vertices)
+				Vertex += Shift;
+	}
+
+	void CanonicalizePolyhedron(std::vector<Face> &Polyhedron)
+	{
+		for (Face &CurrentFace : Polyhedron)
+			CurrentFace = ConvexHullFace(CurrentFace);
+		Polyhedron.erase(std::remove_if(Polyhedron.begin(), Polyhedron.end(),
+			[](const Face &CurrentFace) { return CurrentFace.vertices.size() < 3; }), Polyhedron.end());
+	}
+
+	void CreateSourceLocalVoronoiPlanes(Tessellation3D const& Tess, size_t CellIndex,
+		Vector3D const& Origin, std::vector<Plane> &Planes)
+	{
+		const auto &FaceIndices = Tess.GetCellFaces(CellIndex);
+		Planes.resize(FaceIndices.size());
+		const Vector3D CellPoint = Tess.GetMeshPoint(CellIndex) - Origin;
+		for (size_t Index = 0; Index < FaceIndices.size(); ++Index)
+		{
+			const std::pair<size_t, size_t> Neighbors = Tess.GetFaceNeighbors(FaceIndices[Index]);
+			const size_t OtherIndex = Neighbors.first == CellIndex ? Neighbors.second : Neighbors.first;
+			const Vector3D OtherPoint = Tess.GetMeshPoint(OtherIndex) - Origin;
+			const Vector3D Delta = CellPoint - OtherPoint;
+			if (!(fastabs(Delta) > std::numeric_limits<double>::min()))
+				throw UniversalError("Degenerate Voronoi generator pair in removal remap");
+			Planes[Index].normal = normalize(Delta);
+			Planes[Index].point = 0.5 * (CellPoint + OtherPoint);
+		}
+	}
+
+	void ShiftBounds(ClipBounds &Bounds, Vector3D const& Shift)
+	{
+		if (!Bounds.valid)
+			return;
+		Bounds.lower += Shift;
+		Bounds.upper += Shift;
+	}
 
 	void LocalRemoveWithTargets(Tessellation3D const& oldtess, Tessellation3D const& tess,
 		std::vector<size_t> const& ToRemove, PointsToNeighborsMap const& target_map,
@@ -1562,57 +1617,88 @@ namespace
 		EquationOfState const& eos, std::vector<Conserved3D> &extensives,
 		SpatialReconstruction3D &interp)
 	{
-		std::vector<Plane> source_planes;
-		std::vector<Face> target_poly;
-		ClipWorkspace workspace;
-		for (size_t source : ToRemove)
+		struct LocalRemovalContribution
 		{
-			CreatePolyPlanes(oldtess, source, source_planes);
-			double overlap_sum = 0.0;
-			auto map_it = target_map.find(source);
-			if (map_it == target_map.end())
+			size_t target;
+			double volume;
+			Vector3D center;
+		};
+		std::vector<Face> SourcePolyhedron;
+		std::vector<Plane> TargetPlanes;
+		std::vector<LocalRemovalContribution> PendingContributions;
+		ClipWorkspace Workspace;
+		for (size_t Source : ToRemove)
+		{
+			// Clip the old source polyhedron by each rebuilt target in source-local
+			// coordinates. The inverse orientation loses faces in distorted targets,
+			// while global coordinates inflate CleanFace's ULP-based tolerance.
+			const Vector3D SourceCenter = oldtess.GetCellCM(Source);
+			const Vector3D ToLocal = -1.0 * SourceCenter;
+			CreatePolyFaces(oldtess, Source, SourcePolyhedron);
+			ShiftPolyhedron(SourcePolyhedron, ToLocal);
+			CanonicalizePolyhedron(SourcePolyhedron);
+			const ClipBounds SourceBounds = computeBounds(SourcePolyhedron);
+			const double SourceVolume = oldtess.GetVolume(Source);
+			const double SourceGeometryVolume = computeVolume(SourcePolyhedron);
+			double OverlapSum = 0.0;
+			Vector3D OverlapMoment(0, 0, 0);
+			PendingContributions.clear();
+			auto MapIt = target_map.find(Source);
+			if (MapIt == target_map.end())
 				throw UniversalError("Missing two-hop removal target map");
-			for (const RemotePoint &remote_target : map_it->second)
+			for (const RemotePoint &RemoteTarget : MapIt->second)
 			{
 #ifdef RICH_MPI
-				if (remote_target.rank != 0)
+				if (RemoteTarget.rank != 0)
 					continue;
-				const size_t old_target = remote_target.indexOnRank;
+				const size_t OldTarget = RemoteTarget.indexOnRank;
 #else
-				const size_t old_target = remote_target.index;
+				const size_t OldTarget = RemoteTarget.index;
 #endif
-				if (old_target >= oldtess.GetPointNo() ||
-					std::binary_search(ToRemove.begin(), ToRemove.end(), old_target))
+				if (OldTarget >= oldtess.GetPointNo() ||
+					std::binary_search(ToRemove.begin(), ToRemove.end(), OldTarget))
 					continue;
-				const size_t removed_before = static_cast<size_t>(
-					std::lower_bound(ToRemove.begin(), ToRemove.end(), old_target) - ToRemove.begin());
-				const size_t target = old_target - removed_before;
-				CreatePolyFaces(tess, target, target_poly);
-				ClipBounds target_bounds = computeBounds(target_poly);
-				auto [dv, clip_volume, clip_cm] = clipCells(
-					target_poly, source_planes, workspace, &target_bounds);
-				if (dv <= 0)
+				const size_t RemovedBefore = static_cast<size_t>(
+					std::lower_bound(ToRemove.begin(), ToRemove.end(), OldTarget) - ToRemove.begin());
+				const size_t Target = OldTarget - RemovedBefore;
+				CreateSourceLocalVoronoiPlanes(tess, Target, SourceCenter, TargetPlanes);
+				ClipBounds TargetBounds = CreatePolyBounds(tess, Target);
+				ShiftBounds(TargetBounds, ToLocal);
+				auto [Volume, ClippedVolume, Center] = clipCells(
+					SourcePolyhedron, TargetPlanes, Workspace, &SourceBounds, &TargetBounds);
+				if (Volume <= 0)
 					continue;
-				overlap_sum += dv;
-				if (dv > oldtess.GetVolume(source) * 1e-12)
-				{
-					Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[source], eos, dv,
-						interp.GetSlopes()[source], oldtess.GetCellCM(source), clip_cm);
-					extensives[target] += toadd;
-				}
+				OverlapSum += Volume;
+				OverlapMoment += Volume * Center;
+				PendingContributions.push_back({Target, Volume, Center});
 			}
-			const double source_volume = oldtess.GetVolume(source);
-			const double relative_error = std::abs(overlap_sum - source_volume) /
-				std::max(source_volume, std::numeric_limits<double>::min());
-			if (relative_error > 1e-6)
+			const double GeometryRelativeError = std::abs(SourceGeometryVolume - SourceVolume) /
+				std::max(SourceVolume, std::numeric_limits<double>::min());
+			const double PartitionRelativeError = std::abs(OverlapSum - SourceGeometryVolume) /
+				std::max(SourceGeometryVolume, std::numeric_limits<double>::min());
+			if (!(SourceGeometryVolume > 0) || !(OverlapSum > 0) ||
+				GeometryRelativeError > removal_source_geometry_consistency_limit ||
+				PartitionRelativeError > removal_partition_correction_limit)
 			{
-				UniversalError eo("Incomplete neighboring-cell removal remap");
-				eo.addEntry("Source index", source);
-				eo.addEntry("Source ID", cells[source].ID);
-				eo.addEntry("Source volume", source_volume);
-				eo.addEntry("Clipped volume", overlap_sum);
-				eo.addEntry("Relative error", relative_error);
-				throw eo;
+				UniversalError Error("Removal remap geometry exceeds conservative correction limit");
+				Error.addEntry("Source index", Source);
+				Error.addEntry("Source ID", cells[Source].ID);
+				Error.addEntry("Source volume", SourceVolume);
+				Error.addEntry("Source geometry volume", SourceGeometryVolume);
+				Error.addEntry("Clipped volume", OverlapSum);
+				Error.addEntry("Source geometry relative error", GeometryRelativeError);
+				Error.addEntry("Partition relative error", PartitionRelativeError);
+				throw Error;
+			}
+			const double VolumeScale = SourceVolume / OverlapSum;
+			const Vector3D CenterShift = -1.0 * OverlapMoment / OverlapSum;
+			for (const LocalRemovalContribution &Pending : PendingContributions)
+			{
+				const double CorrectedVolume = Pending.volume * VolumeScale;
+				const Vector3D CorrectedCenter = Pending.center + CenterShift;
+				Conserved3D ToAdd = eu.ConvertPrimitveToExtensive3D(cells[Source], eos, CorrectedVolume,
+					interp.GetSlopes()[Source], SourceCenter, CorrectedCenter + SourceCenter);
+				extensives[Pending.target] += ToAdd;
 			}
 		}
 	}
@@ -1629,6 +1715,7 @@ namespace
 		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 		MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 		std::vector<std::vector<RemovalSourcePacket> > packets(static_cast<size_t>(world_size));
+		std::unordered_map<size_t, double> source_geometry_volumes;
 
 		for (size_t source : ToRemove)
 		{
@@ -1639,8 +1726,14 @@ namespace
 			for (const RemotePoint &target : map_it->second)
 				targets_by_rank[target.rank].push_back(target.indexOnRank);
 
-			std::vector<Plane> source_planes;
-			CreatePolyPlanes(oldtess, source, source_planes);
+			std::vector<Face> SourcePolyhedron;
+			std::vector<double> PackedSourcePolyhedron;
+			const Vector3D SourceCenter = oldtess.GetCellCM(source);
+			CreatePolyFaces(oldtess, source, SourcePolyhedron);
+			ShiftPolyhedron(SourcePolyhedron, -1.0 * SourceCenter);
+			CanonicalizePolyhedron(SourcePolyhedron);
+			source_geometry_volumes[source] = computeVolume(SourcePolyhedron);
+			PackPolyhedron(SourcePolyhedron, PackedSourcePolyhedron);
 			for (auto &rank_targets : targets_by_rank)
 			{
 				std::sort(rank_targets.second.begin(), rank_targets.second.end());
@@ -1652,8 +1745,8 @@ namespace
 				packet.source_volume = oldtess.GetVolume(source);
 				packet.cell = cells[source];
 				packet.slope = interp.GetSlopes()[source];
-				packet.source_cm = oldtess.GetCellCM(source);
-				packet.planes = source_planes;
+				packet.source_cm = SourceCenter;
+				packet.SourcePolyhedron = PackedSourcePolyhedron;
 				packet.target_old_indices = rank_targets.second;
 				packets[static_cast<size_t>(rank_targets.first)].push_back(packet);
 			}
@@ -1661,9 +1754,24 @@ namespace
 
 		packets = MPI_Exchange_all_to_all(packets, MPI_COMM_WORLD);
 		std::vector<std::vector<double> > overlap_sums(static_cast<size_t>(world_size));
+		std::vector<std::vector<Vector3D> > overlap_moments(static_cast<size_t>(world_size));
 		for (int source_rank = 0; source_rank < world_size; ++source_rank)
+		{
 			overlap_sums[static_cast<size_t>(source_rank)].resize(
 				packets[static_cast<size_t>(source_rank)].size(), 0.0);
+			overlap_moments[static_cast<size_t>(source_rank)].resize(
+				packets[static_cast<size_t>(source_rank)].size(), Vector3D(0, 0, 0));
+		}
+
+		struct PendingRemovalContribution
+		{
+			int source_rank;
+			size_t packet_index;
+			size_t target_index;
+			double volume;
+			Vector3D center;
+		};
+		std::vector<PendingRemovalContribution> pending_contributions;
 
 		if (distribute_clips)
 		{
@@ -1676,16 +1784,18 @@ namespace
 			std::vector<RemovalClipTask> task_info;
 			std::vector<double> packed_tasks;
 			std::vector<double> source_volumes;
-			std::vector<Face> target_poly;
-			std::vector<double> poly_packed;
-			std::vector<double> planes_packed;
+			std::vector<Face> SourcePolyhedron;
+			std::vector<Plane> TargetPlanes;
+			std::vector<double> PackedTargetPlanes;
 			for (int source_rank = 0; source_rank < world_size; ++source_rank)
 			{
 				const auto &rank_packets = packets[static_cast<size_t>(source_rank)];
 				for (size_t packet_index = 0; packet_index < rank_packets.size(); ++packet_index)
 				{
 					const RemovalSourcePacket &packet = rank_packets[packet_index];
-					PackPlanes(packet.planes, planes_packed);
+					size_t SourceOffset = 0;
+					UnpackPolyhedron(packet.SourcePolyhedron.data(), SourceOffset, SourcePolyhedron);
+					const ClipBounds SourceBounds = computeBounds(SourcePolyhedron);
 					for (size_t old_target : packet.target_old_indices)
 					{
 						if (old_target >= oldtess.GetPointNo() ||
@@ -1694,14 +1804,16 @@ namespace
 						const size_t removed_before = static_cast<size_t>(
 							std::lower_bound(ToRemove.begin(), ToRemove.end(), old_target) - ToRemove.begin());
 						const size_t target = old_target - removed_before;
-						CreatePolyFaces(tess, target, target_poly);
-						const ClipBounds target_bounds = computeBounds(target_poly);
-						PackPolyhedron(target_poly, poly_packed);
-						packed_tasks.insert(packed_tasks.end(), poly_packed.begin(), poly_packed.end());
-						packed_tasks.insert(packed_tasks.end(), planes_packed.begin(), planes_packed.end());
-						PackBounds(target_bounds, packed_tasks);
-						ClipBounds no_plane_bounds;
-						PackBounds(no_plane_bounds, packed_tasks);
+						CreateSourceLocalVoronoiPlanes(tess, target, packet.source_cm, TargetPlanes);
+						ClipBounds TargetBounds = CreatePolyBounds(tess, target);
+						ShiftBounds(TargetBounds, -1.0 * packet.source_cm);
+						PackPlanes(TargetPlanes, PackedTargetPlanes);
+						packed_tasks.insert(packed_tasks.end(), packet.SourcePolyhedron.begin(),
+							packet.SourcePolyhedron.end());
+						packed_tasks.insert(packed_tasks.end(), PackedTargetPlanes.begin(),
+							PackedTargetPlanes.end());
+						PackBounds(SourceBounds, packed_tasks);
+						PackBounds(TargetBounds, packed_tasks);
 						source_volumes.push_back(packet.source_volume);
 						task_info.push_back({source_rank, packet_index, target});
 					}
@@ -1714,24 +1826,29 @@ namespace
 			for (const ClipResultEntry &entry : results)
 			{
 				const RemovalClipTask &task = task_info[entry.task_id];
-				const RemovalSourcePacket &packet =
-					packets[static_cast<size_t>(task.source_rank)][task.packet_index];
+				if (entry.dv <= 0)
+					continue;
 				overlap_sums[static_cast<size_t>(task.source_rank)][task.packet_index] += entry.dv;
-				Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(packet.cell, eos, entry.dv,
-					packet.slope, packet.source_cm, entry.clip_CM);
-				extensives[task.target_index] += toadd;
+				overlap_moments[static_cast<size_t>(task.source_rank)][task.packet_index] +=
+					entry.dv * entry.clip_CM;
+				pending_contributions.push_back(
+					{task.source_rank, task.packet_index, task.target_index, entry.dv, entry.clip_CM});
 			}
 		}
 		else
 		{
-			std::vector<Face> target_poly;
-			ClipWorkspace workspace;
+			std::vector<Face> SourcePolyhedron;
+			std::vector<Plane> TargetPlanes;
+			ClipWorkspace Workspace;
 			for (int source_rank = 0; source_rank < world_size; ++source_rank)
 			{
 				const auto &rank_packets = packets[static_cast<size_t>(source_rank)];
 				for (size_t packet_index = 0; packet_index < rank_packets.size(); ++packet_index)
 				{
 					const RemovalSourcePacket &packet = rank_packets[packet_index];
+					size_t SourceOffset = 0;
+					UnpackPolyhedron(packet.SourcePolyhedron.data(), SourceOffset, SourcePolyhedron);
+					const ClipBounds SourceBounds = computeBounds(SourcePolyhedron);
 					for (size_t old_target : packet.target_old_indices)
 					{
 						if (old_target >= oldtess.GetPointNo() ||
@@ -1740,19 +1857,17 @@ namespace
 						const size_t removed_before = static_cast<size_t>(
 							std::lower_bound(ToRemove.begin(), ToRemove.end(), old_target) - ToRemove.begin());
 						const size_t target = old_target - removed_before;
-						CreatePolyFaces(tess, target, target_poly);
-						ClipBounds target_bounds = computeBounds(target_poly);
+						CreateSourceLocalVoronoiPlanes(tess, target, packet.source_cm, TargetPlanes);
+						ClipBounds TargetBounds = CreatePolyBounds(tess, target);
+						ShiftBounds(TargetBounds, -1.0 * packet.source_cm);
 						auto [dv, clip_volume, clip_cm] = clipCells(
-							target_poly, packet.planes, workspace, &target_bounds);
+							SourcePolyhedron, TargetPlanes, Workspace, &SourceBounds, &TargetBounds);
 						if (dv <= 0)
 							continue;
 						overlap_sums[static_cast<size_t>(source_rank)][packet_index] += dv;
-						if (dv > packet.source_volume * 1e-12)
-						{
-							Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(packet.cell, eos, dv,
-								packet.slope, packet.source_cm, clip_cm);
-							extensives[target] += toadd;
-						}
+						overlap_moments[static_cast<size_t>(source_rank)][packet_index] += dv * clip_cm;
+						pending_contributions.push_back(
+							{source_rank, packet_index, target, dv, clip_cm});
 					}
 				}
 			}
@@ -1768,12 +1883,17 @@ namespace
 				result.source_index = rank_packets[packet_index].source_index;
 				result.source_id = rank_packets[packet_index].source_id;
 				result.volume = overlap_sums[static_cast<size_t>(source_rank)][packet_index];
+				const Vector3D &Moment = overlap_moments[static_cast<size_t>(source_rank)][packet_index];
+				result.moment_x = Moment.x;
+				result.moment_y = Moment.y;
+				result.moment_z = Moment.z;
 				returns[static_cast<size_t>(source_rank)].push_back(result);
 			}
 		}
 
 		returns = MPI_Exchange_all_to_all(returns, MPI_COMM_WORLD);
 		std::unordered_map<size_t, double> overlap_by_source;
+		std::unordered_map<size_t, Vector3D> moment_by_source;
 		for (const std::vector<RemovalOverlapReturn> &from_rank : returns)
 			for (const RemovalOverlapReturn &result : from_rank)
 			{
@@ -1781,25 +1901,79 @@ namespace
 					cells[result.source_index].ID != result.source_id)
 					throw UniversalError("Invalid MPI removal overlap return");
 				overlap_by_source[result.source_index] += result.volume;
+				moment_by_source[result.source_index] += Vector3D(
+					result.moment_x, result.moment_y, result.moment_z);
 			}
 
+		std::unordered_map<size_t, double> scale_by_source;
+		std::unordered_map<size_t, Vector3D> shift_by_source;
 		for (size_t source : ToRemove)
 		{
 			const double source_volume = oldtess.GetVolume(source);
+			const double source_geometry_volume = source_geometry_volumes[source];
 			const double overlap_sum = overlap_by_source[source];
-			const double relative_error = std::abs(overlap_sum - source_volume) /
+			const double geometry_relative_error = std::abs(source_geometry_volume - source_volume) /
 				std::max(source_volume, std::numeric_limits<double>::min());
-			if (relative_error > 1e-6)
+			const double partition_relative_error = std::abs(overlap_sum - source_geometry_volume) /
+				std::max(source_geometry_volume, std::numeric_limits<double>::min());
+			if (!(source_geometry_volume > 0) || !(overlap_sum > 0) ||
+				geometry_relative_error > removal_source_geometry_consistency_limit ||
+				partition_relative_error > removal_partition_correction_limit)
 			{
-				UniversalError eo("Incomplete MPI neighboring-cell removal remap");
+				UniversalError eo("MPI removal remap geometry exceeds conservative correction limit");
 				eo.addEntry("Rank", rank);
 				eo.addEntry("Source index", source);
 				eo.addEntry("Source ID", cells[source].ID);
 				eo.addEntry("Source volume", source_volume);
+				eo.addEntry("Source geometry volume", source_geometry_volume);
 				eo.addEntry("Clipped volume", overlap_sum);
-				eo.addEntry("Relative error", relative_error);
+				eo.addEntry("Source geometry relative error", geometry_relative_error);
+				eo.addEntry("Partition relative error", partition_relative_error);
 				throw eo;
 			}
+			scale_by_source[source] = source_volume / overlap_sum;
+			shift_by_source[source] = -1.0 * moment_by_source[source] / overlap_sum;
+		}
+
+		std::vector<std::vector<RemovalOverlapCorrection> > corrections(static_cast<size_t>(world_size));
+		for (int target_rank = 0; target_rank < world_size; ++target_rank)
+		{
+			for (const RemovalOverlapReturn &result : returns[static_cast<size_t>(target_rank)])
+			{
+				const Vector3D &Shift = shift_by_source[result.source_index];
+				RemovalOverlapCorrection Correction;
+				Correction.source_index = result.source_index;
+				Correction.source_id = result.source_id;
+				Correction.volume_scale = scale_by_source[result.source_index];
+				Correction.center_shift_x = Shift.x;
+				Correction.center_shift_y = Shift.y;
+				Correction.center_shift_z = Shift.z;
+				corrections[static_cast<size_t>(target_rank)].push_back(Correction);
+			}
+		}
+
+		corrections = MPI_Exchange_all_to_all(corrections, MPI_COMM_WORLD);
+		std::vector<std::unordered_map<size_t, RemovalOverlapCorrection> > correction_by_source_rank(
+			static_cast<size_t>(world_size));
+		for (int source_rank = 0; source_rank < world_size; ++source_rank)
+			for (const RemovalOverlapCorrection &Correction : corrections[static_cast<size_t>(source_rank)])
+				correction_by_source_rank[static_cast<size_t>(source_rank)][Correction.source_id] = Correction;
+
+		for (const PendingRemovalContribution &Pending : pending_contributions)
+		{
+			const RemovalSourcePacket &Packet =
+				packets[static_cast<size_t>(Pending.source_rank)][Pending.packet_index];
+			auto Found = correction_by_source_rank[static_cast<size_t>(Pending.source_rank)].find(Packet.source_id);
+			if (Found == correction_by_source_rank[static_cast<size_t>(Pending.source_rank)].end() ||
+				Found->second.source_index != Packet.source_index)
+				throw UniversalError("Missing MPI removal overlap correction");
+			const RemovalOverlapCorrection &Correction = Found->second;
+			const double CorrectedVolume = Pending.volume * Correction.volume_scale;
+			const Vector3D CorrectedCenter = Pending.center + Vector3D(
+				Correction.center_shift_x, Correction.center_shift_y, Correction.center_shift_z);
+			Conserved3D ToAdd = eu.ConvertPrimitveToExtensive3D(Packet.cell, eos, CorrectedVolume,
+				Packet.slope, Packet.source_cm, CorrectedCenter + Packet.source_cm);
+			extensives[Pending.target_index] += ToAdd;
 		}
 	}
 #endif

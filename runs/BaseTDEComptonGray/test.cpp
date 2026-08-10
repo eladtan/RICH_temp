@@ -50,8 +50,20 @@ typedef std::array<double, 4> state_type;
 #define hi_res 1
 // #define low_res 1
 // #define remove_center 1
+
+// Finite-cycle validation mode reads the existing restart without writing run state.
+#define total_cycles 100
+
 namespace
 {
+#ifndef total_cycles
+    void TouchIfPermitted(std::string const& FileName)
+    {
+        std::error_code Error;
+        fs::last_write_time(FileName, fs::file_time_type::clock::now(), Error);
+    }
+#endif
+
 	void RemoveCenter(HDSim3D& sim, double MBH, double Mstar, double Rstar,
 		EquationOfState const& eos, double beta)
 	{
@@ -989,7 +1001,9 @@ int main(void)
 		std::cout<<"Creating directory "<<ss.str()<<std::endl;
 	std::string const run_name = ss.str();
 	run_directory += run_name + "/";
+	#ifndef total_cycles
 	fs::create_directories(run_directory.c_str());
+	#endif
 	double const Rt = R * std::pow(Mbh / M, 0.333333);
 	double const Rp = Rt / beta;
 	double const apocenter = Rt * std::pow(Mbh / M, 0.333333);
@@ -1004,14 +1018,18 @@ int main(void)
 	if(restart)
 	{
 		counter = read_int(counter_name);
-		std::filesystem::last_write_time(counter_name, std::filesystem::file_time_type::clock::now());
+	#ifndef total_cycles
+		TouchIfPermitted(counter_name);
+	#endif
 	}
 	std::string gravity_name = run_directory + "gravity.txt";
 	std::string eos_location("/home/elads/RICH/data/EOS/");
 	std::string STA_location("/home/elads/RICH/data/STA/");
 	bool const full_gravity = fs::exists(gravity_name);
+	#ifndef total_cycles
 	if(full_gravity)
-		std::filesystem::last_write_time(gravity_name, std::filesystem::file_time_type::clock::now());
+		TouchIfPermitted(gravity_name);
+	#endif
 	if(restart && full_gravity && (not fs::exists(file_name + int2str(counter) + ".h5")))
 	{
 		file_name += "full_";
@@ -1074,6 +1092,7 @@ int main(void)
 			}
 		}
 		t_restart = snap.time;
+	#ifndef total_cycles
 		if(fs::exists(restart_name))
 		{
 			auto last_time_restart = std::filesystem::last_write_time(restart_name);
@@ -1106,6 +1125,7 @@ int main(void)
 				}
 			}
 		}
+	#endif
 		std::cout<<"Rank "<<rank<<" has "<<snap.mesh_points.size()<<" points, hdf5_rank "<<hdf5_rank<<std::endl;
 		if (full_gravity && file_name.find(std::string("full")) == std::string::npos)
 			file_name += "full_";
@@ -1291,7 +1311,12 @@ int main(void)
 	// 	dissipation.face_values.shrink_to_fit();
 	// }
 	
+	#ifdef total_cycles
+	int cycle_end = sim->getCycle() + total_cycles;
+	while (sim->getCycle() < cycle_end)
+	#else
 	while (sim->getTime() < tf)
+	#endif
 	{
 		if (sim->getCycle() % 1 == 0)
 		{
@@ -1307,6 +1332,7 @@ int main(void)
 				std::cout << "Cycle " << sim->getCycle() << " Time " << sim->getTime() << std::endl;
 			}
 		}
+	#ifndef total_cycles
 		if (sim->getTime() > nextT)
 		{
 			if(rank == 0)
@@ -1323,6 +1349,7 @@ int main(void)
 			++counter;
 			rich_trim_after_rare_spike();
 		}
+	#endif
 		try
 		{
 			int restart_dump = 0;
@@ -1335,6 +1362,7 @@ int main(void)
 			MPI_Bcast(&restart_dump, 1, MPI_INT, 0, MPI_COMM_WORLD);
 			if (restart_dump == 1)
 			{
+	#ifndef total_cycles
 				if(rank == 0)
 					std::cout<<"Starting writing file "<<run_directory + "restart.h5"<<std::endl;
 				interp.BuildSlopes(tess, sim->getCells(), sim->getTime());
@@ -1345,6 +1373,7 @@ int main(void)
 #endif
 				rich_trim_after_rare_spike();
 				last_start = MPI_Wtime();
+	#endif
 			}
 			double step_tstart = MPI_Wtime();
 #endif
@@ -1371,8 +1400,10 @@ int main(void)
 #endif
 			old_dt = sim->getTime() - old_t;
 			old_t = sim->getTime();
+	#ifndef total_cycles
 			if(not full_gravity)
 				CheckIfFullGravityIsNeeded(*sim, gravity_name, R, M, Mbh, beta, restart_name);
+	#endif
 			reference_cell = GetReferenceCell(eos, tess, sim->getTime());
 			if (sim->getCycle() % 7 == 0)
 			{

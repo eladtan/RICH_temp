@@ -13,20 +13,21 @@ polyhedron clipped against a set of half-planes. On the few busy ranks, hundreds
 
 The solution offloads excess `clipCells` work from busy ranks to idle ranks using MPI collective
 communication. The feature is controlled by the `distribute_clips_` flag on the `AMR3D` class
-(default: `true`). When disabled, the original sequential code paths are used unchanged.
+(default: `true`). When disabled, clip tasks stay on their owning ranks.
 
-The approach introduces four new functions that mirror the original four AMR clip routines:
+The refine paths retain distributed and local variants. Removal uses a saved two-hop topology so
+two adjacent cells can be removed conservatively in one rebuild:
 
 | Original (sequential)  | New (distributed)             | Scope                        |
 |-------------------------|-------------------------------|------------------------------|
 | `LocalRefine`           | `DistributedLocalRefine`      | Same-rank refine clips       |
-| `LocalRemove`           | `DistributedLocalRemove`      | Same-rank remove clips       |
+| `LocalRemove`           | `LocalRemoveWithTargets`       | Serial adjacent removals     |
 | `MPIRefine`             | `DistributedMPIRefine`        | Cross-rank refine clips      |
-| `MPIRemove`             | `DistributedMPIRemove`        | Cross-rank remove clips      |
+| `MPIRemove`             | `MPIRemoveWithTargets`         | MPI adjacent removals        |
 
-Each distributed function: (1) pre-builds a flat list of clip tasks, (2) calls a shared
-`DistributeAndComputeClips` function that balances work across all ranks, and (3) applies the
-returned results to the extensive variables.
+Distributed paths pre-build a flat list of clip tasks, call a shared `DistributeAndComputeClips`
+function that balances work across all ranks, and apply the returned results to the extensive
+variables.
 
 ---
 
@@ -56,10 +57,10 @@ into flat `std::vector<double>` buffers suitable for `MPI_Exchange_all_to_all`:
   by the 3D coordinates of each vertex.
 
 - **`PackPlanes` / `UnpackPlanes`** -- Serialize a `vector<Plane>`. Format:
-  `[nplanes, d_0, nx,ny,nz, d_1, nx,ny,nz, ...]` where `d = dot(normal, point)`. On unpack, a
-  valid point on the plane is reconstructed from `d` and the normal's largest component. This
-  representation is the same one already used by `SendRecvMPIFullRemove` and `MPIRefine` for
-  cross-rank plane exchange.
+  `[nplanes, nx,ny,nz, px,py,pz, ...]`. Preserving the original point on each plane keeps signed
+  distance calculations local to the Voronoi cell. Reconstructing an axis intercept from
+  `d = dot(normal, point)` causes catastrophic cancellation when the mesh coordinates are much
+  larger than the cell width.
 
 - **`PackBounds` / `UnpackBounds`** -- Serialize a `ClipBounds` (AABB + valid flag) as 7 doubles:
   `[lower.x, lower.y, lower.z, upper.x, upper.y, upper.z, valid]`.
@@ -175,7 +176,7 @@ scanning through the packed buffer:
 ```
 task_offsets[t] = byte position where task t starts
                   (scan: nfaces -> for each face: nverts -> skip 3*nverts doubles
-                         -> nplanes -> skip 4*nplanes doubles -> skip 14 doubles for two bounds)
+                         -> nplanes -> skip 6*nplanes doubles -> skip 14 doubles for two bounds)
 ```
 
 Then for each assignment `{target_rank, count}`, it copies the relevant byte ranges from
@@ -243,15 +244,55 @@ Replaces the BFS-based `LocalRefine` for the distributed path. For each refined 
 4. Fallback: if a refined cell gets zero clipped volume, use the same heuristic as the original
    code (assign extensives proportionally from the parent cell).
 
-### 5. `DistributedLocalRemove`
+### 5. `LocalRemoveWithTargets`
 
-Replaces `LocalRemove` for the distributed path. For each removed cell:
+The removal selector may retain connected components of two adjacent cells. Before rebuilding the
+tessellation, AMR saves each accepted source's complete two-hop survivor map. For each removed
+source cell:
 
-1. Build a clip task for each local neighbor: the removed cell's polyhedron (from old tess) clipped
-   against the neighbor's planes (from new tess). This exactly matches the neighbor set used by the
-   original `LocalRemove`.
-2. Pack all tasks, call `DistributeAndComputeClips`.
-3. Apply results: add the clipped extensives to the absorbing neighbor cells.
+1. Use the removed cell's polyhedron from the old tessellation as the mutable clip polyhedron and
+   translate it to coordinates centered on the old source cell.
+2. Canonicalize every source face with a projected monotone-chain convex hull, removing duplicate,
+   collinear, and interior vertices before clipping.
+3. Build every surviving target half-space directly from its two Voronoi generators in
+   source-local coordinates. The plane point is their midpoint and its inward normal points from
+   the other generator to the target generator; no global-coordinate face center is involved.
+4. Clip the old source polyhedron by each new target's planes and retain every overlap volume and
+   centroid until all target pieces for that source are known.
+5. Validate the canonical source geometry against the tessellation volume to a relative tolerance
+   of `1e-10`. This check is independent of the target partition and is never corrected.
+6. Reconcile the pieces' zeroth and first moments before applying them: scale all volumes so they
+   sum to the old source volume, and translate all overlap centroids so their volume-weighted mean
+   is the old source centroid. This preserves the integral of the linearly reconstructed state.
+7. Refuse the partition correction and abort if the raw volume discrepancy exceeds `1e-5`. A
+   missing target, malformed source, or topology error therefore remains distinct from the
+   few-parts-per-million mismatch possible between independently clipped target pieces.
+
+Clipping in this orientation is important. The mathematically equivalent inverse operation (new
+target polyhedron clipped by old source planes) is not numerically equivalent in `PolyClip`: its
+face-cleanup tolerances are based on the input polyhedron. Enlarged, distorted target cells can
+lose a face before all source planes are applied, leaving part of the old source volume unmapped.
+Centering is independently required because `CleanFace` includes a tolerance based on the ULP of
+each vertex's absolute radius. Without translation, identical cells receive different cleanup
+tolerances depending on their distance from the global origin. Constructing the target bisectors
+from the generators after translation also avoids cancellation in a plane point or intercept near
+global coordinate magnitude `3000` when the cell width is below one.
+
+The original `ConvexHullFace` did not compute a convex hull: it angle-sorted every projected point
+and retained interior and collinear points. After repeated adjacent-cell removals, one of these
+non-canonical caps could be reused as input to a later clip. Its weak plane basis and extra vertices
+then produced an inconsistent source partition. The production reproducer over-counted one source
+by `2.2878874e-3` relative to the cached tessellation volume. A true projected convex hull and exact
+local bisectors remove that defect.
+
+Even with valid source geometry, target intersections are evaluated independently. Near-coincident
+faces can take different floating-point tolerance branches, so the resulting pieces are not
+guaranteed to sum bit-for-bit to the source. A deliberately strict diagnostic run after the hull
+fix measured a `2.0430079e-6` partition mismatch while the canonical source geometry agreed with
+the tessellation volume to `8.11144e-14`. The `1e-5` bound admits only that numerical partition
+closure; the original `2.2878874e-3` defect still aborts more than two orders of magnitude above the
+limit. Zeroth-moment scaling alone would conserve a constant state but not a linear reconstruction,
+so the volume-weighted centroid is corrected at the same time.
 
 ### 6. `DistributedMPIRefine`
 
@@ -267,12 +308,16 @@ Replaces `MPIRefine` for the distributed path. Handles refined cells near MPI do
 6. Accumulate results into `extensive_tosend`, exchange back to the originating rank via
    `MPI_Exchange_all_to_all`, and apply to extensives.
 
-### 7. `DistributedMPIRemove`
+### 7. `MPIRemoveWithTargets`
 
-Replaces `MPIRemove` for the distributed path. Uses the existing `SendRecvMPIFullRemove` to
-exchange planes of removed cells with MPI neighbors. Then for each received entry, builds clip
-tasks (local cell polyhedron vs. received planes), distributes via `DistributeAndComputeClips`, and
-applies results.
+The source owner sends the packed source-centered old polyhedron, primitive state, slope, center, volume,
+and target indices to every target rank. Each target rank supplies the rebuilt target planes and
+bounds, then either computes the old-source/new-target intersection locally or passes the same task
+through `DistributeAndComputeClips`. Per-source overlap totals return to the source owner for the
+same bounded correction as the serial path. The source owner returns the volume scale and centroid
+shift to each target rank, and only then are the corrected extensive contributions applied. This
+packet layout supports a source whose immediate neighbor is removed at the same time because all
+surviving cells in the saved two-hop map remain eligible targets.
 
 ### 8. `SendRecvMPIRefine` -- New Cross-Rank Communication for Refine
 
@@ -283,7 +328,7 @@ necessary because `GetKOrderNeighbors` can return neighbors on any rank, not jus
 neighbor ranks.
 
 For each refined cell with remote neighbors, it packs:
-- The refined cell's planes (as `d, nx, ny, nz` per plane).
+- The refined cell's planes (as `nx, ny, nz, px, py, pz` per plane).
 - The remote neighbor indices (already in the remote rank's local index space).
 - The refined cell's index in the new tessellation (stored in `changed_byouter` for result mapping).
 
@@ -306,8 +351,9 @@ LocalRefine(...);
 #endif
 ```
 
-The same pattern is used for the remove phase. Serial builds (`#else`) always use the original
-functions.
+Removal always uses `MPIRemoveWithTargets` in MPI builds and `LocalRemoveWithTargets` in serial
+builds. The `distribute_clips_` switch controls task offloading inside `MPIRemoveWithTargets`; it
+does not disable adjacent-cell removal or change the conservative source/target geometry.
 
 ### 10. Constructor
 
@@ -327,6 +373,22 @@ AMR3D amr(eos, refine, remove, interp, nullptr, nullptr, false);
 // or at runtime:
 amr.SetDistributeClips(false);
 ```
+
+## Regression Coverage
+
+`amr_neighbor_remove_high_coordinate` builds a jittered 3D mesh translated to coordinates near
+`3000`, selects a cross-rank pair that shares a face, and explicitly asserts that both adjacent
+cells were accepted and removed. It checks mass, momentum, and energy conservation as well as the
+3x target-volume growth limit. It also gives `ConvexHullFace` an adversarial coplanar point set with
+four boundary vertices and one interior vertex, then requires a four-vertex hull and a relative
+area error no larger than `1e-10`. The former angle-sort implementation retained all five points and
+fails this assertion.
+
+An earlier `amr_neighbor_remove` test was introduced in commit `7364ceb5` and removed in commit
+`8031e78e`. It used an axis-aligned Cartesian mesh in `[0,1]^3`; consequently it did not exercise
+translated oblique planes, source-local cleanup, or a large coordinate-to-cell-width ratio. The
+remaining generic AMR regressions also did not assert that an adjacent pair had actually survived
+candidate thinning, so they could pass without entering this remap topology.
 
 ## Risks and Assumptions
 
