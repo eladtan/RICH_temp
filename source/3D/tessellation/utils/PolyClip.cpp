@@ -272,62 +272,100 @@ Face ConvexHullFace(const Face &face)
     {
         return result;
     }
-    Vector3D center = faceCenter(face);
-    Vector3D X = face.vertices[0] - center;
-    double size = abs(X);
-    if(!(std::isfinite(size)) || size <= std::numeric_limits<double>::min())
-        return result;
-    X *= 1.0 / size;
-    Vector3D edge;
-    Vector3D raw_normal;
-    const double edge_eps = 1e-10 * size;
-    for(size_t i = 1; i < face.vertices.size(); ++i)
+    const Vector3D Center = faceCenter(face);
+    size_t AxisIndex = 0;
+    double Scale = 0.0;
+    for(size_t Index = 0; Index < face.vertices.size(); ++Index)
     {
-        Vector3D candidate = face.vertices[i] - face.vertices[0];
-        if(fastabs(candidate) <= edge_eps)
-            continue;
-        Vector3D candidate_normal = CrossProduct(X, candidate);
-        if(abs(candidate_normal) <= std::numeric_limits<double>::min())
-            continue;
-        edge = candidate;
-        raw_normal = candidate_normal;
-        break;
-    }
-    double normal_size = abs(raw_normal);
-    if(!(std::isfinite(normal_size)) || normal_size <= std::numeric_limits<double>::min())
-    {
-        return result;
-    }
-    Vector3D N = normalize(raw_normal);
-    Vector3D Y = CrossProduct(N, X);
-
-    struct projected
-    {
-        double angle;
-        Vector3D original;
-    };
-
-    std::vector<projected> projected_points;
-
-    for(const Vector3D &p : face.vertices)
-    {
-        Vector3D v = p - center;
-        double x = ScalarProd(v, X);
-        double y = ScalarProd(v, Y);
-        double angle = std::atan2(y, x);
-        if(angle < 0)
+        const double Radius = fastabs(face.vertices[Index] - Center);
+        if(Radius > Scale)
         {
-            angle += 2 * M_PI;
+            Scale = Radius;
+            AxisIndex = Index;
         }
-        projected_points.push_back({angle, p});
     }
+    if(!(std::isfinite(Scale)) || Scale <= std::numeric_limits<double>::min())
+        return result;
 
-    std::sort(projected_points.begin(), projected_points.end(), [](const projected &a, const projected &b){return a.angle < b.angle;});
-
-    for(const projected &p : projected_points)
+    const Vector3D X = (face.vertices[AxisIndex] - Center) / Scale;
+    Vector3D RawNormal;
+    double NormalSize = 0.0;
+    for(const Vector3D &Vertex : face.vertices)
     {
-        result.vertices.push_back(p.original);
+        const Vector3D CandidateNormal = CrossProduct(X, Vertex - Center);
+        const double CandidateSize = fastabs(CandidateNormal);
+        if(CandidateSize > NormalSize)
+        {
+            RawNormal = CandidateNormal;
+            NormalSize = CandidateSize;
+        }
     }
+    if(!(std::isfinite(NormalSize)) ||
+        NormalSize <= 128.0 * std::numeric_limits<double>::epsilon() * Scale)
+        return result;
+
+    const Vector3D Normal = RawNormal / NormalSize;
+    const Vector3D Y = CrossProduct(Normal, X);
+    struct ProjectedPoint
+    {
+        double X;
+        double Y;
+        Vector3D Original;
+    };
+    std::vector<ProjectedPoint> Projected;
+    Projected.reserve(face.vertices.size());
+    for(const Vector3D &Vertex : face.vertices)
+    {
+        const Vector3D Relative = Vertex - Center;
+        Projected.push_back({ScalarProd(Relative, X), ScalarProd(Relative, Y), Vertex});
+    }
+    std::sort(Projected.begin(), Projected.end(), [](const ProjectedPoint &First, const ProjectedPoint &Second)
+    {
+        if(First.X != Second.X)
+            return First.X < Second.X;
+        return First.Y < Second.Y;
+    });
+
+    const double CoordinateTolerance = 128.0 * std::numeric_limits<double>::epsilon() * Scale;
+    Projected.erase(std::unique(Projected.begin(), Projected.end(),
+        [CoordinateTolerance](const ProjectedPoint &First, const ProjectedPoint &Second)
+        {
+            return std::abs(First.X - Second.X) <= CoordinateTolerance &&
+                std::abs(First.Y - Second.Y) <= CoordinateTolerance;
+        }), Projected.end());
+    if(Projected.size() < 3)
+        return result;
+
+    const double CrossTolerance = 256.0 * std::numeric_limits<double>::epsilon() * Scale * Scale;
+    auto Cross2D = [](const ProjectedPoint &Origin, const ProjectedPoint &First, const ProjectedPoint &Second)
+    {
+        return (First.X - Origin.X) * (Second.Y - Origin.Y) -
+            (First.Y - Origin.Y) * (Second.X - Origin.X);
+    };
+    std::vector<size_t> Hull(2 * Projected.size());
+    size_t HullSize = 0;
+    for(size_t Index = 0; Index < Projected.size(); ++Index)
+    {
+        while(HullSize >= 2 && Cross2D(Projected[Hull[HullSize - 2]], Projected[Hull[HullSize - 1]],
+            Projected[Index]) <= CrossTolerance)
+            --HullSize;
+        Hull[HullSize++] = Index;
+    }
+    const size_t LowerSize = HullSize;
+    for(size_t Index = Projected.size() - 1; Index-- > 0;)
+    {
+        while(HullSize > LowerSize && Cross2D(Projected[Hull[HullSize - 2]], Projected[Hull[HullSize - 1]],
+            Projected[Index]) <= CrossTolerance)
+            --HullSize;
+        Hull[HullSize++] = Index;
+    }
+    if(HullSize > 1)
+        --HullSize;
+    if(HullSize < 3)
+        return result;
+    result.vertices.reserve(HullSize);
+    for(size_t Index = 0; Index < HullSize; ++Index)
+        result.vertices.push_back(Projected[Hull[Index]].Original);
     return result;
 }
 

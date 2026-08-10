@@ -412,6 +412,66 @@ check_amr_random_case() {
     return 0
 }
 
+check_amr_neighbor_remove_high_coordinate_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/amr_neighbor_remove_high_coordinate_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale amr_neighbor_remove_high_coordinate_metrics.txt"
+        return 1
+    fi
+
+    local hull_pass hull_area_error removed_count adjacent_pairs mass_error energy_error momentum_error
+    local max_growth growth_limit origin pass_flag
+    hull_pass=$(awk '$1 == "convex_hull_pass" { print $2 }' "$metrics_file")
+    hull_area_error=$(awk '$1 == "convex_hull_area_error" { print $2 }' "$metrics_file")
+    removed_count=$(awk '$1 == "removed_count" { print $2 }' "$metrics_file")
+    adjacent_pairs=$(awk '$1 == "adjacent_removed_pairs" { print $2 }' "$metrics_file")
+    mass_error=$(awk '$1 == "mass_error" { print $2 }' "$metrics_file")
+    energy_error=$(awk '$1 == "energy_error" { print $2 }' "$metrics_file")
+    momentum_error=$(awk '$1 == "momentum_error" { print $2 }' "$metrics_file")
+    max_growth=$(awk '$1 == "max_volume_growth" { print $2 }' "$metrics_file")
+    growth_limit=$(awk '$1 == "volume_growth_limit" { print $2 }' "$metrics_file")
+    origin=$(awk '$1 == "coordinate_origin" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ "$pass_flag" != "1" ]] || [[ "$hull_pass" != "1" ]] || \
+        ! awk -v n="$removed_count" -v p="$adjacent_pairs" \
+        'BEGIN { exit !(n >= 2 && p >= 1) }'; then
+        set_check_msg "high-coordinate convex clipping or adjacent simultaneous removal failed"
+        return 1
+    fi
+    for value in "$hull_pass" "$hull_area_error" "$removed_count" "$adjacent_pairs" "$mass_error" \
+        "$energy_error" "$momentum_error" \
+        "$max_growth" "$growth_limit" "$origin"; do
+        if ! is_finite_number "$value"; then
+            set_check_msg "non-finite high-coordinate neighboring-removal metric"
+            return 1
+        fi
+    done
+    if ! awk -v e="$hull_area_error" 'BEGIN { exit !(e <= 1e-10) }'; then
+        set_check_msg "high-coordinate convex-face reconstruction is inaccurate (${hull_area_error})"
+        return 1
+    fi
+    if ! awk -v o="$origin" 'BEGIN { exit !(o >= 1e3) }'; then
+        set_check_msg "neighbor-removal test did not exercise high-coordinate geometry"
+        return 1
+    fi
+    if ! awk -v g="$max_growth" -v l="$growth_limit" 'BEGIN { exit !(g <= l * (1 + 1e-8)) }'; then
+        set_check_msg "AMR volume growth exceeded limit (${max_growth} > ${growth_limit})"
+        return 1
+    fi
+
+    set_check_msg "High-coordinate adjacent-pair AMR passed (removed=${removed_count}, pairs=${adjacent_pairs})"
+    return 0
+}
+
 check_voronoi_volume_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
