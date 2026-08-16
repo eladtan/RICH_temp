@@ -1,5 +1,6 @@
 #include "AMR3D.hpp"
 #include <boost/array.hpp>
+#include <cmath>
 #include <iostream>
 #include <boost/scoped_ptr.hpp>
 #include <limits>
@@ -8,6 +9,7 @@
 #include <unordered_set>
 #include <unordered_map>
 #include "3D/tessellation/utils/PolyClip.hpp"
+#include "3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "misc/universal_error.hpp"
 #include "misc/utils.hpp"
 #include "newtonian/three_dimensional/SpatialReconstruction3D.hpp"
@@ -21,7 +23,11 @@ namespace
 {
 	const size_t removal_target_order = 2;
 	const double removal_volume_growth_limit = 3.0;
-	const double removal_source_geometry_consistency_limit = 1e-10;
+	// Multiplies the face-weighted transfer estimate. Larger is stricter.
+	const double removal_volume_claim_safety_factor = 1.5;
+	// Polyhedron reconstruction accumulates roundoff across many planes. The
+	// remap is rescaled to the exact source volume after this consistency check.
+	const double removal_source_geometry_consistency_limit = 1e-8;
 	const double removal_partition_correction_limit = 1e-5;
 
 		const std::vector<Plane> &CachedPolyPlanes(Tessellation3D const& tess, size_t cell_index,
@@ -378,9 +384,10 @@ namespace
 			if (anchor_count != 1)
 				continue;
 
-			int anchor_owner = rank;
 #ifdef RICH_MPI
-			anchor_owner = tess.GetOwner(tess.GetMeshPoint(anchor_neighbor));
+			const int anchor_owner = tess.GetOwner(tess.GetMeshPoint(anchor_neighbor));
+#else
+			const int anchor_owner = rank;
 #endif
 			PairProposal proposal;
 			proposal.anchor_id = cells[anchor_neighbor].ID;
@@ -455,15 +462,101 @@ namespace
 		return std::make_pair(result_names, result_merits);
 	}
 
+	std::pair<vector<size_t>, vector<double> > EnforceAdjacentRemovalPairTopology(
+		std::pair<vector<size_t>, vector<double> > const& proposed,
+		Tessellation3D const& tess, vector<ComputationalCell3D> const& cells)
+	{
+		int world_size = 1;
+#ifdef RICH_MPI
+		MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+#endif
+
+		std::vector<size_t> local_source_ids;
+		local_source_ids.reserve(proposed.first.size());
+		for (size_t source : proposed.first)
+			local_source_ids.push_back(cells[source].ID);
+		std::vector<std::vector<size_t> > source_ids_by_rank(
+			static_cast<size_t>(world_size), local_source_ids);
+#ifdef RICH_MPI
+		source_ids_by_rank = MPI_Exchange_all_to_all(source_ids_by_rank, MPI_COMM_WORLD);
+#endif
+		std::unordered_set<size_t> proposed_ids;
+		for (const std::vector<size_t> &rank_ids : source_ids_by_rank)
+			proposed_ids.insert(rank_ids.begin(), rank_ids.end());
+
+		std::pair<vector<size_t>, vector<double> > result;
+		result.first.reserve(proposed.first.size());
+		result.second.reserve(proposed.second.size());
+		for (size_t i = 0; i < proposed.first.size(); ++i)
+		{
+			const size_t source = proposed.first[i];
+			std::unordered_set<size_t> adjacent_source_ids;
+			const face_vec &faces = tess.GetCellFaces(source);
+			for (size_t face : faces)
+			{
+				const std::pair<size_t, size_t> &neighbors = tess.GetFaceNeighbors(face);
+				const size_t other = neighbors.first == source ? neighbors.second : neighbors.first;
+				if (other >= cells.size() || tess.IsPointOutsideBox(other))
+					continue;
+				const size_t other_id = cells[other].ID;
+				if (other_id != cells[source].ID && proposed_ids.count(other_id))
+					adjacent_source_ids.insert(other_id);
+			}
+			if (adjacent_source_ids.size() > 1)
+				continue;
+			result.first.push_back(source);
+			result.second.push_back(proposed.second[i]);
+		}
+		return result;
+	}
+
 	struct RemovalVolumeClaim
 	{
-		size_t target_index;
 		int source_rank;
 		size_t source_index;
 		size_t source_id;
+		size_t partner_id;
+		double claimed_volume;
+		double source_merit;
+		bool pair_claim;
+	};
+
+	struct RemovalSourceGeometry
+	{
+		size_t source_id;
+		int source_rank;
+		size_t source_index;
+		size_t partner_id;
 		double source_volume;
 		double source_merit;
+		double singleton_conductance;
+		double pair_external_conductance;
 	};
+
+	double RemovalFaceConductance(Tessellation3D const& tess, size_t face,
+		size_t first, size_t second)
+	{
+		const double area = tess.GetArea(face);
+		const double distance = fastabs(tess.GetMeshPoint(first) - tess.GetMeshPoint(second));
+		if (!(area > 0) || !(distance > std::numeric_limits<double>::min()) ||
+			!std::isfinite(area) || !std::isfinite(distance))
+			return 0;
+		return area / distance;
+	}
+
+	double WeightedRemovalClaim(double source_volume, double boundary_conductance,
+		double total_conductance)
+	{
+		if (!(source_volume > 0) || !(boundary_conductance > 0))
+			return 0;
+		if (!(total_conductance > 0) || !std::isfinite(total_conductance))
+			return source_volume;
+		const double estimate = removal_volume_claim_safety_factor * source_volume *
+			boundary_conductance / total_conductance;
+		if (!std::isfinite(estimate))
+			return source_volume;
+		return std::min(source_volume, estimate);
+	}
 
 	struct RemovalVolumeVeto
 	{
@@ -499,49 +592,218 @@ namespace
 		for (size_t i = 0; i < proposed.first.size(); ++i)
 			merit_by_index[proposed.first[i]] = proposed.second[i];
 
+		const size_t no_partner = std::numeric_limits<size_t>::max();
+		std::vector<size_t> local_source_ids;
+		local_source_ids.reserve(proposed.first.size());
+		for (size_t source : proposed.first)
+			local_source_ids.push_back(cells[source].ID);
+		std::vector<std::vector<size_t> > source_ids_by_rank(
+			static_cast<size_t>(world_size), local_source_ids);
+#ifdef RICH_MPI
+		source_ids_by_rank = MPI_Exchange_all_to_all(source_ids_by_rank, MPI_COMM_WORLD);
+#endif
+		std::unordered_set<size_t> proposed_ids;
+		for (const std::vector<size_t> &rank_ids : source_ids_by_rank)
+			proposed_ids.insert(rank_ids.begin(), rank_ids.end());
+
+		std::vector<RemovalSourceGeometry> local_geometry;
+		local_geometry.reserve(proposed.first.size());
+		for (size_t source : proposed.first)
+		{
+			RemovalSourceGeometry geometry;
+			geometry.source_id = cells[source].ID;
+			geometry.source_rank = rank;
+			geometry.source_index = source;
+			geometry.partner_id = no_partner;
+			geometry.source_volume = tess.GetVolume(source);
+			geometry.source_merit = merit_by_index[source];
+			geometry.singleton_conductance = 0;
+			geometry.pair_external_conductance = 0;
+			const face_vec &faces = tess.GetCellFaces(source);
+			for (size_t face : faces)
+			{
+				const std::pair<size_t, size_t> &neighbors = tess.GetFaceNeighbors(face);
+				const size_t other = neighbors.first == source ? neighbors.second : neighbors.first;
+				if (other >= cells.size() || tess.IsPointOutsideBox(other))
+					continue;
+				const double conductance = RemovalFaceConductance(tess, face, source, other);
+				if (!(conductance > 0))
+					continue;
+				geometry.singleton_conductance += conductance;
+				const size_t other_id = cells[other].ID;
+				if (proposed_ids.count(other_id))
+				{
+					if (geometry.partner_id != no_partner && geometry.partner_id != other_id)
+					{
+						UniversalError error("Removal component exceeds adjacent-pair limit");
+						error.addEntry("Source ID", geometry.source_id);
+						error.addEntry("First partner ID", geometry.partner_id);
+						error.addEntry("Second partner ID", other_id);
+						throw error;
+					}
+					geometry.partner_id = other_id;
+				}
+				else
+					geometry.pair_external_conductance += conductance;
+			}
+			local_geometry.push_back(geometry);
+		}
+
+		std::vector<std::vector<RemovalSourceGeometry> > geometry_by_rank(
+			static_cast<size_t>(world_size), local_geometry);
+#ifdef RICH_MPI
+		geometry_by_rank = MPI_Exchange_all_to_all(geometry_by_rank, MPI_COMM_WORLD);
+#endif
+		std::unordered_map<size_t, RemovalSourceGeometry> geometry_by_id;
+		for (const std::vector<RemovalSourceGeometry> &rank_geometry : geometry_by_rank)
+			for (const RemovalSourceGeometry &geometry : rank_geometry)
+				geometry_by_id.emplace(geometry.source_id, geometry);
+
+		// The full two-hop map remains available to the exact overlap remap.  For
+		// this limiter, only inspect targets in that map which actually share a
+		// face with a proposed source or its one proposed adjacent partner.
+		std::vector<std::vector<size_t> > candidate_targets_by_rank(
+			static_cast<size_t>(world_size));
+		for (size_t source : proposed.first)
+		{
+			auto map_it = target_map.find(source);
+			if (map_it == target_map.end())
+				throw UniversalError("Missing removal target map while weighting claims");
+			for (const RemotePoint &target : map_it->second)
+			{
+#ifdef RICH_MPI
+				candidate_targets_by_rank[static_cast<size_t>(target.rank)].push_back(
+					target.indexOnRank);
+#else
+				candidate_targets_by_rank[0].push_back(target.index);
+#endif
+			}
+		}
+#ifdef RICH_MPI
+		candidate_targets_by_rank = MPI_Exchange_all_to_all(
+			candidate_targets_by_rank, MPI_COMM_WORLD);
+#endif
+		std::vector<size_t> candidate_targets;
+		for (const std::vector<size_t> &rank_targets : candidate_targets_by_rank)
+			candidate_targets.insert(candidate_targets.end(), rank_targets.begin(), rank_targets.end());
+		std::sort(candidate_targets.begin(), candidate_targets.end());
+		candidate_targets.erase(std::unique(candidate_targets.begin(), candidate_targets.end()),
+			candidate_targets.end());
+
+		std::map<size_t, std::vector<RemovalVolumeClaim> > potential_claims_by_target;
+		for (size_t target : candidate_targets)
+		{
+			if (target >= tess.GetPointNo())
+				continue;
+			std::unordered_map<size_t, double> singleton_boundary;
+			std::unordered_map<size_t, double> component_boundary;
+			const face_vec &faces = tess.GetCellFaces(target);
+			for (size_t face : faces)
+			{
+				const std::pair<size_t, size_t> &neighbors = tess.GetFaceNeighbors(face);
+				const size_t other = neighbors.first == target ? neighbors.second : neighbors.first;
+				if (other >= cells.size() || tess.IsPointOutsideBox(other))
+					continue;
+				auto source_it = geometry_by_id.find(cells[other].ID);
+				if (source_it == geometry_by_id.end())
+					continue;
+				const double conductance = RemovalFaceConductance(tess, face, target, other);
+				if (!(conductance > 0))
+					continue;
+				const RemovalSourceGeometry &source_geometry = source_it->second;
+				singleton_boundary[source_geometry.source_id] += conductance;
+				const size_t component_id = source_geometry.partner_id == no_partner ?
+					source_geometry.source_id :
+					std::min(source_geometry.source_id, source_geometry.partner_id);
+				component_boundary[component_id] += conductance;
+			}
+
+			std::vector<RemovalVolumeClaim> &target_claims = potential_claims_by_target[target];
+			for (const auto &boundary : singleton_boundary)
+			{
+				const RemovalSourceGeometry &source_geometry = geometry_by_id.at(boundary.first);
+				const double claimed = WeightedRemovalClaim(source_geometry.source_volume,
+					boundary.second, source_geometry.singleton_conductance);
+				if (!(claimed > 0))
+					continue;
+				RemovalVolumeClaim claim;
+				claim.source_rank = source_geometry.source_rank;
+				claim.source_index = source_geometry.source_index;
+				claim.source_id = source_geometry.source_id;
+				claim.partner_id = source_geometry.partner_id;
+				claim.claimed_volume = claimed;
+				claim.source_merit = source_geometry.source_merit;
+				claim.pair_claim = false;
+				target_claims.push_back(claim);
+			}
+
+			for (const auto &boundary : component_boundary)
+			{
+				auto first_it = geometry_by_id.find(boundary.first);
+				if (first_it == geometry_by_id.end() || first_it->second.partner_id == no_partner)
+					continue;
+				const RemovalSourceGeometry &first = first_it->second;
+				auto second_it = geometry_by_id.find(first.partner_id);
+				if (second_it == geometry_by_id.end() || second_it->second.partner_id != first.source_id)
+					throw UniversalError("Incomplete adjacent removal-pair geometry");
+				const RemovalSourceGeometry &second = second_it->second;
+				const double component_conductance = first.pair_external_conductance +
+					second.pair_external_conductance;
+				const RemovalSourceGeometry *members[2] = {&first, &second};
+				for (size_t member = 0; member < 2; ++member)
+				{
+					const RemovalSourceGeometry &source_geometry = *members[member];
+					const double claimed = WeightedRemovalClaim(source_geometry.source_volume,
+						boundary.second, component_conductance);
+					if (!(claimed > 0))
+						continue;
+					RemovalVolumeClaim claim;
+					claim.source_rank = source_geometry.source_rank;
+					claim.source_index = source_geometry.source_index;
+					claim.source_id = source_geometry.source_id;
+					claim.partner_id = source_geometry.partner_id;
+					claim.claimed_volume = claimed;
+					claim.source_merit = source_geometry.source_merit;
+					claim.pair_claim = true;
+					target_claims.push_back(claim);
+				}
+			}
+		}
+
 		std::vector<char> selected(tess.GetPointNo(), 0);
 		for (size_t source : proposed.first)
 			selected[source] = 1;
 
 		while (true)
 		{
-			std::vector<std::vector<RemovalVolumeClaim> > claims(static_cast<size_t>(world_size));
+			std::vector<size_t> local_active_ids;
 			for (size_t source : proposed.first)
 			{
-				if (!selected[source])
-					continue;
-				auto map_it = target_map.find(source);
-				if (map_it == target_map.end())
-					continue;
-				for (const RemotePoint &target : map_it->second)
-				{
-					int target_rank = 0;
-					size_t target_index = 0;
+				if (selected[source])
+					local_active_ids.push_back(cells[source].ID);
+			}
+			std::vector<std::vector<size_t> > active_ids_by_rank(
+				static_cast<size_t>(world_size), local_active_ids);
 #ifdef RICH_MPI
-					target_rank = target.rank;
-					target_index = target.indexOnRank;
-#else
-					target_index = target.index;
+			active_ids_by_rank = MPI_Exchange_all_to_all(active_ids_by_rank, MPI_COMM_WORLD);
 #endif
-					RemovalVolumeClaim claim;
-					claim.target_index = target_index;
-					claim.source_rank = rank;
-					claim.source_index = source;
-					claim.source_id = cells[source].ID;
-					claim.source_volume = tess.GetVolume(source);
-					claim.source_merit = merit_by_index[source];
-					claims[static_cast<size_t>(target_rank)].push_back(claim);
+			std::unordered_set<size_t> active_ids;
+			for (const std::vector<size_t> &rank_ids : active_ids_by_rank)
+				active_ids.insert(rank_ids.begin(), rank_ids.end());
+			std::map<size_t, std::vector<RemovalVolumeClaim> > claims_by_target;
+			for (const auto &target_claims : potential_claims_by_target)
+			{
+				for (const RemovalVolumeClaim &claim : target_claims.second)
+				{
+					if (!active_ids.count(claim.source_id))
+						continue;
+					const bool pair_is_active = claim.partner_id != no_partner &&
+						active_ids.count(claim.partner_id);
+					if (claim.pair_claim != pair_is_active)
+						continue;
+					claims_by_target[target_claims.first].push_back(claim);
 				}
 			}
-
-#ifdef RICH_MPI
-			claims = MPI_Exchange_all_to_all(claims, MPI_COMM_WORLD);
-#endif
-
-			std::map<size_t, std::vector<RemovalVolumeClaim> > claims_by_target;
-			for (const std::vector<RemovalVolumeClaim> &from_rank : claims)
-				for (const RemovalVolumeClaim &claim : from_rank)
-					claims_by_target[claim.target_index].push_back(claim);
 
 			std::vector<std::vector<RemovalVolumeVeto> > vetoes(static_cast<size_t>(world_size));
 			for (auto &target_claims : claims_by_target)
@@ -552,14 +814,14 @@ namespace
 
 				double claimed_volume = 0.0;
 				for (const RemovalVolumeClaim &claim : target_claims.second)
-					claimed_volume += claim.source_volume;
+					claimed_volume += claim.claimed_volume;
 				const double headroom =
 					(removal_volume_growth_limit - 1.0) * tess.GetVolume(target);
 				if (claimed_volume <= headroom * (1.0 + 1e-12))
 					continue;
 
-				// Remove the lowest-priority sources until this potential target's
-				// conservative full-volume reservation fits below 3 V_old.
+				// Remove the lowest-priority sources until the 1.5-safety-factor,
+				// face-weighted estimate fits below 3 V_old.
 				std::sort(target_claims.second.begin(), target_claims.second.end(),
 					[](const RemovalVolumeClaim &a, const RemovalVolumeClaim &b)
 					{
@@ -575,7 +837,7 @@ namespace
 					veto.source_index = claim.source_index;
 					veto.source_id = claim.source_id;
 					vetoes[static_cast<size_t>(claim.source_rank)].push_back(veto);
-					claimed_volume -= claim.source_volume;
+					claimed_volume -= claim.claimed_volume;
 				}
 			}
 
@@ -2792,11 +3054,12 @@ void AMR3D::operator() (Simulation &sim)
 	ToRemove.second = VectorValues(ToRemove.second, indeces);
 	ToRemove.first = VectorValues(ToRemove.first, indeces);
 	// Form an MPI-consistent independent anchor set, allow one neighboring
-	// partner per anchor, then conservatively enforce V_new <= 3 V_old for
-	// every possible surviving target in the old two-hop graph.
+	// partner per anchor, then limit the face-weighted V_new estimate to
+	// 3 V_old on topologically reachable surviving targets.
 	std::pair<vector<size_t>, vector<double> > RemoveAnchors =
 		GreedyRemoveCandidates(ToRemove.second, ToRemove.first, tess, cells);
 	ToRemove = AddNeighborRemovalPartners(RemoveAnchors, ToRemove.first, ToRemove.second, tess, cells);
+	ToRemove = EnforceAdjacentRemovalPairTopology(ToRemove, tess, cells);
 	// The limiter retains the accepted sources' two-hop topology. Reuse it for
 	// refinement conflicts and conservative remapping instead of discovering
 	// the same MPI neighborhoods two more times.
