@@ -6,6 +6,7 @@
 #include <iostream>
 #include <vector>
 #include <string>
+#include <stdexcept>
 #include <cmath>
 #include <algorithm>
 #include "3D/radiation/MonteCarloPhysics3D.hpp"
@@ -38,6 +39,7 @@
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "newtonian/three_dimensional/CostCalculator3D.hpp"
 #include "utils/arguments/ArgumentParser.hpp"
+#include "runs/mc_results_dir.hpp"
 
 /*
  * Mach 2 Radiative Shock benchmark from:
@@ -49,9 +51,9 @@
  *
  * Gas:         ideal, gamma = 5/3, Cv = 1.91e8 erg/(g K)
  * Absorption:  sigma_a = 0.362 rho (T/keV)^{-3.5} cm^{-1}, sigma_s = 0
- * Upstream:    rho = 1 g/cc,    v = 0,            T = 0.122 keV
- * Downstream:  rho = 2.29 g/cc, v = -1.95e7 cm/s, T = 0.253 keV
- * Domain:      x in [-0.21, 0.7] cm, 1024 cells (default)
+ * Upstream:    rho = 1 g/cc,    v = 3.4616e7 cm/s, T = 0.122 keV
+ * Downstream:  rho = 2.29 g/cc, v = 1.5116e7 cm/s, T = 0.253 keV
+ * Domain:      x in [-0.21, 0.25] cm, 1024 cells (default)
  * Runtime:     5 ns
  *
  * Usage: mpirun -np N ./test [options] [Np] [prefix] [new/cell] [max/cell]
@@ -151,6 +153,45 @@ namespace
         bool operator<(const ProfilePoint &o) const { return x < o.x; }
     };
 
+    struct AnalyticProfilePoint
+    {
+        double x, rho, T_gas_K, T_rad_K, vx;
+    };
+
+    std::vector<AnalyticProfilePoint> LoadAnalyticProfile(const std::string &filepath)
+    {
+        std::vector<AnalyticProfilePoint> points;
+        std::ifstream in(filepath);
+        if(!in.is_open())
+        {
+            throw std::runtime_error("Cannot open analytic profile: " + filepath);
+        }
+
+        std::string line;
+        while(std::getline(in, line))
+        {
+            if(line.empty() || line[0] == '#')
+            {
+                continue;
+            }
+            std::replace(line.begin(), line.end(), ',', ' ');
+            std::istringstream iss(line);
+            AnalyticProfilePoint point;
+            if(iss >> point.x >> point.rho >> point.T_gas_K >> point.T_rad_K >> point.vx)
+            {
+                points.push_back(point);
+            }
+        }
+        if(points.empty())
+        {
+            throw std::runtime_error("Analytic profile is empty: " + filepath);
+        }
+        std::sort(points.begin(), points.end(),
+                  [](const AnalyticProfilePoint &a, const AnalyticProfilePoint &b)
+                  { return a.x < b.x; });
+        return points;
+    }
+
     void WriteProfile(const Voronoi3D &tess, const std::vector<ComputationalCell3D> &cells,
                         const std::shared_ptr<MonteCarloRadiationPhysics3D> physics,
                       const std::string &filename, double time_ns, size_t Np)
@@ -168,8 +209,15 @@ namespace
         for(size_t i = 0; i < N; i++)
         {
             const Vector3D &p = tess.GetMeshPoint(i);
+            // At t=0 the time-average estimator is intentionally empty/zero;
+            // use the initialized radiation energy for the initial profile.
+            // Erad_time_avg is an energy density, while cells[i].Erad is
+            // radiation energy per unit mass. Store an energy density in both
+            // cases so the output conversion below is identical.
+            double erad = (i < Erad_time_avg.size() && Erad_time_avg[i] > 0.0)
+                              ? Erad_time_avg[i] : cells[i].Erad * cells[i].density;
             data.emplace_back(p.x, cells[i].density, cells[i].temperature,
-                              Erad_time_avg[i], cells[i].velocity.x);
+                              erad, cells[i].velocity.x);
         }
 
         #ifdef RICH_MPI
@@ -184,7 +232,7 @@ namespace
             for(const auto &pt : data)
             {
                 double T_gas_keV = pt.temperature / units::kev_kelvin;
-                double T_rad_keV = std::pow(pt.Erad * pt.density / units::arad, 0.25) / units::kev_kelvin;
+                double T_rad_keV = std::pow(pt.Erad / units::arad, 0.25) / units::kev_kelvin;
                 out << pt.x << ", " << pt.density << ", " << T_gas_keV << ", "
                     << T_rad_keV << ", " << pt.velocity << "\n";
             }
@@ -235,6 +283,7 @@ int main(int argc, char *argv[])
     arguments.addPositional<size_t>("new_photons_per_cell", 25, "new photons per cell per step");
     arguments.addPositional<size_t>("max_photons_per_cell", 100, "population-control photon cap per cell");
     arguments.addFlag("resume", "resume from the checkpoint if it exists");
+    arguments.addOption<std::string>("profile", "mach2_analytic_ic2.dat", "analytic profile file for initialization");
     arguments.addOption<std::string>("manager", "new-rdma-auto", "Monte Carlo communication manager")
         .choices({"new-rdma-auto", "new-rdma-ibv", "p2p"})
         .flagAlias("new-rdma", "new-rdma-auto")
@@ -266,9 +315,18 @@ int main(int argc, char *argv[])
 
     size_t Np = arguments.get<size_t>("Np");
     std::string prefix = arguments.get<std::string>("prefix");
+    if(prefix.find('/') == std::string::npos)
+    {
+        prefix = McResultsDirectory("Mach2") + "/" + prefix;
+    }
+    EnsureParentDirectory(prefix, rank);
+#ifdef RICH_MPI
+    MPI_Barrier(MPI_COMM_WORLD);
+#endif
     size_t newPhotonsPerCell = arguments.get<size_t>("new_photons_per_cell");
     size_t maxPhotonsPerCell = arguments.get<size_t>("max_photons_per_cell");
     bool doResume = arguments.get<bool>("resume");
+    std::string profileFile = arguments.get<std::string>("profile");
     std::string managerName = arguments.get<std::string>("manager");
 
     #ifdef RICH_MPI
@@ -288,15 +346,18 @@ int main(int argc, char *argv[])
 
     constexpr double rho_up = 1.0;     // g/cc
     constexpr double rho_dn = 2.29;    // g/cc
-    constexpr double v_dn = 1.5116e+07;   // cm/s (moving left)
+    constexpr double v_up = 3.4616e+07;    // cm/s, stationary shock frame
+    constexpr double v_dn = 1.5116e+07;    // cm/s, stationary shock frame
 
     constexpr double t_final = 5e-9;   // 5 ns
     constexpr double xmin = -0.21, xmax = 0.25;
 
-    // CFL-based constant time step: dx / (|v_dn| + cs_dn) * CFL
+    // CFL-based constant time step in the stationary shock frame.
     const double dx = (xmax - xmin) / Np;
+    const double cs_up = std::sqrt(gamma_gas * (gamma_gas - 1) * Cv * T_up);
     const double cs_dn = std::sqrt(gamma_gas * (gamma_gas - 1) * Cv * T_dn);
-    const double dt = 0.3 * dx / (std::abs(v_dn) + cs_dn);
+    const double max_speed = std::max(std::abs(v_up) + cs_up, std::abs(v_dn) + cs_dn);
+    const double dt = 0.3 * dx / max_speed;
 
     constexpr size_t boundaryPhotonsPerCell = 50;
     constexpr bool withHydro = true;
@@ -334,26 +395,43 @@ int main(int argc, char *argv[])
     // --- Equation of State: e = Cv * T ---
     IdealGas eos(gamma_gas, Cv, 1, 0);
 
+    std::vector<AnalyticProfilePoint> analyticProfile;
+    if(!doResume)
+    {
+        analyticProfile = LoadAnalyticProfile(profileFile);
+        if(rank == 0)
+            std::cout << "Loaded analytic profile from " << profileFile
+                      << " (" << analyticProfile.size() << " points)" << std::endl;
+    }
+
     // --- Ghost cell templates (needed for hydro BCs and fresh init) ---
     ComputationalCell3D left_cell, right_cell;
 
-    right_cell.density = rho_dn;
-    right_cell.temperature = T_dn;
-    right_cell.velocity = Vector3D(v_dn, 0, 0);
-    right_cell.internal_energy = eos.dT2e(right_cell.density, right_cell.temperature,
-        right_cell.tracers, ComputationalCell3D::tracerNames);
-        right_cell.pressure = eos.de2p(right_cell.density, right_cell.internal_energy,
-        right_cell.tracers, ComputationalCell3D::tracerNames);
-        right_cell.Erad = units::arad * std::pow(T_dn, 4) / right_cell.density;
+    auto makeCell = [&eos](double rho, double T_gas, double T_rad, double vx)
+    {
+        ComputationalCell3D cell;
+        cell.density = rho;
+        cell.temperature = T_gas;
+        cell.velocity = Vector3D(vx, 0, 0);
+        cell.internal_energy = eos.dT2e(cell.density, cell.temperature,
+            cell.tracers, ComputationalCell3D::tracerNames);
+        cell.pressure = eos.de2p(cell.density, cell.internal_energy,
+            cell.tracers, ComputationalCell3D::tracerNames);
+        cell.Erad = units::arad * std::pow(T_rad, 4) / cell.density;
+        return cell;
+    };
 
-    left_cell.density = rho_up;
-    left_cell.temperature = T_up;
-    left_cell.velocity = Vector3D(3.4616e+07, 0, 0);
-    left_cell.internal_energy = eos.dT2e(left_cell.density, left_cell.temperature,
-        left_cell.tracers, ComputationalCell3D::tracerNames);
-    left_cell.pressure = eos.de2p(left_cell.density, left_cell.internal_energy,
-        left_cell.tracers, ComputationalCell3D::tracerNames);
-    left_cell.Erad = units::arad * std::pow(T_up, 4) / left_cell.density;
+    // x increases from the upstream (left) state to the downstream (right) state,
+    // matching the stationary shock-frame benchmark in Fig. 9(a).
+    left_cell = makeCell(rho_up, T_up, T_up, v_up);
+    right_cell = makeCell(rho_dn, T_dn, T_dn, v_dn);
+    if(!analyticProfile.empty())
+    {
+        const auto &upstream = analyticProfile.front();
+        const auto &downstream = analyticProfile.back();
+        left_cell = makeCell(upstream.rho, upstream.T_gas_K, upstream.T_rad_K, upstream.vx);
+        right_cell = makeCell(downstream.rho, downstream.T_gas_K, downstream.T_rad_K, downstream.vx);
+    }
 
     // --- Generate mesh & initial conditions (skipped on resume) ---
     Voronoi3D tess(ll, ur);
@@ -381,10 +459,24 @@ int main(int argc, char *argv[])
         size_t Nlocal = tess.GetPointNo();
         initialCells.resize(Nlocal);
 
-        if(rank == 0)
-            std::cout << "Using step-function IC" << std::endl;
+        std::vector<double> profileX(analyticProfile.size());
+        for(size_t j = 0; j < analyticProfile.size(); ++j)
+            profileX[j] = analyticProfile[j].x;
+
         for(size_t i = 0; i < Nlocal; ++i)
-            initialCells[i] = (tess.GetMeshPoint(i).x < 0) ? left_cell : right_cell;
+        {
+            const double x = tess.GetMeshPoint(i).x;
+            auto it = std::lower_bound(profileX.begin(), profileX.end(), x);
+            size_t index = (it == profileX.end()) ? profileX.size() - 1 :
+                           (it == profileX.begin()) ? 0 :
+                           (x - *(it - 1) < *it - x) ?
+                               std::distance(profileX.begin(), it) - 1 :
+                               std::distance(profileX.begin(), it);
+            const auto &point = analyticProfile[index];
+            initialCells[i] = makeCell(point.rho, point.T_gas_K, point.T_rad_K, point.vx);
+        }
+        if(rank == 0)
+            std::cout << "Initialized cells from the Lowrie-Edwards analytic profile" << std::endl;
     }
 
     // ===== Simulation =====
@@ -444,12 +536,17 @@ int main(int argc, char *argv[])
 
     std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond =
         std::make_shared<TwoSidesTemperature<Vector3D, Tessellation3D>>(
-            tess, cells, T_up, T_dn, boundaryPhotonsPerCell, withHydro);
+            tess, T_up, T_dn, boundaryPhotonsPerCell);
 
     STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> radiationIMCParameters = {
         .newPhotonsPerCell = newPhotonsPerCell,
         .withHydro = withHydro,
-        .diffusionPressureGradient = diffusionPressureGradient
+        .diffusionPressureGradient = diffusionPressureGradient,
+        .MMC = false,
+        .withMultigroupOpacity = false,
+        .withRandomWalk = false,
+        .energyBoundaries = {0.0, 1.0e30},
+        .energyBoundariesProvided = true
     };
     std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<::RadiationIMC>(
         tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, radiationIMCParameters);
@@ -467,6 +564,8 @@ int main(int argc, char *argv[])
     );
     #ifdef RICH_MPI
         mcStep->setCost(std::make_shared<MCStepCostCalculator>(mcStep->getManager()));
+        sim.setForceRebalanceSteps(4);
+        sim.addMigrationBuffer(mcStep->getManager()->GetCellsStepsCounters());
     #endif
     sim.addPhysics(mcStep);
 
@@ -504,6 +603,7 @@ int main(int argc, char *argv[])
                   << ", T_downstream=" << T_dn_keV << " keV"
                   << "\n  rho_upstream=" << rho_up
                   << ", rho_downstream=" << rho_dn
+                  << "\n  v_upstream=" << v_up
                   << ", v_downstream=" << v_dn << " cm/s"
                   << "\n  domain=[" << xmin << ", " << xmax << "] cm"
                   << ", dt=" << dt << " s"
