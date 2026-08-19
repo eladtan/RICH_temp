@@ -4,7 +4,7 @@
 #include <boost/math/special_functions/pow.hpp>
 #include "monte/boundary/BoundaryCondition.hpp"
 #include "CMMC/src/units/units.hpp"
-#include "3D/tessellation/utils/RandomOnFace.hpp"
+#include "monte/utils/RandomOnFace.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 
 #define MONTECARLO_EPS 1e-8
@@ -93,7 +93,7 @@ std::vector<MonteCarloParticle<T, Grid>> CrookedPipeBoundaryCondition<T, Grid>::
                     {
                         newParticles.emplace_back();
                         MonteCarloParticle<T, Grid> &newParticle = newParticles.back();
-                        newParticle.location = RandomPointOnFace(this->grid, faceIdx);
+                        newParticle.location = STORM::RandomPointOnFace<T, Grid>(this->grid, faceIdx);
                         newParticle.location = newParticle.location * (1 - MONTECARLO_EPS) + MONTECARLO_EPS * this->grid.GetMeshPoint(i);
                         if(newParticle.location.x < 1e-12)
                         {

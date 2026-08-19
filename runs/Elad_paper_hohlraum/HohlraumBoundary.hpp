@@ -4,7 +4,7 @@
 #include <boost/math/special_functions/pow.hpp>
 #include "monte/boundary/BoundaryCondition.hpp"
 #include "CMMC/src/units/units.hpp"
-#include "3D/tessellation/utils/RandomOnFace.hpp"
+#include "monte/utils/RandomOnFace.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 
 // Boundary condition for the hohlraum problem:
@@ -71,7 +71,7 @@ std::vector<MonteCarloParticle<T, Grid>> HohlraumBoundary<T, Grid>::generateNewB
                     {
                         newParticles.emplace_back();
                         MonteCarloParticle<T, Grid> &newParticle = newParticles.back();
-                        newParticle.location = RandomPointOnFace(this->grid, faceIdx);
+                        newParticle.location = STORM::RandomPointOnFace<T, Grid>(this->grid, faceIdx);
                         double mu = std::sqrt(unif(re));
                         // Lambert emission into -x direction (into the hohlraum)
                         newParticle.velocity.x = mu;
