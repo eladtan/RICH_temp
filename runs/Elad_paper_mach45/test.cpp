@@ -37,6 +37,7 @@
 #include "monte/boundary/TwoSidesTemperature.hpp"
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "utils/arguments/ArgumentParser.hpp"
+#include "runs/mc_results_dir.hpp"
 
 #ifdef RICH_MPI
     #include <mpi.h>
@@ -271,8 +272,8 @@ int main(int argc, char *argv[])
     ArgumentParser arguments("Mach 45 radiative shock benchmark");
     arguments.addPositional<size_t>("Np", 2000, "number of cells along x");
     arguments.addPositional<std::string>("prefix", "mach45_mc", "output prefix");
-    arguments.addPositional<size_t>("new_photons_per_cell", 25, "new photons per cell per step");
-    arguments.addPositional<size_t>("max_photons_per_cell", 100, "population-control photon cap per cell");
+    arguments.addPositional<size_t>("new_photons_per_cell", 100, "new photons per cell per step");
+    arguments.addPositional<size_t>("max_photons_per_cell", 400, "population-control photon cap per cell");
     arguments.addFlag("resume", "resume from the checkpoint if it exists");
     arguments.addOption<std::string>("profile", "", "analytic profile file for initialization");
     arguments.addOption<std::string>("manager", "new-rdma-auto", "Monte Carlo communication manager")
@@ -312,6 +313,10 @@ int main(int argc, char *argv[])
 
     size_t Np = arguments.get<size_t>("Np");
     std::string prefix = arguments.get<std::string>("prefix");
+    if(prefix.find('/') == std::string::npos)
+    {
+        prefix = McResultsDirectory("Mach45") + "/" + prefix;
+    }
     size_t newPhotonsPerCell = arguments.get<size_t>("new_photons_per_cell");
     size_t maxPhotonsPerCell = arguments.get<size_t>("max_photons_per_cell");
     bool doResume = arguments.get<bool>("resume");
@@ -352,7 +357,7 @@ int main(int argc, char *argv[])
     double max_speed = std::max(v_up + cs_up, v_dn + cs_dn);
     double max_dt = 0.3 * dx / max_speed;
 
-    constexpr size_t boundaryPhotonsPerCell = 50;
+    constexpr size_t boundaryPhotonsPerCell = 200;
     constexpr bool withHydro = true;
     constexpr bool diffusionPressureGradient = false;
     const bool MMC = false;
@@ -360,13 +365,10 @@ int main(int argc, char *argv[])
     constexpr size_t vtkInterval = 200;
 
     const std::string simFile = prefix + "_checkpoint.h5";
-
-    if(rank == 0)
-    {
-        auto parentDir = std::filesystem::path(prefix).parent_path();
-        if(!parentDir.empty())
-            std::filesystem::create_directories(parentDir);
-    }
+    EnsureParentDirectory(prefix, rank);
+#ifdef RICH_MPI
+    MPI_Barrier(MPI_COMM_WORLD);
+#endif
 
     if(doResume)
     {
@@ -595,13 +597,17 @@ int main(int argc, char *argv[])
 
     std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond =
         std::make_shared<TwoSidesTemperature<Vector3D, Tessellation3D>>(
-            tess, cells, T_up, T_dn, boundaryPhotonsPerCell);
+            tess, T_up, T_dn, boundaryPhotonsPerCell);
 
     STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> radiationIMCParameters = {
         .newPhotonsPerCell = newPhotonsPerCell,
         .withHydro = withHydro,
         .diffusionPressureGradient = diffusionPressureGradient,
-        .MMC = MMC
+        .MMC = MMC,
+        .withMultigroupOpacity = false,
+        .withRandomWalk = false,
+        .energyBoundaries = {0.0, 1.0e30},
+        .energyBoundariesProvided = true
     };
     std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<::RadiationIMC>(
         tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, radiationIMCParameters);
@@ -609,7 +615,7 @@ int main(int argc, char *argv[])
     std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
         std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell, 10);
 
-    size_t initialParticlesPerCell = 50;
+    size_t initialParticlesPerCell = 200;
     std::vector<Particle3D> initialParticles;
     auto mcStep = std::make_shared<RadiationMCStep>(
         tess, cells, extensives, physics, popControl, boundaryCond, initialParticles, initialParticlesPerCell, withHydro

@@ -26,6 +26,7 @@
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "newtonian/three_dimensional/CostCalculator3D.hpp"
 #include "utils/arguments/ArgumentParser.hpp"
+#include "runs/mc_results_dir.hpp"
 
 /*
  * Desmore 2012 step-opacity test — Monte Carlo (multigroup IMC) version.
@@ -163,6 +164,12 @@ int main(int argc, char *argv[])
 
     size_t Nx = arguments.get<size_t>("Nx");
     std::string prefix = arguments.get<std::string>("prefix");
+    if(prefix.find('/') == std::string::npos)
+    {
+        prefix = McResultsDirectory("DensmoreStep") + "/" + prefix;
+    }
+    EnsureParentDirectory(prefix, rank);
+    MPI_Barrier(MPI_COMM_WORLD);
     size_t newPhotonsPerCell = arguments.get<size_t>("new_photons_per_cell");
     size_t maxPhotonsPerCell = arguments.get<size_t>("max_photons_per_cell");
     bool useRandomWalk = arguments.get<bool>("with_random_walk");

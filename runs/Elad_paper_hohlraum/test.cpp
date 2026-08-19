@@ -36,6 +36,7 @@
 #include "HohlraumOpacity.hpp"
 #include "HohlraumBoundary.hpp"
 #include "utils/debug/vtune.h"
+#include "runs/mc_results_dir.hpp"
 
 namespace fs = std::filesystem;
 
@@ -375,14 +376,25 @@ void WriteProfile(const Voronoi3D &tess, const std::vector<ComputationalCell3D> 
     if(rank == 0)
     {
         std::sort(cellData.begin(), cellData.end());
-        std::ofstream out(filename);
-        out << "# t_ns=" << time_ns << " r_line=" << r_line << "\n";
-        out << "# x(cm), T(K), T(keV)\n";
-        for(const auto &cd : cellData)
-            out << cd.x << ", " << cd.temperature << ", "
-                << cd.temperature / units::kev_kelvin << "\n";
-        out.close();
-        std::cout << "Wrote " << filename << " (" << cellData.size() << " cells)" << std::endl;
+        auto writeOne = [&](const std::string &path)
+        {
+            std::ofstream out(path);
+            if(!out)
+            {
+                std::cerr << "Failed to open profile file " << path << std::endl;
+                return;
+            }
+            out << "# t_ns=" << time_ns << " r_line=" << r_line << "\n";
+            out << "# x(cm), T(K), T(keV)\n";
+            for(const CellData &cd : cellData)
+            {
+                out << cd.x << ", " << cd.temperature << ", "
+                    << cd.temperature / units::kev_kelvin << "\n";
+            }
+            out.close();
+            std::cout << "Wrote " << path << " (" << cellData.size() << " cells)" << std::endl;
+        };
+        writeOne(filename);
     }
 }
 
@@ -498,18 +510,24 @@ int main(int argc, char *argv[]) {
             minPhotonsPerCell = std::stoul(positionalArgs[1]);
         }
 
-        const std::string hohlraumDir = useP2P ? "Hohlraum_P2P" : "Hohlraum";
-        const std::string outputDir =
-            "/data/shared/maorm/Hohlraum/" + hohlraumDir + "/N_base_" +
-            std::to_string(N_base) + "/size_" + std::to_string(ws);
-        char prefixBuf[256];
-        std::snprintf(prefixBuf, sizeof(prefixBuf), "Hohlraum_%s_%d_", argv[1], ws);
-        const std::string prefix = outputDir + "/" + prefixBuf;
-
-        if(rank == 0)
+        const std::string outputDir = McResultsDirectory("Hohlraum");
+        const char *commTag = "RDMA";
+        if(useP2P)
         {
-            fs::create_directories(outputDir);
+            commTag = "P2P";
         }
+        else if(useMpiRma)
+        {
+            commTag = "RMA";
+        }
+        else if(useIBV or useNewIbv)
+        {
+            commTag = "IBV";
+        }
+        char prefixBuf[256];
+        std::snprintf(prefixBuf, sizeof(prefixBuf), "Hohlraum_%s_N%zu_%d_", commTag, N_base, ws);
+        const std::string prefix = outputDir + "/" + prefixBuf;
+        EnsureDirectory(outputDir, rank);
         MPI_Barrier(MPI_COMM_WORLD);
 
         // --- Physical parameters (Section 4.2) ---

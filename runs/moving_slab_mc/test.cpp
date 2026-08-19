@@ -10,7 +10,6 @@
 #include <algorithm>
 #include <numeric>
 #include <random>
-#include <filesystem>
 #ifdef RICH_MPI
 #include <mpi.h>
 #endif
@@ -37,8 +36,7 @@
 #include "source/newtonian/three_dimensional/default_extensive_updater.hpp"
 #include "source/newtonian/three_dimensional/SourceTerm3D.hpp"
 #include "source/3D/output/write3D.hpp"
-
-namespace fs = std::filesystem;
+#include "runs/mc_results_dir.hpp"
 
 namespace
 {
@@ -272,6 +270,11 @@ int main(int argc, char *argv[])
 #else
     (void)argc;
     (void)argv;
+#endif
+    const std::string outputDir = McResultsDirectory("MovingSlab");
+    EnsureDirectory(outputDir, rank);
+#ifdef RICH_MPI
+    MPI_Barrier(MPI_COMM_WORLD);
 #endif
 
     try
@@ -547,8 +550,7 @@ int main(int argc, char *argv[])
                       << ", MPI ranks=" << worldSize
                       << std::endl;
                     }
-        std::string const caseDir = fs::path(__FILE__).parent_path().string();
-        WriteSnapshot3D(hdsim, caseDir + "/moving_slab_mc_init.h5");
+        WriteSnapshot3D(hdsim, outputDir + "/moving_slab_mc_init.h5");
         auto wallStart = std::chrono::high_resolution_clock::now();
 
         // constexpr size_t DEBUG_MAX_STEPS = 50; // disabled for full run
@@ -586,9 +588,9 @@ int main(int argc, char *argv[])
             std::cout << "Done. " << sim.GetCycle() << " steps, wall time: " << wallTotal << "s" << std::endl;
         }
 
-        WriteSnapshot3D(hdsim, caseDir + "/moving_slab_mc_final.h5");
+        WriteSnapshot3D(hdsim, outputDir + "/moving_slab_mc_final.h5");
         if (rank == 0)
-            std::cout << "Wrote snapshot to " << caseDir << std::endl;
+            std::cout << "Wrote snapshot to " << outputDir << std::endl;
 
         // --- Find the observer cells (all cells at x closest to z_O) on each rank ---
         const auto &EgTA = mcStep->getEgTimeAvg();
@@ -648,7 +650,7 @@ int main(int argc, char *argv[])
 
             double invCount = (globalObsCount > 0) ? 1.0 / static_cast<double>(globalObsCount) : 0.0;
 
-            std::string const specPath = caseDir + "/moving_slab_mc_spectrum.txt";
+            std::string const specPath = outputDir + "/moving_slab_mc_spectrum.txt";
             std::ofstream out(specPath);
             out << std::scientific << std::setprecision(12);
 

@@ -23,6 +23,7 @@
 #include "monte/boundary/SideTemperature.hpp"
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "newtonian/three_dimensional/CostCalculator3D.hpp"
+#include "runs/mc_results_dir.hpp"
 
 /*
  * Gray Marshak wave test for Random Walk validation.
@@ -61,7 +62,13 @@ int main(int argc, char *argv[])
   try
   {
     size_t Nx = std::stoul(argv[1]);
-    std::string prefix = (argc >= 3) ? argv[2] : "gray_marshak";
+    std::string prefix = (argc >= 3) ? argv[2] : (McResultsDirectory("GrayMarshak") + "/gray_marshak");
+    if(prefix.find('/') == std::string::npos)
+    {
+        prefix = McResultsDirectory("GrayMarshak") + "/" + prefix;
+    }
+    EnsureParentDirectory(prefix, rank);
+    MPI_Barrier(MPI_COMM_WORLD);
     size_t newPhotonsPerCell = (argc >= 4) ? std::stoul(argv[3]) : 50;
     size_t maxPhotonsPerCell = (argc >= 5) ? std::stoul(argv[4]) : 50;
     bool useRandomWalk = (argc >= 6) ? (std::stoi(argv[5]) != 0) : true;

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Graziani crooked pipe (Steinberg & Heizler 2022, Sec. 4.3).
-# Submit from this directory:  sbatch submit.sh
+# Submit from this directory:  sbatch run.sh
 #SBATCH --partition=bigrun
 #SBATCH --job-name=CrookedPipe
 #SBATCH --ntasks=512

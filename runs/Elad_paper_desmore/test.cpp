@@ -7,7 +7,6 @@
 #include <cmath>
 #include <algorithm>
 #include <numeric>
-#include <filesystem>
 #include "source/mpi/mpi_commands.hpp"
 #include "3D/tessellation/Voronoi3D.hpp"
 #include "source/monte/deps/CMMC/src/units/units.hpp"
@@ -25,8 +24,7 @@
 #include "source/monte/boundary/SideTemperature.hpp"
 #include "source/newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "source/3D/radiation/IMCCostCalculator.hpp"
-
-namespace fs = std::filesystem;
+#include "runs/mc_results_dir.hpp"
 
 /*
  * Densmore 2012 heterogeneous step-opacity — Monte Carlo regression test.
@@ -155,6 +153,11 @@ int main(int argc, char *argv[])
     int rank, ws;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &ws);
+    const std::string outputDir = McResultsDirectory("Densmore");
+    EnsureDirectory(outputDir, rank);
+#ifdef RICH_MPI
+    MPI_Barrier(MPI_COMM_WORLD);
+#endif
 
   try
   {
@@ -293,6 +296,7 @@ int main(int argc, char *argv[])
                   << ", max/cell=" << maxPhotonsPerCell
                   << "\n  dt=" << dt << " s, t_final=" << tf << " s"
                   << ", iterations=" << iterations
+                  << "\n  output=" << outputDir
                   << std::endl;
     }
 
@@ -346,8 +350,7 @@ int main(int argc, char *argv[])
     if(rank == 0)
     {
         std::sort(cellData.begin(), cellData.end());
-        std::string const caseDir = fs::path(__FILE__).parent_path().string();
-        std::string const profilePath = caseDir + "/desmore2012_mc_profile.txt";
+        std::string const profilePath = outputDir + "/desmore2012_mc_profile.txt";
         std::ofstream out(profilePath);
         out << "# Densmore2012 MC regression  t=" << simTime << "  Nx=" << Nx << "\n";
         out << "# x(cm)  T(K)\n";
