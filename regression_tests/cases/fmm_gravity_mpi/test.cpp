@@ -414,6 +414,8 @@ int main(int argc, char** argv)
     bool persistentTopologyReused = false;
     bool persistentSplitRebuilt = false;
     bool persistentMergeRebuilt = false;
+    bool gravityRedistributionRebalanced = size == 1;
+    double localGravityRedistributionRebalanceError = 0.0;
 
     PatchForestLifecycleObservation patchForestLifecycle;
 
@@ -724,6 +726,53 @@ int main(int argc, char** argv)
         }
     }
 
+    {
+        FmmDistributedOptions rebalanceDistributed = distributed;
+        rebalanceDistributed.spatiallyRedistributeForGravity = true;
+        rebalanceDistributed.persistentLocalTreeTopology = true;
+        rebalanceDistributed.gravityRedistributionRebalanceInterval = 2;
+        DistributedFmmGravityCalculator rebalanceSolver(
+            options, rebalanceDistributed);
+        std::vector<Vector3D> positions;
+        std::vector<double> masses;
+        std::vector<std::uint64_t> ids;
+        std::vector<Vector3D> acceleration;
+        std::vector<double> potential;
+
+        std::vector<Body> localBodies = bodiesForRank(
+            rank, size, 1.0, BodyLayout::Baseline);
+        unpack(localBodies, positions, masses, ids);
+        rebalanceSolver.solve(
+            positions, masses, ids, Vector3D(-1, -1, -1),
+            Vector3D(1, 1, 1), acceleration, &potential);
+        const std::uint64_t initialRebuildCount =
+            rebalanceSolver.stats().topologyRebuildCount;
+
+        // Move particles inside the retained roots.  Ordinarily this is a warm
+        // refit; solve two must instead resample ownership and compact every
+        // rank's high-water root because the configured interval has elapsed.
+        localBodies = bodiesForRank(
+            rank, size, 1.0, BodyLayout::LocalLeafChange);
+        unpack(localBodies, positions, masses, ids);
+        rebalanceSolver.solve(
+            positions, masses, ids, Vector3D(-1, -1, -1),
+            Vector3D(1, 1, 1), acceleration, &potential);
+        localGravityRedistributionRebalanceError = checkSolve(
+            localBodies,
+            allBodies(size, 1.0, BodyLayout::LocalLeafChange),
+            acceleration, potential);
+        localMaximumError = std::max(
+            localMaximumError, localGravityRedistributionRebalanceError);
+        gravityRedistributionRebalanced = size == 1 ||
+            (rebalanceSolver.stats().ranksWithRootGeometryChange ==
+                 static_cast<std::size_t>(size) &&
+             rebalanceSolver.stats().processTopologyRebuilt &&
+             rebalanceSolver.stats().letTopologyRebuilt &&
+             rebalanceSolver.stats().operatorCacheEntriesAtSolveStart == 0 &&
+             rebalanceSolver.stats().topologyRebuildCount ==
+                 initialRebuildCount + 1);
+    }
+
     patchForestLifecycle = exercisePatchForestLifecycle(rank);
 
     double globalMaximumError = 0.0;
@@ -741,6 +790,10 @@ int main(int argc, char** argv)
     MPI_Allreduce(&localPersistentSplitVsFresh,
                   &globalPersistentSplitVsFresh, 1, MPI_DOUBLE, MPI_MAX,
                   MPI_COMM_WORLD);
+    double globalGravityRedistributionRebalanceError = 0.0;
+    MPI_Allreduce(&localGravityRedistributionRebalanceError,
+                  &globalGravityRedistributionRebalanceError, 1, MPI_DOUBLE,
+                  MPI_MAX, MPI_COMM_WORLD);
 
     // The persistent-split distribution deliberately places several particles
     // only O(1e-4) apart.  It is therefore a much harder direct-summation
@@ -784,7 +837,7 @@ int main(int argc, char** argv)
         std::all_of(globalPatchForestChecks, globalPatchForestChecks + 9,
                     [](int value) { return value != 0; }) ? 1 : 0;
 
-    const int localChecks[16] = {
+    const int localChecks[17] = {
         firstEpoch == secondEpoch ? 1 : 0,
         firstRebuildCount == secondRebuildCount ? 1 : 0,
         leafEpoch > secondEpoch ? 1 : 0,
@@ -800,9 +853,10 @@ int main(int argc, char** argv)
         persistentEmptyLeavesExercised ? 1 : 0,
         persistentTopologyReused ? 1 : 0,
         persistentSplitRebuilt ? 1 : 0,
-        persistentMergeRebuilt ? 1 : 0};
-    int globalChecks[16] = {};
-    MPI_Allreduce(localChecks, globalChecks, 16, MPI_INT, MPI_LAND,
+        persistentMergeRebuilt ? 1 : 0,
+        gravityRedistributionRebalanced ? 1 : 0};
+    int globalChecks[17] = {};
+    MPI_Allreduce(localChecks, globalChecks, 17, MPI_INT, MPI_LAND,
                   MPI_COMM_WORLD);
     const int globalPass = errorWithinTolerance &&
                            globalChecks[0] && globalChecks[1] &&
@@ -813,6 +867,8 @@ int main(int argc, char** argv)
                            globalChecks[10] && globalChecks[11] &&
                            globalChecks[12] && globalChecks[13] &&
                            globalChecks[14] && globalChecks[15] &&
+                           globalChecks[16] &&
+                           globalGravityRedistributionRebalanceError < 1e-3 &&
                            patchForestLifecyclePass;
 
     if(rank == 0)
@@ -861,6 +917,10 @@ int main(int argc, char** argv)
         output << "persistent_topology_reused " << globalChecks[13] << "\n";
         output << "persistent_split_rebuilt " << globalChecks[14] << "\n";
         output << "persistent_merge_rebuilt " << globalChecks[15] << "\n";
+        output << "gravity_redistribution_rebalanced "
+               << globalChecks[16] << "\n";
+        output << "gravity_redistribution_rebalance_error "
+               << globalGravityRedistributionRebalanceError << "\n";
         output << "patch_forest_initial_created "
                << globalPatchForestChecks[0] << "\n";
         output << "patch_forest_identical_stable "
@@ -905,6 +965,9 @@ int main(int argc, char** argv)
                   << " domain_rejected=" << globalChecks[9]
                   << " persistent_reused=" << globalChecks[13]
                   << " persistent_merge=" << globalChecks[15]
+                  << " gravity_rebalanced=" << globalChecks[16]
+                  << " gravity_rebalance_error="
+                  << globalGravityRedistributionRebalanceError
                   << " patch_forest_lifecycle=" << patchForestLifecyclePass
                   << " motion_structural="
                   << (globalPatchForestChecks[5] ? 0 : 1)

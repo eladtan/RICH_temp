@@ -111,6 +111,13 @@ struct FmmDistributedOptions
     // empty Hilbert gaps cannot consume ranks.  Must be in [0,1).
     double hilbertGravityVolumeWeight = 0.0;
 
+    // Keep ownership ranges stable between warm solves, but periodically
+    // resample them so secular motion cannot leave a long-running calculation
+    // with the decomposition chosen at process startup.  The refresh also
+    // rebuilds the retained local tree from a compact root.  Zero preserves
+    // the initial splitters for the lifetime of the process.
+    std::uint64_t gravityRedistributionRebalanceInterval = 256;
+
     // Replicate the small process-tree multipole array with one Allgather.
     // For the one-tree-per-rank compatibility solver this replaces one sparse
     // neighborhood collective per process-tree level and makes every remote

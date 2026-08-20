@@ -1214,13 +1214,19 @@ void DistributedFmmGravityCalculator::solveRedistributed(
                             second.originRank, second.originIndex);
         });
 
-    // Keep gravity ownership stable across warm solves. Re-sampling every
-    // moving-mesh step shifted a few range boundaries, which changed one rank's
-    // retained root and needlessly invalidated the global LET plan. The first
-    // solve establishes balanced splitters; later solves preserve them so small
-    // particle motion is handled by the persistent local trees.
-    if(gravityRedistributionSplitters_.size() !=
-       static_cast<std::size_t>(std::max(0, size_ - 1)))
+    // Keep gravity ownership stable across warm solves, but do not freeze the
+    // decomposition for the lifetime of a moving-mesh run.  Periodic resampling
+    // bounds secular ownership/root drift without the LET churn caused by
+    // moving range boundaries on every solve.
+    const bool splittersUninitialized =
+        gravityRedistributionSplitters_.size() !=
+        static_cast<std::size_t>(std::max(0, size_ - 1));
+    const std::uint64_t rebalanceInterval =
+        distributedOptions_.gravityRedistributionRebalanceInterval;
+    const bool periodicRebalance =
+        !splittersUninitialized && size_ > 1 && rebalanceInterval != 0 &&
+        solveCount_ % rebalanceInterval == 0;
+    if(splittersUninitialized || periodicRebalance)
     {
         const std::size_t localSampleCount = std::min(
             localParticles.size(),
@@ -1344,6 +1350,25 @@ void DistributedFmmGravityCalculator::solveRedistributed(
             MPI_Bcast(gravityRedistributionSplitters_.data(),
                       static_cast<int>(gravityRedistributionSplitters_.size()),
                       MPI_UNSIGNED_LONG_LONG, 0, comm_);
+
+        if(periodicRebalance)
+        {
+            // The retained root deliberately does not contract on ordinary
+            // warm solves.  Repartitioning is the bounded point at which old
+            // high-water geometry and its bounded operator-cache contents must
+            // be discarded as well as old splitters.
+            rootInitialized_ = false;
+            operatorCache_.clear();
+            if(rank_ == 0)
+            {
+                std::printf(
+                    "fmm_gravity_redistribution_rebalance solve=%llu "
+                    "interval=%llu\n",
+                    static_cast<unsigned long long>(solveCount_),
+                    static_cast<unsigned long long>(rebalanceInterval));
+                std::fflush(stdout);
+            }
+        }
     }
     const std::vector<std::uint64_t>& splitters =
         gravityRedistributionSplitters_;
