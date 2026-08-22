@@ -13,7 +13,7 @@ Four panels:
 All plotted vs x (cm), zoomed on the shock region.
 
 Usage:
-    python plot_mach45.py                                  # auto-find profiles
+    python plot_mach45.py                                  # auto-find shared profiles
     python plot_mach45.py <file1.txt> [file2.txt ...]      # explicit files
     python plot_mach45.py --dir /path/to/run               # scan directory
     python plot_mach45.py --wide                            # full domain view
@@ -50,26 +50,68 @@ V_UP = V_SHOCK                      # upstream in shock frame (rightward)
 V_DN = V_SHOCK - 4.82e8             # downstream in shock frame (rightward)
 
 SHOCK_X0 = 2300.0                   # initial shock position
+SHARED_MACH45_ROOT = Path("/data/shared/maorm/MC_results/Mach45")
+
+
+def default_profile_directory():
+    """Choose the default shared Mach45 output directory."""
+    output_dir = os.environ.get("RICH_OUTPUT_DIR")
+    if output_dir:
+        return output_dir
+
+    if SHARED_MACH45_ROOT.is_dir():
+        dated_dirs = sorted(
+            path
+            for path in SHARED_MACH45_ROOT.iterdir()
+            if path.is_dir() and re.fullmatch(r"\d{4}-\d{2}-\d{2}(?:_\d{2}-\d{2}-\d{2})?", path.name)
+        )
+        if dated_dirs:
+            return str(dated_dirs[-1])
+
+    # Keep local-directory behavior as a fallback on machines without the share.
+    return "."
 
 
 def load_profile(filepath):
     """Load a Mach45 profile txt file."""
     t_us, Np, cycle = None, None, None
     with open(filepath) as f:
+        has_data = False
         for line in f:
-            if line.startswith("#"):
-                m = re.search(r"t_us=([\d.e+-]+)", line)
+            stripped = line.strip()
+            if not stripped:
+                continue
+            if stripped.startswith("#"):
+                m = re.search(r"t_us=([\d.e+-]+)", stripped)
                 if m:
                     t_us = float(m.group(1))
-                m = re.search(r"cycle=(\d+)", line)
+                m = re.search(r"cycle=(\d+)", stripped)
                 if m:
                     cycle = int(m.group(1))
-                m = re.search(r"Np=(\d+)", line)
+                m = re.search(r"Np=(\d+)", stripped)
                 if m:
                     Np = int(m.group(1))
             else:
+                has_data = True
                 break
-    data = np.loadtxt(filepath, delimiter=",", comments="#")
+
+    if not has_data:
+        raise ValueError(
+            f"Profile file is empty or contains no data rows: {filepath}"
+        )
+
+    try:
+        data = np.loadtxt(filepath, delimiter=",", comments="#")
+    except ValueError as exc:
+        raise ValueError(f"Could not parse profile file {filepath}: {exc}") from exc
+
+    # np.loadtxt returns a 1-D array for a one-row profile.
+    data = np.atleast_2d(data)
+    if data.shape[1] < 5:
+        raise ValueError(
+            f"Profile file {filepath} has {data.shape[1]} columns; expected at least 5"
+        )
+
     return dict(
         x=data[:, 0],
         rho=data[:, 1],
@@ -108,6 +150,19 @@ def find_profile_files(directory="."):
     for suffix in ("_init.txt", "_final.txt"):
         files.update(glob.glob(os.path.join(directory, f"*{suffix}")))
     return sorted(files)
+
+
+def load_profiles(files, skip_invalid=False):
+    """Load profiles, optionally skipping incomplete output files."""
+    profiles = []
+    for filepath in files:
+        try:
+            profiles.append(load_profile(filepath))
+        except (OSError, ValueError) as exc:
+            if not skip_invalid:
+                raise
+            print(f"Skipping {filepath}: {exc}", file=sys.stderr)
+    return profiles
 
 
 # =========================================================================
@@ -485,7 +540,7 @@ def plot_mach45(profiles, outfile="mach45_figure9.png", wide=False,
     plt.show()
 
 
-def export_analytic_profile(outfile, Np=2000, xmin=1950.0, xmax=2450.0,
+def export_analytic_profile(outfile, Np=4000, xmin=1950.0, xmax=2450.0,
                             shock_x=SHOCK_X0):
     """Export the analytic profile to a .dat file that test.cpp can read.
 
@@ -510,7 +565,7 @@ def export_analytic_profile(outfile, Np=2000, xmin=1950.0, xmax=2450.0,
 
 
 def main():
-    directory = "."
+    directory = default_profile_directory()
     explicit_files = []
     wide = False
     export_dat = None
@@ -540,7 +595,10 @@ def main():
         return
 
     if explicit_files:
-        profiles = [load_profile(f) for f in explicit_files]
+        try:
+            profiles = load_profiles(explicit_files)
+        except (OSError, ValueError) as exc:
+            raise SystemExit(f"Error loading profile: {exc}") from exc
     else:
         files = find_profile_files(directory)
         if not files:
@@ -549,7 +607,11 @@ def main():
                   "[--dir path] [--wide] [--export-profile file.dat]")
             sys.exit(1)
 
-        profiles = [load_profile(f) for f in files]
+        print(f"Scanning profile directory: {directory}")
+        profiles = load_profiles(files, skip_invalid=True)
+        if not profiles:
+            print(f"No readable profile files found in {directory}", file=sys.stderr)
+            sys.exit(1)
         print(f"Found {len(profiles)} profile file(s):")
         for p in profiles:
             if p["t_us"] is not None:

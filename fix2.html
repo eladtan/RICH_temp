@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>STORM Compton Parity Handoff - RICH ablation Reference</title>
+<style>
+:root{color-scheme:light dark;--bg:#f5f7fb;--panel:#fff;--text:#172033;--muted:#59657a;--line:#d8dfeb;--accent:#2457c5;--accent2:#0b7a75;--critical:#a11212;--high:#b55200;--ok:#14733b;--code:#eef2f8;--shadow:0 8px 30px rgba(23,32,51,.08)}
+@media(prefers-color-scheme:dark){:root{--bg:#0f1420;--panel:#171e2c;--text:#e8edf7;--muted:#aeb8ca;--line:#313b4f;--accent:#83a8ff;--accent2:#68d3ca;--critical:#ff8d8d;--high:#ffb26c;--ok:#76d89a;--code:#111824;--shadow:none}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--text);font:16px/1.55 system-ui,-apple-system,Segoe UI,Roboto,Ubuntu,sans-serif}a{color:var(--accent)}
+header{padding:3rem max(1.25rem,calc((100vw - 1180px)/2));background:linear-gradient(135deg,#122a65,#0b756f);color:#fff}header h1{font-size:clamp(2rem,4vw,3.25rem);line-height:1.08;margin:.1rem 0 .7rem}header p{max-width:950px;font-size:1.08rem;color:#e7efff}.meta{display:flex;flex-wrap:wrap;gap:.6rem;margin-top:1.2rem}.pill{border:1px solid #ffffff70;border-radius:999px;padding:.28rem .68rem;background:#ffffff16;font-size:.86rem}
+.layout{display:grid;grid-template-columns:270px minmax(0,1fr);gap:1.4rem;max-width:1220px;margin:1.5rem auto;padding:0 1.25rem 4rem}nav{position:sticky;top:1rem;align-self:start;background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:1rem;box-shadow:var(--shadow);max-height:calc(100vh - 2rem);overflow:auto}nav strong{display:block;margin-bottom:.55rem}nav a{display:block;text-decoration:none;padding:.34rem .42rem;border-radius:7px;font-size:.91rem;color:var(--text)}nav a:hover{background:var(--code);color:var(--accent)}main{min-width:0}
+section{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:clamp(1rem,2.4vw,2rem);margin-bottom:1.25rem;box-shadow:var(--shadow)}h2{font-size:1.55rem;margin:.15rem 0 1rem;border-bottom:1px solid var(--line);padding-bottom:.55rem}h3{font-size:1.18rem;margin:1.35rem 0 .5rem}p{margin:.55rem 0}ul,ol{padding-left:1.35rem}li{margin:.28rem 0}.notice{border-left:5px solid var(--accent);background:var(--code);padding:.85rem 1rem;border-radius:8px;margin:1rem 0}.critical{border-color:var(--critical)}.warn{border-color:var(--high)}.ok{border-color:var(--ok)}
+table{width:100%;border-collapse:collapse;margin:1rem 0;font-size:.91rem}caption{text-align:left;font-weight:700;margin-bottom:.45rem}th,td{border:1px solid var(--line);padding:.55rem .62rem;text-align:left;vertical-align:top}th{background:var(--code)}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;background:var(--code);padding:.08rem .25rem;border-radius:4px;font-size:.91em}pre{background:var(--code);border:1px solid var(--line);padding:1rem;border-radius:10px;overflow:auto;line-height:1.45}pre code{padding:0;background:transparent}.file{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.9em}.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:1rem}.card{border:1px solid var(--line);border-radius:11px;padding:1rem;background:color-mix(in srgb,var(--panel) 88%,var(--code))}.card h3{margin-top:0}.checklist{list-style:none;padding-left:0}.checklist li{padding-left:1.65rem;position:relative}.checklist li:before{content:"[ ]";position:absolute;left:0;color:var(--accent);font-weight:700}.step{border-left:3px solid var(--accent2);padding-left:1rem;margin:1.1rem 0}.small{font-size:.88rem;color:var(--muted)}footer{max-width:1180px;margin:0 auto 3rem;padding:0 1.25rem;color:var(--muted);font-size:.9rem}
+@media(max-width:900px){.layout{grid-template-columns:1fr}nav{position:relative;top:auto;max-height:none}.grid2{grid-template-columns:1fr}}@media print{body{background:#fff;color:#000;font-size:10.5pt}header{background:#fff!important;color:#000;padding:1rem 0;border-bottom:2px solid #333}header p{color:#333}.layout{display:block;max-width:none;margin:0;padding:0}nav{display:none}section{box-shadow:none;border:0;border-bottom:1px solid #bbb;border-radius:0;break-inside:avoid;padding:1rem 0}a{color:#000;text-decoration:none}pre,code,th{background:#f2f2f2!important}}
+</style>
+</head>
+<body>
+<header>
+<h1>STORM Compton Parity Handoff</h1>
+<p>Instructions for making <strong>STORM <code>rich_features</code></strong> match the Compton implementation in <strong>RICH_temp <code>ablation</code></strong>, instead of retaining STORM's current reduced external-kernel adapter.</p>
+<div class="meta"><span class="pill">Reference: eladtan/RICH_temp - ablation</span><span class="pill">Target: maormizrachi/STORM - rich_features</span><span class="pill">Static source comparison</span><span class="pill">Substantial port required</span></div>
+</header>
+<div class="layout">
+<nav aria-label="Contents"><strong>Contents</strong>
+<a href="#decision">1. Executive decision</a><a href="#constructor">2. Matrix ownership</a><a href="#scope">3. Scope and caveats</a><a href="#comparison">4. Parity comparison</a><a href="#architecture">5. Target architecture</a><a href="#data-model">6. Data model</a><a href="#lifecycle">7. Lifecycle</a><a href="#event">8. Event transport</a><a href="#correction">9. End-step correction</a><a href="#dependencies">10. Dependencies</a><a href="#api">11. API changes</a><a href="#example">12. Till example</a><a href="#testing">13. Validation</a><a href="#sequence">14. Patch sequence</a><a href="#acceptance">15. Definition of done</a><a href="#references">16. Reference map</a>
+</nav>
+<main>
+<section id="decision"><h2>1. Executive decision</h2>
+<div class="notice critical"><strong>STORM is not currently equivalent to RICH <code>ablation</code> Compton IMC.</strong> STORM accepts externally supplied frozen rates and optional correction vectors. RICH owns CMMC internally and derives the complete f-reduced operator, induced terms, source decomposition, event kernel, angular distribution, material coupling, risk controls, and end-of-step correction.</div>
+<p>Use RICH <code>ablation</code> as the behavioral specification. The target normal workflow is: a user enables Compton in <code>RadiationIMCParameters</code>, supplies the ordinary EOS, opacity and cell data, then constructs <code>RadiationIMC</code>. STORM must build and use the CMMC matrices internally. No application-defined matrix builder is required.</p>
+</section>
+<section id="constructor"><h2>2. Matrix ownership correction</h2>
+<p>The user's central observation is correct: <strong>matrix construction is not the caller's responsibility in RICH</strong>. The precise timing is important:</p>
+<ul><li>RICH stores <code>std::unique_ptr&lt;ComptonMatrixMC&gt; comptonMatrixGen</code> inside <code>RadiationIMC</code>.</li><li>The constructor stores parameters and validates combinations.</li><li><code>initializeComptonMatrixGenerator()</code> lazily creates CMMC and its temperature tables from <code>precomputeComptonData()</code>.</li><li>The Till MC application constructs <code>RadiationIMC</code> directly and never injects a matrix kernel.</li></ul>
+<div class="notice warn"><strong>Do not eagerly build expensive CMMC tables in the constructor if exact RICH behavior is required.</strong> Ownership is established by the class, but initialization is lazy at first Compton pre-step.</div>
+<h3>Remove as the normal STORM API</h3><pre><code>auto kernel = std::make_shared&lt;TillComptonKernel&gt;(...);
+auto physics = std::make_shared&lt;RadiationIMC&lt;...&gt;&gt;(...);
+physics-&gt;setComptonKernel(kernel);</code></pre>
+<h3>Required normal API</h3><pre><code>RadiationIMCParameters&lt;NumGroups&gt; p;
+p.withMultigroupOpacity = true;
+p.withCompton = true;
+p.comptonMatrixSamples = 2'000'000;
+auto physics = std::make_shared&lt;RadiationIMC&lt;...&gt;&gt;(
+    grid, boundary, cells, extensives, eos, opacity, p);
+// No matrix object and no setComptonKernel().</code></pre>
+</section>
+<section id="scope"><h2>3. Scope and caveats</h2>
+<ul><li>This document compares the connector-visible current heads of STORM <code>rich_features</code> and RICH_temp <code>ablation</code>.</li><li>No compilation or runtime validation was possible in this environment.</li><li>The CMMC gitlink SHA was not exposed by the connector. Before implementation, pin STORM to the exact CMMC revision used by RICH ablation.</li><li>Exact parity includes RICH's present exclusions: Compton with random walk and Compton with DDMC are rejected.</li><li>Establish deterministic parity before refactoring, adding alternate kernels, or changing physics conventions.</li></ul>
+</section>
+<section id="comparison"><h2>4. RICH-STORM parity comparison</h2>
+<table><caption>Current implementation gap</caption><thead><tr><th>Area</th><th>RICH ablation</th><th>STORM rich_features</th><th>Action</th></tr></thead><tbody>
+<tr><td>Ownership</td><td><code>RadiationIMC</code> owns CMMC.</td><td>Caller injects <code>ComptonKernelModel</code>.</td><td>Replace primary path with internal ownership.</td></tr>
+<tr><td>Initialization</td><td>Lazy one-time CMMC construction and table setup.</td><td>External callback builds data per cell.</td><td>Port group/generator initialization.</td></tr>
+<tr><td>Induced scattering</td><td>Radiation-field occupation, zero fallback, adaptive Planck fallback.</td><td>Flag exists, but no equivalent core derivation.</td><td>Port occupation modes and fallback.</td></tr>
+<tr><td>Cell data</td><td>Full opacity, source, matrices, contractions, kernels, risk state.</td><td>Rates, CDF, mean ratio, optional vectors.</td><td>Replace/expand data model.</td></tr>
+<tr><td>Fleck</td><td>Scalar Compton-modified Fleck from <code>Gamma</code>.</td><td>Ordinary Fleck times optional external correction.</td><td>Port exact RICH equations.</td></tr>
+<tr><td>Sources</td><td>Builds <code>Bbase/Bcorr/Btotal/Bpos/Bres</code>.</td><td>Only emits externally supplied residual source.</td><td>Port source decomposition and positive source packets.</td></tr>
+<tr><td>Event kernel</td><td>Uses tau, occupation, <code>mu</code>, <code>Mh</code>, residual kernel.</td><td>Uses external rate and mean energy ratio.</td><td>Port event partition.</td></tr>
+<tr><td>Angle</td><td>CMMC conditional angle CDF, enabled by default.</td><td>Rejected as unsupported.</td><td>Implement and restore RICH default.</td></tr>
+<tr><td>Momentum</td><td>Deposits packet momentum difference.</td><td>Missing for Compton events.</td><td>Port material momentum coupling.</td></tr>
+<tr><td>End-step solve</td><td>Residual group solve, caps, positivity, adaptive subcycling.</td><td>Absent.</td><td>Port complete correction machinery.</td></tr>
+<tr><td>Reconciliation</td><td>Corrected group energy is represented by packets.</td><td>Absent.</td><td>Port packet reconciliation.</td></tr>
+<tr><td>Risk control</td><td>Per-group risk scores and packet targets.</td><td>Absent.</td><td>Port risk calculation/allocation.</td></tr>
+<tr><td>Elastic opacity</td><td>Ordinary elastic opacity is zero in Compton mode.</td><td>Elastic and Compton channels are added.</td><td>Use RICH policy for parity.</td></tr>
+<tr><td>Random walk</td><td>Rejected with Compton.</td><td>Silently suppressed at runtime.</td><td>Add constructor rejection.</td></tr>
+<tr><td>Dependency</td><td>CMMC is a direct radiation dependency.</td><td>CMMC is example-local.</td><td>Make it a library-level dependency.</td></tr>
+</tbody></table>
+</section>
+<section id="architecture"><h2>5. Target architecture</h2>
+<div class="grid2"><div class="card"><h3>Template/public side</h3><ul><li><span class="file">radiation/RadiationIMCParameters.hpp</span></li><li><span class="file">radiation/RadiationIMC.hpp</span></li><li><span class="file">radiation/compton/ComptonTypes.hpp</span></li><li>Generic arrays and cell/packet algorithms.</li></ul></div><div class="card"><h3>CMMC integration side</h3><ul><li><span class="file">radiation/compton/CMMCComptonBackend.hpp</span></li><li><span class="file">radiation/compton/CMMCComptonBackend.cpp</span></li><li>Private CMMC includes, compiled source, stable typed wrapper.</li></ul></div></div>
+<p>A backend wrapper should expose tau matrices, derivatives, maximum table temperature, last-group correction, conditional angle CDF and angle-bin count. It should hide CMMC from STORM's public headers when possible.</p>
+<pre><code>std::unique_ptr&lt;CMMCComptonBackend&lt;NumGroups&gt;&gt; comptonMatrixGen_;
+
+void initializeComptonMatrixGenerator() {
+    if (comptonMatrixGen_) return;
+    initializeComptonGroups();
+    comptonMatrixGen_ = std::make_unique&lt;CMMCComptonBackend&lt;NumGroups&gt;&gt;(
+        comptonGroupCenters_, energyBoundaries_,
+        parameters_.comptonMatrixSamples, true, 1);
+    comptonMatrixGen_-&gt;setTables(buildComptonTemperatures());
+}</code></pre>
+<p>An injectable backend may remain as a private test seam, but it must not be required or documented for ordinary users.</p>
+</section>
+<section id="data-model"><h2>6. Data model to port</h2>
+<p>Replace the minimal STORM <code>ComptonCellData</code> with a generic <code>NumGroups</code> version of the RICH structure. These fields are algorithmically significant.</p>
+<table><thead><tr><th>Category</th><th>Required fields</th><th>Purpose</th></tr></thead><tbody>
+<tr><td>Opacity/source basis</td><td><code>absorptionOpacity</code>, <code>planckFraction</code>, <code>baseSourceFraction</code>, Planck/source CDFs</td><td>Group coupling and source PDFs.</td></tr>
+<tr><td>Material state</td><td><code>volume</code>, <code>temperature</code>, <code>Um</code>, <code>beta</code>, <code>cv</code>, <code>planckOpacity</code></td><td>Linearization and normalization.</td></tr>
+<tr><td>Implicit coefficients</td><td><code>fleck</code>, <code>Upsilon</code>, <code>Gamma</code>, <code>betaCdtF</code></td><td>Compton-modified Fleck scheme.</td></tr>
+<tr><td>Occupation/fallback</td><td><code>occupation</code>, <code>useNZero</code>, <code>usePlanckInduced</code></td><td>Induced terms and fallback state.</td></tr>
+<tr><td>Contractions</td><td><code>oldRadiationEnergy</code>, <code>D</code>, <code>M</code>, <code>rowS</code>, <code>Lambda</code></td><td>Derivative contractions.</td></tr>
+<tr><td>Physical matrices</td><td><code>tau</code>, <code>dtau_dUm</code>, <code>S</code>, <code>dSdUm</code></td><td>CMMC redistribution operator.</td></tr>
+<tr><td>Source decomposition</td><td><code>Bbase</code>, <code>Bcorr</code>, <code>Btotal</code>, <code>Bpos</code>, <code>Bres</code></td><td>Positive packet source and residual correction.</td></tr>
+<tr><td>Transport event</td><td><code>comptonOutRate</code>, target CDF, <code>comptonMu</code>, <code>comptonMh</code></td><td>Event rate, target sampling and f-reduced weight.</td></tr>
+<tr><td>Residual operator</td><td><code>baseEffectiveOpacity</code>, <code>segmentKernel</code>, <code>residualKernel</code>, <code>Ktotal</code></td><td>Partition between MC events and end-step solve.</td></tr>
+<tr><td>Risk</td><td><code>riskScore</code>, <code>riskTargetPackets</code></td><td>Protect poorly sampled groups.</td></tr>
+</tbody></table>
+<h3>Required enums and defaults</h3><pre><code>enum class ComptonInducedMode {
+    RadiationField,
+    AdaptivePlanckFallback
+};
+enum class ComptonOccupationMode {
+    Zero,
+    RadiationField,
+    PlanckFunction
+};
+
+bool comptonUseInduced = true;
+ComptonInducedMode comptonInducedMode =
+    ComptonInducedMode::AdaptivePlanckFallback;
+bool comptonAllowNZeroFallback = true;
+bool comptonAngleDependent = true;
+std::size_t comptonMatrixSamples = 200000;</code></pre>
+</section>
+<section id="lifecycle"><h2>7. Lifecycle and algorithms</h2>
+<div class="step"><h3>7.1 Constructor</h3><ol><li>Store parameters and validate grid/EOS/opacity.</li><li>Require multigroup opacity for Compton.</li><li>Reject Compton + random walk.</li><li>Reject Compton + DDMC.</li><li>Apply RICH postprocess/polarization compatibility rules.</li><li>Validate energy boundaries.</li><li>Do not require an injected kernel.</li><li>Do not yet build expensive CMMC tables.</li></ol></div>
+<div class="step"><h3>7.2 Lazy generator initialization</h3><ol><li>Compute centers and widths.</li><li>Build the RICH temperature grid: 0.0001, 0.001 and 0.005 keV plus 128 logarithmic points from 10^-2 to 10^4 keV.</li><li>Construct CMMC with configured sample count, detailed balance enabled and the RICH deterministic seed.</li><li>Call <code>set_tables()</code> once.</li></ol></div>
+<div class="step"><h3>7.3 Per-cell precomputation</h3><ol><li>Compute volume, temperature, <code>Um=aT^4</code>, heat capacity and <code>beta=4aT^3/cv</code>.</li><li>Compute normalized Planck group fractions.</li><li>Compute group absorption opacity and Planck opacity.</li><li>Read old group radiation energy from the cell.</li><li>Build base source fractions and safe CDFs.</li><li>Build CMMC matrices using radiation-field occupation when induced terms are enabled, otherwise zero occupation.</li><li>Compute contractions, <code>Upsilon</code> and <code>Gamma</code>.</li><li>If the denominator is nonpositive or <code>Upsilon&lt;0</code>, apply the same zero/Planck fallback decision as RICH and rebuild matrices.</li><li>Compute Fleck, event data, source arrays and risk data.</li></ol></div>
+<h3>Core equations</h3><pre><code>D[g]      = sum_h dSdUm[h][g] * oldRadiationEnergy[h]
+Upsilon   = sum_g D[g]
+M[g]      = absorptionOpacity[g] * planckFraction[g] + D[g]
+rowS[h]   = sum_g S[h][g]
+Lambda[h] = absorptionOpacity[h] - rowS[h]
+Gamma     = planckOpacity + Upsilon
+f         = 1 / (1 + beta * c * dt_eff * Gamma)
+
+betaCdtF = beta * cdtEff * f
+if (abs(Gamma) > tiny) betaCdtF = (1 - f) / Gamma</code></pre>
+<h3>Matrix construction details</h3><ul><li>Compute occupation from radiation energy, Planck energy, or zero according to the selected mode.</li><li>Clamp occupation exactly as RICH.</li><li>Call CMMC <code>get_tau_matrix()</code> at a temperature capped below its maximum table value.</li><li>Apply CMMC's last-group up/down correction.</li><li>Build <code>S</code> and <code>dSdUm</code> with induced factors.</li><li>Scale the derivative by <code>1/(4aT^3)</code>.</li></ul>
+</section>
+<section id="event"><h2>8. Event transport parity</h2>
+<h3>8.1 Event operator</h3><pre><code>weight[h->g] = max(0, tau[h][g] * (1 + occupation[g]))
+outRate[h]   = sum_(g != h) weight[h->g]
+q[h->g]      = weight[h->g] / outRate[h]
+mu[h]        = sum_(g != h) q[h->g] * center[g] / center[h]
+Mh[h]        = 1 + f * (mu[h] - 1)</code></pre>
+<p>Port <code>buildComptonEventData()</code> before attempting to simplify it. It constructs the base effective opacity, total physical kernel, explicit event segment and residual kernel.</p>
+<h3>8.2 Scatter event</h3><ol><li>Sample target group from the internal CDF.</li><li>If angle dependence is enabled, request CMMC's conditional angle CDF for temperature/source/target, sample a bin, interpolate within it, sample azimuth and rotate relative to the incoming direction.</li><li>Otherwise use the ordinary direction sampler exactly as RICH does.</li><li>Set <code>newWeight=oldWeight*Mh[source]</code>.</li><li>Set frequency to RICH's representative target-group center.</li><li>Deposit <code>oldWeight-newWeight</code> to material internal/total energy.</li><li>With hydro momentum feedback, deposit <code>(oldWeight*oldVelocity-newWeight*newVelocity)*inv_c2</code>.</li></ol>
+<h3>8.3 Frame handling</h3><p>Retain STORM's generic Lorentz helpers, but validate that the RICH event is evaluated in the material frame and transformed back exactly once. Add packet four-momentum closure tests.</p>
+<div class="notice warn"><strong>Elastic opacity policy:</strong> RICH sets ordinary elastic scattering opacity to zero when Compton is active. STORM currently adds the channels. Exact parity requires the RICH policy. A later change may reconsider this only after parity is established and scientifically reviewed.</div>
+</section>
+<section id="correction"><h2>9. End-of-step correction and packet reconciliation</h2>
+<p>This is the largest missing subsystem. A caller-supplied residual source vector is not equivalent to RICH's state-dependent residual operator.</p>
+<h3>Required <code>postStep()</code> order</h3><ol><li>Tally surviving packet energy into <code>Erad</code> and <code>Eg[g]</code>.</li><li>Record per-cell/group packet counts and maximum packet weights.</li><li>Run <code>applyComptonEndOfStepCorrection(fullDt)</code>.</li><li>Run <code>reconcileComptonParticles(particles)</code>.</li><li>Apply opposite material correction and update thermodynamics.</li><li>Run parity and signed diagnostics when enabled.</li></ol>
+<h3>Solver stack to port</h3><ul><li>Direct group-system solve with pivot diagnostics.</li><li>Support-aware treatment of tiny negative groups.</li><li>Material-energy cap.</li><li>Bounded/NNLS fallback support and diagnostics.</li><li>Adaptive subcycling of the residual operator.</li><li>Early stop and return-to-raw endpoint when accepted correction is negligible.</li><li>Failure records with worst group, support fraction, risk score and packet support.</li></ul>
+<h3>Energy update</h3><pre><code>deltaRadiation = sum_g(solvedEg[g] - rawEg[g]);
+extensives.Eg[g] = solvedEg[g];
+extensives.Erad += deltaRadiation;
+if (!noHydroFeedback) {
+    double materialDeposit = -deltaRadiation;
+    extensives.internal_energy += materialDeposit;
+    extensives.energy += materialDeposit;
+}</code></pre>
+<h3>Reconciliation requirements</h3><ul><li>Corrected cell/group energies must be represented by packet weights.</li><li>Preserve signed accounting.</li><li>Avoid one enormous packet in a weakly supported group.</li><li>Use risk/target packet counts.</li><li>After reconciliation, group packet sums must match corrected <code>Eg</code> within tolerance.</li></ul>
+</section>
+<section id="dependencies"><h2>10. CMMC dependencies and CMake</h2>
+<h3>10.1 Pin the authoritative revision</h3><ul class="checklist"><li>Read the CMMC gitlink SHA from RICH_temp <code>ablation</code>.</li><li>Pin STORM's <code>deps/CMMC</code> to the same SHA.</li><li>Verify APIs: <code>set_tables</code>, <code>get_tau_matrix</code>, maximum table temperature, last-group correction, <code>get_angle_cdf</code>, and <code>NUM_ANGLE_BINS</code>.</li><li>Expose the pinned revision in build diagnostics.</li></ul>
+<h3>10.2 Make CMMC library-level</h3><p>Current STORM builds <code>compton_matrix_mc.cpp</code> only into the Till example. Replace that with a library target used by <code>RadiationIMC</code>.</p>
+<pre><code>option(STORM_WITH_COMPTON "Build internal CMMC support" ON)
+if(STORM_WITH_COMPTON)
+  set(STORM_CMMC_DIR "${CMAKE_CURRENT_SOURCE_DIR}/deps/CMMC/src"
+      CACHE PATH "Pinned CMMC source directory")
+  if(NOT EXISTS "${STORM_CMMC_DIR}/compton_matrix_mc.cpp")
+    message(FATAL_ERROR
+      "Compton support requires the pinned CMMC submodule. "
+      "Run git submodule update --init --recursive")
+  endif()
+  add_library(storm_cmmc STATIC
+    "${STORM_CMMC_DIR}/compton_matrix_mc.cpp"
+    radiation/compton/CMMCComptonBackend.cpp)
+  target_include_directories(storm_cmmc PRIVATE "${STORM_CMMC_DIR}")
+  target_link_libraries(storm_cmmc PUBLIC Boost::boost units planck_integral)
+  target_link_libraries(storm INTERFACE storm_cmmc)
+endif()</code></pre>
+<p>Adjust link visibility according to whether <code>storm</code> is a concrete or INTERFACE target. Do not use invalid <code>PUBLIC</code> operations on an INTERFACE library.</p>
+<h3>10.3 Clone/install behavior</h3><ul><li>Prefer an HTTPS CMMC submodule URL for public credential-free cloning.</li><li>Document <code>git clone --recurse-submodules</code>.</li><li>Update <code>install_deps.sh</code> to initialize the pinned submodule, not clone an unpinned head.</li><li>When Compton is requested and CMMC is missing, CMake must fail clearly rather than silently skip the regression.</li></ul>
+<h3>10.4 Packaging</h3><ul><li>Keep CMMC includes private through the backend wrapper.</li><li>Verify Boost, units, planck_integral and math linkage.</li><li>Verify CMMC's license and required redistribution notices.</li><li>Test an installed STORM package from a clean consumer project.</li></ul>
+</section>
+<section id="api"><h2>11. Public API changes</h2>
+<h3>Remove required injection</h3><p>Deprecate or remove <code>setComptonKernel()</code> and <code>getComptonKernel()</code> from the normal public workflow. If retained for tests, name and document it as a testing/advanced seam.</p>
+<h3>Parameter parity</h3><ul><li>Add <code>ComptonInducedMode</code>.</li><li>After angle implementation, set <code>comptonAngleDependent=true</code> by default.</li><li>Reject Compton + random walk and Compton + DDMC during construction.</li><li>Keep <code>comptonMatrixSamples</code>: users control numerical effort, but not matrix construction.</li></ul>
+<h3>Type contracts</h3><ul><li>Compton requires cell temperature and density.</li><li>EOS must supply heat capacity and material updates.</li><li>Cell/extensive state must supply group energies of length <code>NumGroups</code>.</li><li>Momentum coupling is enabled only when velocity and momentum members exist.</li><li>Fail explicitly when required Compton state is unavailable.</li></ul>
+</section>
+<section id="example"><h2>12. Till-Compton example changes</h2>
+<h3>Delete example-local matrix ownership</h3><p>Remove <code>TillComptonKernel</code>, its <code>ComptonMatrixMC</code> member, direct CMMC include, and the call to <code>setComptonKernel()</code> from <span class="file">examples/till_compton_mc/main.cpp</span>.</p>
+<h3>Keep only problem data</h3><p>The example should define energy boundaries, opacity, EOS, material state, mesh, boundary, population control, timestep and Compton parameters. It should instantiate <code>RadiationIMC</code> exactly like the RICH Till MC regression: constructor only, with no matrix object.</p>
+<h3>Make the regression authoritative</h3><p>The current STORM checker verifies only that the run completed, a profile exists and an energy-drift value was printed. Replace that with:</p><ul><li>temperature-curve error thresholds against a frozen RICH-ablation reference using identical seed, CMMC revision, sample count, packet count and timestep;</li><li>a strict total-energy drift threshold;</li><li>a minimum Compton-event count;</li><li>proof that induced mode and angle-dependent transport were exercised;</li><li>a clean-clone dependency/build test.</li></ul>
+</section>
+<section id="testing"><h2>13. Validation plan</h2>
+<h3>13.1 Deterministic cell-level parity</h3>
+<table><thead><tr><th>Test</th><th>Compare</th><th>Acceptance</th></tr></thead><tbody>
+<tr><td>Group/table setup</td><td>centers, widths, temperatures</td><td>Bitwise where practical.</td></tr>
+<tr><td>CMMC output</td><td><code>tau</code>, <code>dtau_dUm</code></td><td>Same seed/revision, tight tolerance.</td></tr>
+<tr><td>Occupation</td><td>radiation, zero, Planck modes</td><td>Per-group equality.</td></tr>
+<tr><td>Operator</td><td><code>S</code>, <code>dSdUm</code>, last-group terms</td><td>Scale-aware tolerance.</td></tr>
+<tr><td>Contractions</td><td><code>D</code>, <code>M</code>, <code>rowS</code>, <code>Lambda</code></td><td>Numerically equal.</td></tr>
+<tr><td>Fleck</td><td><code>Upsilon</code>, <code>Gamma</code>, denominator, <code>f</code></td><td>Same value and fallback.</td></tr>
+<tr><td>Sources</td><td>all B arrays</td><td>Numerically equal; identities hold.</td></tr>
+<tr><td>Event data</td><td>rates, CDF, <code>mu</code>, <code>Mh</code>, kernels</td><td>Numerically equal.</td></tr>
+</tbody></table>
+<h3>13.2 Event tests</h3><ul class="checklist"><li>Fixed RNG stream yields the same target groups as RICH.</li><li>Angle samples reproduce CMMC conditional CDFs.</li><li>Packet weight equals <code>oldWeight*Mh</code>.</li><li>Material energy is opposite to packet energy change.</li><li>Hydro momentum closes against packet momentum change.</li><li>Moving-frame event is transformed exactly once.</li></ul>
+<h3>13.3 Source/correction tests</h3><ul class="checklist"><li><code>Btotal=Bbase+Bcorr</code>.</li><li><code>Btotal=Bpos+Bres</code>.</li><li>Positive source packet total equals <code>Bbase</code>.</li><li>Direct solve matches RICH for admissible cases.</li><li>Negative solution and material-cap cases select the same fallback.</li><li>Adaptive subcycling returns the same consumed fraction and endpoint.</li><li>Reconciliation reproduces corrected group energies.</li></ul>
+<h3>13.4 Integrated regressions</h3><ol><li>Till: 1 keV material, 10 keV radiation, absorption + Compton.</li><li>Winslow: hot material, cold radiation.</li><li>Compton-only: no absorption.</li><li>No-Compton control.</li><li>Forced negative-Upsilon fallback.</li><li>Moving-material energy and momentum closure.</li><li>MPI global-ledger parity.</li></ol>
+<h3>13.5 Build matrix</h3><table><thead><tr><th>Configuration</th><th>Expected</th></tr></thead><tbody>
+<tr><td>Clean clone + submodules, serial, Compton ON</td><td>Build and run parity suite.</td></tr><tr><td>Missing submodule, Compton ON</td><td>Clear fatal error and remediation.</td></tr><tr><td>Compton OFF, CMMC absent</td><td>Core build succeeds if optional.</td></tr><tr><td>MPI + Compton</td><td>Global-ledger tests pass.</td></tr><tr><td>ASan/UBSan</td><td>No source/event/solver errors.</td></tr><tr><td>Installed consumer</td><td>No undeclared include/link dependency.</td></tr>
+</tbody></table>
+</section>
+<section id="sequence"><h2>14. Recommended patch sequence</h2>
+<div class="step"><h3>PR 1 - Dependency and internal backend</h3><ul><li>Pin RICH CMMC revision.</li><li>Add library-level CMMC target/backend.</li><li>Add lazy ownership to <code>RadiationIMC</code>.</li><li>Remove normal need for <code>setComptonKernel()</code>.</li><li>Add clean-clone build tests.</li></ul></div>
+<div class="step"><h3>PR 2 - Parameters and full cell data</h3><ul><li>Add induced enums/defaults.</li><li>Port complete cell data.</li><li>Port group/table initialization.</li><li>Port matrix construction and contractions.</li><li>Add deterministic parity tests.</li></ul></div>
+<div class="step"><h3>PR 3 - Fleck, sources and event kernels</h3><ul><li>Port fallback and Fleck logic.</li><li>Port B decomposition and positive source generation.</li><li>Port event/residual kernels, CDF, <code>mu</code>, <code>Mh</code>.</li><li>Port risk allocation.</li></ul></div>
+<div class="step"><h3>PR 4 - Event transport and coupling</h3><ul><li>Port angle-CDF sampling.</li><li>Match group frequency and weight semantics.</li><li>Add energy/momentum feedback.</li><li>Match RICH elastic-opacity policy.</li><li>Add event/frame tests.</li></ul></div>
+<div class="step"><h3>PR 5 - End-step correction</h3><ul><li>Port direct solve, safeguards and adaptive subcycling.</li><li>Port packet reconciliation.</li><li>Port detailed diagnostics and signed checks.</li><li>Add endpoint parity tests.</li></ul></div>
+<div class="step"><h3>PR 6 - Examples and regressions</h3><ul><li>Remove Till local adapter.</li><li>Add Till/Winslow quantitative regressions.</li><li>Document supported combinations.</li><li>Deprecate obsolete external-kernel API.</li></ul></div>
+</section>
+<section id="acceptance"><h2>15. Definition of done</h2><ul class="checklist">
+<li>A normal application enables Compton through parameters only.</li><li>No example/application constructs <code>ComptonMatrixMC</code>.</li><li>No normal application calls <code>setComptonKernel()</code>.</li><li>STORM owns one lazily initialized CMMC generator per <code>RadiationIMC</code>.</li><li>STORM pins the same CMMC revision and table grid as RICH ablation.</li><li>All derived matrices/arrays match deterministic RICH references.</li><li>Induced mode and zero/Planck fallback match RICH.</li><li>Compton-modified Fleck matches RICH.</li><li>Positive source, event, residual solve and reconciliation are present.</li><li>Angle-dependent sampling is implemented and enabled by default.</li><li>Event energy and momentum coupling match RICH.</li><li>Compton + RW and Compton + DDMC are rejected.</li><li>Till and Winslow meet numerical thresholds.</li><li>Serial/MPI global energy ledgers close within declared tolerance.</li><li>Clean cloning/building requires one documented submodule command.</li><li>CMake fails clearly when requested CMMC is missing.</li></ul></section>
+<section id="references"><h2>16. Reference map</h2>
+<h3>RICH authoritative files</h3><ul><li><a href="https://github.com/eladtan/RICH_temp/blob/ablation/source/3D/radiation/RadiationIMC.hpp">RICH RadiationIMC.hpp</a> - parameters, full cell data, ownership and method inventory.</li><li><a href="https://github.com/eladtan/RICH_temp/blob/ablation/source/3D/radiation/RadiationIMC.cpp">RICH RadiationIMC.cpp</a> - CMMC initialization, matrices, events, sources, correction and reconciliation.</li><li><a href="https://github.com/eladtan/RICH_temp/blob/ablation/regression_tests/cases/till_compton_mc/test.cpp">RICH Till MC regression</a> - proves no user matrix builder is supplied.</li><li><a href="https://github.com/eladtan/RICH_temp/blob/ablation/.gitmodules">RICH submodules</a> - use to resolve the authoritative CMMC gitlink.</li></ul>
+<h3>STORM files to change</h3><ul><li><a href="https://github.com/maormizrachi/STORM/blob/rich_features/radiation/RadiationIMCParameters.hpp">RadiationIMCParameters.hpp</a></li><li><a href="https://github.com/maormizrachi/STORM/blob/rich_features/radiation/Compton.hpp">Compton.hpp</a></li><li><a href="https://github.com/maormizrachi/STORM/blob/rich_features/radiation/RadiationIMC.hpp">RadiationIMC.hpp</a></li><li><a href="https://github.com/maormizrachi/STORM/blob/rich_features/examples/till_compton_mc/main.cpp">Till example</a></li><li><a href="https://github.com/maormizrachi/STORM/blob/rich_features/examples/CMakeLists.txt">Examples CMake</a></li><li><a href="https://github.com/maormizrachi/STORM/blob/rich_features/CMakeLists.txt">Top-level CMake</a></li><li><a href="https://github.com/maormizrachi/STORM/blob/rich_features/.gitmodules">.gitmodules</a></li><li><a href="https://github.com/maormizrachi/STORM/blob/rich_features/install_deps.sh">install_deps.sh</a></li></ul>
+<div class="notice"><strong>Porting discipline:</strong> preserve RICH names/formulas first. Refactor only after parity tests pass, so scientific auditing remains tractable.</div>
+</section>
+</main></div>
+<footer>Static implementation handoff. The implementing agent must verify the pinned CMMC revision and run the proposed tests before claiming parity.</footer>
+</body></html>

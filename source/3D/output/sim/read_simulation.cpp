@@ -12,6 +12,7 @@
 #ifdef RICH_MPI
     #include <mpi.h>
     #include "3D/tessellation/io/load_balancing/HilbertLoadBalancerIOHandler.hpp"
+    #include "3D/tessellation/io/load_balancing/OneDimensionalLoadBalancerIOHandler.hpp"
     #include "3D/tessellation/io/load_balancing/LoadBalancerIOHandlerFactory.hpp"
     #include "3D/tessellation/Voronoi3D.hpp"
     #include "3D/tessellation/io/points_manager/HilbertPointsManagerIOHandler.hpp"

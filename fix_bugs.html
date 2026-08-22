@@ -1,0 +1,1321 @@
+\
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="Actionable code-review handoff for fixing the STORM IMC/DDMC integration.">
+  <title>STORM IMC/DDMC Code Review and Fix Handoff</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f5f7fb;
+      --surface: #ffffff;
+      --surface-2: #eef2f7;
+      --text: #172033;
+      --muted: #5d687b;
+      --border: #cfd7e4;
+      --accent: #2457c5;
+      --accent-soft: #e8efff;
+      --critical: #9f1d20;
+      --critical-soft: #fdebec;
+      --high: #a14e00;
+      --high-soft: #fff1df;
+      --medium: #6b5d00;
+      --medium-soft: #fff8ce;
+      --good: #17633a;
+      --good-soft: #e9f7ef;
+      --code-bg: #111827;
+      --code-text: #e5e7eb;
+      --shadow: 0 10px 30px rgba(31, 42, 68, 0.08);
+    }
+
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #0e1420;
+        --surface: #161f2d;
+        --surface-2: #202b3d;
+        --text: #edf2f7;
+        --muted: #b7c0ce;
+        --border: #3b4658;
+        --accent: #82a7ff;
+        --accent-soft: #1e315f;
+        --critical: #ff9a9d;
+        --critical-soft: #4b2024;
+        --high: #ffbd78;
+        --high-soft: #4a3019;
+        --medium: #ffe274;
+        --medium-soft: #4b4213;
+        --good: #85d4a7;
+        --good-soft: #173c2b;
+        --code-bg: #090d14;
+        --code-text: #e8edf5;
+        --shadow: none;
+      }
+    }
+
+    * { box-sizing: border-box; }
+
+    html { scroll-behavior: smooth; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font: 16px/1.58 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    a { color: var(--accent); }
+
+    a:focus-visible,
+    button:focus-visible,
+    summary:focus-visible {
+      outline: 3px solid var(--accent);
+      outline-offset: 3px;
+      border-radius: 3px;
+    }
+
+    .skip-link {
+      position: absolute;
+      left: 1rem;
+      top: -4rem;
+      z-index: 1000;
+      padding: .7rem 1rem;
+      background: var(--surface);
+      border: 2px solid var(--accent);
+      color: var(--text);
+      text-decoration: none;
+    }
+
+    .skip-link:focus { top: 1rem; }
+
+    .hero {
+      background:
+        radial-gradient(circle at top right, rgba(96, 135, 255, .22), transparent 42%),
+        linear-gradient(135deg, #122345, #1e3970);
+      color: #fff;
+      padding: 3.2rem max(1rem, calc((100vw - 1180px) / 2));
+    }
+
+    .hero h1 {
+      margin: 0 0 .65rem;
+      font-size: clamp(2rem, 4vw, 3.4rem);
+      line-height: 1.08;
+    }
+
+    .hero p {
+      margin: .35rem 0;
+      max-width: 940px;
+      color: #e4ebff;
+    }
+
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: .55rem;
+      margin-top: 1.25rem;
+    }
+
+    .meta span {
+      background: rgba(255, 255, 255, .16);
+      border: 1px solid rgba(255, 255, 255, .38);
+      border-radius: 999px;
+      padding: .35rem .72rem;
+      font-size: .9rem;
+    }
+
+    .layout {
+      width: min(1180px, calc(100% - 2rem));
+      margin: 0 auto;
+      display: grid;
+      grid-template-columns: minmax(210px, 280px) minmax(0, 1fr);
+      gap: 1.4rem;
+      padding: 1.5rem 0 4rem;
+    }
+
+    nav {
+      position: sticky;
+      top: 1rem;
+      align-self: start;
+      max-height: calc(100vh - 2rem);
+      overflow: auto;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      padding: 1rem;
+    }
+
+    nav h2 {
+      margin: 0 0 .65rem;
+      font-size: 1rem;
+    }
+
+    nav ol {
+      margin: 0;
+      padding-left: 1.25rem;
+    }
+
+    nav li { margin: .34rem 0; }
+
+    nav a {
+      text-decoration: none;
+      color: var(--text);
+    }
+
+    nav a:hover { text-decoration: underline; }
+
+    main { min-width: 0; }
+
+    section,
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      margin-bottom: 1.25rem;
+      padding: clamp(1rem, 2.5vw, 1.7rem);
+    }
+
+    section h2 {
+      margin-top: 0;
+      border-bottom: 1px solid var(--border);
+      padding-bottom: .55rem;
+      font-size: clamp(1.35rem, 2.4vw, 1.8rem);
+    }
+
+    section h3 { margin-top: 1.5rem; }
+
+    .callout {
+      border-left: 5px solid var(--accent);
+      background: var(--accent-soft);
+      padding: 1rem 1.1rem;
+      border-radius: 8px;
+      margin: 1rem 0;
+    }
+
+    .callout.critical {
+      border-color: var(--critical);
+      background: var(--critical-soft);
+    }
+
+    .callout.good {
+      border-color: var(--good);
+      background: var(--good-soft);
+    }
+
+    .severity {
+      display: inline-block;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: .78rem;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      padding: .22rem .58rem;
+      white-space: nowrap;
+    }
+
+    .critical-badge {
+      background: var(--critical-soft);
+      color: var(--critical);
+      border: 1px solid currentColor;
+    }
+
+    .high-badge {
+      background: var(--high-soft);
+      color: var(--high);
+      border: 1px solid currentColor;
+    }
+
+    .medium-badge {
+      background: var(--medium-soft);
+      color: var(--medium);
+      border: 1px solid currentColor;
+    }
+
+    .blocker-badge {
+      background: var(--critical);
+      color: #fff;
+      border: 1px solid var(--critical);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      margin: 1rem 0;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 760px;
+      background: var(--surface);
+    }
+
+    caption {
+      text-align: left;
+      padding: .75rem .85rem;
+      font-weight: 700;
+      background: var(--surface-2);
+      border-bottom: 1px solid var(--border);
+    }
+
+    th, td {
+      text-align: left;
+      vertical-align: top;
+      padding: .7rem .8rem;
+      border-bottom: 1px solid var(--border);
+    }
+
+    thead th {
+      background: var(--surface-2);
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+
+    tbody tr:last-child th,
+    tbody tr:last-child td { border-bottom: 0; }
+
+    code, pre, kbd {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    code {
+      background: var(--surface-2);
+      border-radius: 4px;
+      padding: .08rem .3rem;
+    }
+
+    pre {
+      overflow: auto;
+      background: var(--code-bg);
+      color: var(--code-text);
+      border-radius: 9px;
+      padding: .9rem 1rem;
+      border: 1px solid var(--border);
+      line-height: 1.45;
+    }
+
+    pre code {
+      background: transparent;
+      padding: 0;
+      color: inherit;
+    }
+
+    .finding {
+      scroll-margin-top: 1rem;
+    }
+
+    .finding-header {
+      display: flex;
+      gap: .75rem;
+      align-items: flex-start;
+      justify-content: space-between;
+      flex-wrap: wrap;
+    }
+
+    .finding-header h3 {
+      margin: 0;
+      flex: 1 1 500px;
+    }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1rem;
+    }
+
+    .mini-card {
+      background: var(--surface-2);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: .9rem 1rem;
+    }
+
+    .mini-card h4 { margin: 0 0 .45rem; }
+
+    ul.tight, ol.tight {
+      padding-left: 1.25rem;
+    }
+
+    .tight li { margin: .25rem 0; }
+
+    .checklist {
+      list-style: none;
+      padding-left: 0;
+    }
+
+    .checklist li {
+      margin: .42rem 0;
+      padding-left: 1.75rem;
+      position: relative;
+    }
+
+    .checklist li::before {
+      content: "☐";
+      position: absolute;
+      left: 0;
+      font-weight: 700;
+    }
+
+    details {
+      margin: .8rem 0;
+      border: 1px solid var(--border);
+      border-radius: 9px;
+      padding: .7rem .85rem;
+      background: var(--surface-2);
+    }
+
+    summary {
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    .small {
+      font-size: .91rem;
+      color: var(--muted);
+    }
+
+    footer {
+      width: min(1180px, calc(100% - 2rem));
+      margin: 0 auto 2rem;
+      color: var(--muted);
+      font-size: .9rem;
+    }
+
+    @media (max-width: 860px) {
+      .layout { grid-template-columns: 1fr; }
+      nav {
+        position: static;
+        max-height: none;
+      }
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 560px) {
+      .hero { padding-top: 2.2rem; padding-bottom: 2.2rem; }
+      .layout { width: min(100% - 1rem, 1180px); }
+      section, .card { border-radius: 10px; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+    }
+
+    @media print {
+      :root { color-scheme: light; }
+      body { background: #fff; color: #000; font-size: 11pt; }
+      .hero {
+        background: none !important;
+        color: #000;
+        padding: 0 0 1rem;
+      }
+      .hero p { color: #222; }
+      .meta span {
+        color: #000;
+        border-color: #555;
+        background: #fff;
+      }
+      .layout {
+        width: 100%;
+        display: block;
+        padding: 0;
+      }
+      nav, .skip-link { display: none; }
+      section, .card {
+        box-shadow: none;
+        border-color: #aaa;
+        break-inside: avoid-page;
+      }
+      .finding { break-inside: auto; }
+      h2, h3 { break-after: avoid-page; }
+      pre, table { break-inside: avoid-page; }
+      thead { display: table-header-group; }
+      a { color: #000; text-decoration: none; }
+      a::after {
+        content: " (" attr(href) ")";
+        font-size: 80%;
+        overflow-wrap: anywhere;
+      }
+      a[href^="#"]::after { content: ""; }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#main-content">Skip to review content</a>
+
+  <header class="hero">
+    <h1>STORM IMC/DDMC Code Review and Fix Handoff</h1>
+    <p>
+      Actionable implementation guide derived from a review of the connector-visible
+      <code>maormizrachi/STORM</code> default branch.
+    </p>
+    <p>
+      This document is written for an implementation agent. It separates observed defects,
+      required design changes, recommended patch order, and acceptance tests.
+    </p>
+    <div class="meta" aria-label="Review metadata">
+      <span>Repository: maormizrachi/STORM</span>
+      <span>Reviewed ref: main</span>
+      <span>Reviewed commit: df95ff46531f4220f90f7f5f109fb8c2c13aef4d</span>
+      <span>Status: Release blocker</span>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav aria-label="Document navigation">
+      <h2>Contents</h2>
+      <ol>
+        <li><a href="#scope">Scope and caveat</a></li>
+        <li><a href="#decision">Release decision</a></li>
+        <li><a href="#summary">Finding summary</a></li>
+        <li><a href="#findings">Detailed findings</a></li>
+        <li><a href="#target-design">Target design</a></li>
+        <li><a href="#patch-plan">Recommended patch sequence</a></li>
+        <li><a href="#tests">Required tests</a></li>
+        <li><a href="#done">Definition of done</a></li>
+        <li><a href="#agent-notes">Instructions for the fixing agent</a></li>
+      </ol>
+    </nav>
+
+    <main id="main-content">
+      <section id="scope" aria-labelledby="scope-heading">
+        <h2 id="scope-heading">1. Scope and caveat</h2>
+        <div class="callout">
+          <strong>Important:</strong> the GitHub connector exposed the default branch at
+          commit <code>df95ff46531f4220f90f7f5f109fb8c2c13aef4d</code>. No new pull request
+          or feature-branch ref was visible. This review therefore applies to that snapshot.
+          Before changing code, confirm that the working branch contains the same implementation
+          or re-map the findings to the new files.
+        </div>
+
+        <p>The primary files reviewed were:</p>
+        <ul class="tight">
+          <li><code>radiation/RadiationIMC.hpp</code></li>
+          <li><code>radiation/RadiationIMCParameters.hpp</code></li>
+          <li><code>radiation/RadiationOpacityModel.hpp</code></li>
+          <li><code>particle/Particle.hpp</code></li>
+          <li><code>examples/moving_slab/main.cpp</code></li>
+        </ul>
+
+        <p>
+          Reference behavior was compared against the advanced DDMC implementation in
+          <code>eladtan/RICH_temp</code>, especially
+          <code>source/3D/radiation/RadiationIMC_DDMC.cpp</code>.
+        </p>
+      </section>
+
+      <section id="decision" aria-labelledby="decision-heading">
+        <h2 id="decision-heading">2. Release decision</h2>
+        <div class="callout critical">
+          <span class="severity blocker-badge">Block release</span>
+          <p>
+            The reviewed code is a simplified DDMC accelerator, not a correct implementation
+            of the integration plan. Scientific use should be blocked until resident DDMC state,
+            conservative face coefficients, cross-rank metadata exchange, interface treatment,
+            and validation are implemented.
+          </p>
+        </div>
+
+        <p>Highest-risk failure modes:</p>
+        <ul class="tight">
+          <li>DDMC residence is lost after a leakage event.</li>
+          <li>Leakage coefficients are incorrect even on equal regular cells.</li>
+          <li>Cross-rank face coefficients can differ on opposite sides of the same face.</li>
+          <li>Boundary faces are omitted from the DDMC event process.</li>
+          <li>Multigroup DDMC uses nonphysical uniform group weights.</li>
+          <li>Static and moving IMC-DDMC interface algorithms are absent.</li>
+        </ul>
+      </section>
+
+      <section id="summary" aria-labelledby="summary-heading">
+        <h2 id="summary-heading">3. Finding summary</h2>
+        <div class="table-wrap" role="region" aria-label="Finding summary table" tabindex="0">
+          <table>
+            <caption>Prioritized defects and recommended disposition</caption>
+            <thead>
+              <tr>
+                <th scope="col">ID</th>
+                <th scope="col">Severity</th>
+                <th scope="col">Problem</th>
+                <th scope="col">Primary files</th>
+                <th scope="col">Disposition</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">F-01</th>
+                <td><span class="severity critical-badge">Critical</span></td>
+                <td>No resident DDMC packet state; packets likely fall back to IMC after each leak.</td>
+                <td><code>Particle.hpp</code>, <code>RadiationIMC.hpp</code></td>
+                <td>Must fix first</td>
+              </tr>
+              <tr>
+                <th scope="row">F-02</th>
+                <td><span class="severity critical-badge">Critical</span></td>
+                <td>Finite-volume leakage coefficient is mathematically incorrect.</td>
+                <td><code>RadiationIMC.hpp</code></td>
+                <td>Must fix first</td>
+              </tr>
+              <tr>
+                <th scope="row">F-03</th>
+                <td><span class="severity critical-badge">Critical</span></td>
+                <td>Cross-rank DDMC metadata is not exchanged before face construction.</td>
+                <td><code>RadiationIMC.hpp</code>, MPI utilities</td>
+                <td>Must fix first</td>
+              </tr>
+              <tr>
+                <th scope="row">F-04</th>
+                <td><span class="severity critical-badge">Critical</span></td>
+                <td>Boundary faces are silently omitted from DDMC event rates.</td>
+                <td><code>RadiationIMC.hpp</code>, boundary APIs</td>
+                <td>Must fix first</td>
+              </tr>
+              <tr>
+                <th scope="row">F-05</th>
+                <td><span class="severity high-badge">High</span></td>
+                <td>Multigroup DDMC uses uniform group weights and disables cutoff crossing.</td>
+                <td><code>RadiationIMC.hpp</code>, opacity model</td>
+                <td>Fix before multigroup use</td>
+              </tr>
+              <tr>
+                <th scope="row">F-06</th>
+                <td><span class="severity high-badge">High</span></td>
+                <td>Static and moving IMC-DDMC interface logic is absent.</td>
+                <td>New DDMC interface helpers</td>
+                <td>Required for correctness</td>
+              </tr>
+              <tr>
+                <th scope="row">F-07</th>
+                <td><span class="severity high-badge">High</span></td>
+                <td>Moving-medium group classification uses lab-frame frequency.</td>
+                <td><code>RadiationIMC.hpp</code>, packet state</td>
+                <td>Fix with residence state</td>
+              </tr>
+              <tr>
+                <th scope="row">F-08</th>
+                <td><span class="severity high-badge">High</span></td>
+                <td>Frequency-dependent scattering overload is ignored.</td>
+                <td><code>RadiationIMC.hpp</code></td>
+                <td>Fix before group-dependent scattering</td>
+              </tr>
+              <tr>
+                <th scope="row">F-09</th>
+                <td><span class="severity high-badge">High</span></td>
+                <td>Compton, postprocessing, and polarization remain placeholders.</td>
+                <td>Parameters, particle state, radiation modules</td>
+                <td>Do not advertise as implemented</td>
+              </tr>
+              <tr>
+                <th scope="row">F-10</th>
+                <td><span class="severity medium-badge">Medium</span></td>
+                <td>Invalid DDMC geometry silently ends a particle cycle.</td>
+                <td><code>RadiationIMC.hpp</code></td>
+                <td>Replace with invariant failure or safe fallback</td>
+              </tr>
+              <tr>
+                <th scope="row">F-11</th>
+                <td><span class="severity medium-badge">Medium</span></td>
+                <td>Parameter validation is incomplete and permits ambiguous combinations.</td>
+                <td><code>RadiationIMCParameters.hpp</code>, constructor validation</td>
+                <td>Fix early</td>
+              </tr>
+              <tr>
+                <th scope="row">F-12</th>
+                <td><span class="severity high-badge">High</span></td>
+                <td>Validation coverage is insufficient for scientific release.</td>
+                <td>Regression and unit tests</td>
+                <td>Required before merge</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="findings" aria-labelledby="findings-heading">
+        <h2 id="findings-heading">4. Detailed findings and fixes</h2>
+
+        <article class="finding" id="f01">
+          <div class="finding-header">
+            <h3>F-01 — DDMC packets are not resident</h3>
+            <span class="severity critical-badge">Critical</span>
+          </div>
+
+          <div class="grid-2">
+            <div class="mini-card">
+              <h4>Observed behavior</h4>
+              <ul class="tight">
+                <li><code>Particle</code> has no DDMC-mode or resident-cell state.</li>
+                <li>Admission is recalculated from distance to the nearest face.</li>
+                <li>Leakage places the packet exactly at the face center.</li>
+                <li>The next DDMC admission check therefore sees approximately zero distance and usually fails.</li>
+              </ul>
+            </div>
+            <div class="mini-card">
+              <h4>Likely consequence</h4>
+              <p>
+                Multi-cell diffusion becomes a sequence of one DDMC hop followed by ordinary IMC transport.
+                This changes the stochastic process, destroys intended acceleration, and can bias interface behavior.
+              </p>
+            </div>
+          </div>
+
+          <h4>Required fix</h4>
+          <p>Add compact transport state to <code>Particle</code> or to a dedicated embedded structure:</p>
+          <pre><code>struct RadiationTransportState {
+    uint32_t flags = 0;              // DDMC resident, comoving, pending flux, etc.
+    std::size_t ddmcCellID = invalid_id;
+    std::size_t ddmcBypassCellID = invalid_id;
+    PointT pendingFluxContribution{};
+    double pendingPolarizationScatterings = 0.0;
+};</code></pre>
+
+          <ul class="tight">
+            <li>A resident packet must remain directionless while traveling DDMC-to-DDMC.</li>
+            <li>Do not reapply the geometric particle-depth gate to resident packets.</li>
+            <li>Exit residence only at a DDMC-to-transport interface, unsupported boundary, invalid state, or explicit census handling.</li>
+            <li>Serialize every new field in two-sided MPI paths.</li>
+            <li>For raw RDMA transport, add layout assertions and a startup layout fingerprint check.</li>
+          </ul>
+
+          <h4>Acceptance tests</h4>
+          <ul class="checklist">
+            <li>A packet performs at least ten consecutive DDMC-to-DDMC leaks without entering ordinary IMC.</li>
+            <li>Serial and two-rank trajectories have statistically identical residence counts.</li>
+            <li>Serialized and RDMA-transferred packets preserve all DDMC state exactly.</li>
+          </ul>
+        </article>
+
+        <article class="finding" id="f02">
+          <div class="finding-header">
+            <h3>F-02 — Leakage coefficient is mathematically incorrect</h3>
+            <span class="severity critical-badge">Critical</span>
+          </div>
+
+          <p>The current construction effectively uses a harmonic mean and one center-to-face distance:</p>
+          <pre><code>D_face = harmonic_mean(D_i, D_j);
+lambda_i_to_j = D_face * A_face / (V_i * d_iF);</code></pre>
+
+          <p>Use the conservative two-sided finite-volume resistance instead:</p>
+          <pre><code>R_ij = d_iF / D_i + d_jF / D_j;
+T_ij = A_face / R_ij;
+lambda_i_to_j = T_ij / V_i;
+lambda_j_to_i = T_ij / V_j;</code></pre>
+
+          <div class="callout critical">
+            For two equal cells, the reviewed implementation is larger by a factor of two.
+            On distorted cells, it can also violate reciprocity.
+          </div>
+
+          <h4>Required implementation details</h4>
+          <ul class="tight">
+            <li>Compute both cell-center-to-face distances with consistent outward normals.</li>
+            <li>Reject nonfinite or nonpositive distances and diffusion coefficients.</li>
+            <li>Construct one shared conductance per physical face.</li>
+            <li>Store enough information to verify <code>V_i * lambda_i_to_j == V_j * lambda_j_to_i</code>.</li>
+            <li>Record the conductance and both directional rates in debug diagnostics.</li>
+          </ul>
+
+          <h4>Acceptance tests</h4>
+          <ul class="checklist">
+            <li>Equal-cell analytic coefficient matches to near machine precision.</li>
+            <li>Local distorted-face reciprocity error is below a configured tolerance.</li>
+            <li>Cross-rank reciprocity is checked after metadata exchange.</li>
+          </ul>
+        </article>
+
+        <article class="finding" id="f03">
+          <div class="finding-header">
+            <h3>F-03 — Cross-rank DDMC metadata is incomplete</h3>
+            <span class="severity critical-badge">Critical</span>
+          </div>
+
+          <p>
+            Face construction uses remote data only when the neighbor index is locally addressable.
+            Otherwise, source-cell values are reused. Opposite ranks can therefore construct different
+            coefficients for the same physical face.
+          </p>
+
+          <h4>Metadata to exchange before face construction</h4>
+          <ul class="tight">
+            <li>stable cell ID</li>
+            <li>DDMC eligibility</li>
+            <li>all diffusion and opacity coefficients</li>
+            <li>group cutoff</li>
+            <li>cell velocity and divergence</li>
+            <li>cell volume</li>
+            <li>center-to-face distance, or sufficient geometry to compute it consistently</li>
+            <li>interface and exclusion flags</li>
+          </ul>
+
+          <h4>Recommended design</h4>
+          <pre><code>struct DDMCGhostCell {
+    uint64_t stableID;
+    bool eligible;
+    double volume;
+    double sigmaEnergyAbs;
+    double sigmaMomentum;
+    double sigmaDiffusion;
+    double sigmaParticleGate;
+    double sigmaGroupExit;
+    double diffusionCoefficient;
+    uint32_t groupCutoff;
+    PointT velocity;
+    double velocityDivergence;
+};</code></pre>
+
+          <p>
+            Use a DDMC-specific symmetric exchange first. Do not rewrite the generic exchange framework
+            until the DDMC path is correct. Ensure correspondence lists remain symmetric when a rank owns
+            zero cells.
+          </p>
+
+          <h4>Acceptance tests</h4>
+          <ul class="checklist">
+            <li>A face split across ranks yields identical conductance on both sides.</li>
+            <li>A rank with zero owned cells participates without deadlock.</li>
+            <li>Results are invariant under a different partition of the same mesh.</li>
+          </ul>
+        </article>
+
+        <article class="finding" id="f04">
+          <div class="finding-header">
+            <h3>F-04 — Boundary faces are omitted from the DDMC event process</h3>
+            <span class="severity critical-badge">Critical</span>
+          </div>
+
+          <p>
+            Boundary neighbors are skipped during precomputation. This removes escape, reflection,
+            and prescribed-boundary channels from the total event rate.
+          </p>
+
+          <h4>Required fix</h4>
+          <p>Introduce explicit face kinds:</p>
+          <pre><code>enum class DDMCFaceKind {
+    DDMCNeighbor,
+    TransportNeighbor,
+    ReflectingBoundary,
+    EscapeBoundary,
+    ThermalizingBoundary,
+    UnsupportedBoundary
+};</code></pre>
+
+          <p>Each face record should hold:</p>
+          <ul class="tight">
+            <li>kind</li>
+            <li>face index and stable target ID</li>
+            <li>DDMC leakage rate</li>
+            <li>transport-interface rate or admission data</li>
+            <li>boundary action data</li>
+            <li>outward unit normal</li>
+            <li>face area and both face distances</li>
+          </ul>
+
+          <h4>Acceptance tests</h4>
+          <ul class="checklist">
+            <li>Reflecting DDMC boundary conserves energy and returns no net normal current.</li>
+            <li>Escape boundary produces the expected leakage probability.</li>
+            <li>Unsupported boundary fails early with a clear configuration error.</li>
+          </ul>
+        </article>
+
+        <article class="finding" id="f05">
+          <div class="finding-header">
+            <h3>F-05 — Multigroup DDMC uses nonphysical uniform weights</h3>
+            <span class="severity high-badge">High</span>
+          </div>
+
+          <p>
+            Group weights are currently set to <code>1 / NumGroups</code>, independent of temperature
+            and group width. The code then sets <code>gamma = 1</code>, disabling the cutoff-crossing event.
+          </p>
+
+          <h4>Required fix</h4>
+          <ul class="tight">
+            <li>Compute Planck mass per group from frozen temperature and energy boundaries.</li>
+            <li>Normalize only over valid finite group masses.</li>
+            <li>Use distinct opacity roles rather than one overloaded <code>sigmaA</code>/<code>sigmaT</code> pair.</li>
+            <li>Compute the Densmore grey-band means and a physically meaningful group-exit coefficient.</li>
+            <li>Implement the analytic cutoff-crossing event.</li>
+          </ul>
+
+          <p>Suggested cell data:</p>
+          <pre><code>struct DDMCCellData {
+    bool eligible;
+    uint32_t groupCutoff;
+    double sigmaEnergyAbs;
+    double sigmaMomentum;
+    double sigmaDiffusion;
+    double sigmaParticleGate;
+    double sigmaGroupExit;
+    double diffusionCoefficient;
+    double groupExitRate;
+    double velocityDivergence;
+    std::vector&lt;DDMCFaceLeak&gt; faces;
+};</code></pre>
+
+          <h4>Acceptance tests</h4>
+          <ul class="checklist">
+            <li>Planck masses sum to one within tolerance.</li>
+            <li>Changing temperature changes the grey-band coefficients.</li>
+            <li>Cutoff-crossing events occur in a case where the analytic rate is nonzero.</li>
+          </ul>
+        </article>
+
+        <article class="finding" id="f06">
+          <div class="finding-header">
+            <h3>F-06 — IMC-DDMC interface treatment is missing</h3>
+            <span class="severity high-badge">High</span>
+          </div>
+
+          <p>
+            The current code treats every interior face as a generic leakage face and always emits
+            a cosine-law transport direction at the face. It does not distinguish DDMC-DDMC from
+            DDMC-transport transitions.
+          </p>
+
+          <h4>Required interface states</h4>
+          <ul class="tight">
+            <li><strong>IMC → DDMC:</strong> static admission or reflection decision.</li>
+            <li><strong>DDMC → IMC:</strong> asymptotic angular emission and representation change.</li>
+            <li><strong>DDMC → DDMC:</strong> remain resident and directionless.</li>
+            <li><strong>Moving interface:</strong> apply Wollaeger correction only after static admission.</li>
+          </ul>
+
+          <h4>Moving-interface rules</h4>
+          <ul class="tight">
+            <li>Evaluate the correction using the correct outward normal velocity.</li>
+            <li>Use a high-resolution or exact-enough quadrature table for the angular factor.</li>
+            <li>Invalid or excessive correction factors must bypass DDMC, not silently become one.</li>
+            <li>Local corrected packets may split; remote-target handling must remain unbiased without assuming local insertion.</li>
+            <li>Use a bypass stable cell ID to prevent immediate representation thrashing.</li>
+          </ul>
+
+          <h4>Acceptance tests</h4>
+          <ul class="checklist">
+            <li>Static equilibrium-current test across an IMC-DDMC interface.</li>
+            <li>Admission/reflection probabilities match the reference formulation.</li>
+            <li>Moving-interface A/B test shows the expected correction trend.</li>
+            <li>Threshold sweeps at 3, 5, 10, 15, and 30 optical depths remain stable.</li>
+          </ul>
+        </article>
+
+        <article class="finding" id="f07">
+          <div class="finding-header">
+            <h3>F-07 — Moving-medium frequency classification uses the wrong frame</h3>
+            <span class="severity high-badge">High</span>
+          </div>
+
+          <p>
+            Random-walk cutoff classification applies a Doppler transformation; DDMC cutoff classification
+            does not. The DDMC path therefore compares a lab-frame frequency against a comoving-frame group cutoff.
+          </p>
+
+          <h4>Required fix</h4>
+          <ul class="tight">
+            <li>Define explicitly whether stored packet frequency is lab or comoving while resident.</li>
+            <li>Convert only at IMC-DDMC representation transitions.</li>
+            <li>Do not Lorentz-transform a newly sampled microscopic direction for ordinary DDMC-DDMC leakage.</li>
+            <li>Apply Doppler evolution from velocity divergence as a separate DDMC operator.</li>
+          </ul>
+
+          <h4>Acceptance tests</h4>
+          <ul class="checklist">
+            <li>Homologous expansion produces the expected redshift.</li>
+            <li>Repeated DDMC-DDMC leakage produces no extra frame shift.</li>
+            <li>Near-cutoff classification is invariant under equivalent frame representations.</li>
+          </ul>
+        </article>
+
+        <article class="finding" id="f08">
+          <div class="finding-header">
+            <h3>F-08 — Frequency-dependent scattering is ignored</h3>
+            <span class="severity high-badge">High</span>
+          </div>
+
+          <p>
+            The opacity interface provides <code>CalcScatteringOpacity(cell, frequency)</code>, but
+            transport and DDMC precomputation use only the grey overload.
+          </p>
+
+          <h4>Required fix</h4>
+          <ul class="tight">
+            <li>In multigroup IMC, evaluate scattering at the Doppler-shifted packet frequency.</li>
+            <li>In multigroup DDMC, compute the intended weighted scattering contribution for each opacity role.</li>
+            <li>Retain the grey overload only when multigroup transport is disabled.</li>
+          </ul>
+
+          <h4>Acceptance tests</h4>
+          <ul class="checklist">
+            <li>A synthetic opacity with two strongly different group scattering values produces distinct interaction rates.</li>
+            <li>Grey mode remains unchanged when the frequency-dependent overload delegates to the grey value.</li>
+          </ul>
+        </article>
+
+        <article class="finding" id="f09">
+          <div class="finding-header">
+            <h3>F-09 — Compton, postprocessing, and polarization remain placeholders</h3>
+            <span class="severity high-badge">High</span>
+          </div>
+
+          <p>
+            Parameters exist, but constructor validation rejects the features. <code>ComptonCellData</code>
+            is empty, and packet state lacks signed weights, pending DDMC flux, bypass state, and pending
+            accelerated-polarization history.
+          </p>
+
+          <h4>Required action</h4>
+          <ul class="tight">
+            <li>Do not advertise these features as implemented while they are rejected.</li>
+            <li>Keep <code>Compton + DDMC</code> a hard invalid combination until mathematically supported.</li>
+            <li>Implement Compton in dependency order: signed packets, frozen coefficients, matrix/Fleck terms, signed source, residual transport, parity, signed tallies/MPI, optional analog branch, variance controls.</li>
+            <li>Implement observer postprocessing separately from the transport core.</li>
+            <li>Preserve polarization scattering history across accelerated cells.</li>
+          </ul>
+
+          <h4>Acceptance tests</h4>
+          <ul class="checklist">
+            <li>Feature-off behavior is unchanged.</li>
+            <li>Signed birth/death conserves material plus radiation energy.</li>
+            <li>Postprocessing does not feed back into hydro state.</li>
+            <li>Polarized Thomson tests preserve expected symmetries.</li>
+          </ul>
+        </article>
+
+        <article class="finding" id="f10">
+          <div class="finding-header">
+            <h3>F-10 — Invalid DDMC geometry silently ends transport</h3>
+            <span class="severity medium-badge">Medium</span>
+          </div>
+
+          <p>
+            If face selection fails or the face normal is invalid, the code marks the packet
+            <code>DONE</code>. This loses the remaining census time without a physically valid event.
+          </p>
+
+          <h4>Required fix</h4>
+          <ul class="tight">
+            <li>Prefer a hard invariant failure with cell ID, face ID, rank, geometry, and coefficient diagnostics.</li>
+            <li>If a soft fallback is required, restore a valid IMC representation and preserve the remaining time.</li>
+            <li>Never translate geometry corruption into a census event.</li>
+          </ul>
+        </article>
+
+        <article class="finding" id="f11">
+          <div class="finding-header">
+            <h3>F-11 — Parameter validation is incomplete</h3>
+            <span class="severity medium-badge">Medium</span>
+          </div>
+
+          <h4>Add validation for</h4>
+          <ul class="tight">
+            <li>all group boundaries, including trait-provided boundaries</li>
+            <li>finite and strictly increasing boundaries</li>
+            <li>positive finite optical-depth thresholds</li>
+            <li><code>ddmcUseMultigroupPGRW</code> requiring multigroup opacity</li>
+            <li>explicit policy for simultaneous RW and DDMC</li>
+            <li><code>Compton + DDMC</code> hard rejection</li>
+            <li>postprocessing times and polarization parameters</li>
+            <li>nonzero finite timestep, volume, mass, heat capacity, and opacities where required</li>
+          </ul>
+
+          <div class="callout">
+            Current ordering tries random walk before DDMC. If both are enabled, random walk silently
+            shadows DDMC in jointly eligible cells. Either reject the combination or define a documented
+            deterministic selection policy.
+          </div>
+        </article>
+
+        <article class="finding" id="f12">
+          <div class="finding-header">
+            <h3>F-12 — Validation coverage is insufficient</h3>
+            <span class="severity high-badge">High</span>
+          </div>
+
+          <p>
+            A moving-slab example is not a substitute for focused unit and regression tests.
+            The integration should not merge on visual profile agreement alone.
+          </p>
+
+          <p>See the complete test matrix in <a href="#tests">Section 7</a>.</p>
+        </article>
+      </section>
+
+      <section id="target-design" aria-labelledby="target-design-heading">
+        <h2 id="target-design-heading">5. Recommended target design</h2>
+
+        <p>
+          Preserve STORM's generic templates, compile-time group count, traits, manager factory,
+          two-sided manager, RDMA manager, OFI/IBV/MPI-RMA backends, error model, and existing
+          negative-energy hardening. Do not replace those with RICH-specific managers.
+        </p>
+
+        <h3>Suggested module layout</h3>
+        <pre><code>radiation/
+  RadiationIMC.hpp
+  detail/
+    RadiationIMC_PreStep.tpp
+    RadiationIMC_Transport.tpp
+    RadiationIMC_PostStep.tpp
+  ddmc/
+    DDMCTypes.hpp
+    DDMCState.hpp
+    DDMCGeometry.hpp
+    DDMCGhostExchange.hpp
+    DDMCSampling.hpp
+    DDMCWollaegerInterface.hpp
+    DDMCDiagnostics.hpp
+  compton/
+    ...
+  postprocess/
+    ...
+  polarization/
+    ...
+
+particle/
+  Particle.hpp
+  RadiationTransportState.hpp</code></pre>
+
+        <h3>DDMC face data model</h3>
+        <pre><code>template&lt;typename PointT&gt;
+struct DDMCFaceLeak {
+    DDMCFaceKind kind;
+    std::size_t faceIndex;
+    std::size_t targetLocalIndex;
+    std::uint64_t targetStableID;
+
+    double conductance;
+    double ddmcRate;
+    double transportRate;
+    double boundaryRate;
+
+    double sourceFaceDistance;
+    double targetFaceDistance;
+    double targetCutoffEnergy;
+
+    PointT outwardNormal;
+};</code></pre>
+
+        <h3>Design rules</h3>
+        <ul class="tight">
+          <li>Freeze all DDMC coefficients in <code>preStep</code>.</li>
+          <li>Build faces only after ghost metadata exchange.</li>
+          <li>Keep DDMC residence independent of microscopic direction.</li>
+          <li>Separate energy absorption, momentum coupling, diffusion, particle gating, and group-exit opacity roles.</li>
+          <li>Every local and remote face should be classifiable without guessing from array bounds.</li>
+          <li>Feature-off behavior must remain unchanged.</li>
+        </ul>
+      </section>
+
+      <section id="patch-plan" aria-labelledby="patch-plan-heading">
+        <h2 id="patch-plan-heading">6. Recommended patch sequence</h2>
+
+        <div class="table-wrap" role="region" aria-label="Patch sequence table" tabindex="0">
+          <table>
+            <caption>Small, reviewable implementation sequence</caption>
+            <thead>
+              <tr>
+                <th scope="col">PR</th>
+                <th scope="col">Scope</th>
+                <th scope="col">Must include</th>
+                <th scope="col">Merge gate</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <th scope="row">PR-01</th>
+                <td>Validation and capability cleanup</td>
+                <td>Reject invalid option combinations; validate all boundaries and thresholds.</td>
+                <td>Configuration unit tests</td>
+              </tr>
+              <tr>
+                <th scope="row">PR-02</th>
+                <td>Packet transport state</td>
+                <td>Resident state, bypass ID, pending flux, serialization, RDMA layout checks.</td>
+                <td>Round-trip serialization and backend layout test</td>
+              </tr>
+              <tr>
+                <th scope="row">PR-03</th>
+                <td>Pure DDMC math and types</td>
+                <td>Separate data model; analytic resistance/conductance helpers.</td>
+                <td>Analytic coefficient unit tests</td>
+              </tr>
+              <tr>
+                <th scope="row">PR-04</th>
+                <td>Per-cell frozen coefficients</td>
+                <td>Planck masses, opacity roles, cutoff and exit rate.</td>
+                <td>Coefficient reference tests</td>
+              </tr>
+              <tr>
+                <th scope="row">PR-05</th>
+                <td>Symmetric ghost exchange</td>
+                <td>Stable IDs, zero-cell ranks, local/remote metadata parity.</td>
+                <td>Zero-cell and two-rank tests</td>
+              </tr>
+              <tr>
+                <th scope="row">PR-06</th>
+                <td>Conservative face construction</td>
+                <td>Two-sided resistance, face kinds, reciprocity diagnostics.</td>
+                <td>Local and cross-rank reciprocity</td>
+              </tr>
+              <tr>
+                <th scope="row">PR-07</th>
+                <td>Resident DDMC loop</td>
+                <td>DDMC-DDMC leakage, census, absorption, cutoff crossing.</td>
+                <td>Multi-cell residence and diffusion tests</td>
+              </tr>
+              <tr>
+                <th scope="row">PR-08</th>
+                <td>Static IMC-DDMC interfaces</td>
+                <td>Admission, reflection, asymptotic DDMC emission, bypass state.</td>
+                <td>Equilibrium-current test</td>
+              </tr>
+              <tr>
+                <th scope="row">PR-09</th>
+                <td>Moving interface correction</td>
+                <td>Wollaeger factor, safe bypass, local split/remote unbiased handling.</td>
+                <td>Moving-interface regression suite</td>
+              </tr>
+              <tr>
+                <th scope="row">PR-10</th>
+                <td>Flux and momentum coupling</td>
+                <td>Pending cross-rank flux state, reduction, divergence evolution.</td>
+                <td>Energy/momentum ledger tests</td>
+              </tr>
+              <tr>
+                <th scope="row">PR-11</th>
+                <td>Full backend matrix</td>
+                <td>Serial, two-sided, MPI-RMA, OFI, IBV coverage.</td>
+                <td>No rank-count or backend-dependent scientific drift</td>
+              </tr>
+              <tr>
+                <th scope="row">PR-12+</th>
+                <td>Compton, observers, polarization</td>
+                <td>Separate work packages after DDMC correctness is established.</td>
+                <td>Feature-specific conservation and parity tests</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="tests" aria-labelledby="tests-heading">
+        <h2 id="tests-heading">7. Required validation matrix</h2>
+
+        <h3>Core DDMC mathematics</h3>
+        <ul class="checklist">
+          <li>Equal-cell analytic conductance.</li>
+          <li>Distorted-cell reciprocity.</li>
+          <li>Constant radiation field remains constant.</li>
+          <li>Pure-scattering diffusion satisfies <code>&lt;r²&gt; = 6Dt</code>.</li>
+          <li>Absorption-only weight decay matches the analytic exponential.</li>
+        </ul>
+
+        <h3>Representation transitions</h3>
+        <ul class="checklist">
+          <li>Ten or more consecutive DDMC-DDMC transitions preserve residence.</li>
+          <li>Static IMC-DDMC equilibrium current.</li>
+          <li>DDMC-to-IMC angular distribution.</li>
+          <li>Immediate re-entry prevention using bypass state.</li>
+          <li>Unsupported interface behavior fails deterministically.</li>
+        </ul>
+
+        <h3>Moving media</h3>
+        <ul class="checklist">
+          <li>Homologous redshift.</li>
+          <li>No duplicate DDMC-DDMC Lorentz shift.</li>
+          <li>Moving-interface correction A/B comparison.</li>
+          <li>Correction threshold sweep at 3, 5, 10, 15, and 30.</li>
+        </ul>
+
+        <h3>MPI and transport backends</h3>
+        <ul class="checklist">
+          <li>Two-rank cross-face reciprocity.</li>
+          <li>Zero-owned-cell rank.</li>
+          <li>Serial versus MPI statistical equivalence.</li>
+          <li>Two-sided manager.</li>
+          <li>MPI-RMA manager.</li>
+          <li>OFI manager.</li>
+          <li>IBV manager where available.</li>
+          <li>RDMA layout mismatch is detected at startup.</li>
+        </ul>
+
+        <h3>Regression applications</h3>
+        <ul class="checklist">
+          <li>Marshak wave 1–4.</li>
+          <li>Densmore 2012 centered configuration.</li>
+          <li>Densmore 2012 exposed-interface configuration.</li>
+          <li>Moving-slab benchmark.</li>
+          <li>Feature-off runs match the pre-integration baseline within the chosen deterministic or statistical criterion.</li>
+        </ul>
+
+        <h3>Conservation</h3>
+        <ul class="checklist">
+          <li>Material plus radiation energy ledger closes.</li>
+          <li>Cross-rank pending flux contributions are neither lost nor double-counted.</li>
+          <li>Momentum deposition agrees between serial and MPI decompositions.</li>
+          <li>Russian roulette and splitting preserve expectation.</li>
+        </ul>
+      </section>
+
+      <section id="done" aria-labelledby="done-heading">
+        <h2 id="done-heading">8. Definition of done</h2>
+
+        <ul class="checklist">
+          <li>All critical and high-severity findings in this document are closed or explicitly deferred with the corresponding feature disabled.</li>
+          <li>DDMC face reciprocity is checked in debug builds and passes locally and across ranks.</li>
+          <li>Packets remain resident across DDMC-DDMC transitions.</li>
+          <li>Boundary and transport-interface faces are explicit, not inferred from array bounds.</li>
+          <li>Multigroup coefficients use physical Planck masses and distinct opacity roles.</li>
+          <li>Moving-medium classification uses a documented frame convention.</li>
+          <li>Serial, two-sided, MPI-RMA, OFI, and IBV backends preserve packet state.</li>
+          <li>The required test matrix passes.</li>
+          <li>Unsupported features are rejected clearly and are not presented as implemented.</li>
+          <li>Performance and memory regressions are measured and documented.</li>
+        </ul>
+      </section>
+
+      <section id="agent-notes" aria-labelledby="agent-notes-heading">
+        <h2 id="agent-notes-heading">9. Instructions for the fixing agent</h2>
+
+        <ol class="tight">
+          <li>Resolve the exact branch and compare it with the reviewed commit before editing.</li>
+          <li>Do not copy RICH managers, mesh types, or application-specific logic wholesale.</li>
+          <li>Port the mathematics and state machine into STORM's generic abstractions.</li>
+          <li>Keep each pull request small enough to review independently.</li>
+          <li>Add tests in the same pull request as each behavior change.</li>
+          <li>Do not silence invalid geometry or invalid moving-interface factors.</li>
+          <li>Do not optimize until reciprocity, residence, conservation, and backend parity are established.</li>
+          <li>When a requirement conflicts with current STORM behavior, document the conflict and preserve feature-off compatibility.</li>
+        </ol>
+
+        <div class="callout good">
+          <strong>Recommended first implementation task:</strong>
+          add packet residence state and a pure, unit-tested two-sided face-conductance helper.
+          Those two changes expose most downstream assumptions and make later MPI and interface work reviewable.
+        </div>
+
+        <details>
+          <summary>Suggested code-review checklist for each patch</summary>
+          <ul class="checklist">
+            <li>No hidden use of local indices as stable cross-rank IDs.</li>
+            <li>No face coefficient is constructed from source data alone when target data is required.</li>
+            <li>No packet state is omitted from serialization or raw transfer.</li>
+            <li>No invalid event is converted into <code>DONE</code>.</li>
+            <li>No DDMC-DDMC transition creates a physically meaningful microscopic direction.</li>
+            <li>No feature changes behavior when its flag is disabled.</li>
+          </ul>
+        </details>
+      </section>
+    </main>
+  </div>
+
+  <footer>
+    Generated as an implementation handoff from the STORM IMC/DDMC code review.
+    Review target: connector-visible <code>main</code> at
+    <code>df95ff46531f4220f90f7f5f109fb8c2c13aef4d</code>.
+  </footer>
+</body>
+</html>

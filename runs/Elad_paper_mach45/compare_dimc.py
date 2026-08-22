@@ -9,6 +9,7 @@ jumps coincide.
 Usage:
     python3 compare_dimc.py
     python3 compare_dimc.py mach45_12345_final.txt
+    python3 compare_dimc.py --dir /path/to/mach45-output
 """
 from __future__ import annotations
 
@@ -26,6 +27,27 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 REF_DIMC = os.path.join(HERE, "reference", "fig9b_dimc.csv")
 REF_SN = os.path.join(HERE, "reference", "fig9b_sn.csv")
+SHARED_MACH45_ROOT = "/data/shared/maorm/MC_results/Mach45"
+
+
+def default_profile_directory():
+    """Choose the default shared Mach45 output directory."""
+    output_dir = os.environ.get("RICH_OUTPUT_DIR")
+    if output_dir:
+        return output_dir
+
+    if os.path.isdir(SHARED_MACH45_ROOT):
+        dated_dirs = [
+            os.path.join(SHARED_MACH45_ROOT, name)
+            for name in os.listdir(SHARED_MACH45_ROOT)
+            if re.fullmatch(r"[0-9]{4}-[0-9]{2}-[0-9]{2}(?:_[0-9]{2}-[0-9]{2}-[0-9]{2})?", name)
+            and os.path.isdir(os.path.join(SHARED_MACH45_ROOT, name))
+        ]
+        if dated_dirs:
+            return sorted(dated_dirs)[-1]
+
+    return HERE
+
 
 
 def load_rich(path):
@@ -49,12 +71,13 @@ def load_ref(path):
                 rho=data[:, 3], vx=data[:, 4])
 
 
-def find_profile(explicit=None):
+def find_profile(explicit=None, directory=None):
     if explicit:
         return explicit
-    files = glob.glob(os.path.join(HERE, "*_final.txt"))
-    files += glob.glob(os.path.join(HERE, "*", "*_final.txt"))
-    files += glob.glob(os.path.join(HERE, "*_latest.txt"))
+    directory = default_profile_directory() if directory is None else directory
+    files = glob.glob(os.path.join(directory, "*_final.txt"))
+    files += glob.glob(os.path.join(directory, "*", "*_final.txt"))
+    files += glob.glob(os.path.join(directory, "*_latest.txt"))
     files = [f for f in files if os.path.isfile(f)]
     if not files:
         return None
@@ -74,10 +97,11 @@ def shock_x(prof, rho_lo=1.0, rho_hi=6.43):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("profile", nargs="?", help="RICH Mach-45 profile")
+    parser.add_argument("--dir", dest="directory", help="directory containing RICH Mach-45 profiles")
     parser.add_argument("--output", default=os.path.join(HERE, "compare_dimc.png"))
     args = parser.parse_args()
 
-    path = find_profile(args.profile)
+    path = find_profile(args.profile, args.directory)
     if path is None or not os.path.exists(path):
         print("No RICH Mach-45 profile found. Pass *_final.txt or run the job.", file=sys.stderr)
         sys.exit(1)

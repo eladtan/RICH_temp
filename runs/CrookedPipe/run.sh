@@ -18,9 +18,11 @@ if [[ ! -x ./rich ]]; then
     exit 1
 fi
 
-export RICH_OUTPUT_DIR="/data/shared/maorm/MC_results/CrookedPipe/$(date +%Y-%m-%d)"
-mkdir -p "$RICH_OUTPUT_DIR"
-echo "Simulation output: ${RICH_OUTPUT_DIR}"
+# Particle queues resize repeatedly. Do not let Open MPI/UCX retain the
+# deregistered mappings: the default UCX allowance is 512 MiB per process,
+# which can consume 8 GiB on a 16-rank node after several growth cycles.
+export OMPI_MCA_mpi_leave_pinned=0
+export UCX_IB_RCACHE_MAX_UNRELEASED=0
 
 exec mpirun -np "${SLURM_NTASKS:-512}" ./rich \
-    20000 200 --output "$RICH_OUTPUT_DIR" --ibv
+    20000 100 --cycles 200 --random-walk --manager new-rdma-auto

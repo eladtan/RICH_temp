@@ -18,9 +18,11 @@ if [[ ! -x ./rich ]]; then
     exit 1
 fi
 
-export RICH_OUTPUT_DIR="/data/shared/maorm/MC_results/CrookedPipe/$(date +%Y-%m-%d)"
-mkdir -p "$RICH_OUTPUT_DIR"
-echo "Simulation output: ${RICH_OUTPUT_DIR}"
+output_args=()
+if [[ -n "${CROOKED_PIPE_OUTPUT:-}" ]]; then
+    mkdir -p "$CROOKED_PIPE_OUTPUT"
+    output_args=(--output "$CROOKED_PIPE_OUTPUT")
+fi
 
 exec mpirun -np "${SLURM_NTASKS:-512}" ./rich \
-    20000 200 --output "$RICH_OUTPUT_DIR" --ibv
+    20000 100 --cycles 200 --random-walk --manager new-rdma-auto "${output_args[@]}"

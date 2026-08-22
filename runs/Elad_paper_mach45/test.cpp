@@ -1,6 +1,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <sstream>
 #include <iostream>
 #include <vector>
@@ -11,6 +12,9 @@
 #include "mpi/mpi_commands.hpp"
 #include "misc/mesh_generator3D.hpp"
 #include "3D/tessellation/Voronoi3D.hpp"
+#ifdef RICH_MPI
+#include <MeshDecomposer3D/load_balancing/OneDimensionalLoadBalancer.hpp>
+#endif
 #include "CMMC/src/units/units.hpp"
 #include "newtonian/common/ideal_gas.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
@@ -57,7 +61,7 @@
  * Upstream:    rho = 1 g/cc,    v = 0,              T = 0.1 keV
  * Downstream:  rho = 6.43 g/cc, v = -4.82e8 cm/s,   T = 8.36 keV
  * V_shock:     5.71e8 cm/s
- * Domain:      x in [1950, 2350] cm, 2000 cells (default), shock at x = 2300
+ * Domain:      x in [1950, 2450] cm, 4000 cells (default), shock at x = 2300
  * Runtime:     8e-7 s
  *
  * Usage: mpirun -np N ./test [options] [Np] [prefix] [new/cell] [max/cell]
@@ -270,10 +274,10 @@ int main(int argc, char *argv[])
   try
   {
     ArgumentParser arguments("Mach 45 radiative shock benchmark");
-    arguments.addPositional<size_t>("Np", 2000, "number of cells along x");
+    arguments.addPositional<size_t>("Np", 4000, "number of cells along x");
     arguments.addPositional<std::string>("prefix", "mach45_mc", "output prefix");
-    arguments.addPositional<size_t>("new_photons_per_cell", 100, "new photons per cell per step");
-    arguments.addPositional<size_t>("max_photons_per_cell", 400, "population-control photon cap per cell");
+    arguments.addPositional<size_t>("new_photons_per_cell", 25, "new photons per cell per step");
+    arguments.addPositional<size_t>("max_photons_per_cell", 100, "population-control photon cap per cell");
     arguments.addFlag("resume", "resume from the checkpoint if it exists");
     arguments.addOption<std::string>("profile", "", "analytic profile file for initialization");
     arguments.addOption<std::string>("manager", "new-rdma-auto", "Monte Carlo communication manager")
@@ -357,7 +361,7 @@ int main(int argc, char *argv[])
     double max_speed = std::max(v_up + cs_up, v_dn + cs_dn);
     double max_dt = 0.3 * dx / max_speed;
 
-    constexpr size_t boundaryPhotonsPerCell = 200;
+    constexpr size_t boundaryPhotonsPerCell = 50;
     constexpr bool withHydro = true;
     constexpr bool diffusionPressureGradient = false;
     const bool MMC = false;
@@ -420,6 +424,9 @@ int main(int argc, char *argv[])
 
     // --- Generate mesh & initial conditions (skipped on resume) ---
     Voronoi3D tess(ll, ur);
+#ifdef RICH_MPI
+    tess.PresetLoadBalancer(std::make_shared<OneDimensionalLoadBalancer<Vector3D>>(ll, ur, Axis::X));
+#endif
     std::vector<ComputationalCell3D> initialCells;
     size_t startCycle = 0;
     double simTime = 0;
@@ -596,7 +603,7 @@ int main(int argc, char *argv[])
     auto opacityPtr = std::make_shared<MCPowerLawOpacity>(sigmaA0, sigmaS0, 2, -3.5, 1, 0);
 
     std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond =
-        std::make_shared<TwoSidesTemperature<Vector3D, Tessellation3D>>(
+        std::make_shared<STORM::TwoSidesTemperature<Vector3D, Tessellation3D>>(
             tess, T_up, T_dn, boundaryPhotonsPerCell);
 
     STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> radiationIMCParameters = {
@@ -613,9 +620,9 @@ int main(int argc, char *argv[])
         tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, radiationIMCParameters);
 
     std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
-        std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell, 10);
+        std::make_shared<STORM::CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell, 10);
 
-    size_t initialParticlesPerCell = 200;
+    size_t initialParticlesPerCell = 50;
     std::vector<Particle3D> initialParticles;
     auto mcStep = std::make_shared<RadiationMCStep>(
         tess, cells, extensives, physics, popControl, boundaryCond, initialParticles, initialParticlesPerCell, withHydro
@@ -677,6 +684,72 @@ int main(int argc, char *argv[])
                   << ", manager=" << managerName
                   << (doResume ? ", RESUMED" : "")
                   << std::endl;
+    }
+
+    if(rank == 0)
+    {
+        std::ofstream parameter_file(fs::path(prefix).parent_path() / "mach45_parameters.txt");
+        parameter_file << std::setprecision(17) << std::boolalpha;
+        parameter_file << "# Mach45 runtime parameters" << std::endl;
+        parameter_file << "output_directory=" << fs::path(prefix).parent_path().string() << std::endl;
+        parameter_file << "output_prefix=" << prefix << std::endl;
+        parameter_file << "mpi_ranks=" << ws << std::endl;
+        parameter_file << "mesh_cells_x=" << Np << std::endl;
+        parameter_file << "mesh_cells_y=1" << std::endl;
+        parameter_file << "mesh_cells_z=1" << std::endl;
+        parameter_file << "domain_xmin_cm=" << xmin << std::endl;
+        parameter_file << "domain_xmax_cm=" << xmax << std::endl;
+        parameter_file << "domain_ymin_cm=" << -dy << std::endl;
+        parameter_file << "domain_ymax_cm=" << dy << std::endl;
+        parameter_file << "domain_zmin_cm=" << -dy << std::endl;
+        parameter_file << "domain_zmax_cm=" << dy << std::endl;
+        parameter_file << "domain_length_x_cm=" << domainLength << std::endl;
+        parameter_file << "mesh_dx_cm=" << dx << std::endl;
+        parameter_file << "shock_x_cm=" << shock_x << std::endl;
+        parameter_file << "gamma_gas=" << gamma_gas << std::endl;
+        parameter_file << "Cv_erg_per_g_K=" << Cv << std::endl;
+        parameter_file << "sigma_a_coefficient=" << 0.0142 << std::endl;
+        parameter_file << "sigma_a_rho_exponent=" << 2 << std::endl;
+        parameter_file << "sigma_a_temperature_keV_exponent=" << -3.5 << std::endl;
+        parameter_file << "sigma_s_coefficient=" << 0.4006 << std::endl;
+        parameter_file << "sigma_s_rho_exponent=" << 1 << std::endl;
+        parameter_file << "rho_upstream_g_per_cc=" << rho_up << std::endl;
+        parameter_file << "rho_downstream_g_per_cc=" << rho_dn << std::endl;
+        parameter_file << "T_upstream_keV=" << T_up_keV << std::endl;
+        parameter_file << "T_downstream_keV=" << T_dn_keV << std::endl;
+        parameter_file << "v_upstream_shock_frame_cm_s=" << v_up << std::endl;
+        parameter_file << "v_downstream_shock_frame_cm_s=" << v_dn << std::endl;
+        parameter_file << "v_downstream_lab_cm_s=" << -4.82e8 << std::endl;
+        parameter_file << "shock_speed_cm_s=" << V_shock << std::endl;
+        parameter_file << "t_final_s=" << t_final << std::endl;
+        parameter_file << "cfl_factor=" << 0.3 << std::endl;
+        parameter_file << "max_speed_cm_s=" << max_speed << std::endl;
+        parameter_file << "max_dt_s=" << max_dt << std::endl;
+        parameter_file << "initial_dt_s=" << current_dt << std::endl;
+        parameter_file << "initial_dt_factor=" << 0.001 << std::endl;
+        parameter_file << "timestep_ramp_start_cycle=" << 750 << std::endl;
+        parameter_file << "timestep_ramp_factor=" << 1.01 << std::endl;
+        parameter_file << "dump_interval_cycles=" << dumpInterval << std::endl;
+        parameter_file << "vtk_interval_cycles=" << vtkInterval << std::endl;
+        parameter_file << "new_photons_per_cell=" << newPhotonsPerCell << std::endl;
+        parameter_file << "max_photons_per_cell=" << maxPhotonsPerCell << std::endl;
+        parameter_file << "initial_particles_per_cell=" << initialParticlesPerCell << std::endl;
+        parameter_file << "boundary_photons_per_cell=" << boundaryPhotonsPerCell << std::endl;
+        parameter_file << "population_control_comb_parameter=" << 10 << std::endl;
+        parameter_file << "with_hydro=" << withHydro << std::endl;
+        parameter_file << "diffusion_pressure_gradient=" << diffusionPressureGradient << std::endl;
+        parameter_file << "MMC=" << MMC << std::endl;
+        parameter_file << "multigroup_opacity=" << false << std::endl;
+        parameter_file << "random_walk=" << false << std::endl;
+        parameter_file << "energy_boundary_min=" << 0.0 << std::endl;
+        parameter_file << "energy_boundary_max=" << 1.0e30 << std::endl;
+        parameter_file << "manager=" << managerName << std::endl;
+        parameter_file << "profile_file=" << profileFile << std::endl;
+        parameter_file << "resume=" << doResume << std::endl;
+        parameter_file << "start_cycle=" << startCycle << std::endl;
+        parameter_file << "start_time_s=" << simTime << std::endl;
+        parameter_file.close();
+        std::cout << "Wrote " << fs::path(prefix).parent_path() / "mach45_parameters.txt" << std::endl;
     }
 
     if(!doResume)

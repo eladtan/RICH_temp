@@ -1,5 +1,6 @@
 #include <mpi.h>
 #include <chrono>
+#include <filesystem>
 #include <fstream>
 #include <iostream>
 #include <vector>
@@ -27,12 +28,11 @@
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "3D/monte/Voronoi3DMovement.hpp"
 #include "utils/arguments/ArgumentParser.hpp"
-#include "runs/mc_results_dir.hpp"
 #include "CrookedPipeBoundary.hpp"
 #include "CrookedPipeOpacity.hpp"
 
 std::shared_ptr<RadiationMCStep> mcStep = nullptr;
-bool do_output;
+bool do_output = false;
 
 void Output(const std::string &fname)
 {
@@ -310,23 +310,38 @@ public:
 
     std::vector<double> CalculateCost(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells) const override
     {
-        // const std::vector<double> &factorFlecks = physics->getFactorFleck();
-        // const std::vector<double> &planckOpacities = physics->getPlanckOpacities();
         size_t N = tess.GetPointNo();
-        // weights.resize(N, 1.0);
-        // double weight = static_cast<double>(manager.GetStepCounter()) / N;
-        // for(size_t j = 0; j < N; j++)
-        // {
-        //     // weights[j] = std::max(1., planckOpacities[j] * tess.GetWidth(j) * (1 - factorFlecks[j]));
-        //     weights[j] = weight;
-        // }
-        std::vector<double> weights(N, 0.01);
+        std::vector<double> weights(N, 50.0);
         const std::vector<size_t> &counters = manager->GetCellsStepsCounters();
-        assert(counters.size() == N);
+        const std::vector<size_t> &particleCounts = manager->GetBeginningParticleCount();
+        bool useCounters = counters.size() == N;
+        bool useParticleCounts = particleCounts.size() == N;
+
+        if(!useCounters || !useParticleCounts)
+        {
+            int rank = 0;
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+            if(rank == 0)
+            {
+                std::cout << "WARNING: Rebalance size mismatch: N=" << N
+                          << " counters=" << counters.size()
+                          << " particleCounts=" << particleCounts.size() << std::endl;
+            }
+        }
+
+        constexpr double particleWeight = 10.0;
+        constexpr double countersWeight = 1.0;
 
         for(size_t j = 0; j < N; j++)
         {
-            weights[j] = static_cast<double>(counters[j]);
+            if(useParticleCounts)
+            {
+                weights[j] += particleWeight * static_cast<double>(particleCounts[j]);
+            }
+            if(useCounters)
+            {
+                weights[j] += countersWeight * static_cast<double>(counters[j]);
+            }
         }
         return weights;
     }
@@ -354,8 +369,10 @@ int main(int argc, char *argv[])
         arguments.addPositional<size_t>("points", "number of background mesh points").required();
         arguments.addPositional<size_t>("particles_per_cell", "population-control photon cap per cell").required();
         arguments.addOption<std::string>("output", "", "output directory");
-        arguments.addOption<size_t>("iterations", std::numeric_limits<size_t>::max(), "maximum number of cycles");
-        arguments.addOption<bool>("random-walk", false, "enable random walk acceleration")
+        arguments.addOption<size_t>("cycles", 200, "maximum number of cycles")
+            .optionAlias("iterations");
+        arguments.addFlag("random-walk", "enable random walk acceleration")
+            .defaultValue(true)
             .flagAlias("rw", true)
             .flagAlias("no-rw", false);
         arguments.addOption<std::string>("manager", "new-rdma-auto", "Monte Carlo communication manager")
@@ -390,13 +407,9 @@ int main(int argc, char *argv[])
         size_t N = arguments.get<size_t>("points");
         size_t particlesPerCell = arguments.get<size_t>("particles_per_cell");
         std::string outputDir = arguments.get<std::string>("output");
-        if(outputDir.empty())
-        {
-            outputDir = McResultsDirectory("CrookedPipe");
-        }
-        do_output = true;
+        do_output = !outputDir.empty();
         bool withRandomWalk = arguments.get<bool>("random-walk");
-        size_t iterations = arguments.get<size_t>("iterations");
+        size_t cycles = arguments.get<size_t>("cycles");
         std::string managerName = arguments.get<std::string>("manager");
 
         #ifdef RICH_MPI
@@ -475,12 +488,21 @@ int main(int argc, char *argv[])
             initialCells[i].internal_energy = eos.dT2e(initialCells[i].density, initialCells[i].temperature, initialCells[i].tracers, ComputationalCell3D::tracerNames);
         }
 
-        std::string prefix = outputDir + "/";
-        std::vector<std::string> probeFiles = {prefix + "crookedpipe_probes.txt"};
-        std::vector<std::string> axisFiles = {prefix + "crookedpipe_profile.txt"};
-        EnsureDirectory(outputDir, rank);
+        std::string prefix;
+        std::vector<std::string> probeFiles;
+        std::vector<std::string> axisFiles;
+        if(do_output)
+        {
+            prefix = outputDir + "/";
+            probeFiles = {prefix + "crookedpipe_probes.txt"};
+            axisFiles = {prefix + "crookedpipe_profile.txt"};
+            if(rank == 0)
+            {
+                std::filesystem::create_directories(outputDir);
+            }
+        }
         MPI_Barrier(MPI_COMM_WORLD);
-        if(rank == 0)
+        if(do_output && rank == 0)
         {
             for(size_t i = 0; i < probeFiles.size(); i++)
             {
@@ -491,8 +513,9 @@ int main(int argc, char *argv[])
                       << ", particles/cell=" << particlesPerCell
                       << ", random_walk=" << withRandomWalk
                       << ", manager=" << managerName
-                      << ", iterations=" << iterations
-                      << ", output=" << outputDir
+                      << ", cycles=" << cycles
+                      << ", injected photons/cell=" << particlesPerCell / 4
+                      << ", output=" << (do_output ? outputDir : "<disabled>")
                       << std::endl;
         }
         MPI_Barrier(MPI_COMM_WORLD);
@@ -518,13 +541,14 @@ int main(int argc, char *argv[])
             .withRandomWalk = withRandomWalk,
             .rwMinCellOpticalDepth = 25,
             .energyBoundaries = {0.0, 1.0e30},
-            .energyBoundariesProvided = true
+            .energyBoundariesProvided = true,
+            .postProcess = {}
         };
         std::shared_ptr<MonteCarloRadiationPhysics3D> physics = std::make_shared<::RadiationIMC>(
             tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, params);
 
         std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
-            std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, particlesPerCell, 4);
+            std::make_shared<STORM::CombPopulationControl<Vector3D, Tessellation3D>>(tess, particlesPerCell, 4);
 
         std::vector<Particle3D> initialParticles;
 
@@ -540,24 +564,30 @@ int main(int argc, char *argv[])
             mcStep->setCost(std::make_shared<CrookedPipeCostCalculator>(mcStep->getManager(), physics));
         #endif
 
-        Output(prefix + "start");
+        if(do_output)
+        {
+            Output(prefix + "start");
+        }
 
         double dt = 1e-11;
         double time = 0;
         const double totalTime = 1e-6;
         double max_step = 1e-9;
 
-        AppendProbes(tess, cells, time, sim.GetCycle(), probeFiles);
-        for(size_t i = 0; i < axisFiles.size(); i++)
+        if(do_output)
         {
-            WriteAxisProfile(tess, cells, time, axisFiles[i]);
+            AppendProbes(tess, cells, time, sim.GetCycle(), probeFiles);
+            for(size_t i = 0; i < axisFiles.size(); i++)
+            {
+                WriteAxisProfile(tess, cells, time, axisFiles[i]);
+            }
         }
 
         sim.SetTimeStep(dt);
 
         auto start_total = std::chrono::high_resolution_clock::now();
 
-        while(time < totalTime and sim.GetCycle() < iterations)
+        while(time < totalTime and sim.GetCycle() < cycles)
         {
             auto stepStart = std::chrono::high_resolution_clock::now();
             sim.step();
@@ -572,10 +602,13 @@ int main(int argc, char *argv[])
                 double timeTaken = std::chrono::duration<double>(stepEnd - stepStart).count();
                 std::cout << "Ended Cycle " << sim.GetCycle() << ", dt: " << dt << ", simulation time: " << time << " (" << time / totalTime * 100 << "%), time taken: " << timeTaken << " seconds" << std::endl;
             }
-            AppendProbes(tess, cells, time, sim.GetCycle(), probeFiles);
-            if(sim.GetCycle() % 5 == 0)
+            if(do_output)
             {
-                Output(prefix + std::to_string(sim.GetCycle()));
+                AppendProbes(tess, cells, time, sim.GetCycle(), probeFiles);
+                if(sim.GetCycle() % 5 == 0)
+                {
+                    Output(prefix + std::to_string(sim.GetCycle()));
+                }
             }
 
             MPI_Barrier(MPI_COMM_WORLD);
@@ -588,10 +621,13 @@ int main(int argc, char *argv[])
             std::cout << "Total time taken: " << totalTimeTaken << " seconds" << std::endl;
         }
 
-        Output(prefix + "final");
-        for(size_t i = 0; i < axisFiles.size(); i++)
+        if(do_output)
         {
-            WriteAxisProfile(tess, cells, time, axisFiles[i]);
+            Output(prefix + "final");
+            for(size_t i = 0; i < axisFiles.size(); i++)
+            {
+                WriteAxisProfile(tess, cells, time, axisFiles[i]);
+            }
         }
         mcStep.reset();
     }

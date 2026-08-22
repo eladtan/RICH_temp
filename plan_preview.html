@@ -1,0 +1,782 @@
+<!DOCTYPE html>
+
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta content="width=device-width, initial-scale=1" name="viewport"/><meta content="A staged, risk-controlled plan for integrating RICH_temp Monte Carlo, IMC, DDMC, Compton, observer, and polarization advances into STORM." name="description"/>
+<title>RICH_temp ablation → STORM Monte Carlo / IMC / DDMC Integration Plan</title>
+<style>
+  :root {
+    --bg: #f5f7fb;
+    --paper: #ffffff;
+    --ink: #172033;
+    --muted: #5c677d;
+    --line: #d9dfeb;
+    --blue: #2357a5;
+    --blue-soft: #eaf1fc;
+    --green: #1f6f4a;
+    --green-soft: #eaf7f0;
+    --amber: #945f00;
+    --amber-soft: #fff5dc;
+    --red: #9a2b2b;
+    --red-soft: #fdecec;
+    --purple: #6546a3;
+    --purple-soft: #f1edfb;
+    --code: #111827;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    line-height: 1.55;
+  }
+  a { color: var(--blue); text-underline-offset: 2px; }
+  a:focus-visible, .table-scroll:focus-visible, pre:focus-visible {
+    outline: 3px solid #f6b73c;
+    outline-offset: 3px;
+  }
+  .skip-link {
+    position: fixed;
+    left: 16px;
+    top: 12px;
+    z-index: 1000;
+    transform: translateY(-180%);
+    background: #ffffff;
+    color: #172033;
+    border: 2px solid #172033;
+    border-radius: 8px;
+    padding: 9px 12px;
+    font-weight: 700;
+    text-decoration: none;
+  }
+  .skip-link:focus { transform: translateY(0); }
+  .sr-only {
+    position: absolute !important;
+    width: 1px !important;
+    height: 1px !important;
+    padding: 0 !important;
+    margin: -1px !important;
+    overflow: hidden !important;
+    clip: rect(0, 0, 0, 0) !important;
+    white-space: nowrap !important;
+    border: 0 !important;
+  }
+  code, pre { font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace; }
+  .page { max-width: 1440px; margin: 0 auto; padding: 24px; }
+  header.hero {
+    background: linear-gradient(135deg, #17386f 0%, #295da8 55%, #3c76bc 100%);
+    color: white;
+    padding: 36px 40px;
+    border-radius: 18px;
+    box-shadow: 0 16px 42px rgba(24, 55, 105, .22);
+  }
+  .hero h1 { margin: 0 0 12px; font-size: clamp(28px, 4vw, 48px); line-height: 1.12; }
+  .hero p { margin: 8px 0; max-width: 1050px; font-size: 17px; color: #ffffff; }
+  .badges { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 18px; }
+  .badge { padding: 6px 10px; border-radius: 999px; background: rgba(0,0,0,.18); border: 1px solid rgba(255,255,255,.32); color: #ffffff; font-size: 13px; }
+  .layout { display: grid; grid-template-columns: 275px minmax(0,1fr); gap: 22px; margin-top: 22px; }
+  nav.toc {
+    position: sticky; top: 16px; align-self: start; max-height: calc(100vh - 32px); overflow: auto;
+    background: var(--paper); border: 1px solid var(--line); border-radius: 14px; padding: 16px;
+  }
+  nav.toc h2 { font-size: 15px; margin: 0 0 10px; }
+  nav.toc a { display: block; text-decoration: none; padding: 6px 8px; border-radius: 7px; color: #34405a; font-size: 13px; }
+  nav.toc a:hover { background: var(--blue-soft); color: var(--blue); }
+  main { min-width: 0; }
+  section[id] { scroll-margin-top: 18px; }
+  section {
+    background: var(--paper); border: 1px solid var(--line); border-radius: 14px;
+    padding: 26px 28px; margin-bottom: 20px; box-shadow: 0 5px 18px rgba(30, 45, 75, .045);
+  }
+  h2 { margin: 0 0 16px; font-size: 27px; line-height: 1.2; }
+  h3 { margin-top: 26px; margin-bottom: 10px; font-size: 20px; }
+  h4 { margin-top: 20px; margin-bottom: 7px; font-size: 16px; }
+  p { margin: 10px 0; }
+  ul, ol { padding-left: 22px; }
+  li { margin: 5px 0; }
+  .lead { font-size: 17px; color: #34405a; }
+  .callout { border-left: 5px solid var(--blue); background: var(--blue-soft); padding: 14px 16px; border-radius: 8px; margin: 14px 0; }
+  .callout.good { border-left-color: var(--green); background: var(--green-soft); }
+  .callout.warn { border-left-color: var(--amber); background: var(--amber-soft); }
+  .callout.danger { border-left-color: var(--red); background: var(--red-soft); }
+  .callout.purple { border-left-color: var(--purple); background: var(--purple-soft); }
+  .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 14px; }
+  .grid3 { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 14px; }
+  .card { border: 1px solid var(--line); border-radius: 11px; padding: 15px; background: #fbfcfe; }
+  .card h3, .card h4 { margin-top: 0; }
+  .metric { font-size: 24px; font-weight: 750; color: var(--blue); }
+  .small { font-size: 13px; color: var(--muted); }
+  .table-scroll {
+    max-width: 100%;
+    margin: 14px 0 20px;
+    overflow-x: auto;
+    overscroll-behavior-inline: contain;
+    border-radius: 8px;
+  }
+  table { width: 100%; min-width: 720px; border-collapse: collapse; margin: 0; font-size: 14px; }
+  thead th { text-align: left; background: #eef2f8; color: #26324a; position: sticky; top: 0; z-index: 1; }
+  tbody th { text-align: left; font-weight: 650; background: #ffffff; color: var(--ink); }
+  th, td { padding: 10px 11px; border: 1px solid var(--line); vertical-align: top; }
+  tbody tr:nth-child(even) td,
+  tbody tr:nth-child(even) th { background: #fbfcfe; }
+  .status { display: inline-block; padding: 3px 7px; border-radius: 999px; font-size: 12px; font-weight: 700; white-space: nowrap; }
+  .s-now { background: var(--green-soft); color: var(--green); }
+  .s-next { background: var(--blue-soft); color: var(--blue); }
+  .s-later { background: var(--purple-soft); color: var(--purple); }
+  .s-stop { background: var(--red-soft); color: var(--red); }
+  .s-audit { background: var(--amber-soft); color: var(--amber); }
+  .risk-high { color: var(--red); font-weight: 700; }
+  .risk-med { color: var(--amber); font-weight: 700; }
+  .risk-low { color: var(--green); font-weight: 700; }
+  pre { background: var(--code); color: #e8edf7; padding: 16px; border-radius: 10px; overflow: auto; font-size: 13px; line-height: 1.45; }
+  .path { font-family: "SFMono-Regular", Consolas, monospace; font-size: 12px; color: #38445c; overflow-wrap: anywhere; }
+  .phase { border-left: 6px solid var(--blue); }
+  .phase h3 { color: var(--blue); }
+  .gate { border: 1px dashed #8794ab; background: #f8fafc; padding: 10px 12px; border-radius: 8px; }
+  .mono { font-family: "SFMono-Regular", Consolas, monospace; }
+  footer { color: var(--muted); font-size: 12px; padding: 8px 4px 28px; }
+  @media (prefers-reduced-motion: reduce) {
+    html { scroll-behavior: auto; }
+  }
+  @media (max-width: 1000px) {
+    .layout { grid-template-columns: 1fr; }
+    nav.toc { position: static; max-height: none; }
+    .grid2, .grid3 { grid-template-columns: 1fr; }
+  }
+  @media (max-width: 600px) {
+    .page { padding: 12px; }
+    header.hero { padding: 26px 20px; border-radius: 13px; }
+    .hero p { font-size: 15px; }
+    section { padding: 20px 18px; }
+    h2 { font-size: 24px; }
+    nav.toc { padding: 14px; }
+    table { min-width: 660px; }
+  }
+  @media print {
+    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    body { background: white; }
+    .page { max-width: none; padding: 0; }
+    nav.toc { display: none; }
+    .layout { display: block; }
+    .skip-link { display: none; }
+    header.hero, section { box-shadow: none; }
+    section { border-color: #bbb; break-inside: auto; }
+    .table-scroll { overflow: visible; }
+    table { min-width: 0; font-size: 10pt; }
+    thead { display: table-header-group; }
+    tr, .card, .callout, pre { break-inside: avoid; }
+    h2, h3 { break-after: avoid; }
+    a { color: inherit; text-decoration: none; }
+  }
+</style>
+</head>
+<body><a class="skip-link" href="#main-content">Skip to main content</a>
+<div class="page">
+<header aria-labelledby="report-title" class="hero">
+<h1 id="report-title">Integration Blueprint: RICH_temp <span class="mono">ablation</span> → STORM</h1>
+<p>Detailed, risk-controlled plan for transferring the advanced Monte Carlo radiation stack—IMC, multigroup transport, random-walk/PGRW, DDMC, moving interfaces, Compton, post-processing, polarization, observers, adaptive sources, and associated validation—without overwriting STORM-specific abstractions or its newer communication backends.</p>
+<div aria-label="Report metadata" class="badges" role="group">
+<span class="badge">Source snapshot: eladtan/RICH_temp · ablation · fa715c3</span>
+<span class="badge">Target snapshot: maormizrachi/STORM · main · df95ff4</span>
+<span class="badge">Prepared: 2026-07-20</span>
+<span class="badge">Strategy: staged semantic port, not file copy</span>
+</div>
+</header>
+<div class="layout">
+<nav aria-label="Table of contents" class="toc">
+<h2>Contents</h2>
+<a href="#executive">1. Executive decision</a>
+<a href="#baseline">2. Baseline and caveats</a>
+<a href="#inventory">3. Capability inventory</a>
+<a href="#differences">4. Architectural differences</a>
+<a href="#protected">5. STORM behavior to protect</a>
+<a href="#target">6. Proposed target architecture</a>
+<a href="#filemap">7. File-by-file mapping</a>
+<a href="#sequence">8. Ordered PR sequence</a>
+<a href="#ddmc">9. DDMC work package</a>
+<a href="#mpi">10. MPI/RDMA integration</a>
+<a href="#compton">11. Compton work package</a>
+<a href="#postprocess">12. Post-processing and polarization</a>
+<a href="#tests">13. Validation matrix</a>
+<a href="#risks">14. Risk register</a>
+<a href="#release">15. Release and rollback</a>
+<a href="#dod">16. Definition of done</a>
+<a href="#evidence">17. Evidence inspected</a>
+</nav>
+<main id="main-content" tabindex="-1">
+<section aria-labelledby="executive-heading" id="executive">
+<h2 id="executive-heading">1. Executive decision</h2>
+<p class="lead"><strong>Do not merge or copy RICH’s Monte Carlo directories into STORM wholesale.</strong> Port the radiation physics semantics in small, independently validated increments while retaining STORM’s generic type system, compile-time group count, traits, error handling, manager factory, Serial/Two-Sided/RDMA manager split, and IBV/OFI/MPI-RMA communication work.</p>
+<div class="grid3">
+<div class="card"><div class="metric">Core first</div><p>Conservative static DDMC, packet state, ghost exchange, face rates, and serial/MPI parity.</p></div>
+<div class="card"><div class="metric">Interfaces second</div><p>IMC↔DDMC boundary laws, moving-frame correction, momentum feedback, and diagnostics.</p></div>
+<div class="card"><div class="metric">Optional stacks last</div><p>Compton, observers, polarization, and adaptive post-processing.</p></div>
+</div>
+<div class="callout danger">
+<strong>Main failure mode to avoid:</strong> copying <span class="path">RadiationIMC_DDMC.cpp</span> while leaving STORM’s particle serialization and RDMA buffers unchanged. RICH’s DDMC is stateful across cell and rank boundaries; missing residency/frame/bypass/pending-flux fields can yield plausible-looking but physically wrong transport.
+  </div>
+<h3>Recommended scope split</h3>
+<div aria-labelledby="table-caption-1" class="table-scroll" role="region" tabindex="0"><table><caption class="sr-only" id="table-caption-1">Recommended integration scope and sequencing</caption>
+<thead><tr><th scope="col">Track</th><th scope="col">Contents</th><th scope="col">Priority</th><th scope="col">Boundary</th></tr></thead>
+<tbody>
+<tr><th scope="row"><strong>A. Forward transport core</strong></th><td>Particle state, IMC, PGRW audit, conservative DDMC, static/moving interfaces, MPI ghost data, momentum/energy coupling, diagnostics.</td><td><span class="status s-now">Integrate first</span></td><td>Must remain application-independent.</td></tr>
+<tr><th scope="row"><strong>B. Compton</strong></th><td>Signed packets, frozen matrices, modified Fleck coupling, signed sources, residual child transport, parity and MPI rules.</td><td><span class="status s-next">After DDMC core</span></td><td>Hard-incompatible with DDMC until a separately derived combined method exists.</td></tr>
+<tr><th scope="row"><strong>C. Observer/post-process</strong></th><td>Spherical observer, escape tallies, polarization, adaptive source learning, output adapters.</td><td><span class="status s-later">Optional module</span></td><td>Keep TDE-specific CLI, photosphere workflows, and plotting outside the core library.</td></tr>
+</tbody>
+</table></div>
+</section>
+<section aria-labelledby="baseline-heading" id="baseline">
+<h2 id="baseline-heading">2. Baseline and caveats</h2>
+<div class="grid2">
+<div class="card">
+<h3>Resolved source</h3>
+<p><strong>Repository:</strong> <span class="mono">eladtan/RICH_temp</span></p>
+<p><strong>Branch:</strong> <span class="mono">ablation</span></p>
+<p><strong>Inspected snapshot:</strong> <span class="mono">fa715c3faf0d1602a7f495cefbc3e6811a266c68</span></p>
+</div>
+<div class="card">
+<h3>Resolved target</h3>
+<p><strong>Repository:</strong> <span class="mono">maormizrachi/STORM</span></p>
+<p><strong>Branch used:</strong> <span class="mono">main</span></p>
+<p><strong>Inspected snapshot:</strong> <span class="mono">df95ff46531f4220f90f7f5f109fb8c2c13aef4d</span></p>
+</div>
+</div>
+<div class="callout warn">
+<strong>Unresolved ref:</strong> no accessible remote branch named <span class="mono">submodules_integration</span> or <span class="mono">submodule_integration</span> was found in either inspected repository. The plan therefore targets current STORM <span class="mono">main</span>. Before implementation, record the exact intended target SHA and determine whether the named ref was renamed, merged, local-only, or refers to the extraction history rather than a current branch.
+  </div>
+<h3>What this report did and did not establish</h3>
+<ul>
+<li><strong>Established by source inspection:</strong> current type layouts, parameter surfaces, algorithm structure, boundary hooks, DDMC formulas, MPI ghost exchange needs, test cases, and major commit-level feature history.</li>
+<li><strong>Not established:</strong> successful compilation of the two snapshots in the same environment, bitwise or statistical output equivalence, runtime performance, or hidden local changes.</li>
+<li><strong>Required Phase 0 action:</strong> create immutable source/target tags and a reproducible baseline archive before changing code.</li>
+</ul>
+</section>
+<section aria-labelledby="inventory-heading" id="inventory">
+<h2 id="inventory-heading">3. Capability inventory and gap classification</h2>
+<p>STORM already contains selected earlier ports. The correct task is to identify which target components are complete, partial, stale, or intentionally target-specific.</p>
+<div aria-labelledby="table-caption-2" class="table-scroll" role="region" tabindex="0"><table><caption class="sr-only" id="table-caption-2">Capability inventory and required migration action</caption>
+<thead><tr><th scope="col">Capability</th><th scope="col">RICH ablation</th><th scope="col">STORM main</th><th scope="col">Action</th></tr></thead>
+<tbody>
+<tr><th scope="row">Generic Monte Carlo framework</th><td>Concrete RICH types and older monolithic manager lineage.</td><td>Generic point/grid/cell/extensive/EOS/opacity traits; separate managers and factory.</td><td><span class="status s-stop">Keep STORM</span> Do not port RICH framework classes wholesale.</td></tr>
+<tr><th scope="row">Basic IMC / Fleck transport</th><td>Production implementation with Compton and post-process paths.</td><td>Generic working implementation with recent negative-energy hardening.</td><td><span class="status s-audit">Semantic diff</span> Retain target structure; port missing equations and guards selectively.</td></tr>
+<tr><th scope="row">Random walk / PGRW</th><td>Production PGRW path and split implementation files.</td><td>Already has PGRW data and a self-contained numerical random-walk implementation.</td><td><span class="status s-audit">Numerical parity audit</span> Do not replace by filename.</td></tr>
+<tr><th scope="row">DDMC cell eligibility</th><td>Planck-weighted multigroup data; distinct opacity roles; boundary/observer/source exclusions.</td><td>Minimal eligibility with fewer coefficients and simpler gates.</td><td><span class="status s-now">Replace carefully</span></td></tr>
+<tr><th scope="row">DDMC face leakage</th><td>Two-sided finite-volume resistance; mixed DDMC/transport channels; reciprocity diagnostics.</td><td>Simple harmonic-mean/source-distance rate.</td><td><span class="status s-now">Correctness-critical replacement</span></td></tr>
+<tr><th scope="row">IMC↔DDMC interface</th><td>Static admission/reflection, asymptotic emission, moving Wollaeger correction, local split/remote handling.</td><td>No equivalent full interface state machine.</td><td><span class="status s-now">New target subsystem</span></td></tr>
+<tr><th scope="row">Resident DDMC packet state</th><td>Explicit mode/residency/frame/bypass/pending-flux state.</td><td>Particle lacks DDMC state.</td><td><span class="status s-now">Foundation change</span></td></tr>
+<tr><th scope="row">DDMC MPI ghost metadata</th><td>Exchanges eligibility, diffusion coefficient, opacity, cutoff, velocity, and stable cell ID before rate construction.</td><td>Generic exchange helper exists, but DDMC precompute does not perform the full exchange.</td><td><span class="status s-now">Add DDMC-specific robust exchange</span></td></tr>
+<tr><th scope="row">Zero-owned-cell ranks</th><td>Dedicated symmetric-correspondent logic and regression.</td><td>Not demonstrated for DDMC metadata/flux reduction.</td><td><span class="status s-now">Mandatory regression</span></td></tr>
+<tr><th scope="row">DDMC momentum feedback</th><td>Integrated face-flux RHS, MPI reduction, local matrix solve/fallback, material momentum update.</td><td>Not present in the simple DDMC path.</td><td><span class="status s-next">After transport correctness</span></td></tr>
+<tr><th scope="row">Compton IMC</th><td>Large per-cell matrix/state, signed packets, residual path, diagnostics and explicit constraints.</td><td>Parameters and an empty data placeholder exist, but the option is rejected.</td><td><span class="status s-later">Independent ordered port</span></td></tr>
+<tr><th scope="row">Post-process observer</th><td>Spherical observer, energy ledger, group/polarization tallies, HDF5/VTK/TXT outputs.</td><td>Parameters exist, but post-process is rejected.</td><td><span class="status s-later">Optional module</span></td></tr>
+<tr><th scope="row">Polarization</th><td>Scattering and accelerated-history treatment, observer Stokes statistics.</td><td>Basic optional packet fields exist; pending accelerated history is absent.</td><td><span class="status s-later">After observer abstraction</span></td></tr>
+<tr><th scope="row">Adaptive source learning</th><td>Production controls, per-observer/group statistics, MPI reductions, measured load balancing.</td><td>Some source-score and group-score APIs already exist.</td><td><span class="status s-audit">Reconcile, do not duplicate</span></td></tr>
+</tbody>
+</table></div>
+</section>
+<section aria-labelledby="differences-heading" id="differences">
+<h2 id="differences-heading">4. Architectural differences that make direct copying unsafe</h2>
+<h3>4.1 Concrete RICH types versus generic STORM types</h3>
+<p>RICH’s radiation implementation directly names <span class="mono">Vector3D</span>, <span class="mono">Tessellation3D</span>, <span class="mono">ComputationalCell3D</span>, <span class="mono">Conserved3D</span>, global <span class="mono">ENERGY_GROUPS_NUM</span>, and static cell energy boundaries. STORM’s <span class="mono">RadiationIMC</span> is templated over point, grid, cell, extensives, EOS, group count, traits, and position sampler.</p>
+<div class="callout danger"><strong>Rule:</strong> no source patch may introduce RICH concrete types or <span class="mono">ENERGY_GROUPS_NUM</span> into STORM core headers. Every such dependency must pass through an existing or newly defined trait/concept.</div>
+<h3>4.2 Manager lineage</h3>
+<p>RICH’s current manager code reflects its own MPI/RDMA history. STORM has newer target-specific work: manager factory selection, distinct Serial/Two-Sided/RDMA paths, newer <span class="mono">RankHandler2</span>, registered send buffers, OFI and IBV backends, asynchronous reallocation, and recent deadlock/progress hardening.</p>
+<div class="callout good"><strong>Rule:</strong> port only the manager-facing contract needed by new physics—additional particle fields, child-packet insertion semantics, progress hooks, counters, and reductions. Never replace a STORM manager with the RICH manager.</div>
+<h3>4.3 Packet persistence across transport representations</h3>
+<p>Advanced DDMC is not a stateless shortcut. A packet can remain a grey DDMC resident over multiple events, cross ranks, carry a pending remote flux contribution, bypass DDMC for one target-cell residence, convert between lab/comoving frames, and later return to IMC. These states must survive every copy, move, serialization, reallocation, population-control operation, and communication backend.</p>
+<h3>4.4 Error and boundary semantics</h3>
+<p>RICH uses <span class="mono">UniversalError</span>; STORM uses <span class="mono">StormError</span>. Boundary APIs are already very similar, but numeric nudges differ and STORM has its own geometry checks. Treat the existing STORM boundary implementation as the base and port only missing semantics with regression tests.</p>
+<h3>4.5 Header-heavy template organization</h3>
+<p>RICH can place substantial implementation in concrete <span class="mono">.cpp</span> files. STORM’s generic <span class="mono">RadiationIMC</span> must remain visible to template instantiation. Avoid growing one monolithic header; split implementation into included <span class="mono">.tpp</span> units and keep non-template numerical helpers in isolated headers or compiled sources only when embedding/build rules are proven.</p>
+</section>
+<section aria-labelledby="protected-heading" id="protected">
+<h2 id="protected-heading">5. STORM behavior that must be protected</h2>
+<p>The following target behavior is presumed intentional and must be covered by “unchanged when feature disabled” tests before any radiation port:</p>
+<ul>
+<li><strong>Generic traits and compile-time group count.</strong> Preserve <span class="mono">NumGroups</span>, per-cell access traits, generic point operations, and user-supplied EOS/opacity types.</li>
+<li><strong>Manager architecture.</strong> Preserve Serial, Two-Sided, legacy/RDMA, manager-factory selection, and backend configuration.</li>
+<li><strong>OFI/IBV/MPI-RMA progress and memory-registration work.</strong> New packet fields must integrate with current raw-transfer and registered-buffer paths; no reversion to RICH communication code.</li>
+<li><strong>Negative material-energy hardening.</strong> Keep the current pre-step energy floor/restoration logic and test it with DDMC/Compton energy deposits.</li>
+<li><strong>STORM-specific <span class="mono">ddmcMinParticleOpticalDepth</span>.</strong> RICH’s current public parameter surface differs. Retain this target-specific gate initially, document its interaction with <span class="mono">sigmaParticleGate</span>, and remove or redefine it only after A/B evidence.</li>
+<li><strong>Existing PGRW implementation.</strong> Validate numerical parity; do not replace it simply because RICH splits header and source differently.</li>
+<li><strong>Existing adaptive-source API.</strong> Reconcile with newer RICH controls instead of introducing a second parallel configuration path.</li>
+<li><strong>Boundary nudge and containment safeguards.</strong> Any change must pass Cartesian and distorted-Voronoi containment tests.</li>
+<li><strong>Build defaults.</strong> All new capabilities off by default; plain IMC builds remain dependency-light.</li>
+</ul>
+</section>
+<section aria-labelledby="target-heading" id="target">
+<h2 id="target-heading">6. Proposed target architecture</h2>
+<p>The target should keep <span class="mono">RadiationIMC</span> as the orchestrator but move physics-specific data and algorithms into narrowly scoped components.</p>
+<pre aria-label="6. Proposed target architecture" tabindex="0">radiation/
+  RadiationIMC.hpp                  // public template API and orchestration
+  RadiationIMCParameters.hpp        // backwards-compatible parameter surface
+  detail/
+    RadiationIMCCommon.tpp          // source generation, ordinary IMC
+    RadiationIMCRandomWalk.tpp      // existing RW/PGRW path
+    RadiationIMCDDMC.tpp            // integration glue only
+    RadiationIMCCompton.tpp         // optional glue only
+  ddmc/
+    DDMCTypes.hpp                   // DDMCCellData, DDMCFaceLeak, enums
+    DDMCState.hpp                   // compact packet-state helpers/flags
+    DDMCGeometry.hpp                // distances, conductance, reciprocity
+    DDMCWollaegerInterface.hpp      // pure static/moving interface mathematics
+    DDMCSampling.hpp                // band mass, angular/location sampling
+    DDMCGhostExchange.hpp           // robust local/ghost metadata exchange
+    DDMCDiagnostics.hpp             // counters and event ledger
+  compton/
+    ComptonTypes.hpp
+    ComptonPrecompute.hpp
+    ComptonSignedSource.hpp
+    ComptonResidualTransport.hpp
+    ComptonDiagnostics.hpp
+  postprocess/                      // optional, no TDE driver code
+    Observer.hpp                    // generic observer contract
+    SphericalObserver.hpp/.cpp
+    PostProcessConfig.hpp
+  polarization/                    // optional compile-time feature
+    IMCPolarization.hpp
+particle/
+  RadiationTransportState.hpp       // compact state embedded in Particle
+  Particle.hpp                      // serialization updated explicitly
+tests/radiation/
+  ...</pre>
+<h3>6.1 Compact packet state recommendation</h3>
+<p>Avoid adding many independent booleans with padding. Add a compact state aggregate while keeping the existing <span class="mono">Particle&lt;T, Grid&gt;</span> signature unchanged, minimizing framework churn:</p>
+<pre aria-label="6.1 Compact packet state recommendation" tabindex="0">template&lt;class PointT&gt;
+struct RadiationTransportState {
+    enum Flag : std::uint8_t {
+        DDMCMode          = 1u &lt;&lt; 0,
+        DDMCCellResident  = 1u &lt;&lt; 1,
+        DDMCComovingFrame = 1u &lt;&lt; 2,
+        PendingFlux       = 1u &lt;&lt; 3
+    };
+
+    std::uint8_t flags = 0;
+    PointT pendingFlux{};
+    std::size_t bypassCellID = std::numeric_limits&lt;std::size_t&gt;::max();
+#ifdef MONTECARLO_POLARIZATION
+    double pendingMeanScatterings = 0.0;
+#endif
+};</pre>
+<p>This is safer than introducing a third particle template parameter across every manager during the physics port. After correctness is established, memory profiling can decide whether a policy-based particle type is worth the broader refactor.</p>
+<h3>6.2 Explicit adapter contracts</h3>
+<div aria-labelledby="table-caption-3" class="table-scroll" role="region" tabindex="0"><table><caption class="sr-only" id="table-caption-3">Proposed STORM adapter contracts</caption>
+<thead><tr><th scope="col">Contract</th><th scope="col">Required operations</th><th scope="col">Purpose</th></tr></thead>
+<tbody>
+<tr><th scope="row"><span class="mono">CellTraits</span></th><td>stable ID, temperature, velocity if available, tracers/names, radiation/group energy access.</td><td>Prevents direct RICH cell-field references.</td></tr>
+<tr><th scope="row"><span class="mono">OpacityModel</span></th><td>Planck, absorption by frequency/group, physical scattering, group centers/findGroup, thermal sampling, reseed.</td><td>Supports IMC, PGRW, DDMC, and later Compton without concrete classes.</td></tr>
+<tr><th scope="row"><span class="mono">GridDDMCCapabilities</span></th><td>local/total point counts, stable ghost owner mapping, face geometry, neighbor point data, exchange maps, containment sampling.</td><td>Makes remote DDMC construction explicit and testable.</td></tr>
+<tr><th scope="row"><span class="mono">Observer</span></th><td>next crossing, record crossing, energy ledger, optional reduction/output.</td><td>Separates transport from spherical/TDE-specific output.</td></tr>
+<tr><th scope="row"><span class="mono">TransportVelocityPolicy</span></th><td>lab↔comoving transforms and velocity availability.</td><td>Allows static cells without compiling invalid velocity access.</td></tr>
+</tbody>
+</table></div>
+<h3>6.3 Configuration policy</h3>
+<ul>
+<li>Initially retain the flat public parameter fields for source compatibility.</li>
+<li>Add one central <span class="mono">validateConfiguration()</span> that reports every invalid combination before transport starts.</li>
+<li>Use STORM macros/options in core code. Do not propagate <span class="mono">RICH_IMC_DDMC_ENABLED</span> or concrete RICH build symbols.</li>
+<li>All advanced modes remain opt-in; disabled paths must not allocate large DDMC/Compton/observer state.</li>
+</ul>
+</section>
+<section aria-labelledby="filemap-heading" id="filemap">
+<h2 id="filemap-heading">7. File-by-file semantic mapping</h2>
+<div aria-labelledby="table-caption-4" class="table-scroll" role="region" tabindex="0"><table><caption class="sr-only" id="table-caption-4">Semantic mapping from RICH files to STORM destinations</caption>
+<thead><tr><th scope="col">RICH source</th><th scope="col">STORM destination</th><th scope="col">Port method</th><th scope="col">Do not copy</th></tr></thead>
+<tbody>
+<tr><th class="path" scope="row">source/monte/MonteCarloParticle.hpp</th><td class="path">particle/RadiationTransportState.hpp<br/>particle/Particle.hpp</td><td>Port DDMC and pending-polarization semantics; compact flags; update dump/load and raw-transfer checks.</td><td>RICH serializer classes, debug macros, concrete point assumptions.</td></tr>
+<tr><th class="path" scope="row">source/monte/physics/MonteCarloPhysics.hpp</th><td class="path">physics/MonteCarloPhysics.hpp</td><td>Add only a default no-op progress hook if required by post-process/load-balance workflows.</td><td>RICH status/functionality types or manager coupling.</td></tr>
+<tr><th class="path" scope="row">source/monte/boundary/BoundaryCondition.hpp</th><td class="path">boundary/BoundaryCondition.hpp</td><td>Audit only; most DDMC behavior API already exists. Test nudge differences.</td><td>Blind line sync.</td></tr>
+<tr><th class="path" scope="row">source/3D/radiation/RadiationIMC.hpp</th><td class="path">radiation/RadiationIMC.hpp<br/>radiation/RadiationIMCParameters.hpp</td><td>Map parameters/data through generic aliases and traits; move details into submodules.</td><td><span class="mono">Vector3D</span>, <span class="mono">Tessellation3D</span>, cell statics, global group macro.</td></tr>
+<tr><th class="path" scope="row">source/3D/radiation/RadiationIMC_DDMC.cpp</th><td class="path">radiation/ddmc/*<br/>radiation/detail/RadiationIMCDDMC.tpp</td><td>Re-express algorithm in phases: coefficients, exchange, faces, resident events, interfaces, coupling.</td><td>Monolithic paste into template header.</td></tr>
+<tr><th class="path" scope="row">source/3D/radiation/DDMCWollaegerInterface.hpp</th><td class="path">radiation/ddmc/DDMCWollaegerInterface.hpp</td><td>Near-direct mathematical port under <span class="mono">STORM::ddmc</span>, with unit tests and no RICH includes.</td><td>Namespace/global constants leakage.</td></tr>
+<tr><th class="path" scope="row">source/3D/radiation/RandomWalk.hpp/.cpp</th><td class="path">radiation/RandomWalk.hpp</td><td>Cross-validate tables and sampled distributions; port only proven formula fixes.</td><td>Replacing STORM’s working header-only implementation without evidence.</td></tr>
+<tr><th class="path" scope="row">source/mpi/MPI_Particle3D_dtype.hpp</th><td class="path">particle/Particle.hpp<br/>manager/parallel/*</td><td>Map semantics into STORM serialization and raw RDMA transfer invariants.</td><td>RICH MPI datatype/serializer wiring.</td></tr>
+<tr><th class="path" scope="row">source/3D/radiation/PostProcessIMCHelpers.*</th><td class="path">radiation/postprocess/*</td><td>Port generic validation and generated-packet preparation after core transport.</td><td>TDE runtime globals and CLI assumptions.</td></tr>
+<tr><th class="path" scope="row">source/3D/radiation/SphericalObserver.*</th><td class="path">radiation/postprocess/SphericalObserver.*</td><td>Port behind an observer interface and optional HDF5/VTK adapters.</td><td>Mandatory output dependencies in core.</td></tr>
+<tr><th class="path" scope="row">source/3D/radiation/IMCPolarization.hpp</th><td class="path">radiation/polarization/IMCPolarization.hpp</td><td>Port after packet state and observer basis conventions are fixed.</td><td>Implicit convention changes for Q/U or basis orientation.</td></tr>
+<tr><th class="path" scope="row">runs/imc_postprocess_tde/*</th><td class="path">examples/postprocess_tde/ or external app</td><td>Use as integration examples and reference workflows.</td><td>Application-specific code in STORM library targets.</td></tr>
+<tr><th class="path" scope="row">regression_tests/cases/*ddmc*</th><td class="path">tests/radiation/ddmc/*</td><td>Port physics checks, simplify harness, run against all STORM managers.</td><td>Path/layout assumptions from RICH build system.</td></tr>
+</tbody>
+</table></div>
+</section>
+<section aria-labelledby="sequence-heading" id="sequence">
+<h2 id="sequence-heading">8. Ordered pull-request sequence</h2>
+<p>Each PR should be reviewable on its own, preserve disabled-mode behavior, and contain an explicit rollback point. Do not combine multiple red/high-risk rows.</p>
+<div aria-labelledby="table-caption-5" class="table-scroll" role="region" tabindex="0"><table><caption class="sr-only" id="table-caption-5">Ordered pull-request sequence and acceptance gates</caption>
+<thead><tr><th scope="col">PR</th><th scope="col">Deliverable</th><th scope="col">Dependencies</th><th scope="col">Acceptance gate</th><th scope="col">Explicitly excluded</th></tr></thead>
+<tbody>
+<tr><th scope="row"><strong>PR-00</strong></th><td>Freeze source/target SHAs; create compile/run matrix; capture baseline outputs, seeds, particle counts, energy ledgers, and performance.</td><td>None</td><td>Serial + current MPI managers reproduce current STORM results.</td><td>Physics changes.</td></tr>
+<tr><th scope="row"><strong>PR-01</strong></th><td>Configuration validator, feature capability report, test-only introspection, parameter documentation.</td><td>PR-00</td><td>Every invalid combination fails before preStep with actionable <span class="mono">StormError</span>.</td><td>Enabling rejected features.</td></tr>
+<tr><th scope="row"><strong>PR-02</strong></th><td>Compact radiation packet state; serialization; print/debug; population-control copy preservation; ABI/layout assertions.</td><td>PR-00</td><td>Round-trip equality through serializer, Two-Sided, MPI-RMA, IBV, OFI; all flags/pending vectors survive.</td><td>DDMC algorithm.</td></tr>
+<tr><th scope="row"><strong>PR-03</strong></th><td>Pure DDMC math/types module: Wollaeger kernel, static admission, boundary leak, resistance/conductance, band-mass helpers.</td><td>PR-01</td><td>Deterministic unit tests against RICH reference values; quadrature convergence.</td><td>Integration into transport.</td></tr>
+<tr><th scope="row"><strong>PR-04</strong></th><td>DDMC per-cell precompute: Planck-weighted PGRW, distinct opacity roles, cutoff cap, velocity divergence, eligibility reasons.</td><td>PR-03</td><td>Per-cell golden tables on grey and 30-group cases.</td><td>Remote faces, interfaces.</td></tr>
+<tr><th scope="row"><strong>PR-05</strong></th><td>Robust DDMC ghost metadata exchange with stable IDs and symmetric peer handling.</td><td>PR-02, PR-04</td><td>1/2/4+ ranks, including zero-owned-cell ranks; no hang; ghost fields exact.</td><td>Leakage events.</td></tr>
+<tr><th scope="row"><strong>PR-06</strong></th><td>Conservative face construction: two-sided resistance, mixed channels, boundary exclusions, reciprocity diagnostics.</td><td>PR-05</td><td><span class="mono">V_i λ_ij = V_j λ_ji</span> locally and across ranks; constant field preserved.</td><td>Moving interfaces.</td></tr>
+<tr><th scope="row"><strong>PR-07</strong></th><td>Resident DDMC event loop: absorption, census, upscatter, truncated Planck reconstruction, zero-weight guard, cutoff crossing.</td><td>PR-02, PR-06</td><td>Grey and multigroup Densmore microtests; energy conservation; no stale direction use.</td><td>IMC admission law.</td></tr>
+<tr><th scope="row"><strong>PR-08</strong></th><td>Static IMC↔DDMC interface: frequency eligibility, admission, diffuse rejection, asymptotic DDMC→IMC emission, bypass state.</td><td>PR-07</td><td>Equilibrium-current balance and detailed-balance angular test.</td><td>Velocity correction.</td></tr>
+<tr><th scope="row"><strong>PR-09</strong></th><td>Moving Wollaeger interface: face velocity interpolation, lab/comoving transforms, weight factor, split budget, invalid-factor bypass.</td><td>PR-08</td><td>Moving-interface A/B, homologous redshift, threshold sweep; local/remote split parity.</td><td>Momentum feedback.</td></tr>
+<tr><th scope="row"><strong>PR-10</strong></th><td>DDMC flux and material momentum coupling; pending remote contribution; MPI reduction; matrix solve/fallback.</td><td>PR-05, PR-09</td><td>Momentum ledger closes; MPI and serial agree statistically; no double counting at representation changes.</td><td>Observer-specific tallies.</td></tr>
+<tr><th scope="row"><strong>PR-11</strong></th><td>DDMC diagnostics/event ledger and production test suite; delete or disable legacy simple DDMC after A/B signoff.</td><td>PR-06–10</td><td>Full validation matrix passes; new path default for <span class="mono">withDDMC</span>.</td><td>Compton/post-process.</td></tr>
+<tr><th scope="row"><strong>PR-12</strong></th><td>Random-walk/PGRW parity audit and fixes; shared sampling helpers where justified.</td><td>PR-11</td><td>Distribution tests, RICH cross-checks, no regression in existing examples.</td><td>Compton residual interaction.</td></tr>
+<tr><th scope="row"><strong>PR-13A–13G</strong></th><td>Compton projects: signed foundation → frozen precompute → matrix/Fleck → signed source → residual children → parity → MPI/boundaries.</td><td>PR-02, PR-12</td><td>Acceptance chain in Section 11.</td><td>DDMC+Compton, optional analog mode.</td></tr>
+<tr><th scope="row"><strong>PR-14</strong></th><td>Generic observer contract and spherical observer; post-process packet lifetime and energy ledger.</td><td>PR-02, PR-11</td><td>Angular-uniformity, crossing geometry, energy ledger, MPI reduction.</td><td>Adaptive learning and polarization.</td></tr>
+<tr><th scope="row"><strong>PR-15</strong></th><td>Polarization in ordinary scattering and accelerated histories; observer Stokes output.</td><td>PR-14</td><td>Basis orthogonality, Mueller/Thomson tests, DDMC/RW history tests, MPI serialization.</td><td>Adaptive learning and application-specific output drivers.</td></tr>
+<tr><th scope="row"><strong>PR-16</strong></th><td>Adaptive source/group scoring and measured load-balance adapters.</td><td>PR-14</td><td>Unbiased weighted estimator, cap/fallback diagnostics, MPI reproducibility, load-balance benefit.</td><td>TDE command-line driver.</td></tr>
+</tbody>
+</table></div>
+</section>
+<section aria-labelledby="ddmc-heading" class="phase" id="ddmc">
+<h2 id="ddmc-heading">9. DDMC work package: detailed implementation plan</h2>
+<h3>9.1 Replace the data model before replacing behavior</h3>
+<p>STORM’s current DDMC structures contain only a cell eligibility flag, a few aggregate opacities, total rate, and simple face rates. Introduce richer types first, with no behavior change, so later PRs remain mechanical and reviewable.</p>
+<ul>
+<li><strong>Cell fields:</strong> eligibility and exclusion reason; group cutoff; <span class="mono">sigmaEnergyAbs</span>, <span class="mono">sigmaMomentum</span>, <span class="mono">sigmaDiffusion</span>, <span class="mono">sigmaParticleGate</span>, <span class="mono">sigmaGroupExit</span>; diffusion coefficient; <span class="mono">gamma</span>; velocity divergence; face-velocity jump; flux matrix and area sum.</li>
+<li><strong>Face fields:</strong> face/target index, kind, total/internal/boundary/DDMC/transport rates, band masses, DDMC fraction, area, both center-to-face distances, conductance, target cutoff/eligibility, oriented normal.</li>
+<li><strong>Diagnostics:</strong> explicit counters for exclusion and fallback reasons rather than one aggregate fallback counter.</li>
+</ul>
+<h3>9.2 Coefficient and eligibility precompute</h3>
+<ol>
+<li>Calculate physical scattering and geometry using generic grid operations.</li>
+<li>For multigroup PGRW/DDMC, use actual Planck band integrals—not equal group weights—to find the contiguous low-frequency diffusive band.</li>
+<li>Respect both the source’s compile-time <span class="mono">NumGroups</span> and a runtime maximum cutoff.</li>
+<li>Separate opacity roles. Do not reuse one average for energy deposition, diffusion, momentum, particle gating, and group-exit timing unless the derivation makes them equal.</li>
+<li>Preserve STORM’s particle optical-depth gate as an additional target-specific control until benchmark sweeps justify convergence.</li>
+<li>Compute velocity divergence and maximum face jump only when the cell/traits provide velocities. Static-cell instantiations must compile without fake velocities.</li>
+<li>Finalize all local exclusions—unsupported boundaries, observer overlap, external-source interior/face gates—before exchanging eligibility to ghosts.</li>
+</ol>
+<h3>9.3 Ghost exchange and stable identity</h3>
+<p>Build point-indexed arrays for eligibility, diffusion coefficient, diffusion opacity, cutoff, velocity, and stable cell ID. Exchange them before constructing any local-to-remote face. Never index the local cell vector using an arbitrary ghost point index.</p>
+<div class="gate"><strong>Stop gate:</strong> if STORM’s grid cannot provide an unambiguous owner/local-index mapping for every DDMC-adjacent ghost, do not proceed to face rates. Add that grid capability explicitly.</div>
+<h3>9.4 Conservative face rates</h3>
+<p>For two DDMC cells <span class="mono">i</span> and <span class="mono">j</span> separated by face <span class="mono">F</span>, use the two-sided diffusion resistance:</p>
+<pre aria-label="9.4 Conservative face rates" tabindex="0">R_ij = d_iF / D_i + d_jF / D_j
+T_ij = A_F / R_ij
+lambda_i_to_j = T_ij / V_i</pre>
+<p>Do not use an unweighted harmonic mean divided only by the source-center-to-face distance. Record <span class="mono">T_ij</span> and validate reciprocity in debug/tests.</p>
+<h3>9.5 Unequal group cutoffs</h3>
+<p>A resident grey-band packet has no microscopic group until representation conversion. If the neighbor’s low-frequency DDMC band is smaller, split the face reaction statistically into:</p>
+<ul>
+<li>an internal DDMC channel for the common Planck-band mass, and</li>
+<li>an asymptotic transport channel for the remaining source-band mass.</li>
+</ul>
+<p>The event-rate split must use source-cell truncated Planck mass. At census or conversion back to IMC, sample a frequency from the corresponding truncated Planck distribution.</p>
+<h3>9.6 Resident DDMC lifecycle</h3>
+<ul>
+<li>Define valid state invariants: DDMC mode implies cell resident and comoving-frame state.</li>
+<li>Store DDMC residents at a controlled representative location; when returning to transport, sample a physically valid in-cell location.</li>
+<li>Never Lorentz-transform a stale microscopic direction for ordinary DDMC-to-DDMC leakage.</li>
+<li>Include census, leakage, effective/upscatter, and analytic Doppler cutoff crossing in one event competition.</li>
+<li>Remove zero-weight packets before event sampling, including the case <span class="mono">initialWeight == 0</span>.</li>
+<li>At census, reconstruct microscopic direction/frequency and return to IMC for next-step reclassification unless a formally validated persistent-census representation is adopted.</li>
+</ul>
+<h3>9.7 Static IMC↔DDMC interface</h3>
+<ul>
+<li>Evaluate target frequency eligibility in the target comoving frame.</li>
+<li>Use the asymptotic static admission probability based on incident cosine, target transport opacity, and target center-to-face distance.</li>
+<li>Rejected packets undergo diffuse-albedo reflection and remain in the IMC source cell.</li>
+<li>DDMC→IMC leakage uses the detailed-balance outgoing angular density, not the ordinary cosine law used for unrelated boundary emission.</li>
+<li>Use a bypass stable cell ID to prevent immediate repeated admission attempts after an invalid moving-interface correction.</li>
+</ul>
+<h3>9.8 Moving interface correction</h3>
+<ul>
+<li>Port the exact tabulated Wollaeger kernel with independent quadrature-convergence tests.</li>
+<li>Interpolate material velocity to the face using source/target distances.</li>
+<li>Use the static law for the admission decision; after admission, multiply weight by the moving factor.</li>
+<li>Reject invalid/nonpositive factors and excessive <span class="mono">|U_n|/c</span> by bypassing DDMC for that residence—never silently replace the factor by one.</li>
+<li>Split corrected weight only for local targets and within the configured split budget. A remote target carries one unbiased corrected packet because newly created children cannot be inserted directly into a ghost cell.</li>
+</ul>
+<h3>9.9 Energy and momentum coupling</h3>
+<ul>
+<li>Perform DDMC material absorption in the correct comoving interval, convert the deposited four-momentum consistently, and update STORM extensives only through target-safe helper functions.</li>
+<li>Accumulate face-direction contributions to an integrated flux RHS.</li>
+<li>For a remote admitted packet, carry a pending contribution in the packet and consume it exactly once after ownership transfer.</li>
+<li>Reduce ghost contributions to owners using a peer-symmetric protocol.</li>
+<li>Solve the per-cell face matrix for integrated flux; retain a documented area-weighted fallback for singular geometry and count every fallback.</li>
+<li>Prove there is no double momentum update at IMC↔DDMC representation changes.</li>
+</ul>
+</section>
+<section aria-labelledby="mpi-heading" class="phase" id="mpi">
+<h2 id="mpi-heading">10. MPI, Two-Sided, and RDMA integration</h2>
+<h3>10.1 Packet wire-layout changes</h3>
+<p>STORM’s RDMA path moves contiguous particle objects. Every new member therefore affects registered-buffer size, remote windows, reallocation, and any assumptions about trivial copying.</p>
+<ul>
+<li>Add compile-time assertions for standard layout and trivial copyability in raw-transfer backends.</li>
+<li>Add a startup cross-rank layout fingerprint covering <span class="mono">sizeof</span>, <span class="mono">alignof</span>, polarization macro, and relevant feature macros; abort on mismatch.</li>
+<li>Update explicit serializer dump/load in the exact same field order and test round-trip equality.</li>
+<li>Verify constructors and all reset paths initialize the full radiation state.</li>
+<li>Verify population control, combing, copies, moves, send-buffer detachment, and reallocation preserve state.</li>
+</ul>
+<h3>10.2 Child-packet semantics</h3>
+<p>Moving-interface weight splitting and Compton residual transport create child packets. Confirm each manager’s <span class="mono">particlesToAdd</span> contract:</p>
+<ul>
+<li>Children inserted locally receive unique IDs and valid local cell indices.</li>
+<li>No child is inserted directly into a ghost cell.</li>
+<li>Remote transfers preserve stable cell ID and defer local-only tally application through packet state.</li>
+<li>Termination/accounting counters include dynamically added children without premature global completion.</li>
+</ul>
+<h3>10.3 Do not globally rewrite MPI utilities first</h3>
+<p>The existing generic <span class="mono">MPI_exchange_data</span> helper may be adequate for symmetric decomposition maps but RICH found a specific deadlock mode when peer lists are asymmetric, especially with zero-owned-cell ranks. Implement and test a DDMC-specific symmetric exchange/reduction layer first. Generalize the utility only after proving compatibility with all existing users.</p>
+<h3>10.4 Backend test order</h3>
+<ol>
+<li>Serial manager: deterministic event-level tests.</li>
+<li>Two-Sided manager: easiest MPI debugging and reference distributed result.</li>
+<li>MPI-RMA fallback: raw layout and completion semantics.</li>
+<li>IBV backend: registration/reallocation and completion.</li>
+<li>OFI backend: provider initialization, progress, registration, and Frontier-like multi-node execution.</li>
+</ol>
+<div class="callout warn"><strong>No backend is “covered” by another.</strong> DDMC adds long-lived resident particles, dynamically split packets, and pending owner tallies; these stress progress and buffer-lifetime paths differently from ordinary IMC.</div>
+</section>
+<section aria-labelledby="compton-heading" class="phase" id="compton">
+<h2 id="compton-heading">11. Compton work package</h2>
+<p>Compton is a separate algorithmic integration, not a few extra scattering branches. Follow the dependency chain already documented in RICH.</p>
+<div class="callout danger">
+<strong>Hard configuration rule:</strong> keep <span class="mono">withCompton &amp;&amp; withDDMC</span> invalid. RICH deliberately rejects this combination because explicit group changes destroy DDMC acceleration and a correct batched in-cell frequency propagator requires a separate derivation and validation campaign.
+  </div>
+<div aria-labelledby="table-caption-6" class="table-scroll" role="region" tabindex="0"><table><caption class="sr-only" id="table-caption-6">Compton implementation subprojects and acceptance criteria</caption>
+<thead><tr><th scope="col">Subproject</th><th scope="col">Implementation endpoint</th><th scope="col">Acceptance</th></tr></thead>
+<tbody>
+<tr><th scope="row"><strong>C1. Signed packet foundation</strong></th><td>All transport, removal, boundaries, population control, ledgers, and diagnostics accept positive and negative weights without sign-destroying thresholds.</td><td>No-Compton output unchanged; signed smoke tests conserve energy.</td></tr>
+<tr><th scope="row"><strong>C2. Frozen precompute skeleton</strong></th><td>Per-step group absorption, Planck fractions/CDFs, Planck opacity, base source fractions; inert when disabled.</td><td>Fractions normalize; opacity matches model; no runtime behavior change.</td></tr>
+<tr><th scope="row"><strong>C3. Matrix and Fleck coupling</strong></th><td>Port matrix kernels and derivatives behind a model adapter; compute modified coefficients from frozen state.</td><td>Zero-Compton limit reproduces legacy Fleck and source terms.</td></tr>
+<tr><th scope="row"><strong>C4. Signed group source</strong></th><td>Emit unbiased positive/negative source packets from decomposed group source.</td><td>Material+radiation energy closes at packet birth.</td></tr>
+<tr><th scope="row"><strong>C5. Residual branch transport</strong></th><td>Create residual children with expectation equal to residual matrix action; define low-weight handling.</td><td>Monte Carlo expectation matches deterministic residual for both parent signs.</td></tr>
+<tr><th scope="row"><strong>C6. Deterministic parity harness</strong></th><td>Reconstruct linearized matrix/source from sampled diagnostics.</td><td>Debug parity tolerance achieved on representative cells/groups.</td></tr>
+<tr><th scope="row"><strong>C7. MPI, boundaries, tallies</strong></th><td>Signed state survives every manager; boundary deaths and material deposits use signed conservation; random walk disabled unless residual-equivalent.</td><td>Serial/MPI signed ledgers agree and no sign is lost during transfer.</td></tr>
+<tr><th scope="row"><strong>C8. Optional analog direct Compton</strong></th><td>Physical analog events in addition to residual-only mode.</td><td>Group-transfer expectation tests.</td></tr>
+<tr><th scope="row"><strong>C9. Variance controls</strong></th><td>Splitting/roulette/diagnostics after correctness.</td><td>Unbiased estimator with actionable variance metrics.</td></tr>
+</tbody>
+</table></div>
+<h3>STORM-specific adaptations</h3>
+<ul>
+<li>Replace concrete CMMC includes with a narrow <span class="mono">ComptonKernelModel&lt;NumGroups&gt;</span> adapter.</li>
+<li>Keep group arrays compile-time sized.</li>
+<li>Use traits for old per-group radiation energy. If unavailable, reject induced modes requiring the radiation field rather than fabricating data.</li>
+<li>Freeze all per-step coefficients in <span class="mono">preStep</span>; do not mutate them as packets deposit energy.</li>
+<li>Disable random walk while residual Compton sources are active unless the acceleration method emits mathematically equivalent children.</li>
+<li>Do not enable Compton merely by removing STORM’s current rejection; the placeholder data structure is not an implementation.</li>
+</ul>
+</section>
+<section aria-labelledby="postprocess-heading" class="phase" id="postprocess">
+<h2 id="postprocess-heading">12. Post-processing, observer, polarization, and adaptive sources</h2>
+<h3>12.1 Extract generic functionality from application workflow</h3>
+<p>Port these to STORM core/optional modules:</p>
+<ul>
+<li>finite transport lifetime distinct from source emission interval;</li>
+<li>no-hydro-feedback mode while optionally retaining snapshot velocities for frame transforms;</li>
+<li>observer crossing detection and energy ledger;</li>
+<li>per-observer and per-group tallies;</li>
+<li>generic adaptive source and group-weight interfaces;</li>
+<li>optional HDF5/VTK/TXT output adapters.</li>
+</ul>
+<p>Keep these outside core:</p>
+<ul>
+<li>TDE-specific runtime configuration and filenames;</li>
+<li>CER construction workflow and FLD-normalized source application unless generalized as an external-source interface;</li>
+<li>photosphere pipeline and domain-specific plotting scripts;</li>
+<li>job-launch/Slurm scripts.</li>
+</ul>
+<h3>12.2 Observer abstraction first</h3>
+<p>Define a small observer interface before porting <span class="mono">SphericalObserver</span>. <span class="mono">RadiationIMC</span> should depend on crossing/tally operations, not on output formats, Fibonacci tilings, or a specific observer shape.</p>
+<h3>12.3 Polarization convention lock</h3>
+<ul>
+<li>Document that packet weight is Stokes I and packet Q/U are fractional or absolute—choose one and never mix.</li>
+<li>Document basis orientation, observer reference axis, pole fallback, and lab/comoving basis transforms.</li>
+<li>Add <span class="mono">pendingMeanScatterings</span> to packet state and serialization before accelerated transport uses polarization.</li>
+<li>Split accelerated treatment into per-step history accumulation and finalization on representation exit, preserving history across DDMC cells.</li>
+<li>Test basis transversality after every direction/frame change.</li>
+</ul>
+<h3>12.4 Adaptive source reconciliation</h3>
+<p>STORM already exposes adaptive cell/group score controls. Compare semantics and extend the existing API rather than adding RICH-named duplicates. Required additions may include learned minimum/maximum photons, score power, per-observer/group quality snapshots, and richer cap/fallback diagnostics.</p>
+<div class="callout warn"><strong>Bias gate:</strong> any capped importance-weight correction must report capped energy fraction and mark the estimator potentially biased. Do not hide caps as a performance optimization.</div>
+<h3>12.5 Measured load balance</h3>
+<p>Expose transport cost data through a neutral manager/physics interface. Do not port RICH’s decomposition driver into STORM core. A consuming application may use steps per emitted packet, source-cell charge after clamping, or other measured costs to rebuild the mesh.</p>
+</section>
+<section aria-labelledby="tests-heading" id="tests">
+<h2 id="tests-heading">13. Validation matrix and quantitative gates</h2>
+<h3>13.1 Required test dimensions</h3>
+<div aria-labelledby="table-caption-7" class="table-scroll" role="region" tabindex="0"><table><caption class="sr-only" id="table-caption-7">Required validation dimensions</caption>
+<thead><tr><th scope="col">Dimension</th><th scope="col">Cases</th></tr></thead>
+<tbody>
+<tr><th scope="row">Transport mode</th><td>ordinary IMC; grey RW; multigroup PGRW; grey DDMC; multigroup DDMC; Compton without acceleration; post-process; polarization.</td></tr>
+<tr><th scope="row">Geometry</th><td>1-D Cartesian; regular Voronoi; distorted Voronoi; moving slab; homologous expansion; exact material interface.</td></tr>
+<tr><th scope="row">Boundary</th><td>vacuum, rigid reflecting, temperature source, moving source, unsupported face exclusion, external thermalizing source.</td></tr>
+<tr><th scope="row">Manager/backend</th><td>Serial, Two-Sided, MPI-RMA, IBV, OFI.</td></tr>
+<tr><th scope="row">Rank topology</th><td>1, 2, 4, and a rank count producing one or more zero-owned-cell ranks; local and cross-rank interfaces.</td></tr>
+<tr><th scope="row">Build</th><td>Release, Debug assertions, ASan/UBSan where compatible, polarization on/off, HDF5/VTK on/off.</td></tr>
+<tr><th scope="row">Groups</th><td>1, small synthetic multigroup, and 30-group Densmore-style setup.</td></tr>
+</tbody>
+</table></div>
+<h3>13.2 Physics invariants</h3>
+<ul>
+<li><strong>Energy ledger:</strong> material + live packets + census + escaped/observed/cutoff terms equals initial + emitted source within statistical/numerical tolerance.</li>
+<li><strong>Signed energy:</strong> use signed sums and absolute diagnostic sums separately; no accidental <span class="mono">abs(weight)</span> in conservation.</li>
+<li><strong>DDMC diffusion:</strong> pure scattering gives <span class="mono">&lt;r²&gt; = 6Dt</span> with <span class="mono">D = c/(3σ_s)</span>.</li>
+<li><strong>Constant field:</strong> preserve a constant solution on regular and distorted Voronoi meshes.</li>
+<li><strong>Reciprocity:</strong> local and cross-rank <span class="mono">V_i λ_ij = V_j λ_ji</span>.</li>
+<li><strong>Interface balance:</strong> static IMC-DDMC equilibrium current has no jump beyond tolerance.</li>
+<li><strong>Moving interface:</strong> moving-factor A/B test, no invalid factor substitution, threshold sweep at 3, 5, 10, 15, 30.</li>
+<li><strong>Frame handling:</strong> ordinary DDMC-to-DDMC leakage introduces no extra Lorentz shift; divergence redshift matches analytic homologous result.</li>
+<li><strong>Containment:</strong> every transport packet is in its declared cell after nudge/conversion; DDMC representative locations are explicitly exempt only while resident.</li>
+<li><strong>Zero-weight termination:</strong> no infinite scatter loop for zero initial/current weight.</li>
+</ul>
+<h3>13.3 Suggested benchmark suite</h3>
+<div aria-labelledby="table-caption-8" class="table-scroll" role="region" tabindex="0"><table><caption class="sr-only" id="table-caption-8">Suggested benchmark suite and pass criteria</caption>
+<thead><tr><th scope="col">Benchmark</th><th scope="col">Purpose</th><th scope="col">Pass criterion</th></tr></thead>
+<tbody>
+<tr><th scope="row">Existing STORM Marshak 1–4</th><td>Feature-off and ordinary IMC non-regression; negative-energy behavior.</td><td>Baseline profile/statistics within predefined seed-aware tolerance.</td></tr>
+<tr><th scope="row">STORM Densmore 2012</th><td>MC baseline and initial DDMC integration.</td><td>MC unchanged; DDMC approaches reference and MC as threshold increases.</td></tr>
+<tr><th scope="row">Centered Densmore MC/DDMC pair</th><td>Expose exact interface and mixed-channel behavior.</td><td>No artificial interface jump; event ledger explains differences.</td></tr>
+<tr><th scope="row">Pure-scattering packet cloud</th><td>Diffusion coefficient and spatial moments.</td><td>Mean-square radius and distribution within statistical confidence.</td></tr>
+<tr><th scope="row">DDMC moving-interface A/B</th><td>Wollaeger correction.</td><td>Admitted-weight ratio matches independent kernel calculation.</td></tr>
+<tr><th scope="row">DDMC MPI zero-cell</th><td>Peer symmetry, ghost data, transfer, flux reduction.</td><td>No hang; exact state transfer; reciprocity and energy ledger close.</td></tr>
+<tr><th scope="row">Moving slab</th><td>Frame transforms and Doppler cutoff.</td><td>Analytic/transport comparison and manager parity.</td></tr>
+<tr><th scope="row">Compton cell tests</th><td>Matrix/Fleck/source/residual parity.</td><td>Deterministic matrix and Monte Carlo expectations agree.</td></tr>
+<tr><th scope="row">Observer isotropy</th><td>Direction sampling and patch area.</td><td>Uniform solid-angle statistics; no angular aliasing.</td></tr>
+<tr><th scope="row">Polarized Thomson scatter</th><td>Q/U and basis convention.</td><td>Known angular/polarization distributions and basis orthogonality.</td></tr>
+</tbody>
+</table></div>
+<h3>13.4 Performance gates</h3>
+<ul>
+<li>Plain IMC runtime and memory must not regress materially when advanced features are disabled.</li>
+<li>Report packet bytes before/after the state extension and total registered-buffer impact.</li>
+<li>DDMC must reduce event count/runtime in optically thick cases without exceeding the agreed error/interface-jump budget.</li>
+<li>Ghost metadata precompute should scale with neighboring ranks/faces, not all global cells.</li>
+<li>Wollaeger table construction occurs once per process and is measured separately from transport.</li>
+<li>Track compile-time growth from template decomposition.</li>
+</ul>
+</section>
+<section aria-labelledby="risks-heading" id="risks">
+<h2 id="risks-heading">14. Risk register</h2>
+<div aria-labelledby="table-caption-9" class="table-scroll" role="region" tabindex="0"><table><caption class="sr-only" id="table-caption-9">Integration risk register</caption>
+<thead><tr><th scope="col">Risk</th><th scope="col">Severity</th><th scope="col">Likely symptom</th><th scope="col">Mitigation / gate</th></tr></thead>
+<tbody>
+<tr><th scope="row">Concrete RICH assumptions leak into generic STORM</th><td class="risk-high">High</td><td>Only Voronoi/RICH cell builds compile.</td><td>Concept/traits compile tests with both Cartesian and Voronoi mock cells.</td></tr>
+<tr><th scope="row">Particle state omitted from one communication path</th><td class="risk-high">High</td><td>Rank-dependent bias, lost DDMC residency, double tally.</td><td>State-pattern round trips through every manager/backend.</td></tr>
+<tr><th scope="row">Raw RDMA layout mismatch across ranks/options</th><td class="risk-high">High</td><td>Memory corruption or silent field shifts.</td><td>Layout fingerprint handshake and trivial-layout assertions.</td></tr>
+<tr><th scope="row">Ghost index used as local cell index</th><td class="risk-high">High</td><td>Partition-dependent crash or wrong target properties.</td><td>Stable-ID arrays; zero-cell and cross-rank interface tests.</td></tr>
+<tr><th scope="row">Asymmetric MPI peer list</th><td class="risk-high">High</td><td>Hang in indexed exchange/reduction.</td><td>Symmetric DDMC correspondent construction and timeout tests.</td></tr>
+<tr><th scope="row">Legacy face rate retained accidentally</th><td class="risk-high">High</td><td>Factor-of-two diffusion error/interface jump.</td><td>Reciprocity unit test and uniform-mesh analytic rate test.</td></tr>
+<tr><th scope="row">Incorrect frame conversion at DDMC transitions</th><td class="risk-high">High</td><td>Spectral bias and momentum non-conservation.</td><td>Explicit representation state machine and analytic moving tests.</td></tr>
+<tr><th scope="row">Moving factor treated as probability</th><td class="risk-high">High</td><td>Probability &gt;1 clipping and bias.</td><td>Static admission then weight correction; dedicated unit test.</td></tr>
+<tr><th scope="row">Child split into ghost target</th><td class="risk-high">High</td><td>Invalid local insertion or lost packets.</td><td>Remote targets force one corrected packet; manager assertion.</td></tr>
+<tr><th scope="row">Compton sign lost in threshold/population control</th><td class="risk-high">High</td><td>Energy creation/destruction.</td><td>Signed packet foundation before any matrix port.</td></tr>
+<tr><th scope="row">DDMC + Compton enabled prematurely</th><td class="risk-high">High</td><td>Biased frequency diffusion or no acceleration.</td><td>Central hard error and configuration test.</td></tr>
+<tr><th scope="row">Observer/post-process dependencies pollute core</th><td class="risk-med">Medium</td><td>HDF5/VTK required for ordinary STORM builds.</td><td>Observer interface and optional adapters.</td></tr>
+<tr><th scope="row">Header growth degrades build time</th><td class="risk-med">Medium</td><td>Very slow/redundant template compilation.</td><td>Included .tpp modules, pure helper isolation, compile-time measurements.</td></tr>
+<tr><th scope="row">Changing boundary nudge breaks geometry</th><td class="risk-med">Medium</td><td>Out-of-cell particles or repeated intersections.</td><td>Do not sync constants blindly; containment regression.</td></tr>
+<tr><th scope="row">Adaptive weight cap introduces hidden bias</th><td class="risk-med">Medium</td><td>Stable-looking but biased observer results.</td><td>Report capped energy and explicit potential-bias flag.</td></tr>
+<tr><th scope="row">Tests compare noisy single-seed values</th><td class="risk-med">Medium</td><td>Flaky CI or false confidence.</td><td>Separate deterministic microtests from statistical ensemble tests.</td></tr>
+</tbody>
+</table></div>
+</section>
+<section aria-labelledby="release-heading" id="release">
+<h2 id="release-heading">15. Release, feature flags, and rollback strategy</h2>
+<h3>15.1 Feature flags</h3>
+<ul>
+<li><span class="mono">withDDMC</span>: after PR-11, selects the conservative path.</li>
+<li>Temporary <span class="mono">ddmcImplementation = Legacy|Conservative</span> may be used only during A/B validation; remove it after signoff to avoid two permanent algorithms.</li>
+<li><span class="mono">withCompton</span>: remains rejected until C1–C7 are complete.</li>
+<li><span class="mono">postProcess.enabled</span>: remains rejected until observer/post-process core is complete.</li>
+<li>Polarization stays compile-time gated and runtime validated.</li>
+</ul>
+<h3>15.2 Merge discipline</h3>
+<ul>
+<li>One high-risk semantic change per PR.</li>
+<li>Every PR includes an “unchanged paths” section and before/after test table.</li>
+<li>No PR removes the old behavior until the replacement has passed serial, Two-Sided, and at least one RDMA backend.</li>
+<li>Keep source SHAs and copied mathematical formulas in code comments for auditability, but rewrite code into STORM abstractions.</li>
+<li>Use deterministic microtests as merge blockers; run expensive statistical/multi-node suites nightly or before release.</li>
+</ul>
+<h3>15.3 Rollback points</h3>
+<ol>
+<li>After packet-state plumbing, before physics.</li>
+<li>After static conservative DDMC, before moving interfaces.</li>
+<li>After moving interfaces, before momentum coupling.</li>
+<li>After forward core, before Compton.</li>
+<li>After observer core, before adaptive source/load balancing.</li>
+</ol>
+</section>
+<section aria-labelledby="dod-heading" id="dod">
+<h2 id="dod-heading">16. Definition of done</h2>
+<p>The integration is complete only when all statements below are true:</p>
+<ol>
+<li>Current ordinary STORM IMC examples and communication backends remain supported and pass feature-off regression tests.</li>
+<li>STORM’s generic Cartesian and Voronoi instantiations compile without RICH concrete types.</li>
+<li>Conservative DDMC uses two-sided resistance and validated mixed-band interface handling.</li>
+<li>DDMC packet representation state survives serialization, Two-Sided, MPI-RMA, IBV, OFI, population control, splitting, and reallocation.</li>
+<li>Static and moving IMC-DDMC interfaces pass detailed-balance and moving-interface validation.</li>
+<li>Zero-owned-cell MPI ranks do not hang and produce correct ghost metadata, packet transfer, and flux reduction.</li>
+<li>Energy and momentum ledgers close within declared tolerances in serial and distributed runs.</li>
+<li>DDMC and PGRW show an acceleration benefit on thick benchmarks without exceeding the error budget.</li>
+<li>Compton remains hard-incompatible with DDMC unless a future, separately reviewed derivation changes that rule.</li>
+<li>When Compton is enabled, signed source/residual tests and deterministic parity pass on all supported managers.</li>
+<li>Post-processing and polarization are optional modules and do not add mandatory dependencies to ordinary STORM builds.</li>
+<li>Application-specific TDE/CER workflows are either outside core or behind explicit reusable interfaces.</li>
+<li>Public documentation lists every supported/unsupported feature combination and the validated benchmark envelope.</li>
+</ol>
+</section>
+<section aria-labelledby="evidence-heading" id="evidence">
+<h2 id="evidence-heading">17. Evidence inspected</h2>
+<p class="small">This is a source-review plan, not a runtime certification. The following high-value files and histories informed it.</p>
+<div class="grid2">
+<div class="card">
+<h3>RICH_temp / ablation</h3>
+<ul class="small">
+<li class="path">source/3D/radiation/RadiationIMC.hpp</li>
+<li class="path">source/3D/radiation/RadiationIMC.cpp</li>
+<li class="path">source/3D/radiation/RadiationIMC_DDMC.cpp</li>
+<li class="path">source/3D/radiation/DDMCWollaegerInterface.hpp</li>
+<li class="path">docs/radiation/ddmc_wollaeger_interface.md</li>
+<li class="path">source/monte/MonteCarloParticle.hpp</li>
+<li class="path">source/monte/physics/MonteCarloPhysics.hpp</li>
+<li class="path">source/monte/manager/MonteCarloManager.hpp</li>
+<li class="path">source/monte/boundary/BoundaryCondition.hpp</li>
+<li class="path">source/3D/radiation/PostProcessIMCHelpers.hpp</li>
+<li class="path">source/3D/radiation/SphericalObserver.hpp</li>
+<li class="path">imc_compton_subprojects/README.md and project files</li>
+<li class="path">regression_tests/cases and tests for DDMC interfaces/zero-cell ranks</li>
+</ul>
+</div>
+<div class="card">
+<h3>STORM / main</h3>
+<ul class="small">
+<li class="path">radiation/RadiationIMC.hpp</li>
+<li class="path">radiation/RadiationIMCParameters.hpp</li>
+<li class="path">radiation/RandomWalk.hpp</li>
+<li class="path">particle/Particle.hpp</li>
+<li class="path">particle/StepResult.hpp</li>
+<li class="path">physics/MonteCarloPhysics.hpp</li>
+<li class="path">boundary/BoundaryCondition.hpp</li>
+<li class="path">utils/MpiExchangeGrid.hpp</li>
+<li class="path">manager/parallel/RDMAMonteCarloManager.hpp</li>
+<li class="path">manager/parallel/TwoSidedMonteCarloManager.hpp</li>
+<li class="path">manager/MonteCarloManagerFactory.hpp</li>
+<li class="path">CMakeLists.txt and examples/CMakeLists.txt</li>
+<li class="path">existing Marshak, Densmore, moving-slab examples</li>
+</ul>
+</div>
+</div>
+<h3>Important RICH development milestones reviewed</h3>
+<ul class="small">
+<li><span class="mono">edab380</span> — PGRW introduction.</li>
+<li><span class="mono">207553f</span> — DDMC and post-processing integration.</li>
+<li><span class="mono">a60901c</span> — polarization support.</li>
+<li><span class="mono">e2abefb</span> — Wollaeger moving-interface correction and MPI-safe eligibility exchange.</li>
+<li><span class="mono">d7c1ffa</span> — multigroup grey-band DDMC corrections.</li>
+<li><span class="mono">3b0c79e</span> — moving-interface and zero-owned-cell MPI regressions.</li>
+<li><span class="mono">b86752a</span> — one-sided thermalizing DDMC external-source boundary.</li>
+<li><span class="mono">d90254c</span> — ghost cell ID resolution fix.</li>
+<li><span class="mono">2c4a158</span> — CER/source decoupling and measured load-balance fix.</li>
+</ul>
+</section>
+</main>
+</div>
+<footer aria-label="Report provenance note">
+  Prepared as a cautious source-level integration blueprint. Exact target/source SHAs should be tagged before implementation, and every phase should be revalidated against the live repositories if either branch advances.
+</footer>
+</div>
+</body>
+</html>

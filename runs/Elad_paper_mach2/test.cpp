@@ -13,6 +13,9 @@
 #include "mpi/mpi_commands.hpp"
 #include "misc/mesh_generator3D.hpp"
 #include "3D/tessellation/Voronoi3D.hpp"
+#ifdef RICH_MPI
+#include <MeshDecomposer3D/load_balancing/OneDimensionalLoadBalancer.hpp>
+#endif
 #include "CMMC/src/units/units.hpp"
 #include "newtonian/common/ideal_gas.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
@@ -435,6 +438,9 @@ int main(int argc, char *argv[])
 
     // --- Generate mesh & initial conditions (skipped on resume) ---
     Voronoi3D tess(ll, ur);
+#ifdef RICH_MPI
+    tess.PresetLoadBalancer(std::make_shared<OneDimensionalLoadBalancer<Vector3D>>(ll, ur, Axis::X));
+#endif
     std::vector<ComputationalCell3D> initialCells;
     size_t startCycle = 0;
     double simTime = 0;
@@ -535,7 +541,7 @@ int main(int argc, char *argv[])
     auto opacityPtr = std::make_shared<MCPowerLawOpacity>(sigmaA0, 0, 1, -3.5, 0, 0);
 
     std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond =
-        std::make_shared<TwoSidesTemperature<Vector3D, Tessellation3D>>(
+        std::make_shared<STORM::TwoSidesTemperature<Vector3D, Tessellation3D>>(
             tess, T_up, T_dn, boundaryPhotonsPerCell);
 
     STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> radiationIMCParameters = {
@@ -552,7 +558,7 @@ int main(int argc, char *argv[])
         tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, radiationIMCParameters);
 
     std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
-        std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell, 10);
+        std::make_shared<STORM::CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell, 10);
 
     std::vector<Particle3D> initialParticles;
     constexpr size_t initialParticlesPerCell = 50;
