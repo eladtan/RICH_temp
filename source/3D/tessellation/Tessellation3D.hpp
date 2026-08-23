@@ -10,6 +10,8 @@
 #include <chrono>
 #include <algorithm>
 #include <numeric>
+#include <limits>
+#include <utility>
 #include <vector>
 #include <boost/container/small_vector.hpp>
 #include "../elementary/Face.hpp"
@@ -268,6 +270,16 @@ public:
   virtual bool BoundaryFace(size_t index) const = 0;
 
   virtual bool IsPointInCell(const Vector3D &point, size_t cellIndex, bool verbose = false) const = 0;
+
+  /*! \brief Returns whether a point is inside a cell and, if not, the first neighboring cell across a violated face.
+   *  The default is a safe unsupported-operation result for non-Voronoi tessellations.
+   */
+  virtual std::pair<bool, size_t> FindViolatedFaceNeighbor(const Vector3D &point, size_t cellIndex) const
+  {
+    (void)point;
+    (void)cellIndex;
+    return {false, std::numeric_limits<size_t>::max()};
+  }
 
   #ifdef RICH_MPI
     /*!

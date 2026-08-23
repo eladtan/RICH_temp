@@ -32,7 +32,7 @@
 #include "monte/population/CombPopulationControl.hpp"
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 
-#include "3D/monte/Voronoi3DMovement.hpp"
+#include "3D/monte/STORMVoronoi3DMovement.hpp"
 #include "HohlraumOpacity.hpp"
 #include "HohlraumBoundary.hpp"
 #include "utils/debug/vtune.h"
