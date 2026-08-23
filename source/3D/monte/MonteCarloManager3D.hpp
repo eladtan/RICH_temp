@@ -1,6 +1,8 @@
 #ifndef MONTECARLO_MANAGER_3D_HPP
 #define MONTECARLO_MANAGER_3D_HPP
 
+#include <cassert>
+
 #ifdef STORM_WITH_MPI
 #include "monte/manager/parallel/MonteCarloManagerLegacy.hpp"
 #include "monte/manager/parallel/RDMAMonteCarloManager.hpp"
@@ -164,6 +166,56 @@ public:
     inline size_t GetHandlerMemoryBytes(void) const override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetHandlerMemoryBytes();};
 
     std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
+};
+
+template<typename Physics>
+class StaticPhysicsRDMAMonteCarloManager3D
+    : public RDMAMonteCarloManager<Vector3D, Tessellation3D, Physics>,
+      public MonteCarloManager3D
+{
+    using Base = RDMAMonteCarloManager<Vector3D, Tessellation3D, Physics>;
+    using MCParticle = MonteCarloParticle<Vector3D>;
+
+public:
+    StaticPhysicsRDMAMonteCarloManager3D(
+        const Tessellation3D &grid,
+        const std::shared_ptr<Physics> &physics,
+        const std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> &populationControl,
+        const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition,
+        const MonteCarloConfig &config = MonteCarloConfig(),
+        const MPI_Comm &comm = MPI_COMM_WORLD,
+        RDMA_Type rdmaType = RDMA_Type::AUTO_RDMA)
+        : Base(grid, physics, populationControl, boundaryCondition,
+               config, comm, rdmaType)
+    {}
+
+    const std::vector<size_t> &GetCellsStepsCounters(void) const override { return Base::GetCellsStepsCounters(); }
+    std::vector<size_t> &GetCellsStepsCounters(void) override { return Base::GetCellsStepsCounters(); }
+    const std::vector<size_t> &GetCellsParticleCounters(void) const override { return Base::GetCellsParticleCounters(); }
+    size_t GetStartParticleCount(void) const override { return Base::GetStartParticleCount(); }
+    size_t GetInitialParticleCount(void) const override { return Base::GetInitialParticleCount(); }
+    size_t GetPreStepParticleCount(void) const override { return Base::GetPreStepParticleCount(); }
+    size_t GetEndParticleCount(void) const override { return Base::GetEndParticleCount(); }
+    double GetPureComputeTime(void) const override { return Base::GetPureComputeTime(); }
+    const std::vector<size_t> &GetBeginningParticleCount(void) const override { return Base::GetBeginningParticleCount(); }
+    std::vector<size_t> &GetBeginningParticleCount(void) override { return Base::GetBeginningParticleCount(); }
+    size_t GetHandlerMemoryBytes(void) const override { return Base::GetHandlerMemoryBytes(); }
+
+    std::vector<MCParticle> step(
+        std::vector<MCParticle> &&particleList,
+        const std::vector<ComputationalCell3D> &cells,
+        dt_t fullDt) override
+    {
+        std::vector<MCParticle> newParticles =
+            Base::step(std::move(particleList), fullDt);
+        for(MCParticle &particle : newParticles)
+        {
+            size_t cellIndex = particle.cellIndex;
+            assert(cells.size() > cellIndex);
+            particle.cellID = cells[cellIndex].ID;
+        }
+        return newParticles;
+    }
 };
 
 

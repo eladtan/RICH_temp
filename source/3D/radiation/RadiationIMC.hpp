@@ -290,7 +290,7 @@ struct RICHRadiationPositionSampler
     }
 };
 
-class RadiationIMC : public MonteCarloRadiationPhysics3D
+class RadiationIMC final : public MonteCarloRadiationPhysics3D
 {
 public:
     using Particle = STORM::Particle<Vector3D>;
