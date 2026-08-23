@@ -234,6 +234,11 @@ public:
         return engine_.IsPointInCell(point, cellIndex, verbose);
     }
 
+    std::pair<bool, size_t> FindViolatedFaceNeighbor(const Vector3D& point, size_t cellIndex) const override
+    {
+        return engine_.FindViolatedFaceNeighbor(point, cellIndex);
+    }
+
     size_t GetTotalPointNumber(void) const override { return engine_.GetTotalPointNumber(); }
 
     vector<Vector3D>& GetAllCM(void) override { return engine_.GetAllCM(); }

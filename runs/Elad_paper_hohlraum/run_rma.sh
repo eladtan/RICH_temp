@@ -10,6 +10,9 @@
 # srun ulimit -c unlimited
 
 srun --ntasks-per-node=1 systemctl start drop-caches
+export RICH_OUTPUT_DIR="/data/shared/maorm/MC_results/Hohlraum/$(date +%Y-%m-%d)"
+mkdir -p "$RICH_OUTPUT_DIR"
+echo "Simulation output: ${RICH_OUTPUT_DIR}"
 mpirun ./rich 0.03 --mpi-rma \
     > >(tee "hohlraum_RMA_${SLURM_JOB_ID}_n${SLURM_NTASKS}.out") \
     2> >(tee "hohlraum_RMA_${SLURM_JOB_ID}_n${SLURM_NTASKS}.err" >&2)

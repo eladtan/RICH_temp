@@ -21,6 +21,7 @@
 #include "monte/boundary/SideTemperature.hpp"
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "utils/arguments/ArgumentParser.hpp"
+#include "runs/mc_results_dir.hpp"
 
 // Diffusion includes
 #include "Radiation/Diffusion.hpp"
@@ -99,6 +100,14 @@ int main(int argc, char *argv[])
 
     size_t Nx = arguments.get<size_t>("Nx");
     std::string prefix = arguments.get<std::string>("prefix");
+    if(prefix.find('/') == std::string::npos)
+    {
+        prefix = McResultsDirectory("Marshak") + "/" + prefix;
+    }
+    EnsureParentDirectory(prefix, rank);
+#ifdef RICH_MPI
+    MPI_Barrier(MPI_COMM_WORLD);
+#endif
     size_t Ny = arguments.get<size_t>("Ny");
     size_t Nz = arguments.get<size_t>("Nz");
     std::string mode = arguments.get<std::string>("mode");

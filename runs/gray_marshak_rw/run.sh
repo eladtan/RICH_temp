@@ -9,7 +9,12 @@ export OMPI_MCA_btl="^openib"
 export OMPI_MCA_osc="ucx"
 ml ucx/1.15.0
 which mpirun
+
+export RICH_OUTPUT_DIR="/data/shared/maorm/MC_results/GrayMarshak/$(date +%Y-%m-%d)"
+mkdir -p "$RICH_OUTPUT_DIR"
+echo "Simulation output: ${RICH_OUTPUT_DIR}"
+
 echo "=== RW ON ==="
-mpirun ./rich 128 output/gray_rw 50 50 1
+mpirun ./rich 128 "${RICH_OUTPUT_DIR}/gray_rw" 50 50 1
 echo "=== RW OFF ==="
-mpirun ./rich 128 output/gray_norw 50 50 0
+mpirun ./rich 128 "${RICH_OUTPUT_DIR}/gray_norw" 50 50 0

@@ -28,7 +28,7 @@
 #include "newtonian/three_dimensional/conserved_3d.hpp"
 #include "3D/radiation/MonteCarloPhysics3D.hpp"
 #include "3D/monte/MonteCarloManager3D.hpp"
-#include "3D/monte/Voronoi3DMovement.hpp"
+#include "3D/monte/STORMVoronoi3DMovement.hpp"
 #include "monte/population/PopulationControl.hpp"
 #include "monte/boundary/BoundaryCondition.hpp"
 #include "monte/boundary/RigidBoundary.hpp"

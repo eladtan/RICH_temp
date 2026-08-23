@@ -12,7 +12,7 @@
 #include "3D/radiation/PowerLawOpacity.hpp"
 #include "monte/population/CombPopulationControl.hpp"
 #include "monte/boundary/SideTemperature.hpp"
-#include "monte/Voronoi3DMovement.hpp"
+#include "3D/monte/STORMVoronoi3DMovement.hpp"
 
 using namespace STORM;
 #include "3D/output/write3D.hpp"

@@ -4,7 +4,7 @@
 #include "PhysicsStep.hpp"
 #include "newtonian/three_dimensional/CostCalculator3D.hpp"
 #include "3D/radiation/MonteCarloPhysics3D.hpp"
-#include "3D/monte/Voronoi3DMovement.hpp"
+#include "3D/monte/STORMVoronoi3DMovement.hpp"
 #include "3D/monte/MonteCarloManager3D.hpp"
 
 #ifdef RICH_MPI

@@ -33,8 +33,10 @@ T_UP = 0.122   # keV
 T_DN = 0.253   # keV
 RHO_UP = 1.0   # g/cc
 RHO_DN = 2.29  # g/cc
-V_UP = 3.4616e7  # cm/s, upstream velocity in shock frame (rightward)
-V_DN = 1.5116e7  # cm/s, downstream velocity in shock frame (rightward)
+V_UP = 3.4616e7       # cm/s, stationary shock frame
+V_DN = 1.5116e7       # cm/s, stationary shock frame
+PAPER_SHOCK = -0.1730126582  # x-coordinate of the digitized Fig. 9(a) jump
+DEFAULT_PAPER_DATA = Path(__file__).with_name("paper_fig9a.csv")
 
 
 def load_profile(filepath):
@@ -64,25 +66,37 @@ def load_profile(filepath):
     )
 
 
+def load_paper_data(filepath=DEFAULT_PAPER_DATA):
+    """Load the digitized magenta analytic curves from Fig. 9(a)."""
+    data = np.loadtxt(filepath, delimiter=",", comments="#")
+    return dict(
+        x=data[:, 0],
+        T_gas=data[:, 1],
+        T_rad=data[:, 2],
+        rho=data[:, 3],
+        vx=data[:, 4],
+        path=str(filepath),
+    )
+
+
 def find_shock_position(prof):
-    """Locate shock front as the steepest density gradient,
-    excluding boundary cells where ghost-cell artifacts can dominate."""
+    """Locate the physical shock using the density midpoint.
+
+    A late-time radiative shock is broad, and small boundary waves can have a
+    steeper individual cell-to-cell gradient than the shock itself.
+    """
     rho = prof["rho"]
     x = prof["x"]
     margin = max(10, len(rho) // 50)
-    drho = np.abs(np.diff(rho))
-    drho[:margin] = 0
-    drho[-margin:] = 0
-    idx = np.argmax(drho)
-    return 0.5 * (x[idx] + x[idx + 1])
+    valid = np.arange(margin, len(rho) - margin)
+    target = 0.5 * (RHO_UP + RHO_DN)
+    idx = valid[np.argmin(np.abs(rho[valid] - target))]
+    return x[idx]
 
 
 def find_profile_files(directory="."):
-    """Find all mach2 profile .txt files."""
-    patterns = [
-        os.path.join(directory, "mach2_mc_?????.txt"),
-        os.path.join(directory, "*_?????.txt"),
-    ]
+    """Find the current run's initial/final profiles and numbered dumps."""
+    patterns = [os.path.join(directory, "mach2_storm_?????.txt")]
     files = set()
     for pat in patterns:
         files.update(glob.glob(pat))
@@ -106,7 +120,8 @@ def compute_mach2_analytic(x_plot, x_shock_plot):
     avoid stack-overflow in the Noebauer class hierarchy).
 
     Returns dict with 'T_gas' (keV), 'T_rad' (keV), 'rho' (g/cc),
-    'vx' (cm/s, shock frame with rightward flow).
+    and lab-frame 'vx' (cm/s). The returned analytic coordinate is in
+    the paper convention: upstream on the left, downstream on the right.
     """
     import scipy.optimize
     import scipy.integrate
@@ -287,10 +302,10 @@ def compute_mach2_analytic(x_plot, x_shock_plot):
     T_rad_keV = th_full * T_UP
     rho_dim = rho_full * RHO_UP
 
-    # Velocity in the shock frame (shock stationary, fluid flows rightward)
+    # The benchmark is plotted in the stationary shock frame, as in Fig. 9(a).
     v_shock = M0 * cs_left / rho_full
     vx_dim = np.interp(np.asarray(x_plot), x_dim, v_shock,
-                        left=M0 * cs_left, right=M0 * cs_left / rho1)
+                       left=V_UP, right=V_DN)
 
     x_arr = np.asarray(x_plot)
     return dict(
@@ -301,7 +316,8 @@ def compute_mach2_analytic(x_plot, x_shock_plot):
     )
 
 
-def plot_mach2(profiles, outfile="mach2_figure9.png", wide=False):
+def plot_mach2(profiles, outfile="mach2_figure9.png", wide=False,
+               paper_path=DEFAULT_PAPER_DATA):
     """
     Plot T_gas, T_rad, density, velocity vs x.
     Style follows Figure 9(a) of arXiv:2108.13453.
@@ -315,9 +331,8 @@ def plot_mach2(profiles, outfile="mach2_figure9.png", wide=False):
     cmap = plt.cm.viridis
     n = len(profiles)
 
-    x_shock = 0.0
-    if not wide and profiles:
-        x_shock = find_shock_position(profiles[-1])
+    simulation_shock = find_shock_position(profiles[-1]) if profiles else 0.0
+    x_shock = PAPER_SHOCK if profiles else 0.0
 
     for i, prof in enumerate(profiles):
         color = cmap(0.15 + 0.7 * i / max(n - 1, 1)) if n > 1 else "C0"
@@ -327,12 +342,27 @@ def plot_mach2(profiles, outfile="mach2_figure9.png", wide=False):
             t_str = Path(prof["path"]).stem
         lw = 1.6 if n <= 5 else 1.0
 
-        x = prof["x"]
+        x = prof["x"] + (PAPER_SHOCK - simulation_shock)
 
         ax_Tg.plot(x, prof["T_gas"], color=color, lw=lw, label=t_str)
         ax_Tr.plot(x, prof["T_rad"], color=color, lw=lw, label=t_str)
         ax_rho.plot(x, prof["rho"], color=color, lw=lw, label=t_str)
         ax_vx.plot(x, prof["vx"] / 1e7, color=color, lw=lw, label=t_str)
+
+    # The paper's panel uses the opposite x orientation from the simulation:
+    # upstream is on the left and downstream on the right. Reflect the
+    # digitized reference around the measured simulation shock before plotting.
+    try:
+        paper = load_paper_data(paper_path)
+        paper_x = paper["x"]
+        paper_kw = dict(color="black", ls=":", lw=1.4, alpha=0.9,
+                        label="Paper Fig. 9(a), digitized")
+        ax_Tg.plot(paper_x, paper["T_gas"], **paper_kw)
+        ax_Tr.plot(paper_x, paper["T_rad"], **paper_kw)
+        ax_rho.plot(paper_x, paper["rho"], **paper_kw)
+        ax_vx.plot(paper_x, -paper["vx"] / 1e7, **paper_kw)
+    except Exception as e:
+        print(f"Warning: could not load paper reference: {e}")
 
     ref_kw = dict(color="gray", ls="--", lw=0.7, alpha=0.5)
     for ax in (ax_Tg, ax_Tr):
@@ -350,10 +380,10 @@ def plot_mach2(profiles, outfile="mach2_figure9.png", wide=False):
         xlim = (x_shock - margin, x_shock + margin)
 
     # --- Analytical solution on all panels ---
-    shock_pos = find_shock_position(profiles[-1]) if profiles else 0.0
+    shock_pos = x_shock
     try:
         x_fine = np.linspace(xlim[0] - 0.05, xlim[1] + 0.05, 2000)
-        analytic = compute_mach2_analytic(x_fine, shock_pos)
+        analytic = compute_mach2_analytic(x_fine, PAPER_SHOCK)
         akw = dict(ls='-', lw=2, zorder=0)
         ax_Tg.plot(x_fine, analytic['T_gas'], color='magenta', **akw,
                    label=r'Analytic $T_m$')
@@ -371,7 +401,7 @@ def plot_mach2(profiles, outfile="mach2_figure9.png", wide=False):
     ax_Tg.set(ylabel=r"$T_{\mathrm{mat}}$ (keV)", title="(a) Material temperature")
     ax_Tr.set(ylabel=r"$T_{\mathrm{rad}}$ (keV)", title="(b) Radiation temperature")
     ax_rho.set(ylabel=r"$\rho$ (g/cc)", title="(c) Density")
-    ax_vx.set(ylabel=r"$v_x$ ($10^7$ cm/s)", title="(d) Velocity")
+    ax_vx.set(ylabel=r"$-v_x$ ($10^7$ cm/s)", title="(d) Velocity")
 
     for ax in axes.flat:
         ax.set_xlabel("x (cm)")
@@ -397,6 +427,8 @@ def main():
     directory = "."
     explicit_files = []
     wide = False
+    outfile = "mach2_figure9.png"
+    paper_path = DEFAULT_PAPER_DATA
 
     args = sys.argv[1:]
     i = 0
@@ -407,6 +439,12 @@ def main():
         elif args[i] == "--wide":
             wide = True
             i += 1
+        elif args[i] == "--output" and i + 1 < len(args):
+            outfile = args[i + 1]
+            i += 2
+        elif args[i] == "--paper" and i + 1 < len(args):
+            paper_path = args[i + 1]
+            i += 2
         else:
             explicit_files.append(args[i])
             i += 1
@@ -417,7 +455,7 @@ def main():
         files = find_profile_files(directory)
         if not files:
             print(f"No profile files found in {directory}")
-            print("Usage: python plot_mach2.py [file1.txt ...] [--dir path] [--wide]")
+            print("Usage: python plot_mach2.py [file1.txt ...] [--dir path] [--wide] [--output file]")
             sys.exit(1)
 
         profiles = [load_profile(f) for f in files]
@@ -426,7 +464,7 @@ def main():
             t_str = f"t = {p['t_ns']:.3f} ns" if p["t_ns"] is not None else "t = ?"
             print(f"  {Path(p['path']).name:30s}  {t_str}")
 
-    plot_mach2(profiles, wide=wide)
+    plot_mach2(profiles, outfile=outfile, wide=wide, paper_path=paper_path)
 
 
 if __name__ == "__main__":
