@@ -24,7 +24,7 @@ using STORM::TwoSidedMonteCarloManager;
 
 class MonteCarloManager3D
 {
-    using MCParticle = MonteCarloParticle<Vector3D, Tessellation3D>;
+    using MCParticle = MonteCarloParticle<Vector3D>;
 
 public:
     virtual ~MonteCarloManager3D() = default;
@@ -60,7 +60,7 @@ public:
 
 class MonteCarloManagerSerial3D : public MonteCarloManagerSerial<Vector3D, Tessellation3D>, public MonteCarloManager3D
 {
-    using MCParticle = MonteCarloParticle<Vector3D, Tessellation3D>;
+    using MCParticle = MonteCarloParticle<Vector3D>;
 
 public:
     MonteCarloManagerSerial3D(const Tessellation3D &grid, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics,
@@ -94,7 +94,7 @@ public:
 
 class RDMAMonteCarloManagerLegacy3D : public MonteCarloManagerLegacy<Vector3D, Tessellation3D>, public MonteCarloManager3D
 {
-    using MCParticle = MonteCarloParticle<Vector3D, Tessellation3D>;
+    using MCParticle = MonteCarloParticle<Vector3D>;
 
 public:
     RDMAMonteCarloManagerLegacy3D(const Tessellation3D &grid, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics,
@@ -131,7 +131,7 @@ public:
 
 class RDMAMonteCarloManager3D : public RDMAMonteCarloManager<Vector3D, Tessellation3D>, public MonteCarloManager3D
 {
-    using MCParticle = MonteCarloParticle<Vector3D, Tessellation3D>;
+    using MCParticle = MonteCarloParticle<Vector3D>;
 
 public:
     RDMAMonteCarloManager3D(const Tessellation3D &grid, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics,
@@ -169,7 +169,7 @@ public:
 
 class TwoSidedMonteCarloManager3D : public TwoSidedMonteCarloManager<Vector3D, Tessellation3D>, public MonteCarloManager3D
 {
-    using MCParticle = MonteCarloParticle<Vector3D, Tessellation3D>;
+    using MCParticle = MonteCarloParticle<Vector3D>;
 
 public:
     TwoSidedMonteCarloManager3D(const Tessellation3D &grid, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics,

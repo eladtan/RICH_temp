@@ -44,7 +44,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
     size_t Ncells = runtime.nCells;
 
     ForwardPostprocessResult result;
-            using Particle3D = MonteCarloParticle<Vector3D, Tessellation3D>;
+            using Particle3D = MonteCarloParticle<Vector3D>;
 
             bool const measuredLBActive =
                 cfg.measuredLoadBalance && (cfg.adaptiveSourceCells || cfg.nGenerations > 1);

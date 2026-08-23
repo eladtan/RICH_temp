@@ -17,9 +17,9 @@ public:
     HohlraumBoundary(const Grid &grid, const std::vector<ComputationalCell3D> &cells,
                      double temperature, size_t Npercell);
 
-    MonteCarloParticleStatus apply(MonteCarloParticle<T, Grid> &particle) override;
+    MonteCarloParticleStatus apply(MonteCarloParticle<T> &particle) override;
 
-    std::vector<MonteCarloParticle<T, Grid>> generateNewBoundaryParticles(double fullDt) override;
+    std::vector<MonteCarloParticle<T>> generateNewBoundaryParticles(double fullDt) override;
 
 private:
     const std::vector<ComputationalCell3D> &cells;
@@ -36,20 +36,20 @@ HohlraumBoundary<T, Grid>::HohlraumBoundary(const Grid &grid,
 {}
 
 template<typename T, typename Grid>
-MonteCarloParticleStatus HohlraumBoundary<T, Grid>::apply(MonteCarloParticle<T, Grid> &particle)
+MonteCarloParticleStatus HohlraumBoundary<T, Grid>::apply(MonteCarloParticle<T> &particle)
 {
     // All boundaries are vacuum: remove every particle that reaches the boundary
     return MonteCarloParticleStatus::REMOVE;
 }
 
 template<typename T, typename Grid>
-std::vector<MonteCarloParticle<T, Grid>> HohlraumBoundary<T, Grid>::generateNewBoundaryParticles(double fullDt)
+std::vector<MonteCarloParticle<T>> HohlraumBoundary<T, Grid>::generateNewBoundaryParticles(double fullDt)
 {
     const double T4 = boost::math::pow<4>(this->temperature);
     std::uniform_real_distribution<double> unif(0, 1);
     static std::mt19937_64 re(0);
 
-    std::vector<MonteCarloParticle<T, Grid>> newParticles;
+    std::vector<MonteCarloParticle<T>> newParticles;
     size_t N = this->grid.GetPointNo();
     const auto &[ll, ur] = this->grid.GetBoxCoordinates();
 
@@ -70,7 +70,7 @@ std::vector<MonteCarloParticle<T, Grid>> HohlraumBoundary<T, Grid>::generateNewB
                     for(size_t j = 0; j < this->Npercell; j++)
                     {
                         newParticles.emplace_back();
-                        MonteCarloParticle<T, Grid> &newParticle = newParticles.back();
+                        MonteCarloParticle<T> &newParticle = newParticles.back();
                         newParticle.location = STORM::RandomPointOnFace<T, Grid>(this->grid, faceIdx);
                         double mu = std::sqrt(unif(re));
                         // Lambert emission into -x direction (into the hohlraum)

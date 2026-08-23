@@ -18,7 +18,7 @@
 class OpacityCalculator
 {
 public:
-    using MCParticle = MonteCarloParticle<Vector3D, Tessellation3D>;
+    using MCParticle = MonteCarloParticle<Vector3D>;
 
     OpacityCalculator()
     {
@@ -64,9 +64,30 @@ public:
                         mu) * units::clight;
     }
 
+    virtual Vector3D getRandomVelocity(ComputationalCell3D const& /*cell*/,
+                                       double directionRandom1,
+                                       double directionRandom2) const
+    {
+        double const mu = 1.0 - 2.0 * directionRandom1;
+        double const phi = 2.0 * std::acos(-1.0) * directionRandom2;
+        double const sinTheta = std::sqrt(std::max(0.0, 1.0 - mu * mu));
+        return Vector3D(sinTheta * std::cos(phi),
+                        sinTheta * std::sin(phi), mu) * units::clight;
+    }
+
     virtual Vector3D getNewScatterVelocity(ComputationalCell3D const& cell, MCParticle& particle) const
     {
         return getRandomVelocity(cell);
+    }
+
+    virtual Vector3D getNewScatterVelocity(ComputationalCell3D const& cell,
+                                           MCParticle& particle,
+                                           double directionRandom1,
+                                           double directionRandom2) const
+    {
+        (void) particle;
+        return getRandomVelocity(
+            cell, directionRandom1, directionRandom2);
     }
 
     std::size_t findGroup(double energy) const

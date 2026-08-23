@@ -260,8 +260,8 @@ class GreyThermalizationProbePhysics
     : public MonteCarloPhysics<Vector3D, Tessellation3D>
 {
 public:
-    using Particle = MonteCarloParticle<Vector3D, Tessellation3D>;
-    using Functionality = MonteCarloFunctionality<Vector3D, Tessellation3D>;
+    using Particle = MonteCarloParticle<Vector3D>;
+    using Functionality = MonteCarloFunctionality;
     using BoundaryCond = BoundaryCondition<Vector3D, Tessellation3D>;
 
     GreyThermalizationProbePhysics(

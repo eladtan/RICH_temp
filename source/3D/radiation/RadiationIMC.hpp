@@ -62,26 +62,24 @@ public:
     }
 
     Vector3D getRandomVelocity(const ComputationalCell3D &cell,
-                               std::mt19937_64 &rng,
-                               std::uniform_real_distribution<double> &dist) override
+                               double directionRandom1,
+                               double directionRandom2) override
     {
-        (void) rng;
-        (void) dist;
-        return this->opacity_->getRandomVelocity(cell);
+        return this->opacity_->getRandomVelocity(
+            cell, directionRandom1, directionRandom2);
     }
 
     Vector3D getNewScatterVelocity(const ComputationalCell3D &cell,
                                    const Vector3D &oldVelocity,
                                    double frequency,
-                                   std::mt19937_64 &rng,
-                                   std::uniform_real_distribution<double> &dist) override
+                                   double directionRandom1,
+                                   double directionRandom2) override
     {
-        (void) rng;
-        (void) dist;
-        STORM::Particle<Vector3D, Tessellation3D> particle;
+        STORM::Particle<Vector3D> particle;
         particle.velocity = oldVelocity;
         particle.frequency = frequency;
-        return this->opacity_->getNewScatterVelocity(cell, particle);
+        return this->opacity_->getNewScatterVelocity(
+            cell, particle, directionRandom1, directionRandom2);
     }
 
     bool ComptonIncludedInTransport() const override
@@ -295,8 +293,8 @@ struct RICHRadiationPositionSampler
 class RadiationIMC : public MonteCarloRadiationPhysics3D
 {
 public:
-    using Particle = STORM::Particle<Vector3D, Tessellation3D>;
-    using Functionality = STORM::StepResult<Vector3D, Tessellation3D>;
+    using Particle = STORM::Particle<Vector3D>;
+    using Functionality = STORM::StepResult;
     using BoundaryCond = STORM::BoundaryCondition<Vector3D, Tessellation3D>;
     using GroupArray = std::array<double, ENERGY_GROUPS_NUM>;
     using Impl = STORM::RadiationIMC<Vector3D,

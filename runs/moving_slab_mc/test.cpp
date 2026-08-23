@@ -198,7 +198,7 @@ public:
     {
     }
 
-    MonteCarloParticleStatus apply(MonteCarloParticle<Vector3D, Tessellation3D> &particle) override
+    MonteCarloParticleStatus apply(MonteCarloParticle<Vector3D> &particle) override
     {
         const auto &[ll, ur] = this->grid.GetBoxCoordinates();
 
@@ -250,7 +250,7 @@ public:
         exit(1);
     }
 
-    std::vector<MonteCarloParticle<Vector3D, Tessellation3D>>
+    std::vector<MonteCarloParticle<Vector3D>>
     generateNewBoundaryParticles(double /*fullDt*/) override
     {
         return {};
@@ -463,7 +463,7 @@ int main(int argc, char *argv[])
         auto popControl =
             std::make_shared<NoPopulationControl<Vector3D, Tessellation3D>>(tess);
 
-        std::vector<MonteCarloParticle<Vector3D, Tessellation3D>> emptyParticles;
+        std::vector<MonteCarloParticle<Vector3D>> emptyParticles;
         auto mcStep = std::make_shared<RadiationMCStep>(
             tess, cells, extensives, physics, popControl, boundaryCond,
             emptyParticles, 0, true

@@ -10,7 +10,7 @@
 #include "../vectorData.hpp"
 #include "3D/tessellation/Tessellation3D.hpp"
 
-using Particle3D = MonteCarloParticle<Vector3D, Tessellation3D>;
+using Particle3D = MonteCarloParticle<Vector3D>;
 
 #define PARTICLES_DATASET_NAME "particles"
 

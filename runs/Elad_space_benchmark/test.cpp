@@ -35,7 +35,7 @@
 #include "utils/arguments/ArgumentParser.hpp"
 #include "utils/debug/vtune.h"
 
-using Particle3D = MonteCarloParticle<Vector3D, Tessellation3D>;
+using Particle3D = MonteCarloParticle<Vector3D>;
 
 class TransparentOpacity : public OpacityCalculator
 {
@@ -75,7 +75,7 @@ template<typename T, typename Grid>
 class IdentityPopulationControl : public PopulationControl<T, Grid>
 {
 public:
-    using Particle = MonteCarloParticle<T, Grid>;
+    using Particle = MonteCarloParticle<T>;
 
     explicit IdentityPopulationControl(const Grid &grid)
         : PopulationControl<T, Grid>(grid)

@@ -18,8 +18,8 @@
 class MonteCarloRadiationPhysics3D : public STORM::MonteCarloPhysics<Vector3D, Tessellation3D>
 {
 public:
-    using Particle = STORM::Particle<Vector3D, Tessellation3D>;
-    using Functionality = STORM::StepResult<Vector3D, Tessellation3D>;
+    using Particle = STORM::Particle<Vector3D>;
+    using Functionality = STORM::StepResult;
     using BoundaryCond = STORM::BoundaryCondition<Vector3D, Tessellation3D>;
 
     MonteCarloRadiationPhysics3D(Tessellation3D &grid, const std::shared_ptr<BoundaryCond> &boundary, std::vector<ComputationalCell3D> &cells, std::vector<Conserved3D> &conserved, std::shared_ptr<EquationOfState> eos, std::shared_ptr<OpacityCalculator> opacity);

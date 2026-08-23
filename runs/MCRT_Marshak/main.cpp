@@ -45,7 +45,7 @@ int main(int argc, char *argv[])
 
     MonteCarloManagerSerial<Vector3D, Tessellation3D> manager(tess, physics, popControl, boundaryCond);
     
-    std::vector<MonteCarloParticle<Vector3D, Tessellation3D>> particles;
+    std::vector<MonteCarloParticle<Vector3D>> particles;
     size_t iterations = 500 / 0.03;
     for(int i = 0; i < iterations; i++)
     {

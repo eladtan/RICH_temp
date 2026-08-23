@@ -15,9 +15,9 @@ class CrookedPipeBoundaryCondition : public BoundaryCondition<T, Grid>
 public:
     CrookedPipeBoundaryCondition(const Grid &grid, const std::vector<ComputationalCell3D> &cells);
     
-    MonteCarloParticleStatus apply(MonteCarloParticle<T, Grid> &particle) override;
+    MonteCarloParticleStatus apply(MonteCarloParticle<T> &particle) override;
 
-    std::vector<MonteCarloParticle<T, Grid>> generateNewBoundaryParticles(double fullDt) override;
+    std::vector<MonteCarloParticle<T>> generateNewBoundaryParticles(double fullDt) override;
 
 private:
     const std::vector<ComputationalCell3D> &cells;
@@ -29,7 +29,7 @@ CrookedPipeBoundaryCondition<T, Grid>::CrookedPipeBoundaryCondition(const Grid &
 {}
 
 template<typename T, typename Grid>
-MonteCarloParticleStatus CrookedPipeBoundaryCondition<T, Grid>::apply(MonteCarloParticle<T, Grid> &particle)
+MonteCarloParticleStatus CrookedPipeBoundaryCondition<T, Grid>::apply(MonteCarloParticle<T> &particle)
 {
     const auto &[ll, ur] = this->grid.GetBoxCoordinates();
     MonteCarloParticleStatus status;
@@ -63,7 +63,7 @@ MonteCarloParticleStatus CrookedPipeBoundaryCondition<T, Grid>::apply(MonteCarlo
 }
 
 template<typename T, typename Grid>
-std::vector<MonteCarloParticle<T, Grid>> CrookedPipeBoundaryCondition<T, Grid>::generateNewBoundaryParticles(double fullDt)
+std::vector<MonteCarloParticle<T>> CrookedPipeBoundaryCondition<T, Grid>::generateNewBoundaryParticles(double fullDt)
 {
     static const double T4 = boost::math::pow<4>(0.5 * units::kev_kelvin);
     std::uniform_real_distribution<double> unif(0, 1);
@@ -71,7 +71,7 @@ std::vector<MonteCarloParticle<T, Grid>> CrookedPipeBoundaryCondition<T, Grid>::
 
     // re.seed(0); // todo: remove
 
-    std::vector<MonteCarloParticle<T, Grid>> newParticles;
+    std::vector<MonteCarloParticle<T>> newParticles;
     size_t N = this->grid.GetPointNo();
     for(size_t i = 0; i < N; i++)
     {
@@ -92,7 +92,7 @@ std::vector<MonteCarloParticle<T, Grid>> CrookedPipeBoundaryCondition<T, Grid>::
                     for(size_t j = 0; j < 100; j++)
                     {
                         newParticles.emplace_back();
-                        MonteCarloParticle<T, Grid> &newParticle = newParticles.back();
+                        MonteCarloParticle<T> &newParticle = newParticles.back();
                         newParticle.location = STORM::RandomPointOnFace<T, Grid>(this->grid, faceIdx);
                         newParticle.location = newParticle.location * (1 - MONTECARLO_EPS) + MONTECARLO_EPS * this->grid.GetMeshPoint(i);
                         if(newParticle.location.x < 1e-12)

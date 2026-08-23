@@ -48,7 +48,7 @@ ForwardPostprocessResult RunGreyPostprocess(
     auto& manager = runtime.manager;
     size_t Ncells = runtime.nCells;
 
-            using Particle3D = MonteCarloParticle<Vector3D, Tessellation3D>;
+            using Particle3D = MonteCarloParticle<Vector3D>;
 
             SphericalObserver::PhotosphereData greyPhotosphere;
             bool hasGreyPhotosphere = false;
