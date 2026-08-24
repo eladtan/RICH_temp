@@ -277,6 +277,32 @@ struct RICHRadiationIMCTraits
 
 struct RICHRadiationPositionSampler
 {
+    using Decomposition = CellVolumeDecomposition;
+    using Sampler = RandomInCellPositionSampler<Vector3D, Tessellation3D>;
+
+    void BuildDecomposition(const Tessellation3D &grid,
+                            std::size_t cellIndex,
+                            Decomposition &out) const
+    {
+        Sampler().BuildDecomposition(grid, cellIndex, out);
+    }
+
+    /// Draws from the same thread-local stream as `operator()`, in the same order.
+    Vector3D Sample(const Tessellation3D &grid,
+                    std::size_t cellIndex,
+                    const Decomposition &decomp,
+                    std::mt19937_64 &rng,
+                    std::uniform_real_distribution<double> &dist) const
+    {
+        (void) rng;
+        (void) dist;
+        Vector3D location = Sampler().Sample(grid, cellIndex, decomp,
+                                             random_in_cell_detail::GetRNG(),
+                                             random_in_cell_detail::GetDist());
+        static constexpr double nudge = 1e-10;
+        return location * (1.0 - nudge) + nudge * grid.GetMeshPoint(cellIndex);
+    }
+
     Vector3D operator()(const Tessellation3D &grid,
                         std::size_t cellIndex,
                         std::mt19937_64 &rng,
@@ -437,6 +463,17 @@ public:
     const std::vector<ComptonCellData> &getComptonData() const { return this->impl_.getComptonData(); }
     const GroupArray &getComptonGroupCenters() const { return this->impl_.getComptonGroupCenters(); }
     const GroupArray &getComptonGroupWidths() const { return this->impl_.getComptonGroupWidths(); }
+#ifdef STORM_WITH_GPU
+    bool UsesDeviceTransport() const
+    {
+        return this->impl_.UsesDeviceTransport();
+    }
+
+    STORM::gpu::GreyIMCViews<STORM::gpu::DeviceVec3> GetDeviceTransportViews() const
+    {
+        return this->impl_.GetDeviceTransportViews();
+    }
+#endif
 
     void setObserver(std::shared_ptr<SphericalObserver> observer)
     {

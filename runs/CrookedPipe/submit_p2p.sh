@@ -1,12 +1,12 @@
 #!/bin/bash
 # Crooked pipe with the P2P Monte Carlo manager.
 # Submit from this directory:  sbatch submit_p2p.sh
-#SBATCH --partition=bigrun
 #SBATCH --job-name=CrookedPipeP2P
-#SBATCH --ntasks=512
+#SBATCH --nodes=2
+#SBATCH --ntasks-per-node=56
 #SBATCH --exclusive
-#SBATCH --constraint=d25g
-#SBATCH --time=12:00:00
+#SBATCH --account=ast246
+#SBATCH --time=00:30:00
 #SBATCH --output=CrookedPipeP2P_%j.out
 #SBATCH --error=CrookedPipeP2P_%j.err
 
@@ -24,5 +24,8 @@ if [[ -n "${CROOKED_PIPE_OUTPUT:-}" ]]; then
     output_args=(--output "$CROOKED_PIPE_OUTPUT")
 fi
 
-exec mpirun -np "${SLURM_NTASKS:-512}" ./rich \
-    20000 100 --cycles 200 --random-walk --manager p2p "${output_args[@]}"
+export OMPI_MCA_mpi_leave_pinned=0
+export UCX_IB_RCACHE_MAX_UNRELEASED=0
+
+exec mpirun -np "${SLURM_NTASKS:-112}" ./rich \
+    10000 50 --cycles 40 --random-walk --manager p2p "${output_args[@]}"

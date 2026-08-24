@@ -121,6 +121,9 @@ for arg in "${@:2}"; do
         --montecarlo-polarization)
             CMAKE_FLAGS+=" -DRICH_MONTECARLO_POLARIZATION=ON "
             ;;
+        --with-gpu)
+            CMAKE_FLAGS+=" -DSTORM_WITH_GPU=ON "
+            ;;
         --build-subdir=*)
             BUILD_SUBDIR="${arg#--build-subdir=}"
             ;;
@@ -165,7 +168,7 @@ CMAKE_ERR="$BUILD_DIR/${CONFIG}_cmake.err"
 # ==================== Validate arguments ====================
 
 if [[ $# -lt 2 || -z "$TEST_NAME" ]]; then
-    echo -e "${RED}Usage: $0 <config> --test_name=<name> [--with_asan] [--energy_groups_num=<N>] [--mc_debug] [--mc_trace_debug=<N>] [--shared] [--high-res] [--memory_debug] [--memory_profile] [--assert] [--timing] [--montecarlo-polarization] [--build-subdir=<name>] [--jobs=<N>]${NC}"
+    echo -e "${RED}Usage: $0 <config> --test_name=<name> [--with_asan] [--energy_groups_num=<N>] [--mc_debug] [--mc_trace_debug=<N>] [--shared] [--high-res] [--memory_debug] [--memory_profile] [--assert] [--timing] [--montecarlo-polarization] [--with-gpu] [--build-subdir=<name>] [--jobs=<N>]${NC}"
     exit 1
 fi
 

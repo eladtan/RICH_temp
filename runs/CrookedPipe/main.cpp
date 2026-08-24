@@ -644,5 +644,9 @@ int main(int argc, char *argv[])
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
 
+    RMAFactory::Finalize(RDMA_Type::AUTO_RDMA);
+#ifdef STORM_WITH_GPU
+    STORM::gpu::KokkosRuntime::Finalize();
+#endif
     MPI_Finalize();
 }

@@ -19,6 +19,11 @@ public:
 
     std::vector<MonteCarloParticle<T>> generateNewBoundaryParticles(double fullDt) override;
 
+    STORM::DeviceBoundaryFaceBehavior getDeviceBoundaryFaceBehavior(
+        size_t faceIdx,
+        size_t insideCellIndex,
+        size_t outsidePointIndex) const override;
+
 private:
     const std::vector<ComputationalCell3D> &cells;
  };
@@ -60,6 +65,22 @@ MonteCarloParticleStatus CrookedPipeBoundaryCondition<T, Grid>::apply(MonteCarlo
     // should not reach here
     std::cerr << "Particle " << particle << " is not on any boundary" << std::endl;
     exit(1);
+}
+
+template<typename T, typename Grid>
+STORM::DeviceBoundaryFaceBehavior
+CrookedPipeBoundaryCondition<T, Grid>::getDeviceBoundaryFaceBehavior(
+    size_t faceIdx,
+    size_t insideCellIndex,
+    size_t outsidePointIndex) const
+{
+    (void)outsidePointIndex;
+    T normal = normalize(this->grid.Normal(faceIdx));
+    const bool escapesThroughOpenEnd =
+        std::abs(normal.x) > 0.99 && this->cells[insideCellIndex].tracers[1] > 0.5;
+    return escapesThroughOpenEnd
+        ? STORM::DeviceBoundaryFaceBehavior::HostOnly
+        : STORM::DeviceBoundaryFaceBehavior::ReflectingRigid;
 }
 
 template<typename T, typename Grid>
