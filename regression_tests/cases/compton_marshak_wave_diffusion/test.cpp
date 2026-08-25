@@ -1,3 +1,2 @@
-// Keep the diffusion regression test and the documented run configuration identical.
-#include "../../../runs/compton_marshak_wave/test.cpp"
-
+// Reuse the public Compton-Marshak regression source.
+#include "../compton_marshak_wave/test.cpp"

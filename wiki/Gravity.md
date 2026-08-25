@@ -90,7 +90,7 @@ TDE simulations operate in two gravity phases:
 
 The transition is triggered automatically by `CheckIfFullGravityIsNeeded()`. When triggered, `UpdateReferenceFrame()` shifts all positions and velocities to the lab frame.
 
-See [Example: TDE Simulation](Example-TDE-Simulation) for the full implementation.
+Frame changes must preserve positions, velocities, simulation time, and restart state.
 
 ## Combining Sources
 

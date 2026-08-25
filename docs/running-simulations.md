@@ -114,6 +114,9 @@ mpirun -x UCX_TLS=ib -mca btl ^openib -np 128 ./rich
 
 ## Run Directory Structure
 
+The public repository tracks only `runs/sedov_3d/main.cpp`; other run
+directories are local and ignored.
+
 A typical run directory contains:
 
 ```
@@ -179,18 +182,13 @@ tail -f output_12345  # where 12345 is the SLURM job ID
 scancel <job_id>
 ```
 
-## Multiple Simultaneous Runs
+## Isolated Build Directories
 
-Use `--build-subdir` to keep multiple executables:
+Use `--build-subdir` to keep serial and MPI executables separate:
 
 ```bash
-# Build for different problems
-./build_rich.sh gnuReleaseMPI --test_name=sedov_3d --build-subdir=sedov
-./build_rich.sh gnuReleaseMPI --test_name=Lane --build-subdir=lane
-
-# Run them independently
-cd runs/sedov_3d && ../../build/gnuReleaseMPI/sedov/rich &
-cd runs/Lane && ../../build/gnuReleaseMPI/lane/rich &
+./build_rich.sh gnuRelease --test_name=sedov_3d --build-subdir=sedov-serial
+./build_rich.sh gnuReleaseMPI --test_name=sedov_3d --build-subdir=sedov-mpi
 ```
 
 ## Performance Tips

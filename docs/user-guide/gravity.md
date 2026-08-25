@@ -90,7 +90,7 @@ TDE simulations operate in two gravity phases:
 
 The transition is triggered automatically by `CheckIfFullGravityIsNeeded()`, which monitors whether debris has moved far enough from the BH. When triggered, `UpdateReferenceFrame()` shifts all positions and velocities to the lab frame, and the simulation restarts from that point.
 
-See `runs/BaseTDECompton/test.cpp` for the full implementation.
+Frame changes must preserve positions, velocities, simulation time, and restart state.
 
 ## Combining Sources
 

@@ -133,17 +133,17 @@ MultigroupDiffusion mg(
 );
 ```
 
-See `regression_tests/cases/till_compton/test.cpp` for a focused equilibration test, and [Example: TDE Simulation](Example-TDE-Simulation) for a full production TDE with Compton.
+See `regression_tests/cases/till_compton/test.cpp` for a focused equilibration test.
 
 ## Multigroup Opacity Tables
 
-To use multigroup diffusion with tabulated opacities, implement `MultigroupDiffusionCoefficientCalculator`. The `BaseTDECompton` simulation provides an example (`STAMGopacity`) that loads STA opacity tables:
+To use multigroup diffusion with tabulated opacities, implement `MultigroupDiffusionCoefficientCalculator`. A tabulated implementation can load STA opacity tables:
 
 ```cpp
-class STAMGopacity : public MultigroupDiffusionCoefficientCalculator
+class TabulatedMultigroupOpacity : public MultigroupDiffusionCoefficientCalculator
 {
 public:
-    STAMGopacity(std::string file_directory);
+    TabulatedMultigroupOpacity(std::string file_directory);
 
     double CalcDiffusionCoefficientGroup(ComputationalCell3D const& cell, size_t group) const override;
     double CalcAbsorptionCoefficientGroup(ComputationalCell3D const& cell, size_t group) const override;

@@ -71,18 +71,17 @@ intelMixed          intelMixedMPI
 # Basic release build
 ./build_rich.sh gnuRelease --test_name=sedov_3d
 
-# MPI release build with 32 energy groups
-./build_rich.sh gnuReleaseMPI --test_name=BaseTDE --energy_groups_num=32
+# MPI release build in a separate output directory
+./build_rich.sh gnuReleaseMPI --test_name=sedov_3d --build-subdir=sedov-mpi
 
 # Debug build with AddressSanitizer
 ./build_rich.sh gnuDebug --test_name=sod --with_asan
 
 # MPI build with memory tracking (prints RSS to stderr at each simulation phase)
-./build_rich.sh intelReleaseMPI --test_name=BaseTDE --memory_debug
+./build_rich.sh intelReleaseMPI --test_name=sedov_3d --memory_debug
 
 # Build into a named subdirectory (keeps multiple executables)
 ./build_rich.sh gnuReleaseMPI --test_name=sedov_3d --build-subdir=sedov
-./build_rich.sh gnuReleaseMPI --test_name=Lane --build-subdir=lane
 ```
 
 ## Build Artifacts

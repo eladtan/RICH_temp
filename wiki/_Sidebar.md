@@ -32,7 +32,6 @@
 - [Sedov Blast Wave](Example-Sedov-Blast-Wave)
 - [Marshak Wave](Example-Marshak-Wave)
 - [Lane-Emden Star](Example-Lane-Emden)
-- [TDE with Radiation](Example-TDE-Simulation)
 
 **Reference**
 - [FAQ](FAQ)

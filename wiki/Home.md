@@ -54,7 +54,6 @@ cd runs/sedov_3d && ../../build/gnuRelease/rich
 - [Sedov Blast Wave](Example-Sedov-Blast-Wave) -- 3D MPI example
 - [Marshak Wave](Example-Marshak-Wave) -- Radiation example
 - [Lane-Emden Star](Example-Lane-Emden) -- Self-gravity example
-- [TDE with Multigroup Radiation](Example-TDE-Simulation) -- Production TDE with Compton, AMR, gravity
 
 ### Reference
 - [FAQ](FAQ) -- Frequently asked questions

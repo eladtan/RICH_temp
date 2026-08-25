@@ -369,15 +369,13 @@ uses radial-profile spherical harmonics.
 | Test | Path | What it tests |
 |------|------|---------------|
 | Lane-Emden regression | `regression_tests/cases/lane_self_gravity/test.cpp` | Polytropic star in hydrostatic equilibrium with `GravityAcceleration3D` |
-| Lane-Emden run | `runs/Lane/test.cpp` | Same physics, standalone run |
-| AMR test | `runs/AMRtest/test.cpp` | Self-gravity with AMR |
-| TDE variants | `runs/BaseTDE*/test.cpp` | `TDEGravity` combining self-gravity + tidal field |
-| Pericenter convergence | `runs/peri_convergence/test.cpp` | Gravity accuracy near pericenter |
+| Lane-Emden FMM regression | `regression_tests/cases/lane_self_gravity_fmm/test.cpp` | Same equilibrium with the FMM solver |
+| Serial FMM regression | `regression_tests/cases/fmm_gravity_serial/test.cpp` | Serial tree construction and force evaluation |
+| MPI FMM regression | `regression_tests/cases/fmm_gravity_mpi/test.cpp` | Distributed topology and force evaluation |
 
-Build and run:
+Run the focused public regression:
 ```bash
-ml restore 2024_new
-./build_rich.sh intelReleaseMPI --test_name=Lane
+./regression_tests/run_all.sh --test lane_self_gravity --config intelReleaseMPI --verbose
 ```
 
 For detailed code excerpts and annotated algorithm logic, see [reference.md](reference.md).

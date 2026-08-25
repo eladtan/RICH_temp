@@ -124,34 +124,6 @@ remover.SetSize(newvol);
 
 `UpdateBox` detects mesh points approaching the domain boundary, expands the box by ~5x the maximum cell width, fills the new volume with low-density reference cells, and rebuilds the tessellation.
 
-## Production Example: TDE Simulation
-
-The `runs/BaseTDECompton/test.cpp` demonstrates a full production AMR strategy:
-
-### Physics-Aware Refinement Criteria
-
-The `MassRefine` class uses distance-dependent thresholds:
-
-- **Mass threshold**: `MaxMass = 1.5e-7 * Mstar`, reduced for cells far from the tidal radius
-- **Volume target**: `target_volume = (4π/3) * (Rt * 0.01)^3`, scaled with distance
-- **Region-dependent**: Different thresholds near the tidal radius vs. at the apocenter
-- **Neighbor quality**: Cells are not refined if their center-of-mass is far from their mesh point (distorted cells)
-- **Volume smoothing**: Refine if cell is 6x larger than its smallest neighbor
-
-### Physics-Aware Removal Criteria
-
-The `RemoveBig` class includes:
-
-- **Timestep-based removal**: Cells too small for stable timestep are removed
-- **Mass threshold**: Time-dependent mass floor that grows as the simulation evolves
-- **Minimum size**: Cells smaller than `Rt * 0.01` are always removed
-- **Aspect ratio check**: Distorted cells (CM offset > 0.15 * width) are removed
-- **Neighbor balance**: Don't remove if smallest neighbor is less than 30% of cell volume
-
-Both criteria use `SetSize(domain_volume)` to adapt to the dynamically changing domain box.
-
-See [Example: TDE Simulation](Example-TDE-Simulation) for the full walkthrough.
-
 ## Performance Notes
 
 - AMR adds overhead for mesh rebuilding; balance refinement frequency against accuracy needs.

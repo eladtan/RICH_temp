@@ -55,7 +55,11 @@ double computeMass(std::vector<Cell> cells);
 - **`data/`** -- Reference data (EOS tables, Lane-Emden, opacity)
 - **`visualisation/`** -- Visualization scripts (Python, MATLAB)
 
-## Adding a New Simulation
+## Adding a New Local Simulation
+
+The public repository tracks only `runs/sedov_3d/main.cpp`. Other directories
+under `runs/` are local and ignored; reusable public validation belongs under
+`regression_tests/cases/`.
 
 1. Create a directory under `runs/your_simulation/`
 2. Write `main.cpp` following the pattern in [Simulation Setup](Simulation-Setup)

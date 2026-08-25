@@ -365,8 +365,8 @@ initializes the member in its initializer list.
 ## API
 
 The feature is transparent to existing users. The `AMR3D` constructor's new parameter has a default
-value of `true`, so all existing call sites (e.g., `runs/TDEbench/test.cpp`) automatically use the
-distributed path without modification. To disable:
+value of `true`, so existing call sites automatically use the distributed path without
+modification. To disable:
 
 ```cpp
 AMR3D amr(eos, refine, remove, interp, nullptr, nullptr, false);

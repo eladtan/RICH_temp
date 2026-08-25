@@ -31,7 +31,6 @@ RICH is a compressible hydrodynamic simulation code on a 3D moving Voronoi mesh,
 | [Sedov Blast Wave](examples/sedov-blast-wave.md) | 3D MPI example |
 | [Marshak Wave](examples/marshak-wave.md) | Radiation example |
 | [Lane-Emden](examples/lane-emden.md) | Self-gravity example |
-| [TDE with Multigroup Radiation](examples/tde-simulation.md) | Full production TDE with Compton, AMR, gravity |
 | **Reference** | |
 | [FAQ](faq.md) | Frequently asked questions |
 | [Troubleshooting](troubleshooting.md) | Common errors and solutions |

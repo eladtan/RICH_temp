@@ -246,6 +246,9 @@ Time advance methods:
 
 ## Creating a New Run
 
+Only `runs/sedov_3d/main.cpp` is public. New run directories are local and
+ignored by the public repository.
+
 1. Create a directory under `runs/`:
    ```bash
    mkdir runs/my_simulation
@@ -285,7 +288,7 @@ if (wall_time > checkpoint_interval)
 }
 ```
 
-On restart, load the snapshot with `ReadSnapshot3D()` and reconstruct the simulation state. See `runs/BaseTDECompton/test.cpp` for a complete restart implementation.
+On restart, load the snapshot with `ReadSnapshot3D()` and reconstruct every component of the simulation state.
 
 ### Wall-Time Checkpointing (HPC)
 
@@ -368,7 +371,7 @@ std::vector<Slope3D> slopes = interp.GetSlopesUnlimited();
 // Access: slopes[i].xderivative.density, .pressure, .internal_energy, .velocity
 ```
 
-See [Example: TDE Simulation](Example-TDE-Simulation) for `GradDiag` which writes all 9 gradient components plus velocity divergence.
+One diagnostic appendix can write tensor-gradient components plus velocity divergence.
 
 ## Runtime Configuration via Text Files
 
@@ -389,4 +392,3 @@ This pattern allows the same binary to run different configurations without reco
 ## Further Examples
 
 - **Sedov blast wave**: `runs/sedov_3d/main.cpp` -- simple setup with ideal gas
-- **TDE with multigroup radiation**: `runs/BaseTDECompton/test.cpp` -- production TDE with Compton, AMR, gravity, and restarts (see [Example: TDE Simulation](Example-TDE-Simulation))

@@ -147,8 +147,8 @@ usage line; unknown options fail immediately.
 # MPI GNU release build
 ./build_rich.sh gnuReleaseMPI --test_name=sedov_3d
 
-# MPI build with a compile-time multigroup override
-./build_rich.sh gnuReleaseMPI --test_name=BaseTDE --energy_groups_num=32
+# MPI build in a separate output directory
+./build_rich.sh gnuReleaseMPI --test_name=sedov_3d --build-subdir=sedov
 
 # Debug build with AddressSanitizer
 ./build_rich.sh gnuDebug --test_name=sod --with_asan
@@ -355,7 +355,7 @@ changes. Additional background is in the
 
 ```text
 source/                    RICH source and bundled submodules
-runs/                      Production and example problem definitions
+runs/                      Public Sedov example and ignored local run checkouts
 regression_tests/cases/    RICH regression cases and metadata
 docs/                      User, architecture, and regression documentation
 wiki/                      GitLab wiki mirror

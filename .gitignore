@@ -1,6 +1,5 @@
 external_libraries
 library_*
-runs/temp_*
 *.vtu
 *.pvtu
 *.out
@@ -45,18 +44,20 @@ output_*
 !.cursor/skills/rich-mpi/**
 !.cursor/skills/rich-self-gravity/
 !.cursor/skills/rich-self-gravity/**
-runs/clemon*
-runs/**/*.txt
 /regression_results
 regression_tests/cases/*/*.txt
 *.png
 *.pdf
-runs/*/venv/
 .specstory/*
 compile_commands.json
 DoctoralProposal/
 IMC_paper/
 RDMA_paper/
 compilation/runs/*/rich*
-runs/*/rich_*
 **/mpi_tmp*
+
+# Private run checkout. Only the public Sedov example belongs to this repo.
+/runs/*
+!/runs/sedov_3d/
+/runs/sedov_3d/*
+!/runs/sedov_3d/main.cpp

@@ -87,7 +87,7 @@ Beyond the standard `EquationOfState` interface, `OndrejEOS` provides additional
 | `dT2cv(rho, T, tracers)` | Density + temperature to heat capacity |
 | `sd2p(s, rho, tracers)` | Entropy + density to pressure |
 
-These are essential for setting up initial conditions from stellar profiles (e.g., Lane-Emden) where temperature is known. See [Example: TDE Simulation](Example-TDE-Simulation) for a full production use of `OndrejEOS`.
+These are essential for setting up initial conditions from stellar profiles (e.g., Lane-Emden) where temperature is known.
 
 ### MixedEOS
 

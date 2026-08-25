@@ -107,7 +107,7 @@ std::vector<DiagnosticAppendix3D*> appendices = {new MyDiagnostic()};
 WriteSnapshot3D(sim, "snap.h5", appendices, true);
 ```
 
-The `BaseTDECompton` simulation writes 11 diagnostic appendices per snapshot: 9 gradient components (`DsieDx/y/z`, `DpDx/y/z`, `DrhoDx/y/z`), velocity divergence (`divV`), and numerical dissipation (`Dissipation`). See [Simulation Setup](Simulation-Setup) for implementation details.
+Diagnostic appendices can store tensor gradients, velocity divergence, and numerical dissipation. See [Simulation Setup](Simulation-Setup) for implementation details.
 
 ### Tracers and Stickers in Snapshots
 
