@@ -2,17 +2,20 @@
 #define SIMULATION_HPP
 
 #include <functional>
+#include <cstdint>
 #include <limits>
 #include <vector>
 #include <map>
 #include <memory>
 #include <string>
+#include <utility>
 #include "ProgressTracker.hpp"
 #include "3D/tessellation/Tessellation3D.hpp"
 #include <MeshDecomposer3D/load_balancing/LoadBalancer.hpp>
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "newtonian/three_dimensional/conserved_3d.hpp"
 #include "newtonian/three_dimensional/simulation/steps/PhysicsStep.hpp"
+#include "newtonian/three_dimensional/simulation/IndividualTimeStep.hpp"
 #include "newtonian/three_dimensional/time_step_function3D.hpp"
 #include "utils/debug/vtune.h"
 
@@ -26,6 +29,11 @@
 class Simulation
 {
 public:
+    using IndividualAMRCallback =
+        std::function<IndividualAMRChangeSet(IndividualStepContext const&)>;
+    using IndividualPostPhysicsCallback =
+        std::function<void(IndividualStepContext const&)>;
+
     Simulation(Tessellation3D &tess, const std::vector<ComputationalCell3D> &cells, EquationOfState &eos, bool new_start = true);
 
     inline ProgressTracker &getTracker(void){return this->tracker;};
@@ -62,6 +70,41 @@ public:
     double GetTimeStep(void) const;
 
     void step(void);
+
+    void EnableIndividualTimeSteps(
+        IndividualTimeStepOptions options = IndividualTimeStepOptions());
+
+    /** Request one all-active individual event.
+     *
+     * The request is process-local and clears only after the event commits.
+     * Callers must not checkpoint while waiting for the requested event.
+     */
+    void RequestSynchronizedIndividualEvent(void);
+
+    /** True when every owned primitive is committed at the current event tick
+     * and the tessellation contains every owned cell. Collective under MPI.
+     */
+    bool IndividualStateSynchronized(void) const;
+
+    void SetIndividualAMR(IndividualAMRCallback callback)
+    {this->individualAMR = std::move(callback);};
+
+    /** Run a collective, run-specific state update after all individual
+     * physics steps and before the next timestep limits are evaluated.
+    */
+    void SetIndividualPostPhysics(IndividualPostPhysicsCallback callback)
+    {this->individualPostPhysics = std::move(callback);};
+
+    TimeIntegrationMode GetTimeIntegrationMode(void) const{return this->timeIntegrationMode;};
+
+    const IndividualTimeStepScheduler *GetIndividualTimeStepScheduler(void) const
+    {return this->individualScheduler.get();};
+
+    IndividualTimeStepScheduler *GetIndividualTimeStepScheduler(void)
+    {return this->individualScheduler.get();};
+
+    bool IndividualEventInProgress(void) const
+    {return this->individualEventInProgress;};
 
     void addPhysics(std::shared_ptr<PhysicsStep> physics);
 
@@ -102,6 +145,30 @@ public:
     #endif // RICH_MPI
 
 private:
+    void stepIndividual(void);
+
+#ifdef RICH_MPI
+    struct IndividualRebalanceResult
+    {
+        bool applied = false;
+        double weightSkew = 1;
+        unsigned long long migratedCells = 0;
+        unsigned long long totalOwnedCells = 0;
+        double localSeconds = 0;
+        double maximumSeconds = 0;
+        double currentRssBeforeKiB = -1;
+        double currentRssAfterKiB = -1;
+    };
+
+    std::shared_ptr<PhysicsStep> findIndividualBalanceStep(void) const;
+
+    IndividualRebalanceResult rebalanceCommittedIndividualState(
+        std::shared_ptr<PhysicsStep> const& balanceStep,
+        bool forceRebalance, double threshold);
+
+    void maybeRebalanceBeforeFirstIndividualEvent(void);
+#endif
+
     int rank, size;
     Tessellation3D &tess;
     std::vector<std::shared_ptr<PhysicsStep>> physics;
@@ -111,7 +178,14 @@ private:
     EquationOfState &eos;
     size_t Max_ID;
     double wallclockTime;
+    bool initializedFromRestart;
     std::shared_ptr<TimeStepFunction3D> tsc; // todo: why?
+    TimeIntegrationMode timeIntegrationMode = TimeIntegrationMode::Global;
+    std::unique_ptr<IndividualTimeStepScheduler> individualScheduler;
+    IndividualAMRCallback individualAMR;
+    IndividualPostPhysicsCallback individualPostPhysics;
+    bool individualEventInProgress = false;
+    bool individualSynchronizedEventRequested = false;
     std::map<std::string, double> lastPhysicsTimes;
     std::map<std::string, double> lastLocalPhysicsTimes;
 
@@ -132,7 +206,11 @@ private:
     size_t forceRebalanceSteps = 0;
     std::pair<Vector3D, Vector3D> currentBox;
     size_t lastRebalanceCycle = std::numeric_limits<size_t>::max();
-
+    size_t lastIndividualBalanceCheckCycle =
+        std::numeric_limits<size_t>::max();
+    std::uint64_t individualOwnershipEpoch = 0;
+    double lastIndividualRebalanceSeconds = 0;
+    bool preFirstIndividualRebalanceChecked = false;
 #endif // RICH_MPI
 };
 

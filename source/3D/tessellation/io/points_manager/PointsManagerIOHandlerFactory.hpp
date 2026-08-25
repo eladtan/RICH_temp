@@ -15,18 +15,23 @@ namespace PointsManagerIO
 {
     using PointsManager = ::PointsManager<Vector3D, MadVoro::VoronoiPayload<Vector3D>>;
 
-    inline std::map<std::string, std::unique_ptr<PointsManagerIOHandler>> registry;
+    inline std::map<std::string, std::unique_ptr<PointsManagerIOHandler>>& registry()
+    {
+        static std::map<std::string, std::unique_ptr<PointsManagerIOHandler>> value;
+        return value;
+    }
 
     inline void registerHandler(const std::string &name, std::unique_ptr<PointsManagerIOHandler> handler)
     {
-        registry[name] = std::move(handler);
+        registry()[name] = std::move(handler);
     }
 
     inline void writePointsManager(HDF5Writer &writer, const std::string &group, const PointsManager &pm)
     {
         const std::string name = pm.getTypeName();
-        auto it = registry.find(name);
-        if(it == registry.end())
+        auto& handlers = registry();
+        auto it = handlers.find(name);
+        if(it == handlers.end())
         {
             throw UniversalError("PointsManagerIO::writePointsManager: no handler for type \"" + name + "\"");
         }
@@ -40,8 +45,9 @@ namespace PointsManagerIO
         std::string name;
         reader.ReadElement(group + "/type", name);
 
-        auto it = registry.find(name);
-        if(it == registry.end())
+        auto& handlers = registry();
+        auto it = handlers.find(name);
+        if(it == handlers.end())
         {
             throw UniversalError("PointsManagerIO::readPointsManager: unknown type \"" + name + "\"");
         }

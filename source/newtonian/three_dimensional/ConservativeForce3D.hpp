@@ -6,6 +6,8 @@
 #ifndef CONSFORCE3D_HPP
 #define CONSFORCE3D_HPP 1
 
+#include <cstdint>
+
 #include "SourceTerm3D.hpp"
 
 //! \brief Physical acceleration
@@ -25,6 +27,21 @@ public:
 				const vector<Conserved3D>& fluxes,const double time,
 		vector<Vector3D> &acc) const = 0;
 
+	virtual bool SupportsIndividualTargetEvaluation(void) const { return false; }
+
+	//! Evaluate active-cell accelerations from the canonical gravity sources.
+	//! Target cells and time let compound fields apply the same physical masks
+	//! and time-dependent terms as their full-mesh operator.
+	virtual void EvaluateIndividualTargets(
+		std::pair<Vector3D, Vector3D> const& bounds,
+		vector<Vector3D> const& source_points,
+		vector<double> const& source_masses,
+		vector<std::uint64_t> const& source_ids,
+		vector<Vector3D> const& target_points,
+		vector<ComputationalCell3D> const& target_cells,
+		double time,
+		vector<Vector3D>& acc) const;
+
 	virtual ~Acceleration3D(void);
 };
 
@@ -37,6 +54,18 @@ public:
 
 	void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
 		const vector<Conserved3D>& fluxes, const double time, vector<Vector3D>& acc) const;
+
+	bool SupportsIndividualTargetEvaluation(void) const override { return true; }
+
+	void EvaluateIndividualTargets(
+		std::pair<Vector3D, Vector3D> const& bounds,
+		vector<Vector3D> const& source_points,
+		vector<double> const& source_masses,
+		vector<std::uint64_t> const& source_ids,
+		vector<Vector3D> const& target_points,
+		vector<ComputationalCell3D> const& target_cells,
+		double time,
+		vector<Vector3D>& acc) const override;
 };
 
 /*! \brief Class for conservative forces
@@ -62,11 +91,30 @@ public:
 
 	double SuggestInverseTimeStep(void)const override;
 
+	bool SupportsIndividualTimeSteps(void) const override { return true; }
+	bool SupportsPartialMesh(void) const override
+	{return acc_.SupportsIndividualTargetEvaluation();}
+	bool UsesIndividualAccelerationCache(void) const override { return true; }
+	void ApplyIndividual(const Tessellation3D& tess,
+		const vector<ComputationalCell3D>& cells,
+		const vector<Conserved3D>& fluxes,
+		const vector<Vector3D>& point_velocities,
+		double time,
+		const IndividualStepContext& context,
+		IndividualSourcePhase phase,
+		vector<Conserved3D>& extensives) const override;
+
+	void SuggestIndividualTimeSteps(const Tessellation3D& tess,
+		const vector<ComputationalCell3D>& cells,
+		const IndividualStepContext& context,
+		vector<double>& time_step_limits) const override;
+
 private:
 	const Acceleration3D& acc_;
 	const bool mass_flux_;
 	mutable double dt_;
 	mutable std::vector<Vector3D> acc_buf_;
+	mutable std::vector<double> individual_time_step_limits_;
 };
 
 #endif // CONSFORCE3D_HPP

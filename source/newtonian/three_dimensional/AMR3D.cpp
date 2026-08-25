@@ -1894,9 +1894,9 @@ namespace
 						eo.addEntry("Norg", Norg2);
 						throw;
 					}
-#endif
-				}
-			}
+			#endif
+		}
+	}
 			if(total_dv < std::numeric_limits<double>::min() * 100)
 			{
 				extensives[Norg2 + i] = eu.ConvertPrimitveToExtensive3D(cells[ToRefine[i]], eos, tess.GetVolume(Norg + i), Slope3D(), 
@@ -2600,6 +2600,23 @@ AMR3D::AMR3D(EquationOfState const& eos,
 
 void AMR3D::operator() (Simulation &sim)
 {
+	last_change_set_ = Apply(sim, nullptr, nullptr);
+}
+
+IndividualAMRChangeSet AMR3D::ApplyIndividual(
+	Simulation &sim,
+	IndividualStepContext const& context)
+{
+	last_change_set_ = Apply(sim, &context.active_indices,
+		&context.gravity_source_points);
+	return last_change_set_;
+}
+
+IndividualAMRChangeSet AMR3D::Apply(
+	Simulation &sim,
+	vector<size_t> const* active_indices,
+	vector<Vector3D> const* canonical_points)
+{
 	int rank = 0;
 #ifdef RICH_MPI
 	int ws = 0;
@@ -2611,8 +2628,77 @@ void AMR3D::operator() (Simulation &sim)
 	std::vector<Conserved3D> &extensives = sim.getExtensives();
 	EquationOfState const& eos = eos_;
 	double time = sim.GetTime();
+	vector<unsigned char> active_mask;
+	std::unordered_set<size_t> active_ids;
+	if(active_indices != nullptr)
+	{
+		active_mask.assign(cells.size(), 0);
+		active_ids.reserve(active_indices->size());
+		for(size_t index : *active_indices)
+		{
+			if(index >= cells.size())
+				throw UniversalError("AMR3D::ApplyIndividual: active index is out of range");
+			active_mask[index] = 1;
+			active_ids.insert(cells[index].ID);
+		}
+
+		bool identity_mesh = tess.GetPointNo() == cells.size();
+		auto const& current_map = tess.GetIndicesInAllPoints();
+		for(size_t i = 0; identity_mesh && i < cells.size(); ++i)
+		{
+			auto const mapped = current_map.find(i);
+			identity_mesh = mapped != current_map.end() && mapped->second == i;
+		}
+		if(!identity_mesh)
+		{
+			vector<Vector3D> all_points;
+			if(canonical_points != nullptr &&
+			   canonical_points->size() >= cells.size())
+				all_points.assign(canonical_points->begin(),
+				                  canonical_points->begin() + cells.size());
+			else
+				all_points = tess.getAllPoints();
+			if(all_points.size() < cells.size())
+				throw UniversalError("AMR3D::ApplyIndividual: partial mesh lost canonical generators");
+			all_points.resize(cells.size());
+		#ifdef RICH_MPI
+			tess.BuildParallel(all_points, true /* no rebalance */, true /* no exchange */);
+		#else
+			tess.Build(all_points);
+			#endif
+		}
+	#ifdef RICH_MPI
+		// The mesh above is canonical and full.  Use the normal full-mesh ghost
+		// exchange here: partial-build duplicate maps can be empty on ranks with
+		// no active targets, while AMR still needs their current primitive data.
+		MPI_exchange_data(tess, cells, true);
+		active_mask.resize(cells.size(), 0);
+	#endif
+	}
 	// Get remove list
 	std::pair<vector<size_t>, vector<double> > ToRemove = remove_.ToRemove(tess, cells, time);
+	if(active_indices != nullptr)
+	{
+		vector<size_t> filtered_cells;
+		vector<double> filtered_merit;
+		filtered_cells.reserve(ToRemove.first.size());
+		filtered_merit.reserve(ToRemove.second.size());
+		if(ToRemove.first.size() != ToRemove.second.size())
+			throw UniversalError("AMR removal candidates and merits have different sizes");
+		for(size_t i = 0; i < ToRemove.first.size(); ++i)
+		{
+			size_t const index = ToRemove.first[i];
+			if(index >= active_mask.size())
+				throw UniversalError("AMR removal candidate is out of range");
+			if(active_mask[index] != 0)
+			{
+				filtered_cells.push_back(index);
+				filtered_merit.push_back(ToRemove.second[i]);
+			}
+		}
+		ToRemove.first.swap(filtered_cells);
+		ToRemove.second.swap(filtered_merit);
+	}
 	// sort
 	vector<size_t> indeces = sort_index(ToRemove.first);
 	ToRemove.second = VectorValues(ToRemove.second, indeces);
@@ -2630,6 +2716,32 @@ void AMR3D::operator() (Simulation &sim)
 	ToRemove = EnforceRemovalVolumeGrowthLimit(ToRemove, tess, cells, removal_targets);
 	// Get points to refine
 	std::pair<vector<size_t>, std::vector<Vector3D> > ToRefine = refine_.ToRefine(tess, cells, time);
+	if(active_indices != nullptr)
+	{
+		vector<size_t> filtered_cells;
+		vector<Vector3D> filtered_directions;
+		filtered_cells.reserve(ToRefine.first.size());
+		if(!ToRefine.second.empty())
+		{
+			if(ToRefine.second.size() != ToRefine.first.size())
+				throw UniversalError("AMR refinement candidates and directions have different sizes");
+			filtered_directions.reserve(ToRefine.second.size());
+		}
+		for(size_t i = 0; i < ToRefine.first.size(); ++i)
+		{
+			size_t const index = ToRefine.first[i];
+			if(index >= active_mask.size())
+				throw UniversalError("AMR refinement candidate is out of range");
+			if(active_mask[index] != 0)
+			{
+				filtered_cells.push_back(index);
+				if(!ToRefine.second.empty())
+					filtered_directions.push_back(ToRefine.second[i]);
+			}
+		}
+		ToRefine.first.swap(filtered_cells);
+		ToRefine.second.swap(filtered_directions);
+	}
 	sort_index(ToRefine.first, indeces);
 	sort(ToRefine.first.begin(), ToRefine.first.end());
 	if (!ToRefine.second.empty())
@@ -2637,6 +2749,14 @@ void AMR3D::operator() (Simulation &sim)
 	// remove neighboring refine/remove
 	RemoveRefineNeighborRemove(tess, ToRemove.first, removal_targets,
 		ToRefine.first, ToRefine.second);
+	IndividualAMRChangeSet changes;
+	changes.removed_cell_ids.reserve(ToRemove.first.size());
+	for(size_t index : ToRemove.first)
+		changes.removed_cell_ids.push_back(cells.at(index).ID);
+	vector<size_t> refined_parent_ids;
+	refined_parent_ids.reserve(ToRefine.first.size());
+	for(size_t index : ToRefine.first)
+		refined_parent_ids.push_back(cells.at(index).ID);
 
 	// Do we need to rebuild tess ?
 	int nAMR[2];
@@ -2646,7 +2766,16 @@ void AMR3D::operator() (Simulation &sim)
 	MPI_Allreduce(MPI_IN_PLACE, nAMR, 2, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 #endif
 	if ((nAMR[0] + nAMR[1]) == 0)
-		return;
+	{
+	#ifdef RICH_MPI
+		if(active_indices != nullptr)
+		{
+			cells.resize(tess.GetPointNo());
+			extensives.resize(tess.GetPointNo());
+		}
+	#endif
+		return changes;
+	}
 	if(rank == 0)
 		std::cout<<"Removing "<<nAMR[0]<<" cells and refining "<<nAMR[1]<<" cells."<<std::endl;
 
@@ -2707,7 +2836,9 @@ void AMR3D::operator() (Simulation &sim)
 	{
 		try
 		{
-			cells[i] = cu_->ConvertExtensiveToPrimitve3D(extensives[i], eos, tess.GetVolume(i), cells[i]);
+			if(active_indices == nullptr || active_ids.count(cells[i].ID) != 0)
+				cells[i] = cu_->ConvertExtensiveToPrimitve3D(extensives[i], eos,
+					tess.GetVolume(i), cells[i]);
 		}
 		catch (UniversalError & eo)
 		{
@@ -2738,6 +2869,8 @@ void AMR3D::operator() (Simulation &sim)
 				cells[ToRefine.first[i] - index_remove]);
 			// Add new ID
 			cells[(Norg - ToRemove.first.size()) + i].ID = Nstart + i;
+			changes.child_parent_ids.push_back(
+				std::make_pair(Nstart + i, refined_parent_ids.at(i)));
 		}
 		catch (UniversalError & eo)
 		{
@@ -2754,6 +2887,10 @@ void AMR3D::operator() (Simulation &sim)
 		size_t Nentropy = cells.size();
 		for (size_t i = 0; i < Nentropy; ++i)
 		{
+			if(active_indices != nullptr &&
+			   active_ids.count(cells[i].ID) == 0 &&
+			   i < Norg - ToRemove.first.size())
+				continue;
 		  cells[i].tracers[entropy_index] = eos.dp2s(cells[i].density, cells[i].pressure, cells[i].tracers, ComputationalCell3D::tracerNames);
 			extensives[i].tracers[entropy_index] = cells[i].tracers[entropy_index] * extensives[i].mass;
 		}
@@ -2762,6 +2899,11 @@ void AMR3D::operator() (Simulation &sim)
 #ifdef RICH_MPI
 	// Update cells
 	MPI_exchange_data(tess, cells, true);
+	if(active_indices != nullptr)
+	{
+		cells.resize(tess.GetPointNo());
+		extensives.resize(tess.GetPointNo());
+	}
 	//#endif
 	// Update Max ID
 	for (size_t i = 0; i < static_cast<size_t>(ws); ++i)
@@ -2769,6 +2911,7 @@ void AMR3D::operator() (Simulation &sim)
 #else
 	MaxID += Nrefine;
 #endif
+	return changes;
 }
 
 AMR3D::~AMR3D(void) {}

@@ -21,7 +21,13 @@ public:
 	DefaultCellUpdater(bool SR = false,double G=0, bool const includes_temperature = false, double const min_temperature = 0, const RadiationDriver* diffusion = nullptr);
 
 	void operator()(vector<ComputationalCell3D> &res, EquationOfState const& eos,
-		const Tessellation3D& tess, vector<Conserved3D>& extensives) const override;
+			const Tessellation3D& tess, vector<Conserved3D>& extensives) const override;
+
+	void UpdateIndividual(vector<ComputationalCell3D> &res,
+		EquationOfState const& eos,
+		const Tessellation3D& tess,
+		vector<Conserved3D>& extensives,
+		const IndividualStepContext& context) const override;
 private:
 	const bool SR_;
 	const double G_;

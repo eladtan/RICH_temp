@@ -120,6 +120,11 @@ public:
 
     vector<vector<size_t> > const& GetDuplicatedPoints(void) const override { return engine_.GetDuplicatedPoints(); }
 
+    vector<vector<size_t> > const& GetDuplicatedAllPointIndices(void) const override
+    {
+        return engine_.GetDuplicatedAllPointIndices();
+    }
+
     vector<int> GetDuplicatedProcs(void) const override { return engine_.GetDuplicatedProcs(); }
 
     vector<int> GetSentProcs(void) const override { return engine_.GetSentProcs(); }
@@ -200,6 +205,11 @@ public:
     const Tessellation3D::AllPointsMap& GetIndicesInAllPoints(void) const override
     {
         return engine_.GetIndicesInAllPoints();
+    }
+
+    size_t GetInputIndexForAllPoint(size_t allPointIndex) const override
+    {
+        return engine_.GetInputIndexForAllPoint(allPointIndex);
     }
 
     const std::vector<Vector3D>& getAllPoints(void) const override { return engine_.getAllPoints(); }

@@ -11,6 +11,7 @@
 #include "3D/tessellation/Tessellation3D.hpp"
 #include "../two_dimensional/computational_cell_2d.hpp"
 #include "../common/equation_of_state.hpp"
+#include "newtonian/three_dimensional/simulation/IndividualTimeStep.hpp"
 
 //! \brief Abstract clas for cell update scheme
 class CellUpdater3D
@@ -25,6 +26,12 @@ public:
 	 */
 	virtual void operator() (vector<ComputationalCell3D> &res, EquationOfState const& eos,
 		const Tessellation3D& tess,vector<Conserved3D>& extensives)const = 0;
+
+	virtual void UpdateIndividual(vector<ComputationalCell3D> &res,
+		EquationOfState const& eos,
+		const Tessellation3D& tess,
+		vector<Conserved3D>& extensives,
+		const IndividualStepContext& context) const;
 
 		//! \brief Class destructor
 		virtual ~CellUpdater3D(void);

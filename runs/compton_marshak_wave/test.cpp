@@ -1,12 +1,15 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
+#include <cstdint>
 #include <exception>
 #include <cfenv>
+#include <limits>
 #include <memory>
 #include <filesystem>
 #include <iostream>
 #include <numeric>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
@@ -41,6 +44,19 @@ constexpr double ev      = 1.602176634e-12;
 constexpr double kev     = 1e3 * ev;
 constexpr double ev_K    = ev / CG::boltzmann_constant;
 constexpr double kev_K   = 1e3 * ev_K;
+
+std::size_t environment_size(char const* name, std::size_t fallback)
+{
+    char const* value = std::getenv(name);
+    if(value == nullptr || value[0] == '\0')
+        return fallback;
+    char* end = nullptr;
+    unsigned long long const parsed = std::strtoull(value, &end, 10);
+    if(end == value || *end != '\0' || parsed == 0)
+        throw std::invalid_argument(
+            std::string("Invalid positive integer in ") + name);
+    return static_cast<std::size_t>(parsed);
+}
 
 double radiation_temperature(ComputationalCell3D const& cell)
 {
@@ -137,7 +153,7 @@ int main(int argc, char* argv[])
         IdealGas eos(5.0 / 3.0, cv, 1.0, 0.0);
 
         // Mesh: 1024 cells over 50 cm in x, 1 cell in y and z
-        constexpr std::size_t Nx = 1024;
+        std::size_t const Nx = environment_size("RICH_TEST_POINT_COUNT", 1024);
         double const Lx = 50.0;
         double const dy = Lx / Nx;
         Vector3D ll(0.0, -0.5 * dy, -0.5 * dy);
@@ -240,10 +256,12 @@ int main(int argc, char* argv[])
             D_boundary = std::make_unique<MultigroupDiffusionSideBoundary>(
                 T_bath, energy_groups_center, energy_groups_boundary);
             bool const compton_on = mode == Mode::Diffusion;
+            bool const doppler_on =
+                std::getenv("RICH_TEST_DOPPLER") != nullptr;
             diffusion = std::make_unique<MultigroupDiffusion>(
                 energy_groups_center, energy_groups_boundary,
                 *diff_opacity, *D_boundary, eos, std::vector<std::string>(),
-                true, false, compton_on, false, -1, false);
+                true, false, compton_on, doppler_on, -1, false);
 
             auto radStep = std::make_shared<RadiationStep>(
                 tess, simulation.getCells(), simulation.getExtensives(),
@@ -255,14 +273,75 @@ int main(int argc, char* argv[])
             simulation.addPhysics(radStep);
         }
 
-        double const tf = 1e-9;
+        bool individual_enabled = false;
+        char const* individual_mode = std::getenv("RICH_INDIVIDUAL_MODE");
+        if(individual_mode != nullptr && individual_mode[0] != '\0') {
+            if(mode == Mode::MC || mode == Mode::MCIsotropic)
+                throw std::invalid_argument(
+                    "individual timesteps are supported only by the diffusion modes");
+            IndividualTimeStepOptions options;
+            std::string const individual_mode_name(individual_mode);
+            bool const synchronized = individual_mode_name == "full";
+            bool const auto_partial = individual_mode_name == "partial";
+            if(!synchronized && !auto_partial &&
+               individual_mode_name != "full-variable")
+                throw std::invalid_argument(
+                    "RICH_INDIVIDUAL_MODE must be 'full', 'full-variable', or 'partial'");
+            options.time_quantum = std::ldexp(
+                dt, -static_cast<int>(options.initial_bin));
+            options.mesh_build_policy = auto_partial ?
+                IndividualMeshBuildPolicy::AutoPartial :
+                IndividualMeshBuildPolicy::FullReference;
+            options.verify_partial_build =
+                std::getenv("RICH_VERIFY_PARTIAL_BUILD") != nullptr;
+            simulation.SetTimeStep(dt);
+            simulation.EnableIndividualTimeSteps(options);
+            individual_enabled = true;
 
-        while (simulation.GetTime() < tf) {
+            if(std::getenv("RICH_TEST_SPARSE_INITIAL_BIN") != nullptr) {
+                if(synchronized || options.initial_bin < 2)
+                    throw std::invalid_argument(
+                        "RICH_TEST_SPARSE_INITIAL_BIN requires variable individual timesteps");
+                IndividualTimeStepScheduler* scheduler =
+                    simulation.GetIndividualTimeStepScheduler();
+                scheduler->initialize(simulation.getCells(), simulation.GetTime(),
+                                      simulation.GetTimeStep());
+                std::vector<CellTimeState>& states = scheduler->states();
+                if(states.empty())
+                    throw std::logic_error(
+                        "RICH_TEST_SPARSE_INITIAL_BIN requires at least one cell per rank");
+#ifdef RICH_MPI
+                if(rank == 0) {
+                    CellTimeState& sparse_state = states.back();
+                    sparse_state.time_bin = static_cast<std::uint8_t>(
+                        options.initial_bin - 2);
+                    sparse_state.end_tick =
+                        std::uint64_t(1) << sparse_state.time_bin;
+                }
+#else
+                CellTimeState& sparse_state = states[states.size() / 2];
+                sparse_state.time_bin = static_cast<std::uint8_t>(
+                    options.initial_bin - 2);
+                sparse_state.end_tick =
+                    std::uint64_t(1) << sparse_state.time_bin;
+#endif
+            }
+        }
+
+        double const tf = 1e-9;
+        std::size_t const maximum_cycles = environment_size(
+            "RICH_TEST_MAX_CYCLES", std::numeric_limits<std::size_t>::max());
+
+        while (simulation.GetTime() < tf &&
+               simulation.GetCycle() < maximum_cycles) {
             double const dt_step = std::min(dt, tf - simulation.GetTime());
             if (dt_step <= 0.0) break;
 
-            simulation.SetTimeStep(dt_step);
+            double const old_time = simulation.GetTime();
+            if(!individual_enabled)
+                simulation.SetTimeStep(dt_step);
             simulation.step();
+            double const advanced_time = simulation.GetTime() - old_time;
 
             if ((mode == Mode::MC || mode == Mode::MCIsotropic) && mc_physics) {
                 auto const& fleck = mc_physics->getFactorFleck();
@@ -278,7 +357,7 @@ int main(int argc, char* argv[])
 
             if (rank == 0 && (simulation.GetCycle() % 50 == 0 || simulation.GetCycle() <= 5)) {
                 std::cout << "Cycle " << simulation.GetCycle()
-                          << " dt " << dt_step
+                          << " dt " << advanced_time
                           << " t " << simulation.GetTime()
                           << std::endl;
             }

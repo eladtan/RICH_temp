@@ -10,6 +10,7 @@
 #include "computational_cell.hpp"
 #include "../two_dimensional/computational_cell_2d.hpp"
 #include "../common/equation_of_state.hpp"
+#include "newtonian/three_dimensional/simulation/IndividualTimeStep.hpp"
 
  //! \brief Abstract class for time step calculator
 class TimeStepFunction3D
@@ -36,6 +37,14 @@ public:
 	virtual double GetTimeStep(void) const = 0;
 
 	virtual double SuggestTimeStep(void) const = 0;
+
+	virtual void SuggestIndividualTimeSteps(const Tessellation3D& tess,
+		const vector<ComputationalCell3D>& cells,
+		const EquationOfState& eos,
+		const vector<Vector3D>& face_velocities,
+		double time,
+		const IndividualStepContext& context,
+		vector<double>& time_step_limits) const;
 };
 
 #endif  // TIME_STEP_FUNCTION3D_HPP

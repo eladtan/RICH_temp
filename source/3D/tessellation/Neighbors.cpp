@@ -1,5 +1,7 @@
 #include "Neighbors.hpp"
 #include <algorithm>
+#include <stdexcept>
+#include <unordered_map>
 
 #ifdef RICH_MPI
     struct Request : public Serializable
@@ -111,6 +113,17 @@ void addPointToSet(boost::container::flat_set<RemotePoint> &set, const RemotePoi
         return result;
     }
 
+	int invalid_point = 0;
+	for(size_t pointIdx : points)
+		if(pointIdx >= tess.GetPointNo())
+			invalid_point = 1;
+#ifdef RICH_MPI
+	MPI_Allreduce(MPI_IN_PLACE, &invalid_point, 1, MPI_INT, MPI_MAX, comm);
+#endif
+	if(invalid_point != 0)
+		throw std::runtime_error(
+			"GetKOrderNeighbors received a non-owned local point index");
+
     #ifdef RICH_MPI
         // send requests
         std::vector<std::vector<Request>> requests(size);
@@ -122,6 +135,21 @@ void addPointToSet(boost::container::flat_set<RemotePoint> &set, const RemotePoi
     #ifdef RICH_MPI
         std::vector<std::pair<int, size_t>> indicesInGhosts;
         const std::vector<int> &dupProcs = tess.GetDuplicatedProcs();
+		const std::vector<std::vector<size_t>> &ghostIndices =
+			tess.GetGhostIndeces();
+		int ghost_mapping_error =
+			dupProcs.size() == ghostIndices.size() ? 0 : 1;
+		std::unordered_map<size_t, std::pair<size_t, size_t>> ghostLookup;
+		size_t ghostCount = 0;
+		for(auto const& peerGhosts : ghostIndices)
+			ghostCount += peerGhosts.size();
+		ghostLookup.reserve(ghostCount);
+		for(size_t peer = 0; peer < ghostIndices.size(); ++peer)
+			for(size_t position = 0;
+			    position < ghostIndices[peer].size(); ++position)
+				if(!ghostLookup.emplace(ghostIndices[peer][position],
+					std::make_pair(peer, position)).second)
+					ghost_mapping_error = 1;
     #endif // RICH_MPI
 
     std::vector<size_t> neighbor_buf;
@@ -134,19 +162,32 @@ void addPointToSet(boost::container::flat_set<RemotePoint> &set, const RemotePoi
             {
                 continue; // skip mirrored points
             }
-            #ifdef RICH_MPI
-                int _rank = tess.GetOwner(tess.GetMeshPoint(neighbor));
-                if(_rank == rank)
-                {
-                    requests[rank].push_back({pointIdx, neighbor});
-                    continue;
-                }
-                // otherwise, belongs to a remote
-                size_t rankIndexInGhostIndices = std::distance(dupProcs.cbegin(), std::find(dupProcs.cbegin(), dupProcs.cend(), _rank));
-                const std::vector<size_t> &ghostsOfRank = tess.GetGhostIndeces()[rankIndexInGhostIndices];
-                size_t ghostIndexInGhost = std::distance(ghostsOfRank.cbegin(), std::find(ghostsOfRank.cbegin(), ghostsOfRank.cend(), neighbor));
-                requests[_rank].push_back({pointIdx, ghostIndexInGhost});
-            #else // RICH_MPI
+	            #ifdef RICH_MPI
+	                if(neighbor < tess.GetPointNo())
+	                {
+	                    requests[rank].push_back({pointIdx, neighbor});
+	                    continue;
+	                }
+	                // Ghost ownership is defined by the paired Nghost/duplicated
+	                // metadata. A spatial owner lookup can disagree at processor
+	                // boundaries and must not be used as an index into those lists.
+	                auto const ghost = ghostLookup.find(neighbor);
+	                if(ghost == ghostLookup.end())
+	                {
+	                    ghost_mapping_error = 1;
+	                    continue;
+	                }
+	                size_t const peer_index = ghost->second.first;
+	                size_t const ghost_index = ghost->second.second;
+	                if(peer_index >= dupProcs.size() ||
+	                   dupProcs[peer_index] < 0 || dupProcs[peer_index] >= size)
+	                {
+	                    ghost_mapping_error = 1;
+	                    continue;
+	                }
+	                requests[static_cast<size_t>(dupProcs[peer_index])].push_back(
+	                    {pointIdx, ghost_index});
+	            #else // RICH_MPI
                 requestPoints.push_back(pointIdx);
                 nextSearch.push_back(neighbor);
             #endif // RICH_MPI
@@ -160,39 +201,101 @@ void addPointToSet(boost::container::flat_set<RemotePoint> &set, const RemotePoi
                 result[pointIdx].insert(RemotePoint(pointIdx, 0));
             #endif // RICH_MPI
         }
-    }
+	    }
 
-    #ifdef RICH_MPI
-        std::vector<std::vector<Request>> incomingRequests = MPI_Exchange_all_to_all(requests, comm);
+#ifdef RICH_MPI
+	MPI_Allreduce(MPI_IN_PLACE, &ghost_mapping_error, 1, MPI_INT, MPI_MAX,
+		comm);
+	if(ghost_mapping_error != 0)
+		throw std::runtime_error(
+			"GetKOrderNeighbors found inconsistent MPI ghost ownership metadata");
+#endif
 
-        // calculate what local points should continue the search
-        for(int _rank = 0; _rank < size; _rank++)
-        {
-            if(incomingRequests[_rank].empty())
+	#ifdef RICH_MPI
+		std::vector<std::vector<Request>> incomingRequests = MPI_Exchange_all_to_all(requests, comm);
+		std::unordered_map<size_t, size_t> inputToLocal;
+		inputToLocal.reserve(tess.GetPointNo());
+		for(auto const& mapping : tess.GetIndicesInAllPoints())
+			if(mapping.first < tess.GetPointNo())
+				inputToLocal.emplace(mapping.second, mapping.first);
+		std::vector<std::vector<size_t>> incomingLocalIndices(
+			static_cast<size_t>(size));
+		int duplicate_mapping_error = 0;
+
+		// calculate what local points should continue the search
+		for(int _rank = 0; _rank < size; _rank++)
+		{
+			incomingLocalIndices[static_cast<size_t>(_rank)].resize(
+				incomingRequests[static_cast<size_t>(_rank)].size(),
+				std::numeric_limits<size_t>::max());
+			if(incomingRequests[_rank].empty())
             {
                 continue;
             }
-            if(_rank != rank)
-            {
-                size_t rankIndexInGhostIndices = std::distance(dupProcs.cbegin(), std::find(dupProcs.cbegin(), dupProcs.cend(), _rank));
-                assert(rankIndexInGhostIndices != dupProcs.size()); // validate rank indeed exists
-                const std::vector<size_t> &dupPointsOfRank = tess.GetDuplicatedPoints()[rankIndexInGhostIndices];
-                for(const Request &indexInGhostArray : incomingRequests[_rank])
-                {
-                    size_t localIndex = dupPointsOfRank[indexInGhostArray.remotePointIdxInGhost];
-                    nextSearch.push_back(localIndex);
-                }
-            }
+			if(_rank != rank)
+			{
+				size_t rankIndexInGhostIndices = std::distance(dupProcs.cbegin(), std::find(dupProcs.cbegin(), dupProcs.cend(), _rank));
+				if(rankIndexInGhostIndices == dupProcs.size() ||
+				   rankIndexInGhostIndices >= tess.GetDuplicatedPoints().size())
+				{
+					duplicate_mapping_error = 1;
+					continue;
+				}
+				const std::vector<size_t> &dupPointsOfRank =
+					tess.GetDuplicatedPoints()[rankIndexInGhostIndices];
+				for(size_t requestNumber = 0;
+				    requestNumber < incomingRequests[_rank].size(); ++requestNumber)
+				{
+					Request const& request = incomingRequests[_rank][requestNumber];
+					if(request.remotePointIdxInGhost >= dupPointsOfRank.size())
+					{
+						duplicate_mapping_error = 1;
+						continue;
+					}
+					size_t const compactIndex =
+						dupPointsOfRank[request.remotePointIdxInGhost];
+					if(compactIndex >= tess.getAllPoints().size())
+					{
+						duplicate_mapping_error = 1;
+						continue;
+					}
+					size_t const inputIndex =
+						tess.GetInputIndexForAllPoint(compactIndex);
+					auto const local = inputToLocal.find(inputIndex);
+					if(local == inputToLocal.end())
+					{
+						duplicate_mapping_error = 1;
+						continue;
+					}
+					incomingLocalIndices[static_cast<size_t>(_rank)][requestNumber] =
+						local->second;
+					nextSearch.push_back(local->second);
+				}
+			}
             else
             {
-                for(const Request &indexInGhostArray : incomingRequests[_rank])
-                {
-                    size_t localIndex = indexInGhostArray.remotePointIdxInGhost;
-                    nextSearch.push_back(localIndex);
-                }
-            }
-        }
-    #endif // RICH_MPI
+				for(size_t requestNumber = 0;
+				    requestNumber < incomingRequests[_rank].size(); ++requestNumber)
+				{
+					size_t const localIndex =
+						incomingRequests[_rank][requestNumber].remotePointIdxInGhost;
+					if(localIndex >= tess.GetPointNo())
+					{
+						duplicate_mapping_error = 1;
+						continue;
+					}
+					incomingLocalIndices[static_cast<size_t>(_rank)][requestNumber] =
+						localIndex;
+					nextSearch.push_back(localIndex);
+				}
+			}
+		}
+		MPI_Allreduce(MPI_IN_PLACE, &duplicate_mapping_error, 1, MPI_INT,
+			MPI_MAX, comm);
+		if(duplicate_mapping_error != 0)
+			throw std::runtime_error(
+				"GetKOrderNeighbors found inconsistent MPI duplicate-point metadata");
+	#endif // RICH_MPI
     
     // Multiple queried points often share first-order neighbors. Recursing on
     // duplicates repeats the same MPI requests and graph traversal while the
@@ -221,16 +324,13 @@ void addPointToSet(boost::container::flat_set<RemotePoint> &set, const RemotePoi
             {
                 continue;
             }
-            if(_rank != rank)
-            {
-                size_t rankIndexInGhostIndices = std::distance(dupProcs.cbegin(), std::find(dupProcs.cbegin(), dupProcs.cend(), _rank));
-                assert(rankIndexInGhostIndices != dupProcs.size()); // validate rank indeed exists
-                const std::vector<size_t> &dupPointsOfRank = tess.GetDuplicatedPoints()[rankIndexInGhostIndices];
-                for(size_t requestNumber = 0; requestNumber < requestsOfRank.size(); requestNumber++) 
-                {
-                    const Request &indexInGhostArray = requestsOfRank[requestNumber];
-                    size_t localIndex = dupPointsOfRank[indexInGhostArray.remotePointIdxInGhost];
-                    for(const RemotePoint &neighbor : neighborPoints[localIndex])
+			if(_rank != rank)
+			{
+				for(size_t requestNumber = 0; requestNumber < requestsOfRank.size(); requestNumber++)
+				{
+					size_t const localIndex =
+						incomingLocalIndices[static_cast<size_t>(_rank)][requestNumber];
+					for(const RemotePoint &neighbor : neighborPoints[localIndex])
                     {
                         responses[_rank].emplace_back(requestNumber, RemotePoint(neighbor.rank, neighbor.indexOnRank, neighbor.distance + 1)); // increase the distance by 1
                     }
@@ -238,10 +338,10 @@ void addPointToSet(boost::container::flat_set<RemotePoint> &set, const RemotePoi
             }
             else
             {
-                for(size_t requestNumber = 0; requestNumber < requestsOfRank.size(); requestNumber++) 
-                {
-                    const Request &index = requestsOfRank[requestNumber];
-                    size_t localIndex = index.remotePointIdxInGhost;
+				for(size_t requestNumber = 0; requestNumber < requestsOfRank.size(); requestNumber++)
+				{
+					size_t const localIndex =
+						incomingLocalIndices[static_cast<size_t>(_rank)][requestNumber];
                     for(const RemotePoint &neighbor : neighborPoints[localIndex])
                     {
                         responses[_rank].emplace_back(requestNumber, RemotePoint(neighbor.rank, neighbor.indexOnRank, neighbor.distance + 1)); 
@@ -250,19 +350,30 @@ void addPointToSet(boost::container::flat_set<RemotePoint> &set, const RemotePoi
             }
         }
 
-        std::vector<std::vector<Response>> incomingResponses = MPI_Exchange_all_to_all(responses, comm);
+		std::vector<std::vector<Response>> incomingResponses = MPI_Exchange_all_to_all(responses, comm);
 
-        // translate the results to the original point
-        for(int _rank = 0; _rank < size; _rank++)
-        {
-            const std::vector<Request> &rankRequests = requests[_rank];
-            const std::vector<Response> &rankResponse = incomingResponses[_rank];
-            for(const Response &rankResponse : rankResponse)
-            {
-                size_t askedPointID = rankRequests[rankResponse.requestID].askingPointIdx;
-                addPointToSet(result[askedPointID], rankResponse.neighbor);
-            }
-        }
+		// translate the results to the original point
+		int response_mapping_error = 0;
+		for(int _rank = 0; _rank < size; _rank++)
+		{
+			const std::vector<Request> &rankRequests = requests[_rank];
+			const std::vector<Response> &rankResponse = incomingResponses[_rank];
+			for(const Response &rankResponse : rankResponse)
+			{
+				if(rankResponse.requestID >= rankRequests.size())
+				{
+					response_mapping_error = 1;
+					continue;
+				}
+				size_t askedPointID = rankRequests[rankResponse.requestID].askingPointIdx;
+				addPointToSet(result[askedPointID], rankResponse.neighbor);
+			}
+		}
+		MPI_Allreduce(MPI_IN_PLACE, &response_mapping_error, 1, MPI_INT,
+			MPI_MAX, comm);
+		if(response_mapping_error != 0)
+			throw std::runtime_error(
+				"GetKOrderNeighbors received an invalid MPI response index");
     #else // RICH_MPI
         for(size_t requestNumber = 0; requestNumber < requestPoints.size(); requestNumber++)
         {

@@ -24,6 +24,30 @@ public:
 
     double suggestTimeStep(void) const override;
 
+    bool supportsIndividualTimeSteps(void) const override
+    {return stepType == StepType::TIMEADVANCE_2 && sim.supportsIndividualTimeSteps();}
+
+    void stepIndividual(const IndividualStepContext &context) override;
+
+    void suggestIndividualTimeSteps(const IndividualStepContext &context,
+                                    std::vector<double> &time_step_limits) const override;
+
+    bool getIndividualGeneratorPoints(
+        std::vector<Vector3D>& points) const override;
+
+    const std::vector<size_t>& getIndividualMeshTargetIDs(void) const
+    {return sim.GetIndividualMeshTargetIDs();}
+
+    void restoreIndividualMeshTargetIDs(
+        const std::vector<size_t>& target_ids)
+    {sim.RestoreIndividualMeshTargetIDs(target_ids);}
+
+    void afterIndividualAMR(void) override;
+
+    void onIndividualForceAllActiveLatch(void) noexcept override;
+
+    void beforeIndividualRebalance(void) noexcept override;
+
     std::string getName(void) const override { return step_name; }
 
     inline const Tessellation3D &getTessellation(void) const{return sim.getTessellation();};

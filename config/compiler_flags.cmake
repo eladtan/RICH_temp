@@ -88,7 +88,15 @@ else()
     add_definitions("-DOMPI_SKIP_MPICXX")
 endif()
 
-list(APPEND CMAKE_CXX_FLAGS_RELEASE "-O2")
+set(RICH_CXX_OPTIMIZATION "-O2" CACHE STRING
+    "C++ optimization level for non-debug RICH targets (-O2 or -O3)")
+set_property(CACHE RICH_CXX_OPTIMIZATION PROPERTY STRINGS "-O2" "-O3")
+if(NOT RICH_CXX_OPTIMIZATION STREQUAL "-O2" AND
+   NOT RICH_CXX_OPTIMIZATION STREQUAL "-O3")
+    message(FATAL_ERROR
+        "RICH_CXX_OPTIMIZATION must be -O2 or -O3; fast-math modes are unsupported")
+endif()
+list(APPEND CMAKE_CXX_FLAGS_RELEASE "${RICH_CXX_OPTIMIZATION}")
 list(APPEND CMAKE_CXX_FLAGS_DEBUG
         "-O0"
         "-gdwarf-3"

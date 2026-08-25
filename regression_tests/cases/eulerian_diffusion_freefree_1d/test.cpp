@@ -19,14 +19,30 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
 #include <fstream>
 #include <limits>
 #include <numeric>
+#include <stdexcept>
+#include <string>
 #include <vector>
 #include <unistd.h>
  
 namespace
 {
+    size_t EnvironmentSize(char const* name, size_t fallback)
+    {
+        char const* value = std::getenv(name);
+        if(value == nullptr || value[0] == '\0')
+            return fallback;
+        char* end = nullptr;
+        unsigned long long const parsed = std::strtoull(value, &end, 10);
+        if(end == value || *end != '\0' || parsed == 0)
+            throw std::invalid_argument(std::string("Invalid positive integer in ") + name);
+        return static_cast<size_t>(parsed);
+    }
+
     class IsPointLeftRightBox3D : public ConditionActionFlux1::Condition3D
     {
     public:
@@ -221,7 +237,7 @@ int main(void)
 #ifndef FREEFREE_COOLING_LIMITER_ON
 #define FREEFREE_COOLING_LIMITER_ON false
 #endif
-    const size_t Np = FREEFREE_NP;
+    const size_t Np = EnvironmentSize("RICH_TEST_POINT_COUNT", FREEFREE_NP);
     const double domain_length = 2e12;
     const double dx = domain_length / static_cast<double>(Np);
     const double dy = 0.5 * dx;
@@ -328,8 +344,49 @@ int main(void)
     simulation.addPhysics(radStep);
     simulation.SetTimeStep(1e-20);
 
+    char const* individual_mode = std::getenv("RICH_INDIVIDUAL_MODE");
+    if(individual_mode != nullptr && individual_mode[0] != '\0')
+    {
+        IndividualTimeStepOptions options;
+        std::string const mode(individual_mode);
+        bool const synchronized = mode == "full";
+        bool const auto_partial = mode == "partial";
+        if(!synchronized && !auto_partial && mode != "full-variable")
+            throw std::invalid_argument(
+                "RICH_INDIVIDUAL_MODE must be 'full', 'full-variable', or 'partial'");
+        options.initial_bin = synchronized ? 0 : 4;
+        options.maximum_bin = synchronized ? 0 : 60;
+        options.time_quantum = std::ldexp(1e-20,
+            -static_cast<int>(options.initial_bin));
+        options.mesh_build_policy = auto_partial ?
+            IndividualMeshBuildPolicy::AutoPartial :
+            IndividualMeshBuildPolicy::FullReference;
+        options.verify_partial_build = std::getenv(
+            "RICH_VERIFY_PARTIAL_BUILD") != nullptr;
+        simulation.EnableIndividualTimeSteps(options);
+
+        if(std::getenv("RICH_TEST_SPARSE_INITIAL_BIN") != nullptr)
+        {
+            if(synchronized || options.initial_bin < 2)
+                throw std::invalid_argument(
+                    "RICH_TEST_SPARSE_INITIAL_BIN requires variable individual timesteps");
+            IndividualTimeStepScheduler* scheduler =
+                simulation.GetIndividualTimeStepScheduler();
+            scheduler->initialize(simulation.getCells(), simulation.GetTime(),
+                                  simulation.GetTimeStep());
+            std::vector<CellTimeState>& states = scheduler->states();
+            if(states.empty())
+                throw std::logic_error(
+                    "RICH_TEST_SPARSE_INITIAL_BIN requires at least one cell");
+            CellTimeState& sparse_state = states[states.size() / 2];
+            sparse_state.time_bin = static_cast<std::uint8_t>(
+                options.initial_bin - 2);
+            sparse_state.end_tick = std::uint64_t(1) << sparse_state.time_bin;
+        }
+    }
+
     const double shock_target = 0.75 * domain_length;
-    const size_t max_cycles = 100000;
+    const size_t max_cycles = EnvironmentSize("RICH_TEST_MAX_CYCLES", 100000);
     const double max_time = 9e4;
     const double density_threshold = 2.0 * left_cell.density;
 
@@ -376,6 +433,19 @@ int main(void)
         }
     }
  
+    // Diagnostics require canonical point ordering, not a partial view.
+    if(tess.GetPointNo() != simulation.getCells().size())
+    {
+        std::vector<Vector3D> output_points;
+        if(!hydroStep->getIndividualGeneratorPoints(output_points) ||
+           output_points.size() != simulation.getCells().size())
+            throw UniversalError("Missing canonical generator positions for free-free diagnostics");
+#ifdef RICH_MPI
+        tess.BuildParallel(output_points, true, true);
+#else
+        tess.Build(output_points);
+#endif
+    }
     shock_position = EstimateShockPositionGlobal(tess, sim.getCells(), rank, nprocs, density_threshold);
     if (rank == 0 && aborted_early)
         std::cerr << "Run ended early after runtime error.\n";
@@ -383,7 +453,9 @@ int main(void)
     char cwd_buf[4096];
     if (getcwd(cwd_buf, sizeof(cwd_buf)) == nullptr)
         throw UniversalError("Failed to resolve current working directory");
-    const std::string output_dir = std::string(cwd_buf);
+    char const* artifact_dir = std::getenv("THUNDER_ARTIFACT_DIR");
+    const std::string output_dir = artifact_dir != nullptr && artifact_dir[0] != '\0'
+        ? std::string(artifact_dir) : std::string(cwd_buf);
     const std::string profile_path = output_dir + "/temperature_profile.txt";
     const std::string shock_path = output_dir + "/shock_position.txt";
  

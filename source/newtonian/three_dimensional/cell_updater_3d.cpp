@@ -1,7 +1,28 @@
 #include "cell_updater_3d.hpp"
+
+#include <stdexcept>
 #include <iostream>
 
 CellUpdater3D::~CellUpdater3D(void) {}
+
+void CellUpdater3D::UpdateIndividual(vector<ComputationalCell3D> &res,
+	EquationOfState const& eos,
+	const Tessellation3D& tess,
+	vector<Conserved3D>& extensives,
+	const IndividualStepContext& context) const
+{
+	vector<ComputationalCell3D> candidate_cells = res;
+	vector<Conserved3D> candidate_extensives = extensives;
+	(*this)(candidate_cells, eos, tess, candidate_extensives);
+	for(std::size_t index : context.active_indices)
+	{
+		if(index >= res.size() || index >= candidate_cells.size() ||
+			index >= extensives.size() || index >= candidate_extensives.size())
+			throw std::out_of_range("Individual cell update index is out of range");
+		res[index] = candidate_cells[index];
+		extensives[index] = candidate_extensives[index];
+	}
+}
 
 namespace
 {

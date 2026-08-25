@@ -41,6 +41,17 @@ public:
 	virtual Slope3D GetGhostGradient(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
 		const vector<Slope3D>& gradients, size_t ghost_index, double time, size_t face_index) const = 0;
 
+	/*! \brief Construct the primitive state for one boundary face.
+	    This face-local API is required when a partial tessellation reuses one
+	    geometric ghost point for faces belonging to different real cells. */
+	virtual ComputationalCell3D GetGhostCell(
+		const Tessellation3D& tess,
+		const vector<ComputationalCell3D>& cells,
+		size_t real_index,
+		size_t ghost_index,
+		double time,
+		size_t face_index) const = 0;
+
 	//! \brief Virtual destructor
 	virtual ~Ghost3D(void);
 	/*!
@@ -60,6 +71,10 @@ public:
 
 	Slope3D GetGhostGradient(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
 		const vector<Slope3D>& gradients, size_t ghost_index, double time, size_t face_index) const override;
+
+	ComputationalCell3D GetGhostCell(const Tessellation3D& tess,
+		const vector<ComputationalCell3D>& cells, size_t real_index,
+		size_t ghost_index, double time, size_t face_index) const override;
 };
 
 //! \brief Generator for free - flow ghosts
@@ -71,6 +86,10 @@ public:
 
 	Slope3D GetGhostGradient(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
 		const vector<Slope3D>& gradients, size_t ghost_index, double time, size_t face_index) const override;
+
+	ComputationalCell3D GetGhostCell(const Tessellation3D& tess,
+		const vector<ComputationalCell3D>& cells, size_t real_index,
+		size_t ghost_index, double time, size_t face_index) const override;
 };
 
 //! \brief Ghost cell with time independent properties
@@ -90,6 +109,10 @@ public:
 
 	Slope3D GetGhostGradient(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
 		const vector<Slope3D>& gradients, size_t ghost_index, double time, size_t face_index) const override;
+
+	ComputationalCell3D GetGhostCell(const Tessellation3D& tess,
+		const vector<ComputationalCell3D>& cells, size_t real_index,
+		size_t ghost_index, double time, size_t face_index) const override;
 };
 
 //! \brief Class to describe several different ghost cells
@@ -124,6 +147,10 @@ public:
 
 	Slope3D GetGhostGradient(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
 		const vector<Slope3D>& gradients, size_t ghost_index, double time, size_t face_index) const override;
+
+	ComputationalCell3D GetGhostCell(const Tessellation3D& tess,
+		const vector<ComputationalCell3D>& cells, size_t real_index,
+		size_t ghost_index, double time, size_t face_index) const override;
 private:
 	vector<Ghost3D*> ghosts_;
 	GhostCriteria3D const& ghost_chooser_;

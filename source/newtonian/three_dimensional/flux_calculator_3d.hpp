@@ -11,6 +11,7 @@
 #include "computational_cell.hpp"
 #include "../common/equation_of_state.hpp"
 #include "RiemannSolver3D.hpp"
+#include "newtonian/three_dimensional/simulation/IndividualTimeStep.hpp"
 
 //! \brief Abstract class for flux calculator
 class FluxCalculator3D
@@ -38,6 +39,17 @@ public:
 	{
 	  face_values = (*this)(fluxes, tess, edge_velocities, cells, extensives, eos, time, dt);
 	}
+
+	virtual void CalculateIndividual(vector<Conserved3D>& fluxes,
+	  const Tessellation3D& tess,
+	  const vector<Vector3D>& edge_velocities,
+	  const vector<ComputationalCell3D>& cells,
+	  const vector<Conserved3D>& extensives,
+	  const EquationOfState& eos,
+	  const IndividualStepContext& context,
+	  std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> >& face_values) const;
+
+	virtual bool SupportsIndividualTimeSteps(void) const { return false; }
 
   //! \brief Class destructor
   virtual ~FluxCalculator3D(void);

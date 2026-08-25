@@ -20,12 +20,26 @@
 #include "source/Radiation/DiffusionForce.hpp"
 #include "source/newtonian/three_dimensional/simulation/steps/RadiationStep.hpp"
 #include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
+#include <limits>
 #include <numeric>
 
 namespace
 {
+    size_t EnvironmentSize(char const* name, size_t fallback)
+    {
+        char const* value = std::getenv(name);
+        if(value == nullptr || value[0] == '\0')
+            return fallback;
+        char* end = nullptr;
+        unsigned long long const parsed = std::strtoull(value, &end, 10);
+        if(end == value || *end != '\0')
+            throw std::invalid_argument(std::string("Invalid integer in ") + name);
+        return static_cast<size_t>(parsed);
+    }
+
     class IsPointLeftRightBox3D : public ConditionActionFlux1::Condition3D
     {
     public:
@@ -65,7 +79,7 @@ namespace
 
 int main(void)
 {
-    size_t const Np = 1024;
+    size_t const Np = EnvironmentSize("RICH_TEST_POINT_COUNT", 1024);
     double const box_size = 1e3;
     double const dy = 3 * box_size / (2 * Np);
     Vector3D ll(-box_size, -dy, -dy), ur(2 * box_size, dy, dy);
@@ -99,6 +113,23 @@ int main(void)
     IdealGas eos(5./3., CG::boltzmann_constant / (1.67e-24 * (5.0 / 3.0 - 1)), 1, 0);
 
     size_t const Nlocal = tess.GetPointNo();
+#ifdef RICH_MPI
+    unsigned long long owned = static_cast<unsigned long long>(Nlocal);
+    unsigned long long minimum_owned = owned;
+    unsigned long long maximum_owned = owned;
+    unsigned long long empty_ranks = owned == 0 ? 1 : 0;
+    MPI_Allreduce(MPI_IN_PLACE, &minimum_owned, 1, MPI_UNSIGNED_LONG_LONG,
+                  MPI_MIN, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &maximum_owned, 1, MPI_UNSIGNED_LONG_LONG,
+                  MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &empty_ranks, 1, MPI_UNSIGNED_LONG_LONG,
+                  MPI_SUM, MPI_COMM_WORLD);
+    if(rank == 0)
+        std::clog << "GREY_MPI_OWNED_CELL_RANGE minimum=" << minimum_owned
+                  << " maximum=" << maximum_owned
+                  << " empty_ranks=" << empty_ranks
+                  << " ranks=" << nprocs << '\n';
+#endif
     std::vector<ComputationalCell3D> cells(Nlocal);
     ComputationalCell3D left_cell, right_cell;
     left_cell.velocity = Vector3D(2.3547e5, 0, 0);
@@ -181,7 +212,112 @@ int main(void)
     simulation.addPhysics(radStep);
     simulation.SetTimeStep(1e-15);
 
-    while (simulation.GetTime() < 0.01)
+    char const* individual_mode = std::getenv("RICH_INDIVIDUAL_MODE");
+    if(individual_mode != nullptr && individual_mode[0] != '\0')
+    {
+        IndividualTimeStepOptions options;
+	        std::string const mode(individual_mode);
+	        bool const synchronized = mode == "full";
+	        bool const auto_partial = mode == "partial";
+	        if(!synchronized && !auto_partial && mode != "full-variable")
+	            throw std::invalid_argument(
+	                "RICH_INDIVIDUAL_MODE must be 'full', 'full-variable', or 'partial'");
+        options.initial_bin = synchronized ? 0 : 4;
+	        options.maximum_bin = synchronized ? 0 : 60;
+        options.time_quantum = std::ldexp(1e-15,
+            -static_cast<int>(options.initial_bin));
+	        options.force_synchronized = synchronized;
+	        options.mesh_build_policy = auto_partial ?
+	            IndividualMeshBuildPolicy::AutoPartial :
+	            IndividualMeshBuildPolicy::FullReference;
+        options.verify_partial_build = std::getenv(
+            "RICH_VERIFY_PARTIAL_BUILD") != nullptr;
+        simulation.EnableIndividualTimeSteps(options);
+
+        if(std::getenv("RICH_TEST_SPARSE_INITIAL_BIN") != nullptr)
+        {
+            if(synchronized || options.initial_bin < 2)
+                throw std::invalid_argument(
+                    "RICH_TEST_SPARSE_INITIAL_BIN requires variable individual timesteps");
+            IndividualTimeStepScheduler* scheduler =
+                simulation.GetIndividualTimeStepScheduler();
+            scheduler->initialize(simulation.getCells(), simulation.GetTime(),
+                                  simulation.GetTimeStep());
+            std::vector<CellTimeState>& states = scheduler->states();
+            std::size_t sparse_index = states.size();
+            bool const activate_reference_maximum = std::getenv(
+                "RICH_TEST_SPARSE_MAX_ER_CELL") != nullptr;
+            if(activate_reference_maximum)
+            {
+#ifdef RICH_MPI
+                struct
+                {
+                    double value;
+                    int rank;
+                } local_maximum = {
+                    -std::numeric_limits<double>::infinity(), rank};
+#else
+                double local_maximum =
+                    -std::numeric_limits<double>::infinity();
+#endif
+                for(std::size_t index = 0; index < states.size(); ++index)
+                {
+                    double const value = simulation.getCells()[index].Erad *
+                        simulation.getCells()[index].density;
+#ifdef RICH_MPI
+                    if(value > local_maximum.value)
+                    {
+                        local_maximum.value = value;
+                        sparse_index = index;
+                    }
+#else
+                    if(value > local_maximum)
+                    {
+                        local_maximum = value;
+                        sparse_index = index;
+                    }
+#endif
+                }
+#ifdef RICH_MPI
+                auto global_maximum = local_maximum;
+                MPI_Allreduce(&local_maximum, &global_maximum, 1,
+                    MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+                if(rank != global_maximum.rank)
+                    sparse_index = states.size();
+                if(rank == 0)
+                    std::clog << "GREY_ACTIVE_REFERENCE_MAX_TEST value="
+                              << global_maximum.value << " owner="
+                              << global_maximum.rank << '\n';
+#else
+                std::clog << "GREY_ACTIVE_REFERENCE_MAX_TEST value="
+                          << local_maximum << " owner=0\n";
+#endif
+            }
+            else
+            {
+#ifdef RICH_MPI
+                if(rank == 0 && !states.empty())
+                    sparse_index = states.size() - 1;
+#else
+                if(!states.empty())
+                    sparse_index = states.size() / 2;
+#endif
+            }
+            if(sparse_index < states.size())
+            {
+                CellTimeState& sparse_state = states[sparse_index];
+                sparse_state.time_bin = static_cast<std::uint8_t>(
+                    options.initial_bin - 2);
+                sparse_state.end_tick = std::uint64_t(1) << sparse_state.time_bin;
+            }
+        }
+    }
+
+    size_t const maximum_cycles = EnvironmentSize(
+        "RICH_TEST_MAX_CYCLES", std::numeric_limits<size_t>::max());
+
+    while (simulation.GetTime() < 0.01 &&
+           simulation.GetCycle() < maximum_cycles)
     {
         try
         {
@@ -225,6 +361,17 @@ int main(void)
         case_dir = file_buf;
     }
     std::string profile_path = case_dir + "/mach2_profile.txt";
+
+    // Global geometry output must not interpret canonical owned-cell arrays
+    // through a partial tessellation's local ordering.
+#ifndef RICH_MPI
+    if(tess.GetPointNo() != simulation.getCells().size())
+    {
+        std::vector<Vector3D> output_points = tess.getAllPoints();
+        output_points.resize(simulation.getCells().size());
+        tess.Build(output_points);
+    }
+#endif
 
     // Gather profile data from all MPI ranks and write to file
     {

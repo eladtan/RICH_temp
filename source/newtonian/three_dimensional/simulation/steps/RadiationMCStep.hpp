@@ -17,6 +17,9 @@ class RadiationMCStep : public PhysicsStep
 {
 public:
     static constexpr const char *step_name = "radiation-mc";
+    static constexpr bool individual_time_steps_supported = false;
+    static constexpr const char *individual_time_step_error =
+        "Monte Carlo radiation transport, including IMC and DDMC, requires global timesteps";
     #ifdef RICH_MPI
     enum ManagerType
     {
@@ -53,6 +56,12 @@ public:
     void step(double dt) override;
 
     double suggestTimeStep(void) const override;
+
+    bool supportsIndividualTimeSteps(void) const override
+    {return individual_time_steps_supported;}
+
+    std::string individualTimeStepUnsupportedReason(void) const override
+    {return individual_time_step_error;}
 
     std::string getName(void) const override { return step_name; }
 

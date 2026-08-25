@@ -1,4 +1,5 @@
 #include "ConditionExtensiveUpdater3D.hpp"
+#include "default_extensive_updater.hpp"
 #include "../../misc/utils.hpp"
 #include <iostream>
 #include <cfloat>
@@ -14,6 +15,38 @@ ConditionExtensiveUpdater3D::~ConditionExtensiveUpdater3D() {}
 
 ConditionExtensiveUpdater3D::ConditionExtensiveUpdater3D(const vector<pair<const Condition3D*, const Action3D*> >& sequence) :
 	sequence_(sequence) {}
+
+void ConditionExtensiveUpdater3D::UpdateIndividual(
+	const vector<Conserved3D>& fluxes,
+	const Tessellation3D& tess,
+	const IndividualStepContext& context,
+	const vector<ComputationalCell3D>& cells,
+	vector<Conserved3D>& extensives,
+	double time,
+	const vector<Vector3D>& edge_velocities,
+	const vector<Vector3D>& point_velocities,
+	const std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> >& interp_values,
+	const vector<ComputationalCell3D>* canonical_cells,
+	vector<Conserved3D>* canonical_extensives) const
+{
+	DefaultExtensiveUpdater regular_update;
+	regular_update.UpdateIndividual(fluxes, tess, context, cells, extensives,
+		time, edge_velocities, point_velocities, interp_values,
+		canonical_cells, canonical_extensives);
+
+	for(std::size_t index : context.active_indices)
+	{
+		if(index >= tess.GetPointNo() || index >= cells.size() || index >= extensives.size())
+			throw std::out_of_range("Condition extensive individual cell is out of range");
+		for(const auto& item : sequence_)
+			if((*item.first)(index, tess, cells, time))
+			{
+				(*item.second)(fluxes, tess, context.cellTimeStep(index), cells,
+					extensives, index, time);
+				break;
+			}
+	}
+}
 
 void ConditionExtensiveUpdater3D::operator()(const vector<Conserved3D>& fluxes, const Tessellation3D& tess,
 	const double dt, const vector<ComputationalCell3D>& cells, vector<Conserved3D>& extensives, double time,

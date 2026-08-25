@@ -4,6 +4,9 @@
 #include <vector>
 #include <array>
 #include <cstdint>
+#include <limits>
+#include <stdexcept>
+#include <utility>
 #include "3D/elementary/Vector3D.hpp"
 #include "GravityTree.hpp"
 
@@ -23,6 +26,8 @@ struct FlatGravityNode
 class FlatGravityTree
 {
 public:
+    using TraversalStack = std::vector<std::pair<int32_t, bool>>;
+
     explicit FlatGravityTree(const GravityTree<Vector3D> &tree)
         : thetaSquared(tree.getTheta() * tree.getTheta()),
           quadrupole(tree.getQuadrupole())
@@ -30,25 +35,45 @@ public:
         const auto *root = tree.getOctTree()->getRoot();
         if(root == nullptr)
             return;
-        this->nodes.reserve(tree.getOctTree()->getDepth() * 64);
-        this->nodes.resize(1);
-        this->compileNode(root, 0);
+        const std::size_t nodeCount = this->countNodes(root);
+        if(nodeCount > static_cast<std::size_t>(
+                std::numeric_limits<int32_t>::max()))
+            throw std::overflow_error(
+                "Flat gravity tree exceeds 32-bit node indexing");
+        this->nodes.resize(nodeCount);
+        std::size_t nextFree = 1;
+        this->compileNode(root, 0, nextFree);
+        if(nextFree != nodeCount)
+            throw std::logic_error(
+                "Flat gravity tree node count changed while compiling");
+    }
+
+    std::size_t nodeCount() const
+    {
+        return this->nodes.size();
     }
 
     Vector3D gravity(const Vector3D &point, bool rootContainsPoint) const
+    {
+        TraversalStack scratch;
+        scratch.reserve(128);
+        return this->gravity(point, rootContainsPoint, scratch);
+    }
+
+    Vector3D gravity(const Vector3D &point, bool rootContainsPoint,
+                     TraversalStack &scratch) const
     {
         Vector3D result;
         if(this->nodes.empty())
             return result;
 
-        std::vector<std::pair<int32_t, bool>> stack;
-        stack.reserve(128);
-        stack.push_back({0, rootContainsPoint});
+        scratch.clear();
+        scratch.push_back({0, rootContainsPoint});
 
-        while(!stack.empty())
+        while(!scratch.empty())
         {
-            auto [idx, containsPoint] = stack.back();
-            stack.pop_back();
+            auto [idx, containsPoint] = scratch.back();
+            scratch.pop_back();
 
             const FlatGravityNode &n = this->nodes[idx];
             bool isLeaf = (n.firstChild < 0);
@@ -82,7 +107,7 @@ public:
                     if(n.childMask & (1 << containsOctant))
                     {
                         int childIdx = n.firstChild + __builtin_popcount(n.childMask & ((1 << containsOctant) - 1));
-                        stack.push_back({childIdx, true});
+                        scratch.push_back({childIdx, true});
                     }
                 }
 
@@ -92,7 +117,8 @@ public:
                     if(n.childMask & (1 << i))
                     {
                         if(i != containsOctant)
-                            stack.push_back({n.firstChild + childOffset, false});
+                            scratch.push_back(
+                                {n.firstChild + childOffset, false});
                         childOffset++;
                     }
                 }
@@ -112,7 +138,19 @@ private:
 
     using PtrNode = typename GravityTree<Vector3D>::Node;
 
-    void compileNode(const PtrNode *node, int32_t slotIdx)
+    std::size_t countNodes(const PtrNode *node) const
+    {
+        if(node == nullptr)
+            return 0;
+        std::size_t result = 1;
+        if(!node->isLeaf)
+            for(int i = 0; i < 8; ++i)
+                result += this->countNodes(node->children[i]);
+        return result;
+    }
+
+    void compileNode(const PtrNode *node, int32_t slotIdx,
+                     std::size_t &nextFree)
     {
         nodes[slotIdx].widthSquared = node->boundingBox.getWidthSquared();
         nodes[slotIdx].CM = node->value.CM;
@@ -138,18 +176,18 @@ private:
             }
         }
 
-        int32_t firstChild = static_cast<int32_t>(nodes.size());
+        int32_t firstChild = static_cast<int32_t>(nextFree);
         nodes[slotIdx].firstChild = firstChild;
         nodes[slotIdx].childMask = mask;
-
-        nodes.resize(nodes.size() + numChildren);
+        nextFree += static_cast<std::size_t>(numChildren);
 
         int childOffset = 0;
         for(int i = 0; i < 8; i++)
         {
             if(node->children[i] != nullptr)
             {
-                this->compileNode(node->children[i], firstChild + childOffset);
+                this->compileNode(node->children[i],
+                                  firstChild + childOffset, nextFree);
                 childOffset++;
             }
         }

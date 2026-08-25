@@ -62,6 +62,20 @@ public:
 		const vector<Vector3D>& point_velocities,
 		std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > const& interp_values) const override;
 
+	bool SupportsIndividualTimeSteps(void) const override { return true; }
+
+	void UpdateIndividual(const vector<Conserved3D>& fluxes,
+		const Tessellation3D& tess,
+		const IndividualStepContext& context,
+		const vector<ComputationalCell3D>& cells,
+		vector<Conserved3D>& extensives,
+		double time,
+		const vector<Vector3D>& edge_velocities,
+		const vector<Vector3D>& point_velocities,
+		const std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> >& interp_values,
+		const vector<ComputationalCell3D>* canonical_cells = nullptr,
+		vector<Conserved3D>* canonical_extensives = nullptr) const override;
+
 private:
 	const vector<pair<const Condition3D*, const Action3D*> > sequence_;
 };

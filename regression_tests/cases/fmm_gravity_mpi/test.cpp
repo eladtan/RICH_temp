@@ -4,12 +4,14 @@
 #include <cstdint>
 #include <fstream>
 #include <iostream>
+#include <utility>
 #include <vector>
 
 #include <mpi.h>
 
 #include "source/3D/gravity/fmm/mpi/DistributedFmmGravityCalculator.hpp"
 #include "source/3D/gravity/fmm/mpi/FmmPatchForest.hpp"
+#include "source/newtonian/three_dimensional/FastMultipoleAcceleration3D.hpp"
 
 namespace
 {
@@ -343,6 +345,120 @@ PatchForestLifecycleObservation exercisePatchForestLifecycle(int rank)
 
     return result;
 }
+
+bool individualTargetEvaluationPasses(
+    int rank,
+    int size,
+    FmmGravityOptions options,
+    const FmmDistributedOptions& distributed)
+{
+    options.computePotential = false;
+    const std::vector<Body> localBodies =
+        bodiesForRank(rank, size, 1.0, BodyLayout::Baseline);
+    const std::vector<Body> globalBodies =
+        allBodies(size, 1.0, BodyLayout::Baseline);
+
+    std::vector<Vector3D> sourcePoints;
+    std::vector<double> sourceMasses;
+    std::vector<std::uint64_t> sourceIds;
+    sourcePoints.reserve(localBodies.size());
+    sourceMasses.reserve(localBodies.size());
+    sourceIds.reserve(localBodies.size());
+    for(const Body& body : localBodies)
+    {
+        sourcePoints.push_back(body.position);
+        sourceMasses.push_back(body.mass);
+        sourceIds.push_back(body.id);
+    }
+
+    std::vector<std::size_t> targetIndices;
+    // With multiple ranks, rank zero owns sources but no active targets.  The
+    // final rank in this fixture owns neither, so both collective edge cases
+    // participate in the same solve.
+    if(!localBodies.empty() && (size == 1 || rank != 0))
+    {
+        targetIndices.push_back(localBodies.size() - 1);
+        if(localBodies.size() > 1)
+            targetIndices.push_back(0);
+    }
+    std::vector<Vector3D> targetPoints;
+    targetPoints.reserve(targetIndices.size());
+    for(std::size_t index : targetIndices)
+        targetPoints.push_back(localBodies[index].position);
+    const std::vector<ComputationalCell3D> targetCells(targetPoints.size());
+
+    const double gravitationalConstant = 0.75;
+    FastMultipoleAcceleration3D gravity(
+        options, distributed, gravitationalConstant);
+    std::vector<Vector3D> acceleration;
+    gravity.EvaluateIndividualTargets(
+        std::make_pair(Vector3D(-2, -2, -2), Vector3D(2, 2, 2)),
+        sourcePoints, sourceMasses, sourceIds, targetPoints, targetCells, 0.0,
+        acceleration);
+    bool parity = acceleration.size() == targetIndices.size();
+    for(std::size_t target = 0;
+        parity && target < targetIndices.size(); ++target)
+    {
+        const Vector3D reference = gravitationalConstant *
+            directAcceleration(localBodies[targetIndices[target]], globalBodies);
+        if(norm(acceleration[target] - reference) /
+           std::max(1.0, norm(reference)) >= 1e-3)
+            parity = false;
+    }
+
+    bool mismatchedSourcesRejected = false;
+    std::vector<double> mismatchedMasses = sourceMasses;
+    if(rank == 0)
+        mismatchedMasses.pop_back();
+    try
+    {
+        gravity.EvaluateIndividualTargets(
+            std::make_pair(Vector3D(-2, -2, -2), Vector3D(2, 2, 2)),
+            sourcePoints, mismatchedMasses, sourceIds, targetPoints,
+            targetCells, 0.0, acceleration);
+    }
+    catch(UniversalError const&)
+    {
+        mismatchedSourcesRejected = true;
+    }
+
+    bool unknownTargetRejected = false;
+    std::vector<Vector3D> unknownTargetPoints = targetPoints;
+    std::vector<ComputationalCell3D> unknownTargetCells = targetCells;
+    if(rank == 0)
+    {
+        unknownTargetPoints.push_back(Vector3D(0.125, 0.25, 0.5));
+        unknownTargetCells.push_back(ComputationalCell3D());
+    }
+    try
+    {
+        gravity.EvaluateIndividualTargets(
+            std::make_pair(Vector3D(-2, -2, -2), Vector3D(2, 2, 2)),
+            sourcePoints, sourceMasses, sourceIds, unknownTargetPoints,
+            unknownTargetCells, 0.0, acceleration);
+    }
+    catch(UniversalError const&)
+    {
+        unknownTargetRejected = true;
+    }
+    bool mismatchedIdsRejected = false;
+    std::vector<std::uint64_t> mismatchedIds = sourceIds;
+    if(rank == 0)
+        mismatchedIds.pop_back();
+    try
+    {
+        gravity.EvaluateIndividualTargets(
+            std::make_pair(Vector3D(-2, -2, -2), Vector3D(2, 2, 2)),
+            sourcePoints, sourceMasses, mismatchedIds, targetPoints,
+            targetCells, 0.0, acceleration);
+    }
+    catch(UniversalError const&)
+    {
+        mismatchedIdsRejected = true;
+    }
+    return parity && mismatchedSourcesRejected && mismatchedIdsRejected &&
+        unknownTargetRejected;
+}
 }
 
 int main(int argc, char** argv)
@@ -389,6 +505,9 @@ int main(int argc, char** argv)
     // execution, plan reuse, splitting, and automatic merging are exercised
     // independently in the dedicated block below.
     distributed.persistentLocalTreeTopology = false;
+
+    const bool individualTargetEvaluation =
+        individualTargetEvaluationPasses(rank, size, options, distributed);
 
     double localMaximumError = 0.0;
     constexpr std::size_t scenarioCount = 10;
@@ -798,7 +917,7 @@ int main(int argc, char** argv)
         std::all_of(globalPatchForestChecks, globalPatchForestChecks + 9,
                     [](int value) { return value != 0; }) ? 1 : 0;
 
-    const int localChecks[16] = {
+    const int localChecks[17] = {
         firstEpoch == secondEpoch ? 1 : 0,
         firstRebuildCount == secondRebuildCount ? 1 : 0,
         leafEpoch > secondEpoch ? 1 : 0,
@@ -814,9 +933,10 @@ int main(int argc, char** argv)
         persistentEmptyLeavesExercised ? 1 : 0,
         persistentTopologyReused ? 1 : 0,
         persistentSplitRebuilt ? 1 : 0,
-        persistentMergeRebuilt ? 1 : 0};
-    int globalChecks[16] = {};
-    MPI_Allreduce(localChecks, globalChecks, 16, MPI_INT, MPI_LAND,
+        persistentMergeRebuilt ? 1 : 0,
+        individualTargetEvaluation ? 1 : 0};
+    int globalChecks[17] = {};
+    MPI_Allreduce(localChecks, globalChecks, 17, MPI_INT, MPI_LAND,
                   MPI_COMM_WORLD);
     const int globalPass = errorWithinTolerance &&
                            globalChecks[0] && globalChecks[1] &&
@@ -827,6 +947,7 @@ int main(int argc, char** argv)
                            globalChecks[10] && globalChecks[11] &&
                            globalChecks[12] && globalChecks[13] &&
                            globalChecks[14] && globalChecks[15] &&
+                           globalChecks[16] &&
                            patchForestLifecyclePass;
 
     if(rank == 0)
@@ -875,6 +996,7 @@ int main(int argc, char** argv)
         output << "persistent_topology_reused " << globalChecks[13] << "\n";
         output << "persistent_split_rebuilt " << globalChecks[14] << "\n";
         output << "persistent_merge_rebuilt " << globalChecks[15] << "\n";
+        output << "individual_target_evaluation " << globalChecks[16] << "\n";
         output << "patch_forest_initial_created "
                << globalPatchForestChecks[0] << "\n";
         output << "patch_forest_identical_stable "

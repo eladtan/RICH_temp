@@ -35,6 +35,17 @@ public:
 	virtual void ApplyFix(Tessellation3D const& tess, vector<ComputationalCell3D> const& cells, double time,
 		double dt, vector<Vector3D> &velocities)const;
 
+	/*! \brief Partial-mesh variant with canonical owned-cell backing arrays.
+	 *
+	 * Exported geometric support generators need not be target cells.  The
+	 * canonical arrays provide their state without enlarging the target mesh.
+	 */
+	virtual void ApplyFixIndividual(Tessellation3D const& tess,
+		vector<ComputationalCell3D> const& cells,
+		vector<ComputationalCell3D> const& all_cells, double time, double dt,
+		vector<Vector3D>& velocities,
+		vector<Vector3D>& all_velocities) const;
+
 	virtual bool MovedPoints() const {return true;}
 	
   //! \brief Class destructor

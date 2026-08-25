@@ -11,18 +11,23 @@
 
 namespace ConvertorIO
 {
-    inline std::map<std::string, std::unique_ptr<ConvertorIOHandler>> registry;
+    inline std::map<std::string, std::unique_ptr<ConvertorIOHandler>>& registry()
+    {
+        static std::map<std::string, std::unique_ptr<ConvertorIOHandler>> value;
+        return value;
+    }
 
     inline void registerHandler(const std::string &name, std::unique_ptr<ConvertorIOHandler> handler)
     {
-        registry[name] = std::move(handler);
+        registry()[name] = std::move(handler);
     }
 
     inline void writeConvertor(HDF5Writer &writer, const std::string &group, const HilbertConvertor3D<Vector3D> &convertor)
     {
         const std::string name = convertor.getTypeName();
-        auto it = registry.find(name);
-        if(it == registry.end())
+        auto& handlers = registry();
+        auto it = handlers.find(name);
+        if(it == handlers.end())
         {
             throw UniversalError("ConvertorIO::writeConvertor: no handler for type \"" + name + "\"");
         }
@@ -36,8 +41,9 @@ namespace ConvertorIO
         std::string name;
         reader.ReadElement(group + "/type", name);
 
-        auto it = registry.find(name);
-        if(it == registry.end())
+        auto& handlers = registry();
+        auto it = handlers.find(name);
+        if(it == handlers.end())
         {
             throw UniversalError("ConvertorIO::readConvertor: unknown type \"" + name + "\"");
         }

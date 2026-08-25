@@ -5,6 +5,8 @@
 #include <limits>
 #include <algorithm>
 #include <cmath>
+#include <cstdlib>
+#include <cstring>
 #include <memory>
 #include "3D/tessellation/Tessellation3D.hpp"
 #include "DistributedGravityTree.hpp"
@@ -20,6 +22,23 @@
 class DistributedGravityCalculator
 {
 public:
+	struct SolveTiming
+	{
+		double exchangePlan = 0.0;
+		double countPostAndRelease = 0.0;
+		double localFlatBuild = 0.0;
+		double localWalk = 0.0;
+		double payloadWaitAndUnpack = 0.0;
+		double remoteTreeBuild = 0.0;
+		double remoteFlatBuild = 0.0;
+		double remoteWalk = 0.0;
+		double total = 0.0;
+		double sentValues = 0.0;
+		double receivedValues = 0.0;
+		double remoteFlatNodes = 0.0;
+		double activeExchangeNeighbors = 0.0;
+	};
+
     DistributedGravityCalculator(const Tessellation3D &tess_, const std::vector<gravity_result_t> &masses_, double theta_, bool quadrupole_ = false, const MPI_Comm &comm_ = MPI_COMM_WORLD);
 
     DistributedGravityCalculator(const std::vector<Vector3D> &sourcePoints,
@@ -33,6 +52,7 @@ public:
     std::vector<Vector3D> getAcceleration(const std::vector<Vector3D> &points) const;
 
     double getWalkTime() const { return walkTime_; }
+	SolveTiming getLastSolveTiming() const { return lastSolveTiming_; }
 
     inline ~DistributedGravityCalculator()
     {
@@ -40,7 +60,28 @@ public:
     }
 
 private:
+	static bool timingOptionEnabled(char const* const name)
+	{
+		char const* const value = std::getenv(name);
+		return value != nullptr && value[0] != '\0' &&
+			std::strcmp(value, "0") != 0 &&
+			std::strcmp(value, "false") != 0 &&
+			std::strcmp(value, "off") != 0 &&
+			std::strcmp(value, "no") != 0;
+	}
+
+	static bool detailedTimingEnabled()
+	{
+		return timingOptionEnabled("RICH_INDIVIDUAL_PERF_TRACE");
+	}
+
+	static bool streamRemotePayloadEnabled()
+	{
+		return timingOptionEnabled("RICH_GRAVITY_STREAM_REMOTE_PAYLOAD");
+	}
+
     mutable double walkTime_ = 0;
+	mutable SolveTiming lastSolveTiming_;
     using LocalNode = typename GravityTree<Vector3D>::Node;
 
     MPI_Comm comm;
@@ -442,63 +483,208 @@ void DistributedGravityCalculator::initialize(
 
 std::vector<Vector3D> DistributedGravityCalculator::getAcceleration(const std::vector<Vector3D> &points) const
 {
+	bool const detailedTiming = detailedTimingEnabled();
+	lastSolveTiming_ = SolveTiming();
+	double const solveStart = detailedTiming ? MPI_Wtime() : 0.0;
+	double phaseStart = solveStart;
     std::vector<std::vector<MassedValue<Vector3D>>> sendList = this->getSendList();
     std::vector<int> activeExchangeNeighbors = this->getActiveExchangeNeighbors(sendList);
+	for(std::vector<MassedValue<Vector3D>> const& destination : sendList)
+		lastSolveTiming_.sentValues += static_cast<double>(destination.size());
+	lastSolveTiming_.activeExchangeNeighbors =
+		static_cast<double>(activeExchangeNeighbors.size());
+	if(detailedTiming)
+	{
+		double const now = MPI_Wtime();
+		lastSolveTiming_.exchangePlan = now - phaseStart;
+		phaseStart = now;
+	}
+	bool const streamRemotePayload = streamRemotePayloadEnabled();
 
     // Stage 1: Flat-pack + post Isend/Irecv for counts (returns immediately)
     FlatSparseHandle flatHandle = MPI_flat_sparse_pack_and_post_counts(sendList, activeExchangeNeighbors, this->comm);
+	bool payloadPosted = false;
+	bool payloadFinished = false;
+	auto postPayload = [&]()
+	{
+		if(payloadPosted)
+			return;
+		if(streamRemotePayload)
+			MPI_flat_sparse_post_peer_payload(flatHandle, this->comm);
+		else
+			MPI_flat_sparse_post_payload(flatHandle, this->comm);
+		payloadPosted = true;
+	};
+	auto finishPayload = [&]()
+	{
+		postPayload();
+		MPI_flat_sparse_wait_payload(flatHandle);
+		payloadFinished = true;
+	};
+	auto recordReceivedValues = [&]()
+	{
+		for(int const bytes : flatHandle.recvCounts)
+			lastSolveTiming_.receivedValues += static_cast<double>(bytes) /
+				static_cast<double>(MassedValue<Vector3D>::FLAT_BYTE_SIZE);
+	};
 
+	try
+	{
     sendList.clear();
     sendList.shrink_to_fit();
+	if(detailedTiming)
+	{
+		double const now = MPI_Wtime();
+		lastSolveTiming_.countPostAndRelease = now - phaseStart;
+		phaseStart = now;
+	}
+	if(points.empty())
+	{
+		postPayload();
+		recordReceivedValues();
+		finishPayload();
+		std::vector<char>().swap(flatHandle.recvBuf);
+		std::vector<std::vector<char>>().swap(flatHandle.peerRecvBufs);
+		this->walkTime_ = 0.0;
+		if(detailedTiming)
+		{
+			double const now = MPI_Wtime();
+			lastSolveTiming_.payloadWaitAndUnpack = now - phaseStart;
+			lastSolveTiming_.total = now - solveStart;
+		}
+		return {};
+	}
 
-    // Stage 2 (overlapped with count exchange): compile and walk the local
+	    // Stage 2 (overlapped with count exchange): compile and walk the local
     // source tree.  Keep remote pruned summaries out of this tree: the
     // vector-only constructor may use tight local bounds, so remote centers
     // need to be inserted into the global-domain remote tree below.
-    double walk_t0 = MPI_Wtime();
-    FlatGravityTree localFlat(*this->gravityTree);
-    std::vector<Vector3D> results;
-    results.reserve(points.size());
-    for(size_t i = 0; i < points.size(); i++)
-    {
-        results.emplace_back(localFlat.gravity(points[i], true));
-    }
-    this->walkTime_ = MPI_Wtime() - walk_t0;
+    double const walk_t0 = MPI_Wtime();
+    std::vector<Vector3D> results(points.size());
+	double localWalkStart = 0.0;
+	double localWalkEnd = walk_t0;
+	{
+		FlatGravityTree localFlat(*this->gravityTree);
+		FlatGravityTree::TraversalStack localScratch;
+		localScratch.reserve(128);
+		localWalkStart = detailedTiming ? MPI_Wtime() : 0.0;
+		if(detailedTiming)
+			lastSolveTiming_.localFlatBuild = localWalkStart - walk_t0;
+		for(size_t i = 0; i < points.size(); i++)
+			results[i] = localFlat.gravity(points[i], true, localScratch);
+		localWalkEnd = MPI_Wtime();
+	}
+    this->walkTime_ = localWalkEnd - walk_t0;
+	if(detailedTiming)
+	{
+		lastSolveTiming_.localWalk = localWalkEnd - localWalkStart;
+		phaseStart = localWalkEnd;
+	}
 
     // Stage 3: Waitall on counts + post payload sends/recvs
     // Stage 4: Waitall on payload + flat-unpack
-    MPI_flat_sparse_post_payload(flatHandle, this->comm);
-    std::vector<std::vector<MassedValue<Vector3D>>> insertToTreeByRanks =
-        MPI_flat_sparse_wait<MassedValue<Vector3D>>(flatHandle);
+	postPayload();
+	recordReceivedValues();
 
-    // Build temporary tree from received data (non-pruned ranks only)
-    GravityTree<Vector3D> remoteTree(this->domainLower, this->domainUpper,
+	std::unique_ptr<FlatGravityTree> remoteFlat;
+	double rwalk_t0 = 0.0;
+	{
+	    // Build temporary tree from received data (non-pruned ranks only)
+	    GravityTree<Vector3D> remoteTree(this->domainLower, this->domainUpper,
                                      this->theta, this->quadrupole);
     remoteTree.addExternalValues(this->prunedSummaries);
-
-    for(int _rank = 0; _rank < this->size; _rank++)
-    {
-        std::vector<MassedValue<Vector3D>> &rankData = insertToTreeByRanks[_rank];
-        if(_rank != this->rank && this->prunedSet.find(_rank) == this->prunedSet.end())
+        if(streamRemotePayload)
         {
-            remoteTree.addExternalValues(rankData);
+            finishPayload();
+            MPI_flat_sparse_visit_received_by_peer<MassedValue<Vector3D>>(
+                flatHandle,
+                [&](rank_t const sourceRank,
+                    MassedValue<Vector3D> const& value)
+                {
+                    if(sourceRank != this->rank &&
+                       this->prunedSet.find(sourceRank) ==
+                           this->prunedSet.end())
+                        remoteTree.addExternalValue(value);
+                });
+            if(detailedTiming)
+            {
+                double const now = MPI_Wtime();
+                lastSolveTiming_.payloadWaitAndUnpack = now - phaseStart;
+                phaseStart = now;
+            }
         }
-        rankData.clear();
-    }
-    insertToTreeByRanks.clear();
-    insertToTreeByRanks.shrink_to_fit();
+        else
+        {
+		std::vector<std::vector<MassedValue<Vector3D>>>
+			insertToTreeByRanks =
+				MPI_flat_sparse_wait<MassedValue<Vector3D>>(flatHandle);
+		payloadFinished = true;
+		if(detailedTiming)
+		{
+			double const now = MPI_Wtime();
+			lastSolveTiming_.payloadWaitAndUnpack = now - phaseStart;
+			phaseStart = now;
+		}
+		for(int sourceRank = 0; sourceRank < this->size; ++sourceRank)
+		{
+			std::vector<MassedValue<Vector3D>>& rankData =
+				insertToTreeByRanks[sourceRank];
+			if(sourceRank != this->rank &&
+			   this->prunedSet.find(sourceRank) == this->prunedSet.end())
+				remoteTree.addExternalValues(rankData);
+			std::vector<MassedValue<Vector3D>>().swap(rankData);
+		}
+		std::vector<std::vector<MassedValue<Vector3D>>>().swap(
+			insertToTreeByRanks);
+	}
     remoteTree.calculateMasses();
+	if(detailedTiming)
+	{
+		double const now = MPI_Wtime();
+		lastSolveTiming_.remoteTreeBuild = now - phaseStart;
+	}
 
     // Compile remote tree to flat array and walk
-    double rwalk_t0 = MPI_Wtime();
-    FlatGravityTree remoteFlat(remoteTree);
+	    rwalk_t0 = MPI_Wtime();
+	    remoteFlat.reset(new FlatGravityTree(remoteTree));
+		lastSolveTiming_.remoteFlatNodes =
+			static_cast<double>(remoteFlat->nodeCount());
+	}
+		FlatGravityTree::TraversalStack remoteScratch;
+	remoteScratch.reserve(128);
+	double const remoteWalkStart = detailedTiming ? MPI_Wtime() : 0.0;
+	if(detailedTiming)
+		lastSolveTiming_.remoteFlatBuild = remoteWalkStart - rwalk_t0;
     for(size_t i = 0; i < points.size(); i++)
     {
-        results[i] += remoteFlat.gravity(points[i], true);
+	        results[i] += remoteFlat->gravity(points[i], true, remoteScratch);
     }
-    this->walkTime_ += MPI_Wtime() - rwalk_t0;
+	double const remoteWalkEnd = MPI_Wtime();
+    this->walkTime_ += remoteWalkEnd - rwalk_t0;
+	if(detailedTiming)
+	{
+		lastSolveTiming_.remoteWalk = remoteWalkEnd - remoteWalkStart;
+		lastSolveTiming_.total = remoteWalkEnd - solveStart;
+	}
 
     return results;
+	}
+	catch(...)
+	{
+		if(!payloadFinished)
+		{
+			try
+			{
+				finishPayload();
+			}
+			catch(...)
+			{
+				// Unmatched live requests cannot be recovered by local unwinding.
+				MPI_Abort(this->comm, 1);
+			}
+		}
+		throw;
+	}
 }
 
 std::vector<int> DistributedGravityCalculator::getActiveExchangeNeighbors(

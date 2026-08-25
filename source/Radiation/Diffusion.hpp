@@ -1,6 +1,8 @@
 #ifndef DIFFUSION_HPP
 #define DIFFUSION_HPP 1
 
+#include <cmath>
+
 #include "conj_grad_solve.hpp"
 #include "RadiationDriver.hpp"
 #include "newtonian/common/equation_of_state.hpp"
@@ -217,8 +219,21 @@ public:
 
     double GetLengthScale() const override {return length_scale_;}
 
-    bool prestep(Tessellation3D const& tess,
-                 std::vector<ComputationalCell3D> const& cells) const override;
+    bool supportsIndividualTimeSteps() const override { return true; }
+
+    bool supportsAllActiveIndividualGlobalStep() const override { return true; }
+
+	    bool prestep(Tessellation3D const& tess,
+	                 std::vector<ComputationalCell3D> const& cells) const override;
+
+	    bool prestepIndividual(
+	        Tessellation3D const& tess,
+	        std::vector<ComputationalCell3D> const& cells,
+	        IndividualStepContext const& context) const override;
+
+	    void prepareIndividualCandidate(
+	        Tessellation3D const& tess,
+	        std::vector<ComputationalCell3D> const& cells) const override;
 
     bool step(double const tolerance, 
               int& total_iters, 
@@ -233,6 +248,14 @@ public:
     double calculate_dt(double const dt,
                         Tessellation3D& tess, 
                         std::vector<ComputationalCell3D>& cells) const override;
+
+    void calculateIndividualTimeSteps(
+        IndividualStepContext const& context,
+        Tessellation3D& tess,
+        std::vector<ComputationalCell3D>& cells,
+        std::vector<double>& time_step_limits,
+        std::vector<ComputationalCell3D> const* canonical_owned_cells,
+        std::vector<std::size_t> const* local_to_global) const override;
 
     void BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells, 
             double const dt, std::vector<double>& b, std::vector<double>& x0, double const current_time) const override;
@@ -261,13 +284,32 @@ public:
     mutable std::vector<double> cell_flux_limiter;
     mutable std::vector<double> new_Er;
     mutable std::vector<double> new_Er_full;
-    mutable std::vector<double> old_Er;
-    mutable std::vector<double> old_T;
+	    mutable std::vector<double> old_Er;
+	    mutable std::vector<double> old_T;
+	    // Event baselines remain fixed across accepted fractional retry
+	    // candidates. BuildMatrix rebuilds all grey coefficients from the latest
+	    // accepted cells for every candidate.
+	    mutable std::vector<double> individual_event_old_Er;
+	    mutable std::vector<double> individual_event_old_T;
     mutable std::vector<ComputationalCell3D> cells_temp;
     mutable std::vector<Conserved3D> extensives_temp;
     mutable CG::BiCGSTABWorkspace cg_workspace_;
     bool const cooling_time_limiter_on_;
     double const max_planck_opacity_factor_;
+
+    void ReleaseDormantGlobalSolverStorage() const override;
+
+    bool validateIndividualCoefficients(
+        IndividualStepContext const& context,
+        std::vector<ComputationalCell3D> const& cells) const override
+    {
+        for(std::size_t i : context.active_indices)
+            if(!std::isfinite(fleck_factor.at(i)) || fleck_factor.at(i) <= 0) {
+                setStepFailure("non-positive grey Fleck factor", cells.at(i).ID);
+                return false;
+            }
+        return true;
+    }
 };
 
 //! D=D0*rho^alpha*T^beta, sigma_planck=sigma_planck0*rho^alpha_planck*T^beta_planck

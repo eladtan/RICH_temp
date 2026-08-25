@@ -88,6 +88,18 @@ public:
 		const double time, const double dt,
 		std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > &face_values) const override;
 
+	void CalculateIndividual(vector<Conserved3D>& fluxes,
+		const Tessellation3D& tess,
+		const vector<Vector3D>& edge_velocities,
+		const vector<ComputationalCell3D>& cells,
+		const vector<Conserved3D>& extensives,
+		const EquationOfState& eos,
+		const IndividualStepContext& context,
+		std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> >& face_values) const override;
+
+	bool SupportsIndividualTimeSteps(void) const override
+	{return interp_.GetSlopesForTimePrediction() != nullptr;}
+
 private:
 	const vector<pair<const Condition3D*, const Action3D*> > sequence_;
 	SpatialReconstruction3D const& interp_;

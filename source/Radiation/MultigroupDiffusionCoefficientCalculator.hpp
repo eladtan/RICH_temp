@@ -3,6 +3,7 @@
 
 #include "OpacityCalculator.hpp"
 #include "conj_grad_solve.hpp"
+#include <array>
 #include <functional>
 
 #include <boost/math/special_functions/pow.hpp>
@@ -22,6 +23,7 @@ public:
     double CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const override;
 
     double CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const override;
+
 };
 
 double interpolateTable(double const T, double const d,
@@ -102,6 +104,15 @@ public:
     double CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const override;
 
     double CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const override;
+
+    bool SupportsProductionPair16() const noexcept;
+
+    bool CalcProductionDiffusionCoefficientPair16(
+        ComputationalCell3D const& first,
+        ComputationalCell3D const& second,
+        std::array<double, 16> const& group_energies,
+        std::array<double, 16>& first_coefficients,
+        std::array<double, 16>& second_coefficients) const;
 };
 
 class ZeroAbsorptionZeroDiffusionMultigroup : public OpacityCalculator {

@@ -196,6 +196,7 @@ private:
 	AMRCellUpdater3D* cu_;
 	AMRExtensiveUpdater3D* eu_;
 	bool distribute_clips_;
+	IndividualAMRChangeSet last_change_set_;
 	AMR3D(AMR3D const& amr);
 	AMR3D& operator=(AMR3D const&);
 	
@@ -205,6 +206,17 @@ public:
 	\param sim The sim object
 	*/
 	void operator() (Simulation &sim);
+
+	//! Topology changes accepted by the most recent AMR call on this rank.
+	IndividualAMRChangeSet const& GetLastChangeSet(void) const
+	{return last_change_set_;}
+
+	/*! \brief Run AMR for cells active in one accepted individual-timestep event.
+	 *
+	 * Returns the stable-ID topology map used by the individual scheduler.
+	 */
+	IndividualAMRChangeSet ApplyIndividual(Simulation &sim,
+		IndividualStepContext const& context);
 
 	/*! \brief Class constructor
 	\param refine Refinement scheme
@@ -223,6 +235,11 @@ public:
 
 	//! Class destructor
 	~AMR3D();
+
+private:
+	IndividualAMRChangeSet Apply(Simulation &sim,
+		vector<size_t> const* active_indices,
+		vector<Vector3D> const* canonical_points);
 };
 
 #endif // AMR3D_HPP

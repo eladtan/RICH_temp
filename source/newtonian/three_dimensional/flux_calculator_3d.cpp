@@ -2,6 +2,29 @@
 
 FluxCalculator3D::~FluxCalculator3D(void) {}
 
+void FluxCalculator3D::CalculateIndividual(
+	vector<Conserved3D>& fluxes,
+	const Tessellation3D& tess,
+	const vector<Vector3D>& edge_velocities,
+	const vector<ComputationalCell3D>& cells,
+	const vector<Conserved3D>& extensives,
+	const EquationOfState& eos,
+	const IndividualStepContext& context,
+	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> >& face_values) const
+{
+	Calculate(fluxes, tess, edge_velocities, cells, extensives, eos,
+		context.event_time, 0, face_values);
+	const std::size_t norg = context.active_mask.size();
+	for(std::size_t face = 0; face < fluxes.size(); ++face)
+	{
+		const auto neighbors = tess.GetFaceNeighbors(face);
+		const bool active = (neighbors.first < norg && context.isActive(neighbors.first)) ||
+			(neighbors.second < norg && context.isActive(neighbors.second));
+		if(!active)
+			fluxes[face] = Conserved3D();
+	}
+}
+
 namespace
 {
 	void AddTracers(ComputationalCell3D const& left, ComputationalCell3D const& right, Conserved3D &res)

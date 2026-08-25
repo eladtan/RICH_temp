@@ -1,0 +1,245 @@
+\documentclass[11pt]{article}
+
+\usepackage[a4paper,margin=19mm,headheight=24pt]{geometry}
+\usepackage{fontspec}
+\usepackage{xcolor}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{amsmath}
+
+\setmainfont{DejaVu Sans}
+\setsansfont{DejaVu Sans}
+\setmonofont{DejaVu Sans Mono}[Scale=0.86]
+
+\definecolor{navy}{HTML}{16324F}
+\definecolor{blue}{HTML}{2474A6}
+\definecolor{cyan}{HTML}{EAF5FA}
+\definecolor{green}{HTML}{237A57}
+\definecolor{palegreen}{HTML}{EAF6F0}
+\definecolor{amber}{HTML}{A86F16}
+\definecolor{paleamber}{HTML}{FFF6E5}
+\definecolor{ink}{HTML}{24313B}
+\definecolor{muted}{HTML}{62717D}
+\definecolor{rule}{HTML}{D5DEE5}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  pdfauthor={RICH/STORM engineering note},
+  pdftitle={Reducing Monte Carlo Buffer Memory Without Sacrificing Performance}
+}
+
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{\textcolor{muted}{RICH / STORM Engineering Note}}
+\rhead{\textcolor{muted}{Monte Carlo Buffer Memory}}
+\cfoot{\textcolor{muted}{\thepage}}
+\renewcommand{\headrulewidth}{0.4pt}
+\renewcommand{\headrule}{\hbox to\headwidth{\color{rule}\leaders\hrule height \headrulewidth\hfill}}
+
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{6pt}
+\setlength{\emergencystretch}{2em}
+\setlist[itemize]{leftmargin=5mm,itemsep=3pt,topsep=3pt}
+\setlist[enumerate]{leftmargin=7mm,itemsep=5pt,topsep=4pt}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{cyan},
+  frame=single,
+  rulecolor=\color{rule},
+  framesep=7pt,
+  xleftmargin=2pt,
+  xrightmargin=2pt,
+  columns=fullflexible,
+  keepspaces=true,
+  showstringspaces=false
+}
+
+\newcommand{\sectiontitle}[1]{%
+  \vspace{4pt}%
+  {\Large\bfseries\color{navy} #1}\par
+  \vspace{2pt}\textcolor{rule}{\rule{\linewidth}{0.8pt}}\vspace{3pt}
+}
+
+\newcommand{\callout}[3]{%
+  \noindent\colorbox{#1}{%
+    \parbox{\dimexpr\linewidth-2\fboxsep}{%
+      \textcolor{#2}{\bfseries #3}%
+    }%
+  }%
+}
+
+\begin{document}
+
+\begin{center}
+  \vspace*{8mm}
+  {\fontsize{25}{29}\selectfont\bfseries\color{navy}
+    Reducing Monte Carlo Buffer Memory\par}
+  \vspace{2mm}
+  {\fontsize{18}{22}\selectfont\color{blue}
+    without sacrificing transport performance\par}
+  \vspace{7mm}
+  {\large RICH / STORM --- \texttt{moving\_slab\_mc\_32}}\par
+  \vspace{2mm}
+  {\color{muted}Source-level engineering assessment \textbullet{} 9 August 2026}
+\end{center}
+
+\vspace{8mm}
+\callout{cyan}{navy}{Executive finding}
+
+The particle representation should remain unchanged. The largest safe memory
+reduction comes from eliminating unnecessary capacity and redundant full-buffer
+copies. A bulk append currently allocates 50\% more handler capacity than the
+known required size while the complete generation vector is still alive.
+
+\vspace{2mm}
+\begin{center}
+\renewcommand{\arraystretch}{1.45}
+\begin{tabular}{>{\raggedright\arraybackslash}p{0.25\linewidth}
+                >{\centering\arraybackslash}p{0.18\linewidth}
+                >{\centering\arraybackslash}p{0.20\linewidth}
+                >{\raggedright\arraybackslash}p{0.25\linewidth}}
+\toprule
+\textbf{Stage} & \textbf{Generation vector} & \textbf{Handler capacity} & \textbf{Particle-slot peak} \\
+\midrule
+Current & $N$ & $1.5N$ & $2.5N$ \\
+Corrected growth & $N$ & $N$ for a large bulk append & $2N$ \\
+Direct generation & none & approximately $N$ & approximately $N$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+For the current 208-byte particle, the first-generation lower-bound peak is
+approximately $2.5N\times208=520N$ bytes before allocator, MPI, mesh, and physics
+overheads. The problem is therefore not explained by particle payload alone.
+
+\sectiontitle{1. Primary fix: correct the capacity equation}
+
+The bulk-append logic in
+\path{source/monte/manager/parallel/RankHandler2.hpp:384} effectively computes:
+
+\begin{lstlisting}
+new_capacity = max(1.5 * old_capacity, 1.5 * required);
+\end{lstlisting}
+
+Use standard amortized growth instead:
+
+\begin{lstlisting}
+new_capacity = max(1.5 * old_capacity, required);
+\end{lstlisting}
+
+This preserves 1.5x growth for incremental arrivals, so repeated small appends
+retain amortized constant-time behavior. A large append whose final size is
+already known receives exactly the capacity it requires rather than an unused
+50\% surplus. The equivalent remote-growth calculation near
+\path{RankHandler2.hpp:704} should follow the same rule.
+
+\callout{palegreen}{green}{Why this should not hurt performance}
+
+The number of reallocations for incremental traffic remains governed by the
+same 1.5x policy. Large bulk operations allocate less memory, initialize fewer
+pages, and register a smaller RDMA region. This should reduce both memory use
+and allocation time.
+
+\sectiontitle{2. Remove duplicate copies during resize}
+
+The current resize path first copies every live particle into
+\texttt{activeParticles} at \path{RankHandler2.hpp:455}. It then allocates the
+new particle array and copies the temporary data again.
+
+For the self handler, copy the circular queue directly into the new array in
+logical order, then replace the old allocation. This removes:
+
+\begin{itemize}
+  \item one live-particle-sized temporary allocation;
+  \item one complete memory copy;
+  \item the corresponding peak RSS and memory-bandwidth cost.
+\end{itemize}
+
+The native IBV path contains a second redundancy. The relevant implementation is
+{\small\path{source/utils/rma/IBVRemoteMemoryAgent.hpp:520}.}
+\texttt{LocalResize} copies the entire old capacity into an internal
+\texttt{saved} vector even
+though \texttt{RankHandler2} has already preserved the live particles. A
+discarding or compacting resize operation should preserve the queue exactly
+once, release the old registration, allocate/register the new region, and
+restore only the live slots.
+
+\sectiontitle{3. Reclaim cold high-water capacities with hysteresis}
+
+Do not shrink buffers during the transport hot loop. Reclaim memory only at a
+step boundary, when the manager already verifies that handler queues are empty.
+
+Recommended policy:
+
+\begin{enumerate}
+  \item Track each buffer's recent peak occupancy over several steps.
+  \item Shrink only after multiple cold steps and only when capacity exceeds
+        roughly twice the recent peak.
+  \item Retain modest headroom, for example 1.25x the recent peak.
+  \item Coordinate peer-handler resizing only at an existing synchronization
+        point.
+\end{enumerate}
+
+The current shrink logic in
+\path{source/monte/manager/parallel/RDMAMonteCarloManager.hpp:1532} excludes
+the self handler, normally runs only every 50 steps, and shrinks neighbor
+handlers only under restrictive conditions. A historical spike can therefore
+remain resident for the rest of the run.
+
+Send buffers and detached-particle vectors also use \texttt{clear()}, which
+retains their peak capacity. Apply the same cold-buffer policy only to unusually
+large retained allocations. Avoid \texttt{shrink\_to\_fit()} after every flush;
+that would create allocation churn and harm performance.
+
+\sectiontitle{4. Larger follow-up: generate directly into final storage}
+
+The generated-particle vector remains alive while its particles are copied into
+the self handler. The relevant sequence begins near
+\path{RDMAMonteCarloManager.hpp:2174}.
+
+A higher-value follow-up is to count the particles first, reserve the exact
+self-handler span, and let each cell or worker generate into a disjoint range.
+This removes the full \texttt{newParticles1} allocation and the subsequent copy.
+It should improve performance through fewer allocations and less memory traffic,
+but it requires a broader physics/manager API change than the growth correction.
+
+\sectiontitle{5. Recommended implementation order}
+
+\renewcommand{\arraystretch}{1.45}
+\small
+\begin{tabular}{>{\centering\arraybackslash}p{0.07\linewidth}
+                >{\raggedright\arraybackslash}p{0.50\linewidth}
+                >{\raggedright\arraybackslash}p{0.31\linewidth}}
+\toprule
+\textbf{Order} & \textbf{Change} & \textbf{Expected effect} \\
+\midrule
+1 & Correct bulk growth to $\max(1.5\,\text{old},\text{required})$ & Large immediate reduction; lowest risk \\
+2 & Copy the circular queue directly during resize & Lower transient peak; faster resize \\
+3 & Add IBV/OFI compact-or-discard resize & Remove redundant full-capacity save/copy \\
+4 & Add cold-buffer hysteresis for self, peer, send, and detached buffers & Release historical spikes without hot-loop churn \\
+5 & Generate directly into pre-sized final storage & Largest long-term peak reduction \\
+\bottomrule
+\end{tabular}
+\normalsize
+
+\vspace{4mm}
+\callout{paleamber}{amber}{Performance guardrails}
+
+Keep RDMA transfer batches large. Keep geometric growth for incremental traffic.
+Do not shrink active buffers or shrink on every flush. Validate using capacity,
+live-occupancy, resize-count, bytes-copied, transport-time, and peak-RSS
+diagnostics per rank and per node.
+
+\vfill
+{\footnotesize\color{muted}
+This note is based on a static audit of the current source tree. No RICH build or
+runtime validation was performed while preparing it.}
+
+\end{document}

@@ -1,13 +1,41 @@
 #include "default_cell_updater.hpp"
 #include "../../misc/utils.hpp"
+#include <cstdlib>
+#include <cstring>
+#include <stdexcept>
 #ifdef RICH_MPI
 #include "../../mpi/mpi_commands.hpp"
 #endif
 
 namespace
 {
+	bool IndividualAllActiveCellUpdateRequested()
+	{
+		char const* const value =
+			std::getenv("RICH_INDIVIDUAL_ALL_ACTIVE_CELL_UPDATE");
+		return value != nullptr &&
+			(std::strcmp(value, "1") == 0 ||
+			 std::strcmp(value, "true") == 0 ||
+			 std::strcmp(value, "on") == 0 ||
+			 std::strcmp(value, "yes") == 0);
+	}
+
+	bool HasCompleteOrderedOwnedActivity(
+		IndividualStepContext const& context, size_t const owned_count)
+	{
+		if(owned_count == 0 ||
+		   context.active_indices.size() != owned_count ||
+		   context.active_mask.size() < owned_count)
+			return false;
+		for(size_t owned = 0; owned < owned_count; ++owned)
+			if(context.active_indices[owned] != owned ||
+			   !context.isActive(owned))
+				return false;
+		return true;
+	}
+
 	void EntropyFix(EquationOfState const& eos, ComputationalCell3D &res, size_t entropy_index, double &energy,
-		Conserved3D &extensive, double Et_min)
+			Conserved3D &extensive, double Et_min)
 	{
 		if(!(res.density > 0) || !(res.tracers[entropy_index] > 0))
 		{
@@ -376,6 +404,51 @@ namespace
 }
 
 DefaultCellUpdater::DefaultCellUpdater(bool SR, double G, bool const includes_temperature, double const min_temperature, const RadiationDriver* diffusion) :SR_(SR), G_(G), includes_temperature_(includes_temperature), min_temperature_(min_temperature), diffusion_(diffusion), entropy_index_(9999999) {}
+
+void DefaultCellUpdater::UpdateIndividual(
+	vector<ComputationalCell3D> &res,
+	EquationOfState const& eos,
+	const Tessellation3D& tess,
+	vector<Conserved3D>& extensives,
+	const IndividualStepContext& context) const
+{
+	size_t const owned_count = tess.GetPointNo();
+	if(!IndividualAllActiveCellUpdateRequested() ||
+	   !HasCompleteOrderedOwnedActivity(context, owned_count) ||
+	   res.size() < owned_count || extensives.size() < owned_count)
+	{
+		CellUpdater3D::UpdateIndividual(
+			res, eos, tess, extensives, context);
+		return;
+	}
+
+	// Retain the legacy transaction boundary: if the concrete update throws,
+	// the caller's primitive and extensive arrays remain untouched.  A complete
+	// owned active set lets a successful update commit the candidate vectors in
+	// O(1), because DefaultCellUpdater only changes the owned prefix.  The MPI
+	// entropy path may resize the candidate extensive array; preserve its legacy
+	// owned-only commit in that case.
+	vector<ComputationalCell3D> candidate_cells = res;
+	vector<Conserved3D> candidate_extensives = extensives;
+	(*this)(candidate_cells, eos, tess, candidate_extensives);
+	if(candidate_cells.size() == res.size() &&
+	   candidate_extensives.size() == extensives.size())
+	{
+		res.swap(candidate_cells);
+		extensives.swap(candidate_extensives);
+		return;
+	}
+
+	for(size_t index : context.active_indices)
+	{
+		if(index >= res.size() || index >= candidate_cells.size() ||
+		   index >= extensives.size() || index >= candidate_extensives.size())
+			throw std::out_of_range(
+				"Individual cell update index is out of range");
+		res[index] = candidate_cells[index];
+		extensives[index] = candidate_extensives[index];
+	}
+}
 
 void DefaultCellUpdater::operator()(vector<ComputationalCell3D> &res, EquationOfState const& eos,
 	const Tessellation3D& tess, vector<Conserved3D>& extensives) const

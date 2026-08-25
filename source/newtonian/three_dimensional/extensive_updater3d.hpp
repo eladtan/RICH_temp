@@ -6,10 +6,13 @@
 #ifndef EXTENSIVE_UPDATER3D_HPP
 #define EXTENSIVE_UPDATER3D_HPP 1
 
+#include <stdexcept>
+
 #include "computational_cell.hpp"
 #include "conserved_3d.hpp"
 #include "3D/tessellation/Tessellation3D.hpp"
 #include "../common/equation_of_state.hpp"
+#include "newtonian/three_dimensional/simulation/IndividualTimeStep.hpp"
 
 using std::vector;
 
@@ -33,6 +36,23 @@ public:
 		const double dt,const vector<ComputationalCell3D>& cells,vector<Conserved3D>& extensives,double time, const vector<Vector3D>& edge_velocities,
 		const vector<Vector3D>& point_velocities,
 		std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > const& interp_values) const = 0;
+
+	virtual bool SupportsIndividualTimeSteps(void) const{return false;}
+
+	virtual void UpdateIndividual(const vector<Conserved3D>&,
+		const Tessellation3D&,
+		const IndividualStepContext&,
+		const vector<ComputationalCell3D>&,
+		vector<Conserved3D>&,
+		double,
+		const vector<Vector3D>&,
+		const vector<Vector3D>&,
+		const std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> >&,
+		const vector<ComputationalCell3D>* = nullptr,
+		vector<Conserved3D>* = nullptr) const
+	{
+		throw std::runtime_error("Extensive updater does not support individual timesteps");
+	}
 
 	//! \brief Class constructor
 	virtual ~ExtensiveUpdater3D(void);

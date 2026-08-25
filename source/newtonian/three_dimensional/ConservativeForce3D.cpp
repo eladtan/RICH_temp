@@ -1,4 +1,8 @@
 #include "ConservativeForce3D.hpp"
+#include <algorithm>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
 #ifdef RICH_MPI
 #include <mpi.h>
 #endif
@@ -83,9 +87,191 @@ void ConservativeForce3D::operator()(const Tessellation3D& tess,const vector<Com
 
 Acceleration3D::~Acceleration3D(void) {}
 
+void Acceleration3D::EvaluateIndividualTargets(
+	std::pair<Vector3D, Vector3D> const& /*bounds*/,
+	vector<Vector3D> const& /*source_points*/,
+	vector<double> const& /*source_masses*/,
+	vector<std::uint64_t> const& /*source_ids*/,
+	vector<Vector3D> const& /*target_points*/,
+	vector<ComputationalCell3D> const& /*target_cells*/,
+	double /*time*/,
+	vector<Vector3D>& /*acc*/) const
+{
+	throw std::logic_error(
+		"Acceleration provider does not support individual target evaluation");
+}
+
 double ConservativeForce3D::SuggestInverseTimeStep(void)const
 {
 	return dt_;
+}
+
+void ConservativeForce3D::ApplyIndividual(
+	const Tessellation3D& tess,
+	const vector<ComputationalCell3D>& cells,
+	const vector<Conserved3D>& fluxes,
+	const vector<Vector3D>& point_velocities,
+	double time,
+	const IndividualStepContext& context,
+	IndividualSourcePhase phase,
+	vector<Conserved3D>& extensives) const
+{
+	auto require_on_every_rank = [](bool valid, char const* message)
+	{
+#ifdef RICH_MPI
+		int valid_on_every_rank = valid ? 1 : 0;
+		MPI_Allreduce(MPI_IN_PLACE, &valid_on_every_rank, 1, MPI_INT, MPI_MIN,
+			MPI_COMM_WORLD);
+		valid = valid_on_every_rank != 0;
+#endif
+		if(!valid)
+			throw std::runtime_error(message);
+	};
+
+	const std::size_t norg = tess.GetPointNo();
+	bool active_indices_valid = true;
+	for(std::size_t index : context.active_indices)
+		if(index >= norg)
+		{
+			active_indices_valid = false;
+			break;
+		}
+	require_on_every_rank(
+		cells.size() >= norg && extensives.size() >= norg &&
+		context.cell_time_steps.size() >= norg &&
+		context.cached_accelerations.size() >= norg &&
+		context.gravity_half_kick_pending.size() >= norg &&
+		active_indices_valid &&
+		(!mass_flux_ || (point_velocities.size() >= norg &&
+			fluxes.size() >= tess.GetTotalFacesNumber())),
+		"Individual conservative force has inconsistent event arrays or active indices");
+	bool calculate_acceleration = phase != IndividualSourcePhase::FirstHalf;
+	if(!calculate_acceleration)
+		for(std::size_t index : context.active_indices)
+			if(context.gravity_half_kick_pending[index] == 0)
+			{
+				calculate_acceleration = true;
+				break;
+			}
+#ifdef RICH_MPI
+	int calculate_on_any_rank = calculate_acceleration ? 1 : 0;
+	MPI_Allreduce(MPI_IN_PLACE, &calculate_on_any_rank, 1, MPI_INT, MPI_MAX,
+		MPI_COMM_WORLD);
+	calculate_acceleration = calculate_on_any_rank != 0;
+#endif
+
+	if(calculate_acceleration)
+	{
+		individual_time_step_limits_.assign(
+			norg, std::numeric_limits<double>::infinity());
+		dt_ = 0;
+		if(acc_.SupportsIndividualTargetEvaluation())
+		{
+			require_on_every_rank(
+				context.gravity_source_points.size() ==
+					context.gravity_source_masses.size() &&
+				context.gravity_source_points.size() ==
+					context.gravity_source_ids.size(),
+				"Individual gravity source point/mass/ID counts differ");
+			vector<Vector3D> target_points;
+			target_points.reserve(context.active_indices.size());
+			vector<ComputationalCell3D> target_cells;
+			target_cells.reserve(context.active_indices.size());
+			for(std::size_t index : context.active_indices)
+			{
+				target_points.push_back(tess.GetCellCM(index));
+				target_cells.push_back(cells[index]);
+				double const volume = tess.GetVolume(index);
+				if(volume > 0 && std::isfinite(volume))
+					target_cells.back().density = extensives[index].mass / volume;
+			}
+			vector<Vector3D> target_accelerations;
+			acc_.EvaluateIndividualTargets(tess.GetBoxCoordinates(),
+				context.gravity_source_points, context.gravity_source_masses,
+				context.gravity_source_ids,
+				target_points, target_cells, time, target_accelerations);
+			require_on_every_rank(
+				target_accelerations.size() == context.active_indices.size(),
+				"Acceleration provider returned the wrong active-target count");
+			acc_buf_ = context.cached_accelerations;
+			for(std::size_t target = 0;
+				target < context.active_indices.size(); ++target)
+				acc_buf_[context.active_indices[target]] =
+					target_accelerations[target];
+		}
+		else
+		{
+			vector<ComputationalCell3D> force_cells = cells;
+			for(std::size_t index = 0; index < norg; ++index)
+			{
+				double const volume = tess.GetVolume(index);
+				if(volume > 0 && std::isfinite(volume))
+					force_cells[index].density = extensives[index].mass / volume;
+			}
+			acc_buf_.clear();
+			acc_(tess, force_cells, fluxes, time, acc_buf_);
+			require_on_every_rank(acc_buf_.size() >= norg,
+				"Acceleration provider returned too few individual accelerations");
+		}
+		for(std::size_t index : context.active_indices)
+		{
+			const double acceleration = fastabs(acc_buf_[index]);
+			if(acceleration <= 0)
+				continue;
+			const double inverse_dt =
+				fastsqrt(acceleration / tess.GetWidth(index));
+			dt_ = std::max(dt_, inverse_dt);
+			individual_time_step_limits_[index] = 1.0 / inverse_dt;
+		}
+	}
+	else
+		acc_buf_ = context.cached_accelerations;
+
+	const double fraction = phase == IndividualSourcePhase::Full ? 1.0 : 0.5;
+	for(std::size_t index : context.active_indices)
+	{
+		if(calculate_acceleration)
+			context.cached_accelerations[index] = acc_buf_[index];
+		context.gravity_half_kick_pending[index] =
+			phase == IndividualSourcePhase::FirstHalf ? 0 : 1;
+		const double acceleration = fastabs(acc_buf_[index]);
+
+		const double dt = fraction * context.cellTimeStep(index);
+		const double old_kinetic = 0.5 * ScalarProd(extensives[index].momentum,
+			extensives[index].momentum) / extensives[index].mass;
+		extensives[index].momentum += extensives[index].mass * acc_buf_[index] * dt;
+		if(mass_flux_ && acceleration * tess.GetWidth(index) * cells[index].density <
+			0.5 * cells[index].pressure)
+		{
+			const double part0 = extensives[index].mass *
+				ScalarProd(point_velocities[index], acc_buf_[index]);
+			const double part1 = 0.5 * ScalarProd(MassFlux(tess, index, fluxes), acc_buf_[index]);
+			extensives[index].energy += (part0 + part1) * dt;
+		}
+		else
+		{
+			const double new_kinetic = 0.5 * ScalarProd(extensives[index].momentum,
+				extensives[index].momentum) / extensives[index].mass;
+			extensives[index].energy += new_kinetic - old_kinetic;
+		}
+	}
+}
+
+void ConservativeForce3D::SuggestIndividualTimeSteps(
+	const Tessellation3D& tess,
+	const vector<ComputationalCell3D>& /*cells*/,
+	const IndividualStepContext& /*context*/,
+	vector<double>& time_step_limits) const
+{
+	for(std::size_t index = 0; index < tess.GetPointNo(); ++index)
+	{
+		double limit = std::numeric_limits<double>::infinity();
+		if(index < individual_time_step_limits_.size())
+			limit = individual_time_step_limits_[index];
+		else if(index < acc_buf_.size() && fastabs(acc_buf_[index]) > 0)
+			limit = fastsqrt(tess.GetWidth(index) / fastabs(acc_buf_[index]));
+		time_step_limits.at(index) = std::min(time_step_limits.at(index), limit);
+	}
 }
 
 ConstantAcceleration3D::ConstantAcceleration3D(Vector3D const g): g_(g){}
@@ -98,4 +284,17 @@ void ConstantAcceleration3D::operator()(const Tessellation3D& tess,
 	acc.resize(N);
 	for (size_t i = 0; i < N; ++i)
 		acc[i] = g_;
+}
+
+void ConstantAcceleration3D::EvaluateIndividualTargets(
+	std::pair<Vector3D, Vector3D> const& /*bounds*/,
+	vector<Vector3D> const& /*source_points*/,
+	vector<double> const& /*source_masses*/,
+	vector<std::uint64_t> const& /*source_ids*/,
+	vector<Vector3D> const& target_points,
+	vector<ComputationalCell3D> const& /*target_cells*/,
+	double /*time*/,
+	vector<Vector3D>& acc) const
+{
+	acc.assign(target_points.size(), g_);
 }

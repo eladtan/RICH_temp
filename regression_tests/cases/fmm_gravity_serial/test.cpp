@@ -3,6 +3,7 @@
 #include <fstream>
 #include <iostream>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include "source/3D/gravity/fmm/DirectGravityReference.hpp"
@@ -10,7 +11,10 @@
 #include "source/3D/gravity/fmm/FmmTree.hpp"
 #include "source/3D/gravity/fmm/LaplaceSolidHarmonics.hpp"
 #include "source/3D/gravity/fmm/SerialFmmGravityCalculator.hpp"
+#include "source/3D/tessellation/Voronoi3D.hpp"
 #include "source/misc/universal_error.hpp"
+#include "source/newtonian/three_dimensional/ConservativeForce3D.hpp"
+#include "source/newtonian/three_dimensional/FastMultipoleAcceleration3D.hpp"
 
 namespace
 {
@@ -318,6 +322,233 @@ bool expectedFailuresPass()
     }
     return coincidentFailed && containmentFailed;
 }
+
+bool individualTargetEvaluationPasses(
+    const std::vector<Vector3D>& points,
+    const std::vector<double>& masses)
+{
+    FmmGravityOptions options;
+    options.expansionOrder = 4;
+    options.thetaCritical = 0.5;
+    options.leafCapacity = 2;
+    options.computePotential = false;
+    options.validateFinite = true;
+    const double gravitationalConstant = 1.7;
+    FastMultipoleAcceleration3D gravity(options, gravitationalConstant);
+    std::vector<std::uint64_t> sourceIds(points.size());
+    for(std::size_t index = 0; index < sourceIds.size(); ++index)
+        sourceIds[index] = static_cast<std::uint64_t>(index);
+
+    const std::vector<std::size_t> targetIndices = {20, 1, 7};
+    std::vector<Vector3D> targetPoints;
+    targetPoints.reserve(targetIndices.size());
+    for(std::size_t index : targetIndices)
+        targetPoints.push_back(points[index]);
+    const std::vector<ComputationalCell3D> targetCells(targetPoints.size());
+
+    std::vector<Vector3D> acceleration;
+    gravity.EvaluateIndividualTargets(
+        std::make_pair(Vector3D(-1, -1, -1), Vector3D(1, 1, 1)),
+        points, masses, sourceIds, targetPoints, targetCells, 0.0,
+        acceleration);
+
+    std::vector<Vector3D> reference;
+    DirectGravityReference::computeAcceleration(points, masses, reference);
+    if(acceleration.size() != targetIndices.size())
+        return false;
+    for(std::size_t target = 0; target < targetIndices.size(); ++target)
+    {
+        const Vector3D expected =
+            gravitationalConstant * reference[targetIndices[target]];
+        if(norm(acceleration[target] - expected) /
+           std::max(1.0, norm(expected)) >= 2e-5)
+            return false;
+    }
+
+    bool unknownTargetRejected = false;
+    try
+    {
+        const std::vector<Vector3D> unknownTarget(1, Vector3D(0.125, 0.25, 0.5));
+        const std::vector<ComputationalCell3D> unknownCell(1);
+        gravity.EvaluateIndividualTargets(
+            std::make_pair(Vector3D(-1, -1, -1), Vector3D(1, 1, 1)),
+            points, masses, sourceIds, unknownTarget, unknownCell, 0.0,
+            acceleration);
+    }
+    catch(UniversalError const&)
+    {
+        unknownTargetRejected = true;
+    }
+
+    bool mismatchedSourcesRejected = false;
+    try
+    {
+        std::vector<double> shortMasses = masses;
+        shortMasses.pop_back();
+        gravity.EvaluateIndividualTargets(
+            std::make_pair(Vector3D(-1, -1, -1), Vector3D(1, 1, 1)),
+            points, shortMasses, sourceIds, targetPoints, targetCells, 0.0,
+            acceleration);
+    }
+    catch(UniversalError const&)
+    {
+        mismatchedSourcesRejected = true;
+    }
+    bool mismatchedIdsRejected = false;
+    try
+    {
+        std::vector<std::uint64_t> shortIds = sourceIds;
+        shortIds.pop_back();
+        gravity.EvaluateIndividualTargets(
+            std::make_pair(Vector3D(-1, -1, -1), Vector3D(1, 1, 1)),
+            points, masses, shortIds, targetPoints, targetCells, 0.0,
+            acceleration);
+    }
+    catch(UniversalError const&)
+    {
+        mismatchedIdsRejected = true;
+    }
+    return unknownTargetRejected && mismatchedSourcesRejected &&
+        mismatchedIdsRejected;
+}
+
+bool individualConservativeForcePasses(
+    const std::vector<Vector3D>& generatorPoints,
+    const std::vector<double>& masses)
+{
+    const Vector3D lower(-1, -1, -1);
+    const Vector3D upper(1, 1, 1);
+    Voronoi3D tess(lower, upper);
+    tess.Build(generatorPoints);
+    const std::size_t count = tess.GetPointNo();
+    if(count != masses.size() || count <= 20)
+        return false;
+
+    std::vector<Vector3D> sourcePoints(count);
+    std::vector<ComputationalCell3D> cells(count);
+    std::vector<Conserved3D> extensives(count);
+    const double initialEnergy = 4.0;
+    for(std::size_t index = 0; index < count; ++index)
+    {
+        const double volume = tess.GetVolume(index);
+        if(!(volume > 0.0) || !std::isfinite(volume))
+            return false;
+        sourcePoints[index] = tess.GetCellCM(index);
+        cells[index].density = masses[index] / volume;
+        cells[index].pressure = 1.0;
+        cells[index].ID = index;
+        extensives[index] = Conserved3D(
+            masses[index], Vector3D(), initialEnergy, initialEnergy);
+    }
+
+    FmmGravityOptions options;
+    options.expansionOrder = 4;
+    options.thetaCritical = 0.5;
+    options.leafCapacity = 2;
+    options.validateFinite = true;
+    FastMultipoleAcceleration3D gravity(options, 1.7);
+    ConservativeForce3D force(gravity, false);
+
+    const std::vector<std::size_t> activeIndices = {20, 1, 7};
+    const Vector3D passiveCache(11, 12, 13);
+    const double cellTimeStep = 0.2;
+    IndividualStepContext context;
+    context.active_indices = activeIndices;
+    context.active_mask.assign(count, 0);
+    context.cell_time_steps.assign(count, cellTimeStep);
+    context.cached_accelerations.assign(count, passiveCache);
+    context.gravity_half_kick_pending.assign(count, 1);
+    context.gravity_source_points = sourcePoints;
+    context.gravity_source_masses = masses;
+    context.gravity_source_ids.resize(count);
+    for(std::size_t index = 0; index < count; ++index)
+        context.gravity_source_ids[index] =
+            static_cast<std::uint64_t>(cells[index].ID);
+    for(std::size_t index : activeIndices)
+    {
+        context.active_mask[index] = 1;
+        context.cached_accelerations[index] = Vector3D();
+        context.gravity_half_kick_pending[index] = 0;
+    }
+
+    const std::vector<Conserved3D> fluxes;
+    const std::vector<Vector3D> pointVelocities;
+    const auto vectorClose = [](Vector3D const& first, Vector3D const& second) {
+        return norm(first - second) <= 1e-12 *
+            std::max(1.0, std::max(norm(first), norm(second)));
+    };
+    const auto energyMatchesKinetic = [initialEnergy](Conserved3D const& state) {
+        const double kinetic = 0.5 * ScalarProd(state.momentum, state.momentum) /
+            state.mass;
+        return close(state.energy, initialEnergy + kinetic, 1e-12);
+    };
+
+    force.ApplyIndividual(tess, cells, fluxes, pointVelocities, 0.0, context,
+        IndividualSourcePhase::FirstHalf, extensives);
+    for(std::size_t index : activeIndices)
+    {
+        const Vector3D acceleration = context.cached_accelerations[index];
+        const Vector3D expectedMomentum =
+            0.5 * cellTimeStep * masses[index] * acceleration;
+        if(!std::isfinite(norm(acceleration)) || norm(acceleration) == 0.0 ||
+           !vectorClose(extensives[index].momentum, expectedMomentum) ||
+           !energyMatchesKinetic(extensives[index]) ||
+           context.gravity_half_kick_pending[index] != 0)
+            return false;
+    }
+
+    const std::vector<Vector3D> firstHalfCache = context.cached_accelerations;
+    for(double& sourceMass : context.gravity_source_masses)
+        sourceMass *= 2.0;
+    std::vector<Vector3D> momentumBeforeSecond(count);
+    for(std::size_t index : activeIndices)
+        momentumBeforeSecond[index] = extensives[index].momentum;
+    force.ApplyIndividual(tess, cells, fluxes, pointVelocities, cellTimeStep,
+        context, IndividualSourcePhase::SecondHalf, extensives);
+    for(std::size_t index : activeIndices)
+    {
+        const Vector3D expectedIncrement = 0.5 * cellTimeStep * masses[index] *
+            context.cached_accelerations[index];
+        if(!vectorClose(context.cached_accelerations[index],
+                        2.0 * firstHalfCache[index]) ||
+           !vectorClose(extensives[index].momentum - momentumBeforeSecond[index],
+                        expectedIncrement) ||
+           !energyMatchesKinetic(extensives[index]) ||
+           context.gravity_half_kick_pending[index] != 1)
+            return false;
+    }
+
+    const std::vector<Vector3D> secondHalfCache = context.cached_accelerations;
+    std::vector<Vector3D> momentumBeforeReuse(count);
+    for(std::size_t index : activeIndices)
+        momentumBeforeReuse[index] = extensives[index].momentum;
+    // A completed second half supplies the next first-half kick without a solve.
+    context.gravity_source_masses.assign(count, 0.0);
+    force.ApplyIndividual(tess, cells, fluxes, pointVelocities, cellTimeStep,
+        context, IndividualSourcePhase::FirstHalf, extensives);
+    for(std::size_t index = 0; index < count; ++index)
+    {
+        const bool active = context.active_mask[index] != 0;
+        if(!active)
+        {
+            if(!vectorClose(extensives[index].momentum, Vector3D()) ||
+               !close(extensives[index].energy, initialEnergy, 1e-12) ||
+               !vectorClose(context.cached_accelerations[index], passiveCache) ||
+               context.gravity_half_kick_pending[index] != 1)
+                return false;
+            continue;
+        }
+        const Vector3D expectedIncrement = 0.5 * cellTimeStep * masses[index] *
+            secondHalfCache[index];
+        if(!vectorClose(context.cached_accelerations[index], secondHalfCache[index]) ||
+           !vectorClose(extensives[index].momentum - momentumBeforeReuse[index],
+                        expectedIncrement) ||
+           !energyMatchesKinetic(extensives[index]) ||
+           context.gravity_half_kick_pending[index] != 0)
+            return false;
+    }
+    return true;
+}
 }
 
 int main()
@@ -339,10 +570,16 @@ int main()
             return result;
         }();
         const bool persistentHysteresis = persistentTreeHysteresisPasses();
+        const bool individualTargetEvaluation =
+            individualTargetEvaluationPasses(points, masses);
+        const bool individualConservativeForce =
+            individualConservativeForcePasses(points, masses);
 
         const bool passed =
             analyticCasesPass() && harmonicCasesPass() && clusteredTreePasses() &&
             persistentHysteresis &&
+            individualTargetEvaluation &&
+            individualConservativeForce &&
             expectedFailuresPass() &&
             production.stats.m2lCount > 0 &&
             production.stats.p2pPairCount < points.size() * (points.size() - 1) &&
@@ -372,6 +609,10 @@ int main()
         out << "loose_scaled_error " << loose.error.maxScaledError << "\n";
         out << "tight_scaled_error " << tight.error.maxScaledError << "\n";
         out << "persistent_hysteresis " << (persistentHysteresis ? 1 : 0) << "\n";
+        out << "individual_target_evaluation "
+            << (individualTargetEvaluation ? 1 : 0) << "\n";
+        out << "individual_conservative_force "
+            << (individualConservativeForce ? 1 : 0) << "\n";
         out << "pass " << (passed ? 1 : 0) << "\n";
 
         std::cout << "fmm_gravity_serial scaled_error="

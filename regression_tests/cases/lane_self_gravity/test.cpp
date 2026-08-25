@@ -17,8 +17,15 @@
 #include "source/newtonian/three_dimensional/Ghost3D.hpp"
 #include "source/newtonian/three_dimensional/ConservativeForce3D.hpp"
 #include "source/newtonian/three_dimensional/GravityAcc3D.hpp"
-#include <fstream>
+#include "source/3D/output/read3D.hpp"
+#include "source/3D/output/write3D.hpp"
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
+#include <limits>
+#include <stdexcept>
 #include <unistd.h>
 
 #ifdef RICH_MPI
@@ -27,6 +34,22 @@
 
 namespace
 {
+
+size_t EnvironmentSize(char const* name, size_t fallback)
+{
+    char const* value = std::getenv(name);
+    if(value == nullptr || value[0] == '\0')
+        return fallback;
+    return static_cast<size_t>(std::stoull(value));
+}
+
+double EnvironmentDouble(char const* name, double fallback)
+{
+    char const* value = std::getenv(name);
+    if(value == nullptr || value[0] == '\0')
+        return fallback;
+    return std::stod(value);
+}
 
 struct LaneEmdenProfile
 {
@@ -105,7 +128,7 @@ int main(void)
     double const G = 6.674e-8;
 
     const double width = 2 * R;
-    size_t np = static_cast<size_t>(2e6);
+    size_t np = EnvironmentSize("RICH_TEST_POINT_COUNT", static_cast<size_t>(2e6));
 
     Vector3D ll(-width, -width, -width), ur(width, width, width);
     Voronoi3D tess(ll, ur);
@@ -165,6 +188,10 @@ int main(void)
 
     Lagrangian3D bpm;
     RoundCells3D pm(bpm, eos);
+    PointMotion3D const& point_motion =
+        std::getenv("RICH_TEST_DISABLE_ROUNDING") != nullptr ?
+        static_cast<PointMotion3D const&>(bpm) :
+        static_cast<PointMotion3D const&>(pm);
 
     DefaultCellUpdater cu;
 
@@ -182,31 +209,81 @@ int main(void)
     vector<pair<const ConditionExtensiveUpdater3D::Condition3D *, const ConditionExtensiveUpdater3D::Action3D *>> eu_sequence;
     ConditionExtensiveUpdater3D eu(eu_sequence);
 
-    GravityAcceleration3D acc(0.7, true, G);
+    double const gravity_strength =
+        std::getenv("RICH_TEST_DISABLE_GRAVITY") != nullptr ? 0.0 : G;
+    GravityAcceleration3D acc(0.7, true, gravity_strength);
     ConservativeForce3D force(acc);
 
     auto tsf = std::make_shared<CourantFriedrichsLewy>(0.25, 1, force, std::vector<std::string>(), false);
 
     Simulation simulation(tess, cells, eos);
     simulation.SetTimeStepFunction(tsf);
-    HDSim3D sim(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), pm, *tsf, fc, cu, eu, force,
+    HDSim3D sim(tess, simulation.getCells(), simulation.getExtensives(), eos, simulation.getTracker(), point_motion, *tsf, fc, cu, eu, force,
                 std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
 
     auto hydroStep = std::make_shared<HydroStep>(sim, HydroStep::TIMEADVANCE_2);
     simulation.addPhysics(hydroStep);
-    simulation.SetTimeStep(1.0);
+    double const initial_dt = EnvironmentDouble("RICH_TEST_INITIAL_DT", 1.0);
+    simulation.SetTimeStep(initial_dt);
+
+    char const* restart_input = std::getenv("RICH_TEST_RESTART_INPUT");
+    char const* individual_mode = std::getenv("RICH_INDIVIDUAL_MODE");
+    if(restart_input != nullptr && restart_input[0] != '\0')
+        ReadSimulation(restart_input, simulation);
+    else if(individual_mode != nullptr && individual_mode[0] != '\0')
+    {
+        IndividualTimeStepOptions options;
+        std::string const mode(individual_mode);
+        bool const synchronized = mode == "full";
+        bool const auto_partial = mode == "partial";
+        if(!synchronized && !auto_partial && mode != "full-variable")
+            throw std::invalid_argument(
+                "RICH_INDIVIDUAL_MODE must be 'full', 'full-variable', or 'partial'");
+        options.initial_bin = synchronized ? 0 : 4;
+        options.maximum_bin = synchronized ? 0 : 60;
+        options.time_quantum = std::ldexp(initial_dt,
+            -static_cast<int>(options.initial_bin));
+        options.mesh_build_policy = auto_partial ?
+            IndividualMeshBuildPolicy::AutoPartial :
+            IndividualMeshBuildPolicy::FullReference;
+        options.verify_partial_build = std::getenv(
+            "RICH_VERIFY_PARTIAL_BUILD") != nullptr;
+        simulation.EnableIndividualTimeSteps(options);
+
+        if(std::getenv("RICH_TEST_SPARSE_INITIAL_BIN") != nullptr)
+        {
+            if(synchronized || options.initial_bin < 2)
+                throw std::invalid_argument(
+                    "RICH_TEST_SPARSE_INITIAL_BIN requires variable individual timesteps");
+            IndividualTimeStepScheduler* scheduler =
+                simulation.GetIndividualTimeStepScheduler();
+            scheduler->initialize(simulation.getCells(), simulation.GetTime(),
+                                  simulation.GetTimeStep());
+            std::vector<CellTimeState>& states = scheduler->states();
+            if(states.empty())
+                throw std::logic_error(
+                    "RICH_TEST_SPARSE_INITIAL_BIN requires at least one cell");
+            CellTimeState& sparse_state = states[states.size() / 2];
+            sparse_state.time_bin = static_cast<std::uint8_t>(
+                options.initial_bin - 2);
+            sparse_state.end_tick = std::uint64_t(1) << sparse_state.time_bin;
+        }
+    }
 #ifdef RICH_MPI
     simulation.PresetLoadBalance("hydro");
 #endif
 
-    double old_t = 0;
+    double old_t = simulation.GetTime();
     double metric = 0;
 
 #ifdef RICH_MPI
     double step_tstart = MPI_Wtime();
 #endif
 
-    while (simulation.GetTime() < 5000.0)
+    size_t const max_cycles = EnvironmentSize("RICH_TEST_MAX_CYCLES",
+        std::numeric_limits<size_t>::max());
+    while (simulation.GetTime() < 5000.0 &&
+           simulation.GetCycle() < max_cycles)
     {
         try
         {
@@ -227,17 +304,18 @@ int main(void)
             auto const& cur_cells = simulation.getCells();
             double local_sum = 0, local_volume = 0;
             double local_count = 0;
-            for (size_t i = 0; i < N_now; ++i)
-            {
-                if (cur_cells[i].density > 1e-2)
+            if(N_now == cur_cells.size())
+                for (size_t i = 0; i < N_now; ++i)
                 {
-                    double r = abs(tess.GetCellCM(i));
-                    double rho0 = prof.densityAt(r, R);
-                    local_sum += tess.GetVolume(i) * std::abs(cur_cells[i].density - rho0);
-                    local_volume += tess.GetVolume(i);
-                    ++local_count;
+                    if (cur_cells[i].density > 1e-2)
+                    {
+                        double r = abs(tess.GetCellCM(i));
+                        double rho0 = prof.densityAt(r, R);
+                        local_sum += tess.GetVolume(i) * std::abs(cur_cells[i].density - rho0);
+                        local_volume += tess.GetVolume(i);
+                        ++local_count;
+                    }
                 }
-            }
             
             double global_count = local_count;
             double global_sum = local_sum;
@@ -247,7 +325,8 @@ int main(void)
             MPI_Allreduce(&local_count, &global_count, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
             MPI_Allreduce(&local_volume, &global_volume, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 #endif
-            metric = global_sum / global_volume;
+            if(global_volume > 0)
+                metric = global_sum / global_volume;
 
             if (rank == 0)
             {
@@ -269,6 +348,89 @@ int main(void)
             throw;
         }
     }
+
+    char const* restart_output = std::getenv("RICH_TEST_RESTART_OUTPUT");
+    if(restart_output != nullptr && restart_output[0] != '\0')
+        WriteSimulation(simulation, restart_output);
+
+    // Global diagnostics require canonical point ordering, not a partial view.
+#ifndef RICH_MPI
+    if(tess.GetPointNo() != simulation.getCells().size())
+    {
+        std::vector<Vector3D> output_points = tess.getAllPoints();
+        output_points.resize(simulation.getCells().size());
+        tess.Build(output_points);
+    }
+
+    {
+        double final_sum = 0;
+        double final_volume = 0;
+        auto const& final_cells = simulation.getCells();
+        for(size_t i = 0; i < tess.GetPointNo(); ++i)
+            if(final_cells[i].density > 1e-2)
+            {
+                double const volume = tess.GetVolume(i);
+                double const rho0 = prof.densityAt(abs(tess.GetCellCM(i)), R);
+                final_sum += volume * std::abs(final_cells[i].density - rho0);
+                final_volume += volume;
+            }
+        metric = final_volume > 0 ? final_sum / final_volume : 0;
+    }
+#endif
+
+    char output_cwd[4096];
+    if(getcwd(output_cwd, sizeof(output_cwd)) == nullptr)
+        throw std::runtime_error("Failed to resolve current working directory");
+    char const* artifact_dir = std::getenv("THUNDER_ARTIFACT_DIR");
+    std::string const output_dir = artifact_dir != nullptr && artifact_dir[0] != '\0'
+        ? std::string(artifact_dir) : std::string(output_cwd);
+    std::string const profile_path = output_dir + "/lane_profile.txt";
+
+#ifndef RICH_MPI
+    if(rank == 0)
+    {
+        std::ofstream state_out(output_dir + "/lane_state.txt");
+        state_out << std::hexfloat;
+        auto const& final_cells = simulation.getCells();
+        auto const& final_extensives = simulation.getExtensives();
+        for(size_t i = 0; i < final_cells.size(); ++i)
+        {
+            ComputationalCell3D const& cell = final_cells[i];
+            Conserved3D const& extensive = final_extensives[i];
+            Vector3D const point = tess.GetMeshPoint(i);
+            state_out << cell.ID << ' ' << point.x << ' ' << point.y << ' '
+                      << point.z << ' ' << cell.density << ' ' << cell.pressure
+                      << ' ' << cell.internal_energy << ' ' << cell.velocity.x
+                      << ' ' << cell.velocity.y << ' ' << cell.velocity.z << ' '
+                      << extensive.mass << ' ' << extensive.momentum.x << ' '
+                      << extensive.momentum.y << ' ' << extensive.momentum.z
+                      << ' ' << extensive.energy << ' '
+                      << extensive.internal_energy << '\n';
+        }
+
+        IndividualTimeStepScheduler const* scheduler =
+            simulation.GetIndividualTimeStepScheduler();
+        if(scheduler != nullptr && scheduler->initialized())
+        {
+            std::ofstream scheduler_out(output_dir + "/lane_scheduler.txt");
+            scheduler_out << std::hexfloat << scheduler->timeOrigin() << ' '
+                          << scheduler->timeQuantum() << ' '
+                          << scheduler->currentTick() << '\n';
+            for(CellTimeState const& state : scheduler->states())
+                scheduler_out << state.cell_id << ' ' << state.begin_tick << ' '
+                              << state.end_tick << ' ' << state.last_primitive_tick
+                              << ' ' << static_cast<unsigned int>(state.time_bin) << ' '
+                              << state.point_velocity.x << ' '
+                              << state.point_velocity.y << ' '
+                              << state.point_velocity.z << ' '
+                              << state.cached_acceleration.x << ' '
+                              << state.cached_acceleration.y << ' '
+                              << state.cached_acceleration.z << ' '
+                              << static_cast<unsigned int>(
+                                     state.gravity_half_kick_pending) << '\n';
+        }
+    }
+#endif
 
     // Radial profile output for plotting
     {
@@ -319,7 +481,7 @@ int main(void)
 
         if (rank == 0)
         {
-            std::ofstream prof_out("lane_profile.txt");
+            std::ofstream prof_out(profile_path);
             for (size_t b = 0; b < nbins; ++b)
             {
                 if (volume_sum_g[b] <= 0.0)
@@ -330,10 +492,10 @@ int main(void)
                          << density_analytic_sum_g[b] * inv << "\n";
             }
             prof_out.close();
-            std::cerr << "Wrote lane_profile.txt" << std::endl;
+            std::cerr << "Wrote " << profile_path << std::endl;
         }
 #else
-        std::ofstream prof_out("lane_profile.txt");
+        std::ofstream prof_out(profile_path);
         for (size_t b = 0; b < nbins; ++b)
         {
             if (volume_sum[b] <= 0.0)
@@ -351,12 +513,7 @@ int main(void)
 
     if (rank == 0)
     {
-        char cwd_buf[4096];
-        std::string metrics_path = "lane_gravity_metrics.txt";
-        if (getcwd(cwd_buf, sizeof(cwd_buf)))
-        {
-            metrics_path = std::string(cwd_buf) + "/lane_gravity_metrics.txt";
-        }
+        std::string const metrics_path = output_dir + "/lane_gravity_metrics.txt";
 
         std::ofstream out(metrics_path);
         if (!out.is_open())

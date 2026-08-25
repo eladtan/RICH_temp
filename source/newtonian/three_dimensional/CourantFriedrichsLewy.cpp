@@ -148,3 +148,54 @@ double CourantFriedrichsLewy::SuggestTimeStep(void) const
 {
 	return this->dt_suggest_;
 }
+
+void CourantFriedrichsLewy::SuggestIndividualTimeSteps(
+	const Tessellation3D& tess,
+	const vector<ComputationalCell3D>& cells,
+	const EquationOfState& eos,
+	const vector<Vector3D>& face_velocities,
+	double /*time*/,
+	const IndividualStepContext& context,
+	vector<double>& time_step_limits) const
+{
+	std::vector<double> source_limits(cells.size(), std::numeric_limits<double>::infinity());
+	source_.SuggestIndividualTimeSteps(tess, cells, context, source_limits);
+	for(std::size_t index = 0;
+		index < source_limits.size() && index < time_step_limits.size(); ++index)
+		time_step_limits[index] = std::min(time_step_limits[index],
+			source_limits[index] * sourcecfl_);
+	std::vector<std::size_t> no_calc_indices(no_calc_.size());
+	for(std::size_t i = 0; i < no_calc_.size(); ++i)
+		no_calc_indices[i] = binary_index_find(ComputationalCell3D::stickerNames, no_calc_[i]);
+
+	for(std::size_t index = 0; index < tess.GetPointNo(); ++index)
+	{
+		const ComputationalCell3D& cell = cells.at(index);
+		if(std::any_of(no_calc_indices.cbegin(), no_calc_indices.cend(),
+			[&cell](std::size_t sticker){return cell.stickers[sticker];}))
+			continue;
+
+		const double sound_speed = eos.de2c(cell.density, cell.internal_energy,
+			cell.tracers, ComputationalCell3D::tracerNames);
+		double signal_speed = 0;
+		double maximum_face_area = 0;
+		const face_vec& faces = tess.GetCellFaces(index);
+		for(std::size_t face : faces)
+		{
+			Vector3D normal = tess.Normal(face);
+			normal *= 1.0 / fastabs(normal);
+			signal_speed = std::max(signal_speed, sound_speed +
+				std::abs(ScalarProd(normal, cell.velocity - face_velocities.at(face))));
+			maximum_face_area = std::max(maximum_face_area, tess.GetArea(face));
+		}
+		double hydro_limit = std::numeric_limits<double>::infinity();
+		if(signal_speed > 0 && maximum_face_area > 0)
+		{
+			const double effective_radius = std::min(tess.GetWidth(index),
+				tess.GetVolume(index) / maximum_face_area);
+			hydro_limit = cfl_ * effective_radius / signal_speed;
+		}
+		time_step_limits.at(index) = std::min(time_step_limits.at(index),
+			hydro_limit);
+	}
+}

@@ -38,6 +38,13 @@ public:
 	void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells, double time,
 		vector<pair<ComputationalCell3D, ComputationalCell3D> > &res) const override;
 
+	void InterpolateIndividual(
+		const Tessellation3D& tess,
+		const vector<ComputationalCell3D>& cells,
+		double time,
+		const vector<unsigned char>& active_mask,
+		vector<pair<ComputationalCell3D, ComputationalCell3D> >& res) const override;
+
 	/*! \brief Interpolates a cell
 	\param cell The primitives of the cell
 	\param cell_index The index of the cell
@@ -55,6 +62,9 @@ public:
 	\return The gradients
 	*/
 	vector<Slope3D>& GetSlopes(void) override;
+
+	const vector<Slope3D>* GetSlopesForTimePrediction(void) const override
+	{return &rslopes_;}
 
 	/*!
 	\brief Returns the unsloped limtied gradients
@@ -77,6 +87,13 @@ public:
 		const EquationOfState& eos) const;
 
 private:
+	void InterpolateImpl(
+		const Tessellation3D& tess,
+		const vector<ComputationalCell3D>& cells,
+		double time,
+		const vector<unsigned char>* active_mask,
+		vector<pair<ComputationalCell3D, ComputationalCell3D> >& res) const;
+
 	EquationOfState const& eos_;
 	Ghost3D const& ghost_;
 	mutable vector<Slope3D> rslopes_;

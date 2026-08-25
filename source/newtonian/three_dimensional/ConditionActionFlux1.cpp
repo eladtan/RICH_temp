@@ -1,5 +1,7 @@
 #include "ConditionActionFlux1.hpp"
 
+#include <cmath>
+
 ConditionActionFlux1::ConditionActionFlux1(const vector<pair<const Condition3D*, const Action3D*> >& sequence,
 	SpatialReconstruction3D const& interp) :
 	sequence_(sequence),interp_(interp) {}
@@ -9,6 +11,70 @@ ConditionActionFlux1::~ConditionActionFlux1(void)
 
 namespace
 {
+	double directional_derivative(double vx, double vy, double vz,
+		double dx, double dy, double dz)
+	{
+		return vx * dx + vy * dy + vz * dz;
+	}
+
+	void predict_primitive(ComputationalCell3D &face_value,
+		const ComputationalCell3D &cell,
+		const Slope3D &slope,
+		const EquationOfState &eos,
+		const Vector3D &face_velocity,
+		const Vector3D &acceleration,
+		double time_offset)
+	{
+		const double vx = cell.velocity.x - face_velocity.x;
+		const double vy = cell.velocity.y - face_velocity.y;
+		const double vz = cell.velocity.z - face_velocity.z;
+		const double div_v = slope.xderivative.velocity.x +
+			slope.yderivative.velocity.y + slope.zderivative.velocity.z;
+		const double drho = -directional_derivative(vx, vy, vz,
+			slope.xderivative.density, slope.yderivative.density,
+			slope.zderivative.density) - cell.density * div_v;
+		const Vector3D pressure_gradient(slope.xderivative.pressure,
+			slope.yderivative.pressure, slope.zderivative.pressure);
+		Vector3D dv;
+		dv.x = -directional_derivative(vx, vy, vz,
+			slope.xderivative.velocity.x, slope.yderivative.velocity.x,
+			slope.zderivative.velocity.x) - pressure_gradient.x / cell.density;
+		dv.y = -directional_derivative(vx, vy, vz,
+			slope.xderivative.velocity.y, slope.yderivative.velocity.y,
+			slope.zderivative.velocity.y) - pressure_gradient.y / cell.density;
+		dv.z = -directional_derivative(vx, vy, vz,
+			slope.xderivative.velocity.z, slope.yderivative.velocity.z,
+			slope.zderivative.velocity.z) - pressure_gradient.z / cell.density;
+		dv += acceleration;
+		const double de = -directional_derivative(vx, vy, vz,
+			slope.xderivative.internal_energy,
+			slope.yderivative.internal_energy,
+			slope.zderivative.internal_energy) -
+			cell.pressure * div_v / cell.density;
+
+		ComputationalCell3D candidate = face_value;
+		candidate.density += time_offset * drho;
+		candidate.velocity += time_offset * dv;
+		candidate.internal_energy += time_offset * de;
+		for(std::size_t tracer = 0; tracer < candidate.tracers.size(); ++tracer)
+		{
+			const double dq = -directional_derivative(vx, vy, vz,
+				slope.xderivative.tracers[tracer],
+				slope.yderivative.tracers[tracer],
+				slope.zderivative.tracers[tracer]);
+			candidate.tracers[tracer] += time_offset * dq;
+		}
+		if(candidate.density > 0 && candidate.internal_energy > 0 &&
+			std::isfinite(candidate.density) && std::isfinite(candidate.internal_energy))
+		{
+			candidate.pressure = eos.de2p(candidate.density,
+				candidate.internal_energy, candidate.tracers,
+				ComputationalCell3D::tracerNames);
+			if(candidate.pressure > 0 && std::isfinite(candidate.pressure))
+				face_value = candidate;
+		}
+	}
+
 	void choose_action(size_t face, const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
 		const EquationOfState& eos, const Vector3D& face_velocity,
 		const vector<pair<const ConditionActionFlux1::Condition3D*, const ConditionActionFlux1::Action3D*> >& sequence,
@@ -52,6 +118,82 @@ namespace
 #endif
 		}
 		throw UniversalError("Error in ConditionActionFlux1");
+	}
+}
+
+void ConditionActionFlux1::CalculateIndividual(
+	vector<Conserved3D>& fluxes,
+	const Tessellation3D& tess,
+	const vector<Vector3D>& face_velocities,
+	const vector<ComputationalCell3D>& cells,
+	const vector<Conserved3D>& /*extensives*/,
+	const EquationOfState& eos,
+	const IndividualStepContext& context,
+	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> >& face_values) const
+{
+	for(std::size_t i = 0; i < sequence_.size(); ++i)
+		sequence_[i].second->Reset();
+	face_values.clear();
+	interp_.InterpolateIndividual(tess, cells, context.event_time,
+		context.active_mask, face_values);
+	fluxes.assign(tess.GetTotalFacesNumber(), Conserved3D());
+	const std::vector<Slope3D>* slopes = interp_.GetSlopesForTimePrediction();
+	const std::size_t norg = context.active_mask.size();
+
+	for(std::size_t face = 0; face < fluxes.size(); ++face)
+	{
+		const auto neighbors = tess.GetFaceNeighbors(face);
+		const bool first_active = neighbors.first < norg && context.isActive(neighbors.first);
+		const bool second_active = neighbors.second < norg && context.isActive(neighbors.second);
+		if(!first_active && !second_active)
+			continue;
+
+		double face_dt = 0;
+		if(neighbors.first < norg && neighbors.second < norg)
+			face_dt = context.faceTimeStep(neighbors.first, neighbors.second);
+		else if(neighbors.first < norg)
+			face_dt = context.cellTimeStep(neighbors.first);
+		else
+			face_dt = context.cellTimeStep(neighbors.second);
+
+		if(slopes)
+		{
+			const double midpoint_time = context.event_time - 0.5 * face_dt;
+			auto prediction_offset = [&](std::size_t index,
+				std::size_t fallback_index)
+			{
+				std::size_t const source = index < norg ? index : fallback_index;
+				if(source < context.primitive_ticks.size())
+					return midpoint_time - (context.time_origin +
+						context.time_quantum *
+						static_cast<double>(context.primitive_ticks[source]));
+				return 0.5 * face_dt;
+			};
+			auto prediction_acceleration = [&](std::size_t index,
+				std::size_t fallback_index)
+			{
+				std::size_t const source = index < norg ? index : fallback_index;
+				return source < context.cached_accelerations.size()
+					? context.cached_accelerations[source]
+					: Vector3D();
+			};
+			if(neighbors.first < slopes->size())
+				predict_primitive(face_values[face].first, cells[neighbors.first],
+					(*slopes)[neighbors.first], eos, face_velocities[face],
+					prediction_acceleration(neighbors.first, neighbors.second),
+					prediction_offset(neighbors.first, neighbors.second));
+			if(neighbors.second < slopes->size())
+				predict_primitive(face_values[face].second, cells[neighbors.second],
+					(*slopes)[neighbors.second], eos, face_velocities[face],
+					prediction_acceleration(neighbors.second, neighbors.first),
+					prediction_offset(neighbors.second, neighbors.first));
+		}
+
+		if(face_values[face].first.density <= 0 || face_values[face].first.internal_energy <= 0 ||
+			face_values[face].second.density <= 0 || face_values[face].second.internal_energy <= 0)
+			throw UniversalError("Bad input to individual flux calculator");
+		choose_action(face, tess, cells, eos, face_velocities[face], sequence_,
+			fluxes[face], context.event_time - 0.5 * face_dt, face_values[face]);
 	}
 }
 

@@ -8,6 +8,7 @@
 
 #include "conj_grad_solve.hpp"
 #include "newtonian/common/equation_of_state.hpp"
+#include "newtonian/three_dimensional/simulation/IndividualTimeStep.hpp"
 #include "boost/math/special_functions/pow.hpp"
 
 class RadiationDriver : public CG::MatrixBuilder {
@@ -105,10 +106,50 @@ public:
                                     Tessellation3D& tess, 
                                     std::vector<ComputationalCell3D>& cells) const = 0;
 
+        /** Serial active-row implicit solve used by individual timesteps. */
+        virtual bool supportsIndividualTimeSteps() const { return false; }
+
+        virtual std::size_t individualUnknownsPerCell() const { return 1; }
+
+        virtual bool prestepIndividual(
+            Tessellation3D const& tess,
+            std::vector<ComputationalCell3D> const& cells,
+            IndividualStepContext const& context) const;
+
+        virtual bool stepIndividual(
+            double tolerance,
+            int& total_iters,
+            Tessellation3D const& tess,
+            std::vector<ComputationalCell3D>& cells,
+            std::vector<Conserved3D>& extensives,
+            IndividualStepContext const& context,
+            double interval_fraction,
+            double time,
+            std::vector<ComputationalCell3D> const* canonical_cells = nullptr,
+            std::vector<Conserved3D>* canonical_extensives = nullptr,
+            std::vector<std::size_t> const* owned_to_canonical = nullptr) const;
+
+        virtual bool poststepIndividual() const { return poststep(); }
+
+        // Release state whose shape follows the committed cell ownership or
+        // tessellation.  Called only after an event commits, before AMR/LB
+        // state is reused.
+        virtual void releaseIndividualTopologyStorage() const noexcept;
+
+        virtual void calculateIndividualTimeSteps(
+            IndividualStepContext const& context,
+            Tessellation3D& tess,
+            std::vector<ComputationalCell3D>& cells,
+            std::vector<double>& time_step_limits,
+            std::vector<ComputationalCell3D> const* canonical_owned_cells = nullptr,
+            std::vector<std::size_t> const* local_to_global = nullptr) const;
+
         void clearStepFailure() const
         {
             last_step_failure_reason_.clear();
             last_step_failure_cell_id_ = std::numeric_limits<size_t>::max();
+            last_step_failure_cell_local_ = false;
+            last_step_failure_remote_ = false;
         }
 
         void setStepFailure(
@@ -118,11 +159,47 @@ public:
             if (!reason.empty() && last_step_failure_reason_.empty()) {
                 last_step_failure_reason_ = reason;
                 last_step_failure_cell_id_ = cell_id;
+                last_step_failure_cell_local_ = false;
+                last_step_failure_remote_ = false;
+            }
+        }
+
+        /** Record a failure caused by one owned active cell. */
+        void setCellLocalStepFailure(
+            std::string const& reason,
+            size_t cell_id) const
+        {
+            if (!reason.empty() && last_step_failure_reason_.empty()) {
+                last_step_failure_reason_ = reason;
+                last_step_failure_cell_id_ = cell_id;
+                last_step_failure_cell_local_ = true;
+                last_step_failure_remote_ = false;
+            }
+        }
+
+        void markStepFailureCellLocal(size_t cell_id) const
+        {
+            if(!last_step_failure_reason_.empty()) {
+                last_step_failure_cell_id_ = cell_id;
+                last_step_failure_cell_local_ = true;
+                last_step_failure_remote_ = false;
+            }
+        }
+
+        void markStepFailureRemote() const
+        {
+            if(!last_step_failure_reason_.empty()) {
+                last_step_failure_cell_local_ = false;
+                last_step_failure_remote_ = true;
             }
         }
 
         std::string const& getLastStepFailureReason() const { return last_step_failure_reason_; }
         size_t getLastStepFailureCellId() const { return last_step_failure_cell_id_; }
+        bool getLastStepFailureIsCellLocal() const
+        {return last_step_failure_cell_local_;}
+        bool getLastStepFailureIsRemote() const
+        {return last_step_failure_remote_;}
 
     bool const flux_limiter_;
     bool const hydro_on_;
@@ -133,10 +210,184 @@ public:
     double time_scale_;
 
 protected:
+    struct IndividualFaceCoefficient
+    {
+        std::size_t left = 0;
+        std::size_t right = 0;
+        std::size_t group = 0;
+        double coefficient = 0;
+    };
+
+    struct SpectralRepairEvent
+    {
+        std::uint64_t repaired_cells = 0;
+        std::uint64_t repaired_groups = 0;
+        double injected_energy = 0;
+        double maximum_relative_deficit = 0;
+        std::uint64_t representative_cell_id =
+            std::numeric_limits<std::uint64_t>::max();
+        std::uint64_t representative_group =
+            std::numeric_limits<std::uint64_t>::max();
+        double representative_original_extent = 0;
+        double representative_floor_extent = 0;
+        double representative_injected_extent = 0;
+        double owned_radiation_energy = 0;
+    };
+
+    // Candidate-local omitted active/passive interface transfer.  This record
+    // remains pending until every solver, residual, mapping, positivity, and
+    // post-solve check has accepted the surrounding transaction.
+    struct IndividualRadiationDefectEvent
+    {
+        long double signed_extent = 0;
+        long double absolute_extent = 0;
+        long double passive_withdrawal_extent = 0;
+        long double passive_deposit_extent = 0;
+        double maximum_local_fraction = 0;
+        double representative_passive_extent = 0;
+        double representative_roundoff_floor = 0;
+        double representative_withdrawal_extent = 0;
+        double representative_deposit_extent = 0;
+        double representative_net_passive_extent = 0;
+        double representative_maximum_withdrawal_term = 0;
+        double candidate_start_positive_global_extent = 0;
+        double rhs_derived_global_floor = 0;
+        double normalization_scale = 0;
+        double event_absolute_fraction = 0;
+        double projected_cumulative_signed_fraction = 0;
+        double projected_cumulative_absolute_fraction = 0;
+        std::uint64_t face_group_terms = 0;
+        std::uint64_t duplicate_face_group_terms = 0;
+        std::uint64_t representative_active_id =
+            std::numeric_limits<std::uint64_t>::max();
+        std::uint64_t representative_passive_id =
+            std::numeric_limits<std::uint64_t>::max();
+        std::uint64_t representative_group =
+            std::numeric_limits<std::uint64_t>::max();
+        std::uint64_t representative_face_group_terms = 0;
+        std::uint64_t representative_active_rank =
+            std::numeric_limits<std::uint64_t>::max();
+        std::uint64_t representative_rank =
+            std::numeric_limits<std::uint64_t>::max();
+        bool valid = true;
+    };
+
+    double individualCellTimeStep(std::size_t index, double fallback) const;
+    double individualScheduledTimeStep(std::size_t index, double fallback) const;
+    double individualFaceTimeStep(std::size_t left,
+                                  std::size_t right,
+                                  double fallback) const;
+    bool individualCellActive(std::size_t index) const;
+    void commitSpectralRepairAccounting(
+        SpectralRepairEvent const& local_event,
+        char const* scope) const;
+    void commitResidualCorrectionAccounting(
+        CG::HistoricalMGResidualCorrectionDiagnostics const& diagnostics) const;
+    void recordIndividualFaceCoefficient(std::size_t left,
+                                         std::size_t right,
+                                         std::size_t group,
+                                         double coefficient) const;
+    double collectiveIndividualRadiationDefectScale(
+        double local_candidate_start_positive_extent,
+        double local_rhs_floor,
+        double& candidate_start_positive_global_extent,
+        double& rhs_derived_global_floor) const;
+    IndividualRadiationDefectAccounting&
+        individualRadiationDefectAccounting() const;
+    bool validateIndividualRadiationDefect(
+        IndividualRadiationDefectEvent& local_event,
+        char const* scope) const;
+    void commitIndividualRadiationDefect(
+        IndividualRadiationDefectEvent const& event,
+        char const* scope) const;
+    virtual void prepareIndividualCandidate(
+        Tessellation3D const&,
+        std::vector<ComputationalCell3D> const&) const
+    {}
+
+    // True only while stepIndividual() owns a rollback snapshot for these
+    // exact state vectors and has explicitly enabled inner-snapshot elision.
+    // Pointer identity prevents direct global calls, reduced active solves,
+    // or nested work on different state vectors from borrowing the marker.
+    bool outerAllActiveTransactionCovers(
+        std::vector<ComputationalCell3D> const& cells,
+        std::vector<Conserved3D> const& extensives) const
+    {
+        return outer_transaction_cells_ == &cells &&
+            outer_transaction_extensives_ == &extensives;
+    }
+
+    // The all-active fast path may leave a large reusable global-solver
+    // workspace in a derived driver.  Release it before constructing the
+    // independent distributed-active system.
+    virtual void ReleaseDormantGlobalSolverStorage() const
+    {}
+
+    virtual bool validateIndividualCoefficients(
+        IndividualStepContext const&,
+        std::vector<ComputationalCell3D> const&) const
+    {
+        return true;
+    }
+
+    // A derived solver may compare the states immediately before and after the
+    // final residual correction, replace a nonphysical local source block, and
+    // ask for a rebuild before any candidate state is committed.
+    virtual bool requestIndividualSolutionRetry(
+        std::vector<double> const&,
+        std::vector<double> const&,
+        std::vector<std::size_t> const&,
+        std::vector<ComputationalCell3D> const&,
+        char const*) const
+    {
+        return false;
+    }
+
+    // Apply cell-local physics that was deliberately removed from the reduced
+    // matrix.  stepIndividual() calls this only after diffusion face transfers,
+    // controlled spectral repair, and Erad/group synchronization.  The final
+    // scalar is the canonical owned-cell Erad maximum reduced with MPI_MAX.
+    virtual bool applyIndividualPostSolvePhysics(
+        Tessellation3D const&,
+        std::vector<ComputationalCell3D>&,
+        std::vector<Conserved3D>&,
+        double,
+        double) const
+    {
+        return true;
+    }
+
+    // Cell-local post-solve operators can perform the same controlled
+    // spectral repair as the main candidate finalizer.  Append their pending
+    // accounting only after the surrounding transaction has passed every
+    // validation check.
+    virtual void appendPendingSpectralRepairEvent(
+        SpectralRepairEvent&) const
+    {}
+
+    // The global implementation must be safe on every MPI rank, including a
+    // rank with zero owned rows, so the capability is opt-in.
+    virtual bool supportsAllActiveIndividualGlobalStep() const
+    {
+        return false;
+    }
+
     EquationOfState const& eos_;
     mutable std::string last_step_failure_reason_;
     mutable size_t last_step_failure_cell_id_ =
         std::numeric_limits<size_t>::max();
+    mutable bool last_step_failure_cell_local_ = false;
+    mutable bool last_step_failure_remote_ = false;
+    mutable std::vector<ComputationalCell3D> const*
+        outer_transaction_cells_ = nullptr;
+    mutable std::vector<Conserved3D> const*
+        outer_transaction_extensives_ = nullptr;
+    mutable IndividualStepContext const* individual_context_ = nullptr;
+    mutable double individual_interval_fraction_ = 1.0;
+    mutable std::vector<IndividualFaceCoefficient> individual_face_coefficients_;
+    mutable RadiationRepairAccounting standalone_repair_accounting_;
+    mutable IndividualRadiationDefectAccounting
+        standalone_defect_accounting_;
 };
 
 using boost::math::pow;

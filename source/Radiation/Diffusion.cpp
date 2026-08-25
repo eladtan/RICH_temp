@@ -3,10 +3,25 @@
 #include "misc/memory_profile.hpp"
 #include "misc/utils.hpp"
 #include <boost/math/special_functions.hpp>
+#include <sstream>
+#include <stdexcept>
 
 #ifdef RICH_MPI
 #include "mpi/mpi_commands.hpp"
 #endif
+
+namespace
+{
+double reduce_grey_reference_scale(double local_maximum)
+{
+	local_maximum = std::max(local_maximum, 0.0);
+#ifdef RICH_MPI
+	MPI_Allreduce(MPI_IN_PLACE, &local_maximum, 1, MPI_DOUBLE, MPI_MAX,
+		MPI_COMM_WORLD);
+#endif
+	return local_maximum;
+}
+}
 
 namespace CG
 {
@@ -100,16 +115,19 @@ bool Diffusion::prestep(Tessellation3D const& tess,
     conditional_shrink(new_Er);
     new_Er_full.resize(N, 0.0);
     conditional_shrink(new_Er_full);
-    old_Er.resize(N, 0.0);
-    conditional_shrink(old_Er);
+	    old_Er.resize(N, 0.0);
+	    conditional_shrink(old_Er);
+	    old_T.resize(N, 0.0);
+	    conditional_shrink(old_T);
 
     cells_temp.resize(N);
     conditional_shrink(cells_temp);
     extensives_temp.resize(N);
     conditional_shrink(extensives_temp);
 
-    for(std::size_t i=0; i < N; ++i){
-        old_Er[i] = cells[i].Erad * cells[i].density;
+	    for(std::size_t i=0; i < N; ++i){
+	        old_Er[i] = cells[i].Erad * cells[i].density;
+	        old_T[i] = cells[i].temperature;
 
         if(old_Er[i] < 0.0){
             UniversalError eo("negative Erad");
@@ -121,7 +139,43 @@ bool Diffusion::prestep(Tessellation3D const& tess,
         }
     }
 
-    return true;
+	    return true;
+	}
+
+bool Diffusion::prestepIndividual(
+	Tessellation3D const& tess,
+	std::vector<ComputationalCell3D> const& cells,
+	IndividualStepContext const&) const
+{
+	bool const result = prestep(tess, cells);
+	individual_event_old_Er = old_Er;
+	individual_event_old_T = old_T;
+	return result;
+}
+
+void Diffusion::prepareIndividualCandidate(
+	Tessellation3D const& tess,
+	std::vector<ComputationalCell3D> const& cells) const
+{
+	// A rejected candidate is rolled back to the latest accepted state before
+	// this hook runs.  Refresh candidate-local radiation/material baselines here;
+	// keep individual_event_old_* fixed for event-level timestep feedback.
+	if(!prestep(tess, cells))
+		throw std::runtime_error("grey individual candidate preparation failed");
+}
+
+void Diffusion::ReleaseDormantGlobalSolverStorage() const
+{
+    bool const had_storage =
+        cg_workspace_.HasAllocatedStorage() ||
+        new_Er.capacity() != 0 ||
+        new_Er_full.capacity() != 0;
+    if(cg_workspace_.HasAllocatedStorage())
+        cg_workspace_.Release();
+    release_container_memory(new_Er);
+    release_container_memory(new_Er_full);
+    if(had_storage)
+        rich_trim_after_rare_spike();
 }
 
 bool Diffusion::poststep() const {    
@@ -165,18 +219,19 @@ double Diffusion::calculate_dt(double const dt,
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
 
-	double max_Er = *std::max_element(old_Er.begin(), old_Er.end());
-#ifdef RICH_MPI
-	MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-#endif	
+		double local_max_Er = 0;
+		for(ComputationalCell3D const& cell : cells)
+			local_max_Er = std::max(
+				local_max_Er, cell.Erad * cell.density);
+		double const max_Er = reduce_grey_reference_scale(local_max_Er);
 
     auto const N = tess.GetPointNo();            
     size_t const Nzero = zero_cells_.size();
 	std::vector<size_t> zero_indeces;
 	for(size_t i = 0; i < Nzero; ++i)
 		zero_indeces.push_back(binary_index_find(ComputationalCell3D::stickerNames, zero_cells_[i]));
-	double max_diff = std::numeric_limits<double>::min() * 100;
-	int max_loc = 0;
+	double max_diff = -1;
+	size_t max_loc = max_size_t;
 	for(size_t i = 0; i < N; ++i)
 	{
 		bool to_calc = true;
@@ -186,10 +241,18 @@ double Diffusion::calculate_dt(double const dt,
 		if(not to_calc)
 			continue;
 		double const equlibrium_factor = std::abs(cells[i].temperature - std::pow(new_Er[i] / CG::radiation_constant, 0.25)) < 0.02 * cells[i].temperature ? 0.05 : 1;
-		double diff = equlibrium_factor * std::abs(cells[i].Erad * cells[i].density - old_Er[i]) / (std::max(old_Er[i], cells[i].Erad * cells[i].density) + 0.02 * max_Er);
+		double const normalization =
+			std::max(old_Er[i], cells[i].Erad * cells[i].density) +
+			0.02 * max_Er;
+		double diff = normalization > 0 ?
+			equlibrium_factor *
+			std::abs(cells[i].Erad * cells[i].density - old_Er[i]) /
+			normalization : 0;
 		if(fleck_factor[i] < 0.4)
 			diff *= 0.2;
-		if(diff > max_diff)
+		if(!std::isfinite(diff))
+			continue;
+		if(max_loc == max_size_t || diff > max_diff)
 		{
 			max_diff = diff;
 			max_loc = i;
@@ -202,23 +265,187 @@ double Diffusion::calculate_dt(double const dt,
         int mpi_id;
     }max_data;
     
-    max_data.mpi_id = rank;
-    max_data.val = max_diff;
+	max_data.mpi_id = max_loc == max_size_t ?
+		std::numeric_limits<int>::max() : rank;
+	max_data.val = max_loc == max_size_t ? -1 : max_diff;
 #ifdef RICH_MPI
 	MPI_Allreduce(MPI_IN_PLACE, &max_data, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
-	max_diff = max_data.val;
 	MPI_exchange_data(tess, cells, true);	
 #endif
-	if(rank == max_data.mpi_id)
+	bool const has_limiting_cell =
+		max_data.mpi_id != std::numeric_limits<int>::max();
+	max_diff = has_limiting_cell ? max_data.val : 0;
+	double const difference_scale =
+		std::max(max_diff, std::numeric_limits<double>::min());
+	double const suggested_dt =
+		dt * std::min(1.25, 0.15 / difference_scale);
+	if(has_limiting_cell && rank == max_data.mpi_id)
 	{
 		std::cout<<"Radiation time step ID "<<cells[max_loc].ID<<" old Er "<<old_Er[max_loc]<<" new Er "<<cells[max_loc].Erad * cells[max_loc].density<<
 		" diff "<<max_diff<<" Tgas "<<cells[max_loc].temperature<<" Trad "<<std::pow(new_Er[max_loc] / CG::radiation_constant, 0.25)<<" max_Er "<<max_Er<<" rank "<<rank<<" density "<<cells[max_loc].density<<
 		" width "<<tess.GetWidth(max_loc)<<" Tgas_old "<<old_T[max_loc]<<" location "<<tess.GetMeshPoint(max_loc)<<std::endl;
 		PrintDebugData(max_loc);
-        std::cout<<"Next time step is "<<dt * std::min(1.25, 0.15 / max_diff)<<std::endl;
+		std::cout<<"Next time step is "<<suggested_dt<<std::endl;
+		std::cout<<"GREY_TIMESTEP_LIMIT mode=global current_dt="<<dt
+			<<" suggested_dt="<<suggested_dt<<" difference="<<max_diff
+			<<" max_Er="<<max_Er<<" growth_cap=1.25"
+			<<" reference_scope=mesh_global cell_id="<<cells[max_loc].ID
+			<<" rank="<<rank<<std::endl;
+	}
+	else if(!has_limiting_cell && rank == 0)
+	{
+		std::cout<<"GREY_TIMESTEP_LIMIT mode=global current_dt="<<dt
+			<<" suggested_dt="<<suggested_dt<<" difference=0"
+			<<" max_Er="<<max_Er<<" growth_cap=1.25"
+			<<" reference_scope=mesh_global cell_id=none rank=-1"<<std::endl;
 	}
 
-    return dt * std::min(1.25, 0.15 / max_diff);
+    return suggested_dt;
+}
+
+void Diffusion::calculateIndividualTimeSteps(
+    IndividualStepContext const& context,
+    Tessellation3D& tess,
+    std::vector<ComputationalCell3D>& cells,
+    std::vector<double>& time_step_limits,
+    std::vector<ComputationalCell3D> const* canonical_owned_cells,
+    std::vector<std::size_t> const* local_to_global) const
+{
+	int rank = 0;
+#ifdef RICH_MPI
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+    int canonical_mapping_valid =
+        (canonical_owned_cells == nullptr) == (local_to_global == nullptr) ?
+        1 : 0;
+    bool const canonical_reference = canonical_owned_cells != nullptr &&
+        local_to_global != nullptr;
+    std::vector<unsigned char> canonical_active;
+    if(canonical_reference) {
+        canonical_active.assign(canonical_owned_cells->size(), 0);
+        if(local_to_global->size() != tess.GetPointNo())
+            canonical_mapping_valid = 0;
+        for(std::size_t local : context.active_indices) {
+            if(local >= cells.size() || local >= local_to_global->size()) {
+                canonical_mapping_valid = 0;
+                continue;
+            }
+            std::size_t const global = local_to_global->at(local);
+            if(global >= canonical_owned_cells->size() ||
+               canonical_active[global] != 0 ||
+               canonical_owned_cells->at(global).ID != cells[local].ID) {
+                canonical_mapping_valid = 0;
+                continue;
+            }
+            canonical_active[global] = 1;
+        }
+    }
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &canonical_mapping_valid, 1, MPI_INT,
+                  MPI_MIN, MPI_COMM_WORLD);
+#endif
+    if(canonical_mapping_valid == 0)
+        throw std::runtime_error(
+            "grey individual canonical-owned mapping is invalid");
+
+    double local_max_Er = 0.0;
+    if(canonical_reference) {
+        for(std::size_t global = 0;
+            global < canonical_owned_cells->size(); ++global)
+            if(canonical_active[global] == 0) {
+                ComputationalCell3D const& cell =
+                    canonical_owned_cells->at(global);
+                local_max_Er = std::max(
+                    local_max_Er, cell.Erad * cell.density);
+            }
+        for(std::size_t local : context.active_indices)
+            local_max_Er = std::max(
+                local_max_Er, cells[local].Erad * cells[local].density);
+    }
+    else
+        for(ComputationalCell3D const& cell : cells)
+            local_max_Er = std::max(
+                local_max_Er, cell.Erad * cell.density);
+    double const max_Er = reduce_grey_reference_scale(local_max_Er);
+
+    std::vector<double> const& event_old_Er =
+        individual_event_old_Er.empty() ? old_Er : individual_event_old_Er;
+    std::vector<std::size_t> zero_indices;
+    zero_indices.reserve(zero_cells_.size());
+    for(std::string const& name : zero_cells_)
+        zero_indices.push_back(binary_index_find(ComputationalCell3D::stickerNames, name));
+
+	double local_max_difference = -1;
+	std::size_t representative = cells.size();
+	double representative_suggested_dt = 0;
+	unsigned long long active_cells = 0;
+    for(std::size_t i : context.active_indices) {
+        if(i >= cells.size() || i >= time_step_limits.size() ||
+           i >= event_old_Er.size())
+            throw std::out_of_range(
+                "grey individual timestep cell is out of range");
+        bool calculate = true;
+        for(std::size_t sticker : zero_indices)
+            if(cells[i].stickers[sticker])
+                calculate = false;
+        if(!calculate)
+            continue;
+		++active_cells;
+
+        double const new_Er_cell = cells[i].Erad * cells[i].density;
+        double const radiation_temperature =
+            std::pow(std::max(new_Er_cell, 0.0) / CG::radiation_constant, 0.25);
+        double const equilibrium_factor =
+            std::abs(cells[i].temperature - radiation_temperature) <
+                    0.02 * cells[i].temperature
+                ? 0.05
+                : 1.0;
+        double difference = equilibrium_factor *
+            std::abs(new_Er_cell - event_old_Er.at(i)) /
+            (std::max(event_old_Er.at(i), new_Er_cell) + 0.02 * max_Er +
+             std::numeric_limits<double>::min());
+        if(fleck_factor.at(i) < 0.4)
+            difference *= 0.2;
+	        double const factor = std::min(
+	            2.0,
+	            0.15 / std::max(difference, std::numeric_limits<double>::min()));
+		double const suggested_dt = context.cellTimeStep(i) * factor;
+        time_step_limits.at(i) = std::min(
+			time_step_limits.at(i), suggested_dt);
+		if(difference > local_max_difference)
+		{
+			local_max_difference = difference;
+			representative = i;
+			representative_suggested_dt = suggested_dt;
+		}
+    }
+
+	struct
+	{
+		double val;
+		int mpi_id;
+	} max_data = {local_max_difference, rank};
+#ifdef RICH_MPI
+	MPI_Allreduce(MPI_IN_PLACE, &max_data, 1, MPI_DOUBLE_INT, MPI_MAXLOC,
+		MPI_COMM_WORLD);
+	MPI_Allreduce(MPI_IN_PLACE, &active_cells, 1, MPI_UNSIGNED_LONG_LONG,
+		MPI_SUM, MPI_COMM_WORLD);
+#endif
+	if(active_cells > 0 && rank == max_data.mpi_id)
+	{
+		if(representative >= cells.size())
+			throw std::logic_error(
+				"Grey timestep representative is missing on the winning rank");
+		std::cout<<"GREY_TIMESTEP_LIMIT mode=individual event_time="
+			<<context.event_time<<" active_cells="<<active_cells
+			<<" cell_id="<<cells[representative].ID<<" rank="<<rank
+			<<" current_dt="<<context.cellTimeStep(representative)
+			<<" suggested_dt="<<representative_suggested_dt
+			<<" difference="<<local_max_difference<<" max_Er="<<max_Er
+			<<" growth_cap=2 reference_scope="
+			<<(canonical_reference ? "canonical_owned_global" : "mesh_global")
+			<<std::endl;
+	}
 }
 
 bool Diffusion::step(double const tolerance, 
@@ -242,10 +469,45 @@ bool Diffusion::step(double const tolerance,
     bool good_end = false;
     new_Er = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Er_full, good_end, cg_workspace_);
     MEMORY_DEBUG_PRINT("diffusion: after BiCGSTAB");
-    if(not good_end)
+    if(not good_end) {
+        CG::HistoricalMGResidualCorrectionDiagnostics const& diagnostic =
+            cg_workspace_.historical_correction;
+        if(!diagnostic.failure_reason.empty()) {
+            std::ostringstream reason;
+            reason << diagnostic.failure_reason
+                   << " failure_class="
+                   << RadiationPositivity::SpectralRepairFailureLabel(
+                          diagnostic.failure_class)
+                   << " failure_cell_id=" << diagnostic.failure_cell_id
+                   << " group=" << diagnostic.failure_group
+                   << " signed_group_extent="
+                   << diagnostic.failure_signed_group_extent
+                   << " negative_extent="
+                   << diagnostic.failure_negative_extent
+                   << " positive_extent="
+                   << diagnostic.failure_positive_extent
+                   << " relative_deficit="
+                   << diagnostic.failure_relative_deficit
+                   << " global_E_max="
+                   << diagnostic.failure_global_maximum_cell_extent
+                   << " solver_iterations=" << total_iters
+                   << " minimum_correction_scale="
+                   << diagnostic.minimum_scale
+                   << " limiting_cell_id=" << diagnostic.limiting_cell_id
+                   << " limiting_group=" << diagnostic.limiting_group
+                   << " limiting_before_extent="
+                   << diagnostic.limiting_before_extent
+                   << " limiting_unscaled_after_extent="
+                   << diagnostic.limiting_unscaled_after_extent
+                   << " limiting_applied_after_extent="
+                   << diagnostic.limiting_applied_after_extent;
+            setCellLocalStepFailure(reason.str(), diagnostic.failure_cell_id);
+        }
         return false;
+    }
     
-    double max_Er = *std::max_element(new_Er.begin(), new_Er.end());
+	    double max_Er = new_Er.empty() ? 0.0 :
+	        *std::max_element(new_Er.begin(), new_Er.end());
 
 #ifdef RICH_MPI
     MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
@@ -255,8 +517,9 @@ bool Diffusion::step(double const tolerance,
         double value;
         int rank;
     };
-    MinErData minErData = {1.0, rank};
-    size_t min_index = -1;
+    MinErData minErData = {
+        std::numeric_limits<double>::infinity(), rank};
+    size_t min_index = max_size_t;
     for(std::size_t i=0; i < N; ++i){
         if(new_Er[i] < 0.0 && std::abs(new_Er[i]) < 1e-9 * max_Er){
             new_Er[i] = std::min(1e-8 * max_Er, CG::radiation_constant * cells[i].temperature * cells[i].temperature * cells[i].temperature * cells[i].temperature);
@@ -273,7 +536,7 @@ bool Diffusion::step(double const tolerance,
 #endif
 
     if(minErData.value < 0) {
-        if(rank == minErData.rank) {
+        if(rank == minErData.rank && min_index < N) {
             std::cout << "Negative Er! Rank: " << minErData.rank << ", Index: " << min_index <<" location "<<tess.GetMeshPoint(min_index)<<" Er value "<<minErData.value<<" cell "<<cells[min_index]<<std::endl;
         }
 
@@ -294,6 +557,7 @@ bool Diffusion::step(double const tolerance,
         return false;
     }
 
+    commitResidualCorrectionAccounting(cg_workspace_.historical_correction);
     return true;
 }
 
@@ -307,7 +571,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
 #endif
     size_t const Nlocal = tess.GetPointNo();
     std::vector<ComputationalCell3D> cells_cgs(cells);
-    for(size_t i = 0; i < Nlocal; ++i)
+    for(size_t i = 0; i < cells_cgs.size(); ++i)
     {
         cells_cgs[i].density *= mass_scale_ / (length_scale_ * length_scale_ * length_scale_);
         cells_cgs[i].Erad *= length_scale_ * length_scale_ / (time_scale_ * time_scale_);
@@ -319,7 +583,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
 	MPI_exchange_data(tess, cells_cgs, true);	
 #endif
     b.resize(Nlocal, 0);
-    x0.resize(Nlocal, 0);
+    x0.resize(individual_context_ == nullptr ? Nlocal : cells_cgs.size(), 0);
     D.resize(Nlocal);
     fleck_factor.resize(Nlocal);
     sigma_planck.resize(Nlocal);
@@ -334,6 +598,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     std::vector<double> new_Er(Nlocal, 0), Er_for_limit(Nlocal, 0);
     for(size_t i = 0; i < Nlocal; ++i)
     {
+        double const dt_cell = individualCellTimeStep(i, dt);
         double const volume = tess.GetVolume(i) * length_scale_ * length_scale_ * length_scale_;
         double const cell_width = std::max(tess.GetWidth(i) * length_scale_, 1e-200);
         bool set_to_zero = false;
@@ -350,7 +615,8 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         sigma_planck[i] = D_coefficient_calcualtor.CalcPlanckOpacity(cells_cgs[i]);
         if(sigma_planck[i] < 0)
             throw UniversalError("Negative sigma_planck");
-        sigma_planck[i] = std::min(sigma_planck[i], max_planck_opacity_factor_ / (CG::speed_of_light * dt * time_scale_)); // avoid too large opacities
+        if(dt_cell > 0)
+            sigma_planck[i] = std::min(sigma_planck[i], max_planck_opacity_factor_ / (CG::speed_of_light * dt_cell * time_scale_)); // avoid too large opacities
         sigma_s[i] = D_coefficient_calcualtor.CalcScatteringOpacity(cells_cgs[i]);
 
         // Optional cooling limiter for under-resolved post-shock cooling layers.
@@ -410,21 +676,31 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         double const energy_ratio = Cv * cells[i].temperature / (cells[i].internal_energy * cells[i].density);
         Cv *= mass_scale_ / (time_scale_ * time_scale_ * length_scale_);
         double const beta = std::max(1.0, 0.5 * energy_ratio) * 4 * CG::radiation_constant * T * T * T / Cv;
-        fleck_factor[i] = compton_on_ ? FleckFactorCompton(dt * time_scale_, beta, sigma_planck[i], sigma_s[i], Er, Cv) : FleckFactor(dt * time_scale_, beta, sigma_planck[i]);
+        fleck_factor[i] = compton_on_ ? FleckFactorCompton(dt_cell * time_scale_, beta, sigma_planck[i], sigma_s[i], Er, Cv) : FleckFactor(dt_cell * time_scale_, beta, sigma_planck[i]);
         if(fleck_factor[i] < 0)
             throw UniversalError("Negative fleck_factor");
         b[i] = volume * Er;
         double const Um = CG::radiation_constant * T * T * T * T;
         if(fleck_factor[i] < 0.8 && Um > Er)
         {
-            double const prefactor = fleck_factor[i] * dt * CG::speed_of_light * sigma_planck[i];
+            double const prefactor = fleck_factor[i] * dt_cell * CG::speed_of_light * sigma_planck[i];
             x0[i] = (Er + prefactor * Um) / (1 + prefactor);
         }
         else
-            x0[i] = std::min(2 * Er, std::max(0.5 * Er, Er + cells_cgs[i].Erad_dt * cells_cgs[i].density * dt * time_scale_  + 0.5 * cells_cgs[i].Erad_dt_dt * cells_cgs[i].density * dt * dt * time_scale_ * time_scale_));//std::max(Er + 0.5 * std::min(fleck_factor[i] * dt * sigma_planck[i] * CG::speed_of_light * time_scale_, 1.0) * (CG::radiation_constant * T * T * T * T - Er), 0.25 * Er);
-        b[i] += volume * fleck_factor[i] * dt * CG::speed_of_light * sigma_planck[i] * T * T * T * T * CG::radiation_constant * time_scale_;
-        Er_for_limit[i] = std::min(Er, std::max(1e-5 * Er, Er + dt * time_scale_ * fleck_factor[i] * sigma_planck[i] * CG::speed_of_light * (CG::radiation_constant * T * T * T * T - Er)));
+            x0[i] = std::min(2 * Er, std::max(0.5 * Er, Er + cells_cgs[i].Erad_dt * cells_cgs[i].density * dt_cell * time_scale_  + 0.5 * cells_cgs[i].Erad_dt_dt * cells_cgs[i].density * dt_cell * dt_cell * time_scale_ * time_scale_));//std::max(Er + 0.5 * std::min(fleck_factor[i] * dt_cell * sigma_planck[i] * CG::speed_of_light * time_scale_, 1.0) * (CG::radiation_constant * T * T * T * T - Er), 0.25 * Er);
+        b[i] += volume * fleck_factor[i] * dt_cell * CG::speed_of_light * sigma_planck[i] * T * T * T * T * CG::radiation_constant * time_scale_;
+        Er_for_limit[i] = std::min(Er, std::max(1e-5 * Er, Er + dt_cell * time_scale_ * fleck_factor[i] * sigma_planck[i] * CG::speed_of_light * (CG::radiation_constant * T * T * T * T - Er)));
     }
+    if(individual_context_ != nullptr)
+        for(size_t i = Nlocal; i < cells_cgs.size(); ++i)
+        {
+            bool set_to_zero = false;
+            for(size_t j = 0; j < Nzero; ++j)
+                if(cells_cgs[i].stickers[zero_indeces[j]])
+                    set_to_zero = true;
+            x0[i] = cells_cgs[i].Erad * cells_cgs[i].density *
+                    (set_to_zero ? zero_value : 1);
+        }
 #ifdef RICH_MPI
     MPI_exchange_data(tess, D, true);
 #endif
@@ -433,10 +709,16 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     for(size_t i = 0; i < Nlocal; ++i)
         max_neigh = std::max(max_neigh, tess.GetCellFaces(i).size());
     ++max_neigh;
-    A.clear();
     A.resize(Nlocal);
-    A_indeces.clear();
     A_indeces.resize(Nlocal);
+    for(size_t row = 0; row < Nlocal; ++row) {
+        A[row].clear();
+        A_indeces[row].clear();
+    }
+    for(size_t i = 0; i < Nlocal; ++i) {
+        A[i].reserve(max_neigh);
+        A_indeces[i].reserve(max_neigh);
+    }
     R2.clear();
     R2.resize(Nlocal, 0);
     conditional_shrink(R2);
@@ -447,14 +729,15 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     // Build the matrix
     for(size_t i = 0; i < Nlocal; ++i)
     {
+        double const dt_cell = individualCellTimeStep(i, dt);
         A_indeces[i].push_back(i);
         double const volume = tess.GetVolume(i) * length_scale_ * length_scale_ * length_scale_;
         double const T = cells_cgs[i].temperature;
-        A[i].push_back(volume * (1 + fleck_factor[i] * dt * CG::speed_of_light * sigma_planck[i] * time_scale_));
+        A[i].push_back(volume * (1 + fleck_factor[i] * dt_cell * CG::speed_of_light * sigma_planck[i] * time_scale_));
         if(compton_on_ && cells[i].tracers[1] > 0.5)
         {
             double const Tr = std::pow(new_Er[i] / CG::radiation_constant, 0.25);
-	        double const pre_factor = fleck_factor[i] * dt * time_scale_ * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light);
+	        double const pre_factor = fleck_factor[i] * dt_cell * time_scale_ * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light);
             double const compton_term = pre_factor * (Tr - T);
             double const theta = (fleck_factor[i] < 0.5 || std::abs(compton_term) > 1e-3) ? 1 : 0.1;
             A[i][0] += pre_factor * (Tr - (1 - theta) * T) * volume;
@@ -462,7 +745,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         }
         if(A[i][0] < 0)
 	        std::cout<<"Negative A in matrix build, density "<<cells_cgs[i].density<<" T "<<cells_cgs[i].temperature<<" fleck "<<fleck_factor[i]<<
-	        " sig_P "<<sigma_planck[i]<<" sig_s "<<sigma_s[i]<<" dt "<<dt * time_scale_<<" Erad "<<cells_cgs[i].Erad * cells_cgs[i].density<<" compton term "<<fleck_factor[i] * dt * time_scale_ * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light)<<std::endl;
+	        " sig_P "<<sigma_planck[i]<<" sig_s "<<sigma_s[i]<<" dt "<<dt_cell * time_scale_<<" Erad "<<cells_cgs[i].Erad * cells_cgs[i].density<<" compton term "<<fleck_factor[i] * dt_cell * time_scale_ * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light)<<std::endl;
     }
 
     std::vector<double> max_R;
@@ -499,6 +782,8 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     std::vector<double> max_neighbor_R(Nlocal, 0);
     for(size_t i = 0; i < Nlocal; ++i)
     {
+        if(!individualCellActive(i))
+            continue;
         double const volume = tess.GetVolume(i) * length_scale_ * length_scale_ * length_scale_;
         faces = tess.GetCellFaces(i);
         tess.GetNeighbors(i, neighbors);
@@ -515,6 +800,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         for(size_t j = 0; j < Nneigh; ++j)
         {
             size_t const neighbor_j = neighbors[j];
+            double const dt_face = individualFaceTimeStep(i, neighbor_j, dt);
             Vector3D r_ij = point - tess.GetMeshPoint(neighbor_j);
             double const r_ij_size = abs(r_ij);
             r_ij *= 1.0 / r_ij_size;
@@ -526,8 +812,15 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
                     if(cells_cgs[neighbor_j].stickers[zero_indeces[k]])
                         set_to_zero = true;
                 Er_j = cells_cgs[neighbor_j].Erad * cells_cgs[neighbor_j].density * (set_to_zero ? zero_value : 1);
-                if(i < neighbor_j)
+                bool const neighbor_active = individualCellActive(neighbor_j);
+                bool const assemble_face = individual_context_ == nullptr
+                    ? i < neighbor_j
+                    : (!neighbor_active || i < neighbor_j);
+                if(assemble_face)
                 {
+                    if(individual_context_ != nullptr && neighbor_j >= max_R.size())
+                        throw std::runtime_error(
+                            "partial radiation mesh is missing an active face neighbor");
                     Vector3D const cm_ij = CM - tess.GetCellCM(neighbor_j);
                     Vector3D const grad_E = cm_ij * (1.0 / (length_scale_ * ScalarProd(cm_ij, cm_ij)));                
                     
@@ -550,28 +843,24 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
                         grad_factor = 0.15 * (max_R[i] + max_R[neighbor_j]) / grad_magnitude;
                     double const flux_limiter = flux_limiter_ ? CalcSingleFluxLimiter(grad_E * ((Er - Er_j) * grad_factor), mid_D, 0.5 * (Er + Er_j)) : 1;
                     mid_D *= flux_limiter;
-                    double const flux = ((self_zero || set_to_zero) ? tess.GetArea(faces[j]) * dt * CG::speed_of_light * 0.5 : ScalarProd(grad_E, r_ij) * tess.GetArea(faces[j]) * dt * mid_D) * length_scale_ * length_scale_ * time_scale_; 
-                    if(neighbor_j < Nlocal)
+                    double const flux = ((self_zero || set_to_zero) ? tess.GetArea(faces[j]) * dt_face * CG::speed_of_light * 0.5 : ScalarProd(grad_E, r_ij) * tess.GetArea(faces[j]) * dt_face * mid_D) * length_scale_ * length_scale_ * time_scale_;
+                    recordIndividualFaceCoefficient(i, neighbor_j, 0, flux);
+                    A[i][0] += flux;
+                    A[i].push_back(-flux);
+                    A_indeces[i].push_back(neighbor_j);
+                    if(neighbor_j < Nlocal &&
+                       (individual_context_ == nullptr || neighbor_active))
                     {
-                        A[i][0] += flux;
-                        A[i].push_back(-flux);
-                        A_indeces[i].push_back(neighbor_j);
                         A[neighbor_j].push_back(-flux);
                         A_indeces[neighbor_j].push_back(i);
                         A[neighbor_j][0] += flux;
-                    }                  
-                    else
-                    {
-                        A[i][0] += flux;
-                        A[i].push_back(-flux);
-                        A_indeces[i].push_back(neighbor_j);
                     }
                 }
             }
             else
             {
-                if(i < neighbor_j)
-                    boundary_calc_.SetBoundaryValues(tess, i, neighbor_j, dt * time_scale_, cells_cgs, tess.GetArea(faces[j]) * length_scale_ * length_scale_, A[i][0], b[i], faces[j]);
+                if(individual_context_ != nullptr || i < neighbor_j)
+                    boundary_calc_.SetBoundaryValues(tess, i, neighbor_j, dt_face * time_scale_, cells_cgs, tess.GetArea(faces[j]) * length_scale_ * length_scale_, A[i][0], b[i], faces[j]);
                 boundary_calc_.GetOutSideValues(tess, cells_cgs, i, neighbor_j, new_Er, Er_j, dummy_v);
             }
             gradE[i] += r_ij * (tess.GetArea(faces[j]) * 0.5 * (Er + Er_j) * length_scale_ * length_scale_);
@@ -579,6 +868,9 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     }
     for(size_t i = 0; i < Nlocal; ++i)
     {
+        if(!individualCellActive(i))
+            continue;
+        double const dt_cell = individualCellTimeStep(i, dt);
         double const volume = tess.GetVolume(i) * length_scale_ * length_scale_* length_scale_;
         gradE[i] *= -1.0 / volume;
         faces = tess.GetCellFaces(i);
@@ -612,6 +904,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         for(size_t j = 0; j < Nneigh; ++j)
         {
             size_t const neighbor_j = neighbors[j];
+            double const dt_face = individualFaceTimeStep(i, neighbor_j, dt);
             if(!tess.IsPointOutsideBox(neighbor_j))
             {
                 Vector3D r_ij = point - tess.GetMeshPoint(neighbor_j);
@@ -634,7 +927,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
                 // cells_cgs[neighbor_j].temperature = T2;
                 // double mid_D = 2 * D1 * D2 / (D1 + D2);
                 double const mid_D = Dcell;
-                double const momentum_relativity_term = -0.5 * dt * flux_limiter * tess.GetArea(faces[j]) * (v_ratio * fleck_factor[i] * 2 * 3 * sigma_planck[i] * mid_D / CG::speed_of_light - 1) * length_scale_ * length_scale_ * time_scale_
+                double const momentum_relativity_term = -0.5 * dt_face * flux_limiter * tess.GetArea(faces[j]) * (v_ratio * fleck_factor[i] * 2 * 3 * sigma_planck[i] * mid_D / CG::speed_of_light - 1) * length_scale_ * length_scale_ * time_scale_
                     * ScalarProd(cells_cgs[i].velocity, r_ij) / 3;
                 A[i][0] += momentum_relativity_term;
                 auto it = std::find(A_indeces[i].begin(), A_indeces[i].end(), neighbor_j);
@@ -646,12 +939,12 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
                 A[i][neigh_counter] += momentum_relativity_term;
             }
             else
-                boundary_calc_.SetMomentumTermBoundary(tess, i, neighbor_j, dt * time_scale_, cells_cgs[i],
+                boundary_calc_.SetMomentumTermBoundary(tess, i, neighbor_j, dt_face * time_scale_, cells_cgs[i],
                     tess.GetArea(faces[j]) * length_scale_ * length_scale_, A[i][0], b[i], faces[j], fleck_factor[i],
                     flux_limiter, Dcell, sigma_planck[i]);
         }
         R2[i] = flux_limiter_ ? flux_limiter / 3 + boost::math::pow<2>(flux_limiter * abs(gradE[i]) * Dcell / (CG::speed_of_light * Er)) : 1.0 / 3.0;
-        A[i][0] -= volume * fleck_factor[i] * dt * 0.5 * (3 - R2[i]) * sigma_planck[i] * std::min(0.01 * CG::speed_of_light * CG::speed_of_light, ScalarProd(cells_cgs[i].velocity, cells_cgs[i].velocity)) * time_scale_ / CG::speed_of_light;
+        A[i][0] -= volume * fleck_factor[i] * dt_cell * 0.5 * (3 - R2[i]) * sigma_planck[i] * std::min(0.01 * CG::speed_of_light * CG::speed_of_light, ScalarProd(cells_cgs[i].velocity, cells_cgs[i].velocity)) * time_scale_ / CG::speed_of_light;
     }
     for(size_t i = 0; i < Nlocal; ++i)
     {
@@ -659,7 +952,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         A_indeces[i].resize(max_neigh, max_size_t);
 	if(A[i][0] < 0)
 	  std::cout<<"Negative A in matrix build, density "<<cells_cgs[i].density<<" T "<<cells_cgs[i].temperature<<" fleck "<<fleck_factor[i]<<
-	    " sig_P "<<sigma_planck[i]<<" dt "<<dt * time_scale_<<" Erad "<<cells_cgs[i].Erad * cells_cgs[i].density<<std::endl;
+	  " sig_P "<<sigma_planck[i]<<" dt "<<individualCellTimeStep(i, dt) * time_scale_<<" Erad "<<cells_cgs[i].Erad * cells_cgs[i].density<<std::endl;
     }
 }
 
@@ -692,23 +985,26 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
     old_T.resize(N, 0);
     for(size_t i = 0; i < N; ++i)
     {
+        if(!individualCellActive(i))
+            continue;
+        double const dt_cell = individualCellTimeStep(i, dt);
         double const old_e_therm = extensives[i].internal_energy;
         double const volume = tess.GetVolume(i) * length_scale_ * length_scale_* length_scale_;
         extensives[i].Erad = CG_result[i] * volume * time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
         double const T = cells[i].temperature;
         old_T[i] = T;
-        double dE = fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * (full_CG_result[i] - T * T * T * T * CG::radiation_constant
+        double dE = fleck_factor[i] * CG::speed_of_light * dt_cell * sigma_planck[i] * (full_CG_result[i] - T * T * T * T * CG::radiation_constant
             -0.5 * (3 - R2[i]) * std::min(max_v * max_v, ScalarProd(cells[i].velocity, cells[i].velocity)) * full_CG_result[i] * length_scale_ * length_scale_ / (CG::speed_of_light * CG::speed_of_light * time_scale_ * time_scale_)) * volume * time_scale_;
 	    double old_Tr = 0;
         double compton_term = 0;
-        double e_absorb = fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * full_CG_result[i] * volume * time_scale_;
-        double e_emitt = -fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * T * T * T * T * CG::radiation_constant * volume * time_scale_;
-        double e_v2 =  fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * (-0.5 * (3 - R2[i]) * std::min(max_v * max_v, ScalarProd(cells[i].velocity, cells[i].velocity)) * full_CG_result[i] * length_scale_ * length_scale_ / (CG::speed_of_light * CG::speed_of_light * time_scale_ * time_scale_)) * volume * time_scale_;
+        double e_absorb = fleck_factor[i] * CG::speed_of_light * dt_cell * sigma_planck[i] * full_CG_result[i] * volume * time_scale_;
+        double e_emitt = -fleck_factor[i] * CG::speed_of_light * dt_cell * sigma_planck[i] * T * T * T * T * CG::radiation_constant * volume * time_scale_;
+        double e_v2 =  fleck_factor[i] * CG::speed_of_light * dt_cell * sigma_planck[i] * (-0.5 * (3 - R2[i]) * std::min(max_v * max_v, ScalarProd(cells[i].velocity, cells[i].velocity)) * full_CG_result[i] * length_scale_ * length_scale_ / (CG::speed_of_light * CG::speed_of_light * time_scale_ * time_scale_)) * volume * time_scale_;
         if(compton_on_)
         {
             double const old_Er = cells[i].Erad * cells[i].density * mass_scale_ / (time_scale_ * time_scale_ * length_scale_);
             old_Tr = std::pow(old_Er / CG::radiation_constant, 0.25);
-	        double const pre_factor = fleck_factor[i] * dt * time_scale_ * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light);
+            double const pre_factor = fleck_factor[i] * dt_cell * time_scale_ * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light);
             compton_term = pre_factor * (old_Tr - T);
             double const theta = (fleck_factor[i] < 0.5 || std::abs(compton_term) > 1e-3) ? 1 : 0.1;
             compton_term = pre_factor * volume * (full_CG_result[i] * (old_Tr - T * (1 - theta)) - T * theta * old_Er);
@@ -732,12 +1028,12 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
                 extensives[i].mass<<" dE "<<dE<<" R2 "<<R2[i]<<" old_e_therm "<<old_e_therm<<std::endl;
             std::cout<<cells[i]<<std::endl;
             std::cout<<extensives[i]<<std::endl;
-             std::cout<<"max emitt "<<fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * T * T * T * T * CG::radiation_constant
+            std::cout<<"max emitt "<<fleck_factor[i] * CG::speed_of_light * dt_cell * sigma_planck[i] * T * T * T * T * CG::radiation_constant
              * volume * time_scale_ * time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_)<<" full_CG_result "<<full_CG_result[i]<<std::endl;
-             std::cout<<"relativity "<<fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i]
+            std::cout<<"relativity "<<fleck_factor[i] * CG::speed_of_light * dt_cell * sigma_planck[i]
              *0.5 * (3 - R2[i]) * ScalarProd(cells[i].velocity, cells[i].velocity) * full_CG_result[i] * length_scale_ * length_scale_ / (CG::speed_of_light * CG::speed_of_light * time_scale_ * time_scale_) * volume * time_scale_* time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_)<<std::endl;
              std::cout<<" fleck "<<fleck_factor[i]<<" sigma_planck "<<sigma_planck[i]<<
-                " other dE "<<fleck_factor[i] * CG::speed_of_light * dt * sigma_planck[i] * (full_CG_result[i] - T * T * T * T * CG::radiation_constant
+                " other dE "<<fleck_factor[i] * CG::speed_of_light * dt_cell * sigma_planck[i] * (full_CG_result[i] - T * T * T * T * CG::radiation_constant
             -0.5 * (3 - R2[i]) * ScalarProd(cells[i].velocity, cells[i].velocity) * full_CG_result[i] * length_scale_ * length_scale_ / (CG::speed_of_light * CG::speed_of_light * time_scale_ * time_scale_)) * volume * time_scale_
              * time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_)<<" density "<<cells[i].density<<
              " compton_term "<<compton_term<<" old_Tr "<<old_Tr<<std::endl;
@@ -784,7 +1080,7 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
   
 
             gradE += (0.5 * tess.GetArea(faces[j]) * (Er_j + full_CG_result[i])) * r_ij * length_scale_ * length_scale_;
-            double const momentum_term = (0.5 * dt * cell_flux_limiter[i] * tess.GetArea(faces[j]) * ScalarProd(cells[i].velocity, r_ij) * (Er_j + full_CG_result[i]) / 3) * (time_scale_ * time_scale_ * length_scale_ / mass_scale_);
+            double const momentum_term = (0.5 * dt_cell * cell_flux_limiter[i] * tess.GetArea(faces[j]) * ScalarProd(cells[i].velocity, r_ij) * (Er_j + full_CG_result[i]) / 3) * (time_scale_ * time_scale_ * length_scale_ / mass_scale_);
             double const relativity_term = -v_ratio * momentum_term * 2 * 3 * sigma_planck[i] * Dcell / CG::speed_of_light;
             extensives[i].energy += /*momentum_term + */fleck_factor[i] * relativity_term;
             extensives[i].internal_energy += fleck_factor[i] * relativity_term;
@@ -795,7 +1091,7 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         if(hydro_on_)
         {
             double const old_Ek = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass;
-            dP = (cell_flux_limiter[i] * dt * time_scale_ / 3) * gradE * (time_scale_ / (length_scale_ * mass_scale_));
+            dP = (cell_flux_limiter[i] * dt_cell * time_scale_ / 3) * gradE * (time_scale_ / (length_scale_ * mass_scale_));
             Erad_dE = ScalarProd(dP, extensives[i].momentum) / extensives[i].mass;
             extensives[i].momentum += dP;
             double const new_Ek = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass;
@@ -831,7 +1127,7 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
                 double const flux_limiter_face = flux_limiter_ ? CalcSingleFluxLimiter(grad_E * (CG_result[i] - Er_j), mid_D, 0.5 * (CG_result[i] + Er_j)) : 1;
                 double const max_local_v = std::min(max_v, std::max(-max_v, ScalarProd(cells[i].velocity, r_ij)));
                 double const v_ratio = max_local_v / ScalarProd(cells[i].velocity, r_ij);
-                double const momentum_term = (0.5 * dt * cell_flux_limiter[i] * tess.GetArea(faces[j]) * ScalarProd(cells[i].velocity, r_ij) * (Er_j + full_CG_result[i]) / 3) * (time_scale_ * time_scale_ * length_scale_ / mass_scale_);
+                double const momentum_term = (0.5 * dt_cell * cell_flux_limiter[i] * tess.GetArea(faces[j]) * ScalarProd(cells[i].velocity, r_ij) * (Er_j + full_CG_result[i]) / 3) * (time_scale_ * time_scale_ * length_scale_ / mass_scale_);
                 double const relativity_term = -v_ratio * fleck_factor[i] * momentum_term * 2 * 3 * sigma_planck[i] * Dcell / CG::speed_of_light;
                 std::cout<<"relativity_term "<<relativity_term<<" flux_limiter_face "<<flux_limiter_face<<" Er_j "<<Er_j<<" Er_j_init "<<cells[neighbor_j].density * 
                     cells[neighbor_j].Erad* mass_scale_ / (time_scale_ * time_scale_ * length_scale_)<<" ID "<<cells[neighbor_j].ID<<" v_ratio "<<v_ratio<<" Area "<<tess.GetArea(faces[j])<<std::endl;
@@ -862,10 +1158,10 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         }
 
         double const old_Edot = cells[i].Erad_dt;
-        cells[i].Erad_dt = (extensives[i].Erad / extensives[i].mass - cells[i].Erad) / dt;
-        cells[i].Erad_dt_dt = (cells[i].Erad_dt - old_Edot) / dt;
+        cells[i].Erad_dt = (extensives[i].Erad / extensives[i].mass - cells[i].Erad) / dt_cell;
+        cells[i].Erad_dt_dt = (cells[i].Erad_dt - old_Edot) / dt_cell;
         if(!std::isfinite(cells[i].Erad_dt) || !std::isfinite(cells[i].Erad_dt))
-            std::cout<<"Bad Edot "<<cells[i].Erad_dt<<" edot_dt_dt "<<cells[i].Erad_dt_dt<<" i "<<i<<" ID "<<cells[i].ID<<" dt "<<dt<<" Erad "<<extensives[i].Erad<<" m "<<extensives[i].mass<<" old_Edot "<<old_Edot<<std::endl;
+            std::cout<<"Bad Edot "<<cells[i].Erad_dt<<" edot_dt_dt "<<cells[i].Erad_dt_dt<<" i "<<i<<" ID "<<cells[i].ID<<" dt "<<dt_cell<<" Erad "<<extensives[i].Erad<<" m "<<extensives[i].mass<<" old_Edot "<<old_Edot<<std::endl;
         cells[i].Erad = extensives[i].Erad / extensives[i].mass;
         cells[i].internal_energy = extensives[i].internal_energy / extensives[i].mass;
         try

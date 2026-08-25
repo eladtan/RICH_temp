@@ -98,6 +98,8 @@ public:
 
     T gravity(const T &point, const direction_t *directions = nullptr) const;
 
+    void addExternalValue(const MassedValue<T> &value);
+
     void addExternalValues(const std::vector<MassedValue<T>> &values);
 
     template<typename U>
@@ -135,25 +137,29 @@ bool GravityTree<T>::build(const std::vector<MassedPoint<T>> &points)
 }
 
 template<typename T>
+void GravityTree<T>::addExternalValue(const MassedValue<T> &value)
+{
+    MassedValue<T> correctedValue;
+    correctedValue.value = value.CM;
+    correctedValue.CM = value.CM;
+    correctedValue.mass = value.mass;
+    for(int i = 0; i < 6; i++)
+    {
+        correctedValue.Q[i] = value.Q[i];
+    }
+    if(!this->octTree->insert(correctedValue))
+    {
+        UniversalError eo("Could not add a point to the gravity tree");
+        eo.addEntry("Point", correctedValue);
+        throw eo;
+    }
+}
+
+template<typename T>
 void GravityTree<T>::addExternalValues(const std::vector<MassedValue<T>> &values)
 {
     for(const MassedValue<T> &value : values)
-    {
-        MassedValue<T> correctedValue;
-        correctedValue.value = value.CM;
-        correctedValue.CM = value.CM;
-        correctedValue.mass = value.mass;
-        for(int i = 0; i < 6; i++)
-        {
-            correctedValue.Q[i] = value.Q[i];
-        }
-        if(!this->octTree->insert(correctedValue))
-        {
-            UniversalError eo("Could not add a point to the gravity tree");
-            eo.addEntry("Point", correctedValue);
-            throw eo;
-        }
-    }
+        this->addExternalValue(value);
 }
 
 template<typename T>

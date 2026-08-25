@@ -89,7 +89,7 @@
     },
     "cmake.configureOnOpen": true,
     "git.autoRepositoryDetection": "subFolders",
-    "git.repositoryScanMaxDepth": 4,
+    "git.repositoryScanMaxDepth": 5,
     // maor:
     "git.autofetch": true,
     "[python]": {

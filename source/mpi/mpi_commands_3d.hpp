@@ -20,6 +20,7 @@ inline void compact_to_indices_exact_order(std::vector<T>& data,
         tmp.push_back(std::move(data[idx]));
     data.swap(tmp);
 }
+
 } // namespace rich_mpi_3d_detail
 #include "misc/memory_profile.hpp"
 

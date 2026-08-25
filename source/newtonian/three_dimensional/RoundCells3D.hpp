@@ -36,7 +36,18 @@ public:
 
 	void ApplyFix(Tessellation3D const& tess, vector<ComputationalCell3D> const& cells, double time,
 		double dt, vector<Vector3D> &velocities)const override;
+
+	void ApplyFixIndividual(Tessellation3D const& tess,
+		vector<ComputationalCell3D> const& cells,
+		vector<ComputationalCell3D> const& all_cells, double time, double dt,
+		vector<Vector3D>& velocities,
+		vector<Vector3D>& all_velocities) const override;
 private:
+	void ApplyFixImpl(Tessellation3D const& tess,
+		vector<ComputationalCell3D> const& cells,
+		vector<ComputationalCell3D> const* all_cells, double time, double dt,
+		vector<Vector3D>& velocities,
+		vector<Vector3D>* all_velocities) const;
 
 	void calc_dw(Vector3D &velocty, size_t i, const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
 		const vector<Vector3D> & velocities, vector<char> const& nomove) const;

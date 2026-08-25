@@ -11,6 +11,7 @@ RICH is a compressible hydrodynamic simulation code on a 3D moving Voronoi mesh,
 | [Running Simulations](running-simulations.md) | Serial, MPI, and SLURM execution |
 | **User Guide** | |
 | [Simulation Setup](user-guide/simulation-setup.md) | How to write `main.cpp` for a new problem |
+| [Individual Timesteps](user-guide/individual-timesteps.md) | Power-of-two scheduling, partial meshes, local diffusion, MPI, tests, and benchmarks |
 | [Output and Visualization](user-guide/output-and-visualization.md) | HDF5 snapshots, VTK, Python post-processing |
 | [Equations of State](user-guide/equations-of-state.md) | IdealGas, Tillotson, OndrejEOS, MixedEOS |
 | [Radiation Transport](user-guide/radiation.md) | Grey diffusion, multigroup, Compton/CMMC |

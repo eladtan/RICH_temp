@@ -2,6 +2,7 @@
 #include "misc/simple_io.hpp"
 
 #include <cmath>
+#include <cstring>
 #include <limits>
 
 double interpolateTable(double const T,
@@ -214,6 +215,78 @@ double FreeFreeAbsorptionOpacityMultigroup::CalcAbsorptionOpacity(ComputationalC
 
 double FreeFreeAbsorptionOpacityMultigroup::CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const {
     return 0.0;
+}
+
+bool FreeFreeAbsorptionOpacityMultigroup::SupportsProductionPair16() const noexcept {
+    return Z == 1.0 && !include_plasma_cutoff_ &&
+        use_free_free_cgs_formula_;
+}
+
+bool FreeFreeAbsorptionOpacityMultigroup::CalcProductionDiffusionCoefficientPair16(
+    ComputationalCell3D const& first,
+    ComputationalCell3D const& second,
+    std::array<double, 16> const& group_energies,
+    std::array<double, 16>& first_coefficients,
+    std::array<double, 16>& second_coefficients) const {
+    if(!SupportsProductionPair16())
+        return false;
+    if(std::memcmp(&first.temperature, &second.temperature,
+                   sizeof(double)) != 0)
+        return false;
+
+    double const m_p = 1.6726231e-24;
+    double const temperature = first.temperature;
+    double const kT = kB*temperature;
+    double const first_n_i = first.density/m_p;
+    double const first_n_e = Z*first_n_i;
+    double const second_n_i = second.density/m_p;
+    double const second_n_e = Z*second_n_i;
+    double const temperature_power = std::pow(temperature, 1.5);
+    double const sqrt_temperature = std::sqrt(temperature);
+    double constexpr max_diffusion_coefficient = 1e100;
+    double const min_transport_opacity =
+        CG::speed_of_light / (3.0 * max_diffusion_coefficient);
+
+    for(std::size_t group = 0; group < 16; ++group) {
+        double const energy = group_energies[group];
+        double const nu_g = energy/h;
+        double const e = energy;
+        double g_ff = std::max(
+            1.0,
+            std::log(std::exp(5.960) * temperature_power / (nu_g * Z)));
+        double plasma_cutoff_factor = 1.0;
+        double const stimulated_factor = 1.-std::exp(-e/kT);
+        double const nu_inverse_cube = std::pow(nu_g, -3);
+
+        double const first_absorption_opacity =
+            3.7e8*Z*Z*first_n_e*first_n_i/sqrt_temperature*
+            stimulated_factor*nu_inverse_cube;
+        double const first_absorption_result =
+            g_ff * first_absorption_opacity * plasma_cutoff_factor;
+        double const first_total_opacity = first_absorption_result + 0.0;
+        if (!std::isfinite(first_total_opacity) ||
+            first_total_opacity <= 0.0 ||
+            first_total_opacity < min_transport_opacity)
+            first_coefficients[group] = max_diffusion_coefficient;
+        else
+            first_coefficients[group] =
+                CG::speed_of_light / (3.0 * first_total_opacity);
+
+        double const second_absorption_opacity =
+            3.7e8*Z*Z*second_n_e*second_n_i/sqrt_temperature*
+            stimulated_factor*nu_inverse_cube;
+        double const second_absorption_result =
+            g_ff * second_absorption_opacity * plasma_cutoff_factor;
+        double const second_total_opacity = second_absorption_result + 0.0;
+        if (!std::isfinite(second_total_opacity) ||
+            second_total_opacity <= 0.0 ||
+            second_total_opacity < min_transport_opacity)
+            second_coefficients[group] = max_diffusion_coefficient;
+        else
+            second_coefficients[group] =
+                CG::speed_of_light / (3.0 * second_total_opacity);
+    }
+    return true;
 }
 
 ZeroAbsorptionZeroDiffusionMultigroup::ZeroAbsorptionZeroDiffusionMultigroup(

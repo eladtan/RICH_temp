@@ -22,6 +22,26 @@ public:
 
 	double SuggestInverseTimeStep(void)const override;
 
+	bool SupportsIndividualTimeSteps(void) const override;
+
+	void ApplyIndividual(const Tessellation3D& tess,
+		const vector<ComputationalCell3D>& cells,
+		const vector<Conserved3D>& fluxes,
+		const vector<Vector3D>& point_velocities,
+		double time,
+		const IndividualStepContext& context,
+		IndividualSourcePhase phase,
+		vector<Conserved3D>& extensives) const override;
+
+	void SuggestIndividualTimeSteps(const Tessellation3D& tess,
+		const vector<ComputationalCell3D>& cells,
+		const IndividualStepContext& context,
+		vector<double>& time_step_limits) const override;
+
+	bool SupportsPartialMesh(void) const override;
+
+	bool UsesIndividualAccelerationCache(void) const override;
+
 private:
 	vector<std::shared_ptr<SourceTerm3D>> sources_;
 };

@@ -11,18 +11,23 @@
 
 namespace PhysicsStepIO
 {
-    inline std::map<std::string, std::unique_ptr<PhysicsStepIOHandler>> registry;
+    inline std::map<std::string, std::unique_ptr<PhysicsStepIOHandler>>& registry()
+    {
+        static std::map<std::string, std::unique_ptr<PhysicsStepIOHandler>> value;
+        return value;
+    }
 
     inline void registerHandler(const std::string &name, std::unique_ptr<PhysicsStepIOHandler> handler)
     {
-        registry[name] = std::move(handler);
+        registry()[name] = std::move(handler);
     }
 
     inline void writeStep(HDF5Writer &writer, const std::string &prefix, const PhysicsStep &step)
     {
         const std::string name = step.getName();
-        auto it = registry.find(name);
-        if(it == registry.end())
+        auto& handlers = registry();
+        auto it = handlers.find(name);
+        if(it == handlers.end())
         {
             throw UniversalError("PhysicsStepIO::writeStep: no handler for step \"" + name + "\"");
         }
@@ -37,8 +42,9 @@ namespace PhysicsStepIO
         {
             return;
         }
-        auto it = registry.find(name);
-        if(it == registry.end())
+        auto& handlers = registry();
+        auto it = handlers.find(name);
+        if(it == handlers.end())
         {
             throw UniversalError("PhysicsStepIO::readStep: no handler for step \"" + name + "\"");
         }

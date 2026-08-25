@@ -1760,6 +1760,8 @@ check_fmm_gravity_serial_case() {
     local p2p_pairs
     local order2_scaled_error
     local order6_scaled_error
+    local individual_target_evaluation
+    local individual_conservative_force
     local pass_flag
 
     if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
@@ -1777,9 +1779,11 @@ check_fmm_gravity_serial_case() {
     p2p_pairs=$(awk '$1 == "p2p_pairs" { print $2 }' "$metrics_file")
     order2_scaled_error=$(awk '$1 == "order2_scaled_error" { print $2 }' "$metrics_file")
     order6_scaled_error=$(awk '$1 == "order6_scaled_error" { print $2 }' "$metrics_file")
+    individual_target_evaluation=$(awk '$1 == "individual_target_evaluation" { print $2 }' "$metrics_file")
+    individual_conservative_force=$(awk '$1 == "individual_conservative_force" { print $2 }' "$metrics_file")
     pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
 
-    if [[ -z "$max_scaled_error" || -z "$max_relative_potential_error" || -z "$m2l_count" || -z "$p2p_pairs" || -z "$order2_scaled_error" || -z "$order6_scaled_error" || -z "$pass_flag" ]]; then
+    if [[ -z "$max_scaled_error" || -z "$max_relative_potential_error" || -z "$m2l_count" || -z "$p2p_pairs" || -z "$order2_scaled_error" || -z "$order6_scaled_error" || -z "$individual_target_evaluation" || -z "$individual_conservative_force" || -z "$pass_flag" ]]; then
         set_check_msg "failed to parse fmm gravity serial metrics"
         return 1
     fi
@@ -1807,6 +1811,14 @@ check_fmm_gravity_serial_case() {
     fi
     if ! awk -v low="$order2_scaled_error" -v high="$order6_scaled_error" 'BEGIN { exit !(high < low) }'; then
         set_check_msg "fmm gravity serial order convergence failed (p2=${order2_scaled_error}, p6=${order6_scaled_error})"
+        return 1
+    fi
+    if [[ "$individual_target_evaluation" != "1" ]]; then
+        set_check_msg "fmm gravity serial individual-target evaluation failed"
+        return 1
+    fi
+    if [[ "$individual_conservative_force" != "1" ]]; then
+        set_check_msg "fmm gravity serial individual conservative-force KDK integration failed"
         return 1
     fi
     if [[ "$pass_flag" != "1" ]]; then
@@ -1895,6 +1907,7 @@ check_fmm_gravity_mpi_case() {
     local root_storage_reset
     local count_only_topology_reused
     local count_only_local_plan_reused
+    local individual_target_evaluation
     local pass_flag
 
     if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
@@ -1932,6 +1945,7 @@ check_fmm_gravity_mpi_case() {
     root_storage_reset=$(awk '$1 == "root_storage_reset" { print $2 }' "$metrics_file")
     count_only_topology_reused=$(awk '$1 == "count_only_topology_reused" { print $2 }' "$metrics_file")
     count_only_local_plan_reused=$(awk '$1 == "count_only_local_plan_reused" { print $2 }' "$metrics_file")
+    individual_target_evaluation=$(awk '$1 == "individual_target_evaluation" { print $2 }' "$metrics_file")
     pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
 
     if [[ -z "$ranks" || -z "$max_scaled_error" || -z "$first_epoch" ||
@@ -1949,9 +1963,10 @@ check_fmm_gravity_mpi_case() {
           -z "$root_process_rebuild" ||
           -z "$count_only_topology_reused" ||
           -z "$count_only_local_plan_reused" ||
-          -z "$leaf_storage_reused" || -z "$root_storage_reset" ||
-          -z "$finite_stats" || -z "$mismatched_domain_rejected" ||
-          -z "$pass_flag" ]]; then
+           -z "$leaf_storage_reused" || -z "$root_storage_reset" ||
+           -z "$finite_stats" || -z "$mismatched_domain_rejected" ||
+           -z "$individual_target_evaluation" ||
+           -z "$pass_flag" ]]; then
         set_check_msg "failed to parse distributed FMM gravity metrics"
         return 1
     fi
@@ -2034,6 +2049,10 @@ check_fmm_gravity_mpi_case() {
     fi
     if [[ "$mismatched_domain_rejected" != "1" ]]; then
         set_check_msg "distributed FMM did not collectively reject mismatched domains"
+        return 1
+    fi
+    if [[ "$individual_target_evaluation" != "1" ]]; then
+        set_check_msg "distributed FMM individual-target evaluation failed"
         return 1
     fi
     if [[ "$pass_flag" != "1" ]]; then

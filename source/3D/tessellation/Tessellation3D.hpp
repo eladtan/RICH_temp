@@ -9,6 +9,7 @@
 #include <cassert>
 #include <chrono>
 #include <algorithm>
+#include <limits>
 #include <numeric>
 #include <vector>
 #include <boost/container/small_vector.hpp>
@@ -191,6 +192,13 @@ public:
 
   virtual const Tessellation3D::AllPointsMap &GetIndicesInAllPoints(void) const = 0;
 
+  /*! \brief Convert an index in getAllPoints() to the corresponding index in
+    the point vector supplied to Build*.
+    \param allPointIndex Index in getAllPoints()
+    \return Index in the Build* input vector
+   */
+  virtual size_t GetInputIndexForAllPoint(size_t allPointIndex) const = 0;
+
   /*! \brief Returns all the points, even those which are not participating in the build
     \return List of all the points
   */
@@ -280,6 +288,16 @@ public:
       \return The sent points, outer vector is the index of the cpu and inner vector are the points sent through the face
     */
     virtual vector<vector<size_t> >const& GetDuplicatedPoints(void)const = 0;
+
+    /*!
+      \brief Returns sent generators in getAllPoints() index space
+      \return Sent points, including non-target geometric supports
+
+      MadVoro's range finder is built over getAllPoints(), so these indices
+      are not compact Voronoi-cell or Delaunay-point indices.
+    */
+    virtual vector<vector<size_t> > const&
+      GetDuplicatedAllPointIndices(void) const = 0;
 
     /*!
       \brief Returns the indeces of the points that were sent to other processors as ghost points
@@ -494,13 +512,57 @@ inline void Tessellation3D::SyncPartialBuildData(std::vector<T> &partialBuildDat
     throw eo;
   }
   const Tessellation3D::AllPointsMap &indicesInAllMyPoints = this->GetIndicesInAllPoints();
+  if(indicesInAllMyPoints.size() < Norg)
+  {
+    UniversalError eo("Tessellation3D::SyncPartialBuildData: local-to-global map is incomplete");
+    eo.addEntry("Map size", indicesInAllMyPoints.size());
+    eo.addEntry("Number of points", Norg);
+    throw eo;
+  }
   
-  allBuildData.resize(this->GetAllPointsNo());
+  // allBuildData is keyed by the original Build* input.  A partial MPI build
+  // may contain far fewer compact MadVoro points, so never contract this
+  // canonical array to GetAllPointsNo().  Optional predictor arrays may be
+  // empty; default-initialize only enough canonical entries to cover every
+  // owned point represented by this mesh.
+  size_t requiredCanonicalSize = 0;
+  for(auto const& mapping : indicesInAllMyPoints)
+  {
+    if(mapping.second == std::numeric_limits<size_t>::max())
+      throw UniversalError(
+        "Tessellation3D::SyncPartialBuildData: canonical map index overflow");
+    requiredCanonicalSize = std::max(requiredCanonicalSize,
+                                     mapping.second + 1);
+  }
+  for(size_t allPointIndex = 0; allPointIndex < this->GetAllPointsNo();
+      ++allPointIndex)
+  {
+    const size_t canonicalIndex =
+      this->GetInputIndexForAllPoint(allPointIndex);
+    if(canonicalIndex == std::numeric_limits<size_t>::max())
+      throw UniversalError(
+        "Tessellation3D::SyncPartialBuildData: all-point canonical index overflow");
+    requiredCanonicalSize = std::max(requiredCanonicalSize,
+                                     canonicalIndex + 1);
+  }
+  if(allBuildData.empty())
+    allBuildData.resize(requiredCanonicalSize);
 
-  // update CMs of active local points in all points CM vector
+  // Update active local points in the canonical all-points vector.
   for(size_t i = 0; i < Norg; i++)
   {
-      size_t pointIdx = indicesInAllMyPoints.at(i);
+      auto const map_it = indicesInAllMyPoints.find(i);
+      if(map_it == indicesInAllMyPoints.end() || map_it->second >= allBuildData.size())
+      {
+        UniversalError eo("Tessellation3D::SyncPartialBuildData: invalid local-to-global map entry");
+        eo.addEntry("Local index", i);
+        eo.addEntry("Map entry present", map_it != indicesInAllMyPoints.end());
+        if(map_it != indicesInAllMyPoints.end())
+          eo.addEntry("Mapped index", map_it->second);
+        eo.addEntry("All data size", allBuildData.size());
+        throw eo;
+      }
+      size_t pointIdx = map_it->second;
       allBuildData[pointIdx] = partialBuildData[i];
   }
 
@@ -514,6 +576,13 @@ inline void Tessellation3D::SyncPartialBuildData(std::vector<T> &partialBuildDat
       if(pointIsMine)
       {
           size_t pointIdx = indicesInAllMyPoints.at(i);
+          if(pointIdx >= allBuildData.size())
+          {
+            UniversalError eo("Tessellation3D::SyncPartialBuildData: mapped index exceeds all data");
+            eo.addEntry("Local index", i);
+            eo.addEntry("Mapped index", pointIdx);
+            throw eo;
+          }
           partialBuildData[i] = allBuildData[pointIdx];
       }
   }
@@ -526,7 +595,49 @@ inline void Tessellation3D::SyncPartialBuildData(std::vector<T> &partialBuildDat
       // MPI_Exchanger exchanger(this->GetDuplicatedProcs());
       // std::vector<std::vector<T>> incoming = exchanger.exchange_indices_seperated<T, size_t>(allBuildData, this->GetDuplicatedProcs(), this->GetDuplicatedPoints());
       const std::vector<int> &dupProcs = this->GetDuplicatedProcs();
-      std::vector<std::vector<T>> incoming = MPI_exchange_data_indexed(dupProcs, allBuildData, this->GetDuplicatedPoints());
+      const std::vector<std::vector<size_t>> &duplicatedAllPoints =
+        this->GetDuplicatedAllPointIndices();
+      std::vector<std::vector<size_t>> duplicatedCanonical(
+        duplicatedAllPoints.size());
+      bool duplicateMappingValid =
+        duplicatedAllPoints.size() == dupProcs.size();
+      size_t invalidDuplicatedAllPoint = std::numeric_limits<size_t>::max();
+      for(size_t peer = 0; peer < duplicatedAllPoints.size(); ++peer)
+      {
+        duplicatedCanonical[peer].reserve(duplicatedAllPoints[peer].size());
+        for(size_t allPointIndex : duplicatedAllPoints[peer])
+        {
+          if(allPointIndex >= this->GetAllPointsNo())
+          {
+            duplicateMappingValid = false;
+            invalidDuplicatedAllPoint = allPointIndex;
+            continue;
+          }
+          const size_t canonicalIndex =
+            this->GetInputIndexForAllPoint(allPointIndex);
+          if(canonicalIndex >= allBuildData.size())
+          {
+            duplicateMappingValid = false;
+            invalidDuplicatedAllPoint = allPointIndex;
+            continue;
+          }
+          duplicatedCanonical[peer].push_back(canonicalIndex);
+        }
+      }
+      int duplicateMappingValidInt = duplicateMappingValid ? 1 : 0;
+      MPI_Allreduce(MPI_IN_PLACE, &duplicateMappingValidInt, 1, MPI_INT,
+                    MPI_MIN, MPI_COMM_WORLD);
+      if(duplicateMappingValidInt == 0)
+      {
+        UniversalError eo(
+          "Tessellation3D::SyncPartialBuildData: invalid duplicated-point canonical mapping on at least one rank");
+        if(!duplicateMappingValid)
+          eo.addEntry("Invalid duplicated all-point index",
+                      invalidDuplicatedAllPoint);
+        throw eo;
+      }
+      std::vector<std::vector<T>> incoming = MPI_exchange_data_indexed(
+        dupProcs, allBuildData, duplicatedCanonical);
       size_t incomingSize = incoming.size();
       const std::vector<std::vector<size_t>> &Nghost = this->GetGhostIndeces();
       assert(dupProcs.size() == Nghost.size());

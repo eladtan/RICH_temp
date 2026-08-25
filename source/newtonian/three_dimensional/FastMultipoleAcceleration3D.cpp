@@ -3,15 +3,47 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <unordered_map>
 
 #include "misc/memory_profile.hpp"
 #include "misc/universal_error.hpp"
 
 namespace
 {
+struct PositionKey
+{
+    double x;
+    double y;
+    double z;
+
+    bool operator==(PositionKey const& other) const
+    {
+        return x == other.x && y == other.y && z == other.z;
+    }
+};
+
+struct PositionKeyHash
+{
+    std::size_t operator()(PositionKey const& position) const
+    {
+        std::size_t value = std::hash<double>()(position.x);
+        value ^= std::hash<double>()(position.y) +
+            static_cast<std::size_t>(0x9e3779b9) + (value << 6) + (value >> 2);
+        value ^= std::hash<double>()(position.z) +
+            static_cast<std::size_t>(0x9e3779b9) + (value << 6) + (value >> 2);
+        return value;
+    }
+};
+
+PositionKey positionKey(Vector3D const& position)
+{
+    return PositionKey{position.x, position.y, position.z};
+}
+
 FmmGravityOptions validateAccelerationOptions(FmmGravityOptions options)
 {
 #ifdef RICH_MPI
@@ -494,6 +526,15 @@ void FastMultipoleAcceleration3D::operator()(const Tessellation3D& tess,
 #endif
     traceFmmSolve(calculator_.stats(), traceEnabled_);
 
+#ifdef RICH_MPI
+    requireOnEveryRank(acc.size() == N,
+        "FastMultipoleAcceleration3D: FMM returned the wrong cell count");
+#else
+    if(acc.size() != N)
+        throw UniversalError(
+            "FastMultipoleAcceleration3D: FMM returned the wrong cell count");
+#endif
+
     bool finiteAcceleration = true;
 #ifndef RICH_MPI
     std::size_t firstInvalid = 0;
@@ -522,6 +563,115 @@ void FastMultipoleAcceleration3D::operator()(const Tessellation3D& tess,
         throw error;
     }
 #endif
+}
+
+void FastMultipoleAcceleration3D::EvaluateIndividualTargets(
+    std::pair<Vector3D, Vector3D> const& bounds,
+    vector<Vector3D> const& source_points,
+    vector<double> const& source_masses,
+    vector<std::uint64_t> const& source_ids,
+    vector<Vector3D> const& target_points,
+    vector<ComputationalCell3D> const& /*target_cells*/,
+    double /*time*/,
+    vector<Vector3D>& acc) const
+{
+#ifdef RICH_MPI
+    requireOnEveryRank(source_points.size() == source_masses.size() &&
+        source_points.size() == source_ids.size(),
+        "FastMultipoleAcceleration3D: individual source point/mass/ID count mismatch");
+#else
+    if(source_points.size() != source_masses.size() ||
+       source_points.size() != source_ids.size())
+        throw UniversalError(
+            "FastMultipoleAcceleration3D: individual source point/mass/ID count mismatch");
+#endif
+
+    // The FMM backend evaluates its source set.  Individual gravity targets
+    // are exact canonical source centroids, so recover their source slots and
+    // extract only those accelerations after the collective solve.
+    std::unordered_map<PositionKey, std::size_t, PositionKeyHash>
+        source_index_by_position;
+    source_index_by_position.reserve(source_points.size());
+    bool valid_target_mapping = true;
+    for(std::size_t source = 0; source < source_points.size(); ++source)
+        if(!source_index_by_position.emplace(
+            positionKey(source_points[source]), source).second)
+            valid_target_mapping = false;
+
+    std::vector<std::size_t> target_source_indices(target_points.size(), 0);
+    for(std::size_t target = 0; target < target_points.size(); ++target)
+    {
+        auto const source = source_index_by_position.find(
+            positionKey(target_points[target]));
+        if(source == source_index_by_position.end())
+            valid_target_mapping = false;
+        else
+            target_source_indices[target] = source->second;
+    }
+#ifdef RICH_MPI
+    requireOnEveryRank(valid_target_mapping,
+        "FastMultipoleAcceleration3D: an individual target does not match a unique source centroid");
+#else
+    if(!valid_target_mapping)
+        throw UniversalError(
+            "FastMultipoleAcceleration3D: an individual target does not match a unique source centroid");
+#endif
+
+    points_ = source_points;
+    masses_ = source_masses;
+#ifdef RICH_MPI
+    cellIds_ = source_ids;
+    calculator_.solve(points_, masses_, cellIds_, bounds.first, bounds.second,
+                      acc);
+#else
+    calculator_.solve(points_, masses_, bounds.first, bounds.second, acc);
+#endif
+    traceFmmSolve(calculator_.stats(), traceEnabled_);
+
+#ifdef RICH_MPI
+    requireOnEveryRank(acc.size() == points_.size(),
+        "FastMultipoleAcceleration3D: individual FMM returned the wrong source count");
+#else
+    if(acc.size() != points_.size())
+        throw UniversalError(
+            "FastMultipoleAcceleration3D: individual FMM returned the wrong source count");
+#endif
+
+    bool finite_acceleration = true;
+#ifndef RICH_MPI
+    std::size_t first_invalid = 0;
+#endif
+    for(std::size_t source = 0; source < acc.size(); ++source)
+    {
+        acc[source] *= G_;
+        if(finite_acceleration &&
+           (!std::isfinite(acc[source].x) || !std::isfinite(acc[source].y) ||
+            !std::isfinite(acc[source].z)))
+        {
+            finite_acceleration = false;
+#ifndef RICH_MPI
+            first_invalid = source;
+#endif
+        }
+    }
+#ifdef RICH_MPI
+    requireOnEveryRank(finite_acceleration,
+        "FastMultipoleAcceleration3D: non-finite individual acceleration after G scaling on an MPI rank");
+#else
+    if(!finite_acceleration)
+    {
+        UniversalError error(
+            "FastMultipoleAcceleration3D: non-finite individual acceleration after G scaling");
+        error.addEntry("source", first_invalid);
+        throw error;
+    }
+#endif
+
+    vector<Vector3D> target_accelerations;
+    target_accelerations.reserve(target_source_indices.size());
+    for(std::size_t source : target_source_indices)
+        target_accelerations.push_back(acc[source]);
+    acc.swap(target_accelerations);
 }
 
 const FmmSolveStats& FastMultipoleAcceleration3D::getLastStats() const noexcept

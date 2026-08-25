@@ -17,6 +17,7 @@
 #include "extensive_updater3d.hpp"
 #include "SourceTerm3D.hpp"
 #include "newtonian/three_dimensional/simulation/ProgressTracker.hpp"
+#include "newtonian/three_dimensional/simulation/IndividualTimeStep.hpp"
 #include "CostCalculator3D.hpp"
 #include "Hllc3D.hpp"
 
@@ -68,6 +69,17 @@ public:
   void timeAdvance();
   //! \brief Advances the simulation in time (second order)
   void timeAdvance2();
+
+  void timeAdvanceIndividual(const IndividualStepContext& context);
+
+  bool supportsIndividualTimeSteps(void) const
+  {return !special_relativity_ && spherical_shell_projector_ == nullptr &&
+    eu_.SupportsIndividualTimeSteps() &&
+    source_.SupportsIndividualTimeSteps() &&
+    GetFullStateFluxCalculator().SupportsIndividualTimeSteps();}
+
+  void suggestIndividualTimeSteps(const IndividualStepContext& context,
+    vector<double>& time_step_limits) const;
 
   /*! \brief Second order time advance with Lagrangian x-boundaries
     \param left_external Exterior state at left x-boundary (nullptr = vacuum)
@@ -137,6 +149,54 @@ public:
   size_t GetSphericalPerturbationEvaluationCount(void) const
   {return spherical_perturbation_evaluation_count_;}
 
+  void ResetIndividualMeshState(void)
+  {
+    individual_points_.clear();
+    individual_centroids_.clear();
+    individual_mesh_target_ids_.clear();
+    individual_mesh_restore_pending_ = false;
+    individual_event_mesh_reusable_ = false;
+  }
+
+  void ReleaseIndividualPartialMeshScratch(void) noexcept
+  {
+    vector<size_t>().swap(individual_mesh_target_ids_);
+    individual_mesh_restore_pending_ = false;
+  }
+
+  void ReleaseIndividualRebalanceScratch(void) noexcept
+  {
+    vector<Vector3D>().swap(point_vel_scratch_);
+    vector<Vector3D>().swap(face_vel_scratch_);
+    vector<Vector3D>().swap(individual_points_);
+    vector<Vector3D>().swap(individual_centroids_);
+    vector<Vector3D>().swap(oldpoints_scratch_);
+    vector<Vector3D>().swap(tessellation_points_scratch_);
+    vector<Conserved3D>().swap(fluxes_scratch_);
+    vector<Conserved3D>().swap(mid_extensives_scratch_);
+    vector<Conserved3D>().swap(u1_scratch_);
+    vector<Conserved3D>().swap(u2_scratch_);
+    vector<Conserved3D>().swap(u3_scratch_);
+    vector<size_t>().swap(hilbert_order_scratch_);
+    std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> >().swap(
+      face_values_scratch_);
+    vector<size_t>().swap(individual_mesh_target_ids_);
+    individual_mesh_restore_pending_ = false;
+    individual_event_mesh_reusable_ = false;
+  }
+
+  const vector<Vector3D>& GetIndividualGeneratorPoints(void) const
+  {return individual_points_;}
+
+  const vector<size_t>& GetIndividualMeshTargetIDs(void) const
+  {return individual_mesh_target_ids_;}
+
+  void RestoreIndividualMeshTargetIDs(vector<size_t> const& target_ids)
+  {
+    individual_mesh_target_ids_ = target_ids;
+    individual_mesh_restore_pending_ = true;
+  }
+
   #ifdef RICH_MPI
     const ExchangeChain &GetExchangeChain(void) const {return this->exchange_chain_;}
   #endif // RICH_MPI
@@ -175,9 +235,15 @@ private:
   const ExtensiveUpdater3D& eu_;
   const	SourceTerm3D &source_;
   const ProgressTracker &pt_;
-  vector<Vector3D> point_vel_scratch_;
-  vector<Vector3D> face_vel_scratch_;
-  vector<Vector3D> oldpoints_scratch_;
+  const bool special_relativity_;
+	  vector<Vector3D> point_vel_scratch_;
+	  vector<Vector3D> face_vel_scratch_;
+	  vector<Vector3D> individual_points_;
+	  vector<Vector3D> individual_centroids_;
+	  bool individual_event_mesh_reusable_ = false;
+	  vector<size_t> individual_mesh_target_ids_;
+	  bool individual_mesh_restore_pending_ = false;
+	  vector<Vector3D> oldpoints_scratch_;
   vector<Vector3D> tessellation_points_scratch_;
   vector<Conserved3D> fluxes_scratch_;
   vector<Conserved3D> mid_extensives_scratch_;

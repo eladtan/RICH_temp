@@ -27,6 +27,19 @@ public:
 	virtual void operator()(const Tessellation3D& tess,const vector<ComputationalCell3D>& cells,double time,
 		vector<pair<ComputationalCell3D, ComputationalCell3D> > &res) const = 0;
 
+	/*! \brief Interpolate only faces touching an active cell.
+	    The default keeps the full reconstruction for implementations without a
+	    reduced path. */
+	virtual void InterpolateIndividual(
+		const Tessellation3D& tess,
+		const vector<ComputationalCell3D>& cells,
+		double time,
+		const vector<unsigned char>& /*active_mask*/,
+		vector<pair<ComputationalCell3D, ComputationalCell3D> >& res) const
+	{
+		(*this)(tess, cells, time, res);
+	}
+
 	virtual ~SpatialReconstruction3D(void);
 
   /*! \brief Calculate gradients
@@ -40,8 +53,14 @@ public:
 	\brief Returns the gradients
 	\return The gradients
 	*/
-  virtual std::vector<Slope3D>& GetSlopes(void)=0;
+	virtual std::vector<Slope3D>& GetSlopes(void)=0;
+
+	/*! \brief Returns prepared slopes when a temporal predictor is supported.
+	    A null pointer means that the reconstruction remains first order in time. */
+	virtual const std::vector<Slope3D>* GetSlopesForTimePrediction(void) const
+	{
+		return nullptr;
+	}
 };
 
 #endif // SPATIAL_RECONSTRUCTION3D_HPP
-

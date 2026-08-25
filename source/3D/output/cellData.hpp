@@ -1,12 +1,61 @@
 #include "newtonian/three_dimensional/computational_cell.hpp"
+#include "newtonian/three_dimensional/conserved_3d.hpp"
 #include <spatial_ds/utils/BoundingBox.hpp>
 #include "utils/hdf5/HDF5Helper.hpp"
 #include "vectorData.hpp"
+#include <array>
+#include <cstddef>
 
 using namespace H5;
 
 namespace HDF5Utils
 {
+    struct Conserved3DRecord
+    {
+        double mass;
+        Vector3D momentum;
+        double energy;
+        double internal_energy;
+        double Erad;
+        double Erad_dt;
+        double Erad_dt_dt;
+        std::array<double, MAX_TRACERS> tracers;
+        std::array<double, ENERGY_GROUPS_NUM> Eg;
+    };
+
+    inline Conserved3DRecord PackConserved3D(Conserved3D const& value)
+    {
+        Conserved3DRecord result{
+            value.mass,
+            value.momentum,
+            value.energy,
+            value.internal_energy,
+            value.Erad,
+            value.Erad_dt,
+            value.Erad_dt_dt,
+            value.tracers,
+            {}};
+        for(std::size_t group = 0; group < ENERGY_GROUPS_NUM; ++group)
+            result.Eg[group] = value.Eg[group];
+        return result;
+    }
+
+    inline Conserved3D UnpackConserved3D(Conserved3DRecord const& value)
+    {
+        Conserved3D result;
+        result.mass = value.mass;
+        result.momentum = value.momentum;
+        result.energy = value.energy;
+        result.internal_energy = value.internal_energy;
+        result.Erad = value.Erad;
+        result.Erad_dt = value.Erad_dt;
+        result.Erad_dt_dt = value.Erad_dt_dt;
+        result.tracers = value.tracers;
+        for(std::size_t group = 0; group < ENERGY_GROUPS_NUM; ++group)
+            result.Eg[group] = value.Eg[group];
+        return result;
+    }
+
     template<>
     struct HasCompType<BoundingBox<Vector3D>> : std::true_type {};
 
@@ -80,6 +129,41 @@ namespace HDF5Utils
 
             #pragma GCC diagnostic pop
             return mtype;
+        }
+    };
+
+    template<>
+    struct HasCompType<Conserved3DRecord> : std::true_type {};
+
+    template<>
+    struct CompTypeCreator<Conserved3DRecord>
+    {
+        static H5::CompType get()
+        {
+            #pragma GCC diagnostic push
+            #pragma GCC diagnostic ignored "-Winvalid-offsetof"
+            H5::CompType type(sizeof(Conserved3DRecord));
+            type.insertMember("mass", HOFFSET(Conserved3DRecord, mass), H5::PredType::NATIVE_DOUBLE);
+            type.insertMember("momentum", HOFFSET(Conserved3DRecord, momentum),
+                              CompTypeCreator<Vector3D>::get());
+            type.insertMember("energy", HOFFSET(Conserved3DRecord, energy), H5::PredType::NATIVE_DOUBLE);
+            type.insertMember("internal_energy", HOFFSET(Conserved3DRecord, internal_energy), H5::PredType::NATIVE_DOUBLE);
+            type.insertMember("Erad", HOFFSET(Conserved3DRecord, Erad), H5::PredType::NATIVE_DOUBLE);
+            type.insertMember("Erad_dt", HOFFSET(Conserved3DRecord, Erad_dt), H5::PredType::NATIVE_DOUBLE);
+            type.insertMember("Erad_dt_dt", HOFFSET(Conserved3DRecord, Erad_dt_dt), H5::PredType::NATIVE_DOUBLE);
+
+            hsize_t tracer_size[] = {MAX_TRACERS};
+            H5::ArrayType tracer_type(H5::PredType::NATIVE_DOUBLE, 1, tracer_size);
+            type.insertMember("tracers", HOFFSET(Conserved3DRecord, tracers), tracer_type);
+
+            if constexpr(ENERGY_GROUPS_NUM > 0)
+            {
+                hsize_t group_size[] = {ENERGY_GROUPS_NUM};
+                H5::ArrayType group_type(H5::PredType::NATIVE_DOUBLE, 1, group_size);
+                type.insertMember("Eg", HOFFSET(Conserved3DRecord, Eg), group_type);
+            }
+            #pragma GCC diagnostic pop
+            return type;
         }
     };
 } // namespace HDF5Utils

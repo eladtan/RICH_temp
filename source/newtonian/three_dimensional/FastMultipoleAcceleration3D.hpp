@@ -28,6 +28,21 @@ public:
                     const double time,
                     vector<Vector3D>& acc) const override;
 
+    bool SupportsIndividualTargetEvaluation(void) const override
+    {
+        return true;
+    }
+
+    void EvaluateIndividualTargets(
+        std::pair<Vector3D, Vector3D> const& bounds,
+        vector<Vector3D> const& source_points,
+        vector<double> const& source_masses,
+        vector<std::uint64_t> const& source_ids,
+        vector<Vector3D> const& target_points,
+        vector<ComputationalCell3D> const& target_cells,
+        double time,
+        vector<Vector3D>& acc) const override;
+
     const FmmSolveStats& getLastStats() const noexcept;
 
 private:

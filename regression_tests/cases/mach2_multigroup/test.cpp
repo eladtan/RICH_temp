@@ -19,15 +19,29 @@
 #include "source/Radiation/MultigroupDiffusionCoefficientCalculator.hpp"
 #include "source/monte/deps/CMMC/src/planck_integral/planck_integral.hpp"
 #include <chrono>
+#include <cstdlib>
 #include <fstream>
 #include <libgen.h>
 #include <string.h>
 #include <iomanip>
+#include <limits>
 #include <numeric>
 #include "source/newtonian/three_dimensional/simulation/steps/RadiationStep.hpp"
 
 namespace
 {
+    size_t EnvironmentSize(char const* name, size_t fallback)
+    {
+        char const* value = std::getenv(name);
+        if(value == nullptr || value[0] == '\0')
+            return fallback;
+        char* end = nullptr;
+        unsigned long long const parsed = std::strtoull(value, &end, 10);
+        if(end == value || *end != '\0' || parsed == 0)
+            throw std::invalid_argument(std::string("Invalid positive integer in ") + name);
+        return static_cast<size_t>(parsed);
+    }
+
     class IsPointLeftRightBox3D : public ConditionActionFlux1::Condition3D
     {
     public:
@@ -70,7 +84,7 @@ static constexpr double kev = 1e3 * ev;
 
 int main(void)
 {
-    size_t const Np = 1024;
+    size_t const Np = EnvironmentSize("RICH_TEST_POINT_COUNT", 1024);
     double const box_size = 1e3;
     double const dy = 3 * box_size / (2 * Np);
     Vector3D ll(-box_size, -dy, -dy), ur(2 * box_size, dy, dy);
@@ -199,8 +213,10 @@ int main(void)
     opacity.energy_groups_center = energy_groups_center;
     opacity.energy_groups_boundary = energy_groups_boundary;
     MultigroupDiffusionXInflowBoundary diffusion_boundary(left_cell, right_cell, opacity);
+    bool const doppler_on = std::getenv("RICH_TEST_DOPPLER") != nullptr;
     MultigroupDiffusion diffusion(energy_groups_center, energy_groups_boundary, opacity,
-        diffusion_boundary, eos, std::vector<std::string>(), true, true, false, false, -1, false);
+        diffusion_boundary, eos, std::vector<std::string>(), true, true,
+        false, doppler_on, -1, false);
 
     DefaultCellUpdater cu(false, 0, true, 0, &diffusion);
 
@@ -228,7 +244,62 @@ int main(void)
     simulation.addPhysics(radStep);
     simulation.SetTimeStep(1e-15);
 
-    while (simulation.GetTime() < 0.01)
+    char const* individual_mode = std::getenv("RICH_INDIVIDUAL_MODE");
+    if(individual_mode != nullptr && individual_mode[0] != '\0')
+    {
+        IndividualTimeStepOptions options;
+        std::string const mode(individual_mode);
+        bool const synchronized = mode == "full";
+        bool const auto_partial = mode == "partial";
+        if(!synchronized && !auto_partial && mode != "full-variable")
+            throw std::invalid_argument(
+                "RICH_INDIVIDUAL_MODE must be 'full', 'full-variable', or 'partial'");
+        options.initial_bin = synchronized ? 0 : 4;
+        options.maximum_bin = synchronized ? 0 : 60;
+        options.time_quantum = std::ldexp(1e-15,
+            -static_cast<int>(options.initial_bin));
+        options.mesh_build_policy = auto_partial ?
+            IndividualMeshBuildPolicy::AutoPartial :
+            IndividualMeshBuildPolicy::FullReference;
+        options.verify_partial_build = std::getenv(
+            "RICH_VERIFY_PARTIAL_BUILD") != nullptr;
+        simulation.EnableIndividualTimeSteps(options);
+
+        if(std::getenv("RICH_TEST_SPARSE_INITIAL_BIN") != nullptr)
+        {
+            if(synchronized || options.initial_bin < 2)
+                throw std::invalid_argument(
+                    "RICH_TEST_SPARSE_INITIAL_BIN requires variable individual timesteps");
+            IndividualTimeStepScheduler* scheduler =
+                simulation.GetIndividualTimeStepScheduler();
+            scheduler->initialize(simulation.getCells(), simulation.GetTime(),
+                                  simulation.GetTimeStep());
+            std::vector<CellTimeState>& states = scheduler->states();
+            if(states.empty())
+                throw std::logic_error(
+                    "RICH_TEST_SPARSE_INITIAL_BIN requires at least one cell per rank");
+#ifdef RICH_MPI
+            if(rank == 0)
+            {
+                CellTimeState& sparse_state = states.back();
+                sparse_state.time_bin = static_cast<std::uint8_t>(
+                    options.initial_bin - 2);
+                sparse_state.end_tick = std::uint64_t(1) << sparse_state.time_bin;
+            }
+#else
+            CellTimeState& sparse_state = states[states.size() / 2];
+            sparse_state.time_bin = static_cast<std::uint8_t>(
+                options.initial_bin - 2);
+            sparse_state.end_tick = std::uint64_t(1) << sparse_state.time_bin;
+#endif
+        }
+    }
+
+    size_t const maximum_cycles = EnvironmentSize(
+        "RICH_TEST_MAX_CYCLES", std::numeric_limits<size_t>::max());
+
+    while (simulation.GetTime() < 0.01 &&
+           simulation.GetCycle() < maximum_cycles)
     {
         try
         {
@@ -272,6 +343,16 @@ int main(void)
         case_dir = file_buf;
     }
     std::string profile_path = case_dir + "/mach2_profile.txt";
+
+    // Global output requires canonical point ordering, not a partial view.
+#ifndef RICH_MPI
+    if(tess.GetPointNo() != simulation.getCells().size())
+    {
+        std::vector<Vector3D> output_points = tess.getAllPoints();
+        output_points.resize(simulation.getCells().size());
+        tess.Build(output_points);
+    }
+#endif
 
     // Gather profile data from all MPI ranks and write to file
     {

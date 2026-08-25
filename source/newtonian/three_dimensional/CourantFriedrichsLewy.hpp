@@ -32,6 +32,14 @@ public:
 
 	double SuggestTimeStep(void) const override;
 
+	void SuggestIndividualTimeSteps(const Tessellation3D& tess,
+		const vector<ComputationalCell3D>& cells,
+		const EquationOfState& eos,
+		const vector<Vector3D>& face_velocities,
+		double time,
+		const IndividualStepContext& context,
+		vector<double>& time_step_limits) const override;
+
 	void SetPointVelocities(const vector<Vector3D>* pv) { point_velocities_ = pv; }
 
 private:

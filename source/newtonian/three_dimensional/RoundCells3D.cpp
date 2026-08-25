@@ -254,10 +254,37 @@ void RoundCells3D::operator()(const Tessellation3D& tess, const vector<Computati
 void RoundCells3D::ApplyFix(Tessellation3D const& tess, vector<ComputationalCell3D> const& cells, double time,
 	double dt, vector<Vector3D> &velocities)const
 {
-	pm_.ApplyFix(tess, cells, time, dt, velocities);
+	ApplyFixImpl(tess, cells, nullptr, time, dt, velocities, nullptr);
+}
+
+void RoundCells3D::ApplyFixIndividual(
+	Tessellation3D const& tess,
+	vector<ComputationalCell3D> const& cells,
+	vector<ComputationalCell3D> const& all_cells, double time, double dt,
+	vector<Vector3D>& velocities,
+	vector<Vector3D>& all_velocities) const
+{
+	ApplyFixImpl(tess, cells, &all_cells, time, dt, velocities,
+		&all_velocities);
+}
+
+void RoundCells3D::ApplyFixImpl(
+	Tessellation3D const& tess,
+	vector<ComputationalCell3D> const& cells,
+	vector<ComputationalCell3D> const* all_cells, double time, double dt,
+	vector<Vector3D>& velocities,
+	vector<Vector3D>* all_velocities) const
+{
+	if(all_cells != nullptr)
+		pm_.ApplyFixIndividual(tess, cells, *all_cells, time, dt,
+			velocities, *all_velocities);
+	else
+	{
+		pm_.ApplyFix(tess, cells, time, dt, velocities);
 #ifdef RICH_MPI
-	MPI_exchange_data(tess, velocities, true);
+		MPI_exchange_data(tess, velocities, true);
 #endif
+	}
 	const size_t n = tess.GetPointNo();
 	/*if (n == 0)
 		return;*/
@@ -284,9 +311,28 @@ void RoundCells3D::ApplyFix(Tessellation3D const& tess, vector<ComputationalCell
 			}
 		}
 	}
+	if(all_cells != nullptr)
+	{
+		vector<char> all_nomove(all_cells->size(), 0);
+		for(size_t i = 0; i < all_cells->size(); ++i)
+			for(size_t j = 0; j < Nstick; ++j)
+				if(all_cells->at(i).stickers[no_move_indeces[j]])
+				{
+					all_nomove[i] = 1;
+					all_velocities->at(i) = Vector3D();
+					break;
+				}
+		tess.SyncPartialBuildData(nomove, all_nomove);
+		for(size_t i = 0; i < std::min(nomove.size(), velocities.size()); ++i)
+			if(nomove[i] != 0)
+				velocities[i] = Vector3D();
+	}
+	else
+	{
 #ifdef RICH_MPI
-	MPI_exchange_data(tess, nomove, true);
+		MPI_exchange_data(tess, nomove, true);
 #endif
+	}
 
 	if (cold_)
 	{
@@ -308,8 +354,11 @@ void RoundCells3D::ApplyFix(Tessellation3D const& tess, vector<ComputationalCell
 				velocities.at(i) = Vector3D();
 		}
 	}
+	if(all_velocities != nullptr)
+		tess.SyncPartialBuildData(velocities, *all_velocities);
 #ifdef RICH_MPI
-	MPI_exchange_data(tess, velocities, true);
+	else
+		MPI_exchange_data(tess, velocities, true);
 	for (size_t i = 0; i < n; ++i)
 		SlowDown(velocities[i], tess, tess.GetWidth(i), i, velocities, nomove, slowdown_neigh_buf_);
 #endif

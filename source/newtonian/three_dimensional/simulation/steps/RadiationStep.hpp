@@ -26,9 +26,33 @@ public:
 
     void step(double dt) override;
 
+    bool supportsIndividualTimeSteps(void) const override;
+
+    void stepIndividual(IndividualStepContext const& context) override;
+
+    void suggestIndividualTimeSteps(
+        IndividualStepContext const& context,
+        std::vector<double>& time_step_limits) const override;
+
+    void afterIndividualAMR(void) noexcept override;
+
+    void onIndividualForceAllActiveLatch(void) noexcept override;
+
+    void beforeIndividualRebalance(void) noexcept override;
+
     double suggestTimeStep(void) const override;
 
     std::string getName(void) const override;
+
+    std::map<std::string, double>
+    getIndividualPerformanceCounters(void) const override
+    {return last_individual_performance;}
+
+    std::size_t GetCumulativeIndividualRejectedCandidates(void) const
+    {return cumulative_individual_rejected_candidates;}
+
+    double GetSmallestIndividualCandidateFraction(void) const
+    {return smallest_individual_candidate_fraction;}
 
     #ifdef RICH_MPI
         bool allowRebalance(void) override;
@@ -45,6 +69,10 @@ private:
     ProgressTracker &pt;
     const RadiationDriver &matrix_builder;
     double suggested_dt;
+    std::vector<double> suggested_individual_dt;
+    std::size_t cumulative_individual_rejected_candidates = 0;
+    double smallest_individual_candidate_fraction = 1.0;
+    std::map<std::string, double> last_individual_performance;
     #ifdef RICH_MPI
         std::shared_ptr<CostCalculator3D> cost;
     #endif // RICH_MPI

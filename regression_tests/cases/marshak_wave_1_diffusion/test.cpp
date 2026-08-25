@@ -18,8 +18,13 @@
 #include <fstream>
 #include <iomanip>
 #include <cmath>
+#include <cstdint>
+#include <cstdlib>
+#include <limits>
 #include <numeric>
 #include <algorithm>
+#include <stdexcept>
+#include <string>
 #include <fenv.h>
 #include <libgen.h>
 #include <string.h>
@@ -28,6 +33,21 @@
 // kappa_R = 100*(T/keV)^{-3}, kappa_P = 0.001*kappa_R
 // u(T) = 6.860085e14*(T/keV)^4, rho=1, uniform grid
 // T_bath(t) = 1.008038*(t/ns)^{1/3} keV
+
+namespace
+{
+	size_t EnvironmentSize(char const* name, size_t fallback)
+	{
+		char const* value = std::getenv(name);
+		if(value == nullptr || value[0] == '\0')
+			return fallback;
+		char* end = nullptr;
+		unsigned long long const parsed = std::strtoull(value, &end, 10);
+		if(end == value || *end != '\0' || parsed == 0)
+			throw std::invalid_argument(std::string("Invalid positive integer in ") + name);
+		return static_cast<size_t>(parsed);
+	}
+}
 
 int main(void)
 {
@@ -47,7 +67,7 @@ int main(void)
 	double const planck0 = 0.1 * std::pow(keV_K, 3.0);
 	PowerLawOpacity opacity(D0, 0, 3, planck0, 0, -3);
 
-	size_t const Nx = 512;
+	size_t const Nx = EnvironmentSize("RICH_TEST_POINT_COUNT", 512);
 	double const width = 0.2;
 	double const dy = width / Nx;
 	Vector3D ll(0, 0, 0), ur(width, dy, dy);
@@ -117,8 +137,56 @@ int main(void)
 #endif
 		diffusion, true);
 	simulation.addPhysics(radStep);
+	simulation.SetTimeStep(old_dt);
 
-	while (simulation.GetTime() < tf)
+	bool individual_enabled = false;
+	char const* individual_mode = std::getenv("RICH_INDIVIDUAL_MODE");
+	if(individual_mode != nullptr && individual_mode[0] != '\0')
+	{
+		IndividualTimeStepOptions options;
+		std::string const mode(individual_mode);
+		bool const synchronized = mode == "full";
+		bool const auto_partial = mode == "partial";
+		if(!synchronized && !auto_partial && mode != "full-variable")
+			throw std::invalid_argument(
+				"RICH_INDIVIDUAL_MODE must be 'full', 'full-variable', or 'partial'");
+		options.initial_bin = synchronized ? 0 : 4;
+		options.maximum_bin = synchronized ? 0 : 60;
+		options.time_quantum = std::ldexp(old_dt,
+			-static_cast<int>(options.initial_bin));
+		options.mesh_build_policy = auto_partial ?
+			IndividualMeshBuildPolicy::AutoPartial :
+			IndividualMeshBuildPolicy::FullReference;
+		options.verify_partial_build = std::getenv(
+			"RICH_VERIFY_PARTIAL_BUILD") != nullptr;
+		simulation.EnableIndividualTimeSteps(options);
+		individual_enabled = true;
+
+		if(std::getenv("RICH_TEST_SPARSE_INITIAL_BIN") != nullptr)
+		{
+			if(synchronized || options.initial_bin < 2)
+				throw std::invalid_argument(
+					"RICH_TEST_SPARSE_INITIAL_BIN requires variable individual timesteps");
+			IndividualTimeStepScheduler* scheduler =
+				simulation.GetIndividualTimeStepScheduler();
+			scheduler->initialize(simulation.getCells(), simulation.GetTime(),
+							  simulation.GetTimeStep());
+			std::vector<CellTimeState>& states = scheduler->states();
+			if(states.empty())
+				throw std::logic_error(
+					"RICH_TEST_SPARSE_INITIAL_BIN requires at least one cell");
+			CellTimeState& sparse_state = states[states.size() / 2];
+			sparse_state.time_bin = static_cast<std::uint8_t>(
+				options.initial_bin - 2);
+			sparse_state.end_tick = std::uint64_t(1) << sparse_state.time_bin;
+		}
+	}
+
+	size_t const maximum_cycles = EnvironmentSize(
+		"RICH_TEST_MAX_CYCLES", std::numeric_limits<size_t>::max());
+
+	while (simulation.GetTime() < tf &&
+		   simulation.GetCycle() < maximum_cycles)
 	{
 		double const t_now = std::max(simulation.GetTime(), 1e-15);
 		double const T_bath = 1.008038 * std::pow(t_now / 1e-9, 1.0 / 3.0) * keV_K;
@@ -126,11 +194,18 @@ int main(void)
 
 		try
 		{
-			simulation.SetTimeStep(old_dt);
+			if(!individual_enabled)
+				simulation.SetTimeStep(old_dt);
+			double const previous_time = simulation.GetTime();
 			simulation.step();
-			double new_dt = radStep->suggestTimeStep();
-			new_dt = std::min(std::max(1e-15, simulation.GetTime() * 1e-3), new_dt);
-			old_dt = new_dt;
+			if(individual_enabled)
+				old_dt = simulation.GetTime() - previous_time;
+			else
+			{
+				double new_dt = radStep->suggestTimeStep();
+				new_dt = std::min(std::max(1e-15, simulation.GetTime() * 1e-3), new_dt);
+				old_dt = new_dt;
+			}
 		}
 		catch (UniversalError const &eo)
 		{

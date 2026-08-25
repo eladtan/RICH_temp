@@ -78,6 +78,21 @@ Slope3D RigidWallGenerator3D::GetGhostGradient(const Tessellation3D& /*tess*/, c
 	return res;
 }
 
+ComputationalCell3D RigidWallGenerator3D::GetGhostCell(
+	const Tessellation3D& tess,
+	const vector<ComputationalCell3D>& cells,
+	size_t real_index,
+	size_t ghost_index,
+	double /*time*/,
+	size_t /*face_index*/) const
+{
+	ComputationalCell3D result = cells.at(real_index);
+	Vector3D const normal = normalize(
+		tess.GetMeshPoint(ghost_index) - tess.GetMeshPoint(real_index));
+	result.velocity -= 2 * normal * ScalarProd(normal, result.velocity);
+	return result;
+}
+
 void FreeFlowGenerator3D::operator()(const Tessellation3D& tess,
 	const vector<ComputationalCell3D>& cells, double /*time*/, boost::container::flat_map<size_t, ComputationalCell3D> &res) const
 {
@@ -120,6 +135,17 @@ Slope3D FreeFlowGenerator3D::GetGhostGradient(const Tessellation3D& /*tess*/, co
 	//res.yderivative.tracers.resize(cells[0].tracers.size(), 0);
 	//res.zderivative.tracers.resize(cells[0].tracers.size(), 0);
 	return res;
+}
+
+ComputationalCell3D FreeFlowGenerator3D::GetGhostCell(
+	const Tessellation3D& /*tess*/,
+	const vector<ComputationalCell3D>& cells,
+	size_t real_index,
+	size_t /*ghost_index*/,
+	double /*time*/,
+	size_t /*face_index*/) const
+{
+	return cells.at(real_index);
 }
 
 ConstantPrimitiveGenerator3D::ConstantPrimitiveGenerator3D(ComputationalCell3D const & cell):cell_(cell) {}
@@ -174,6 +200,17 @@ Slope3D ConstantPrimitiveGenerator3D::GetGhostGradient(const Tessellation3D & /*
 	return res;
 }
 
+ComputationalCell3D ConstantPrimitiveGenerator3D::GetGhostCell(
+	const Tessellation3D& /*tess*/,
+	const vector<ComputationalCell3D>& /*cells*/,
+	size_t /*real_index*/,
+	size_t /*ghost_index*/,
+	double /*time*/,
+	size_t /*face_index*/) const
+{
+	return cell_;
+}
+
 SeveralGhostGenerator3D::GhostCriteria3D::~GhostCriteria3D(void){}
 
 
@@ -205,3 +242,14 @@ Slope3D SeveralGhostGenerator3D::GetGhostGradient(const Tessellation3D& tess, co
 		ghost_index)]->GetGhostGradient(tess, cells, gradients, ghost_index, time, face_index);
 }
 
+ComputationalCell3D SeveralGhostGenerator3D::GetGhostCell(
+	const Tessellation3D& tess,
+	const vector<ComputationalCell3D>& cells,
+	size_t real_index,
+	size_t ghost_index,
+	double time,
+	size_t face_index) const
+{
+	return ghosts_[ghost_chooser_.GhostChoose(tess, ghost_index)]->GetGhostCell(
+		tess, cells, real_index, ghost_index, time, face_index);
+}

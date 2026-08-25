@@ -33,6 +33,7 @@ Start with the [documentation index](docs/README.md). The most useful guides are
 | Build configurations and flags | [Build system](docs/build-system.md) |
 | Serial, MPI, and SLURM execution | [Running simulations](docs/running-simulations.md) |
 | Creating a problem setup | [Simulation setup](docs/user-guide/simulation-setup.md) |
+| Individual timesteps | [Individual timesteps](docs/user-guide/individual-timesteps.md) |
 | Radiation and Monte Carlo transport | [Radiation transport](docs/user-guide/radiation.md) |
 | Gravity and FMM | [Gravity](docs/user-guide/gravity.md) and [FMM architecture](docs/architecture/fmm-gravity.md) |
 | AMR | [Adaptive mesh refinement](docs/user-guide/amr.md) |
