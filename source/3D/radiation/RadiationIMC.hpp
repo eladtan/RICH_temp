@@ -329,6 +329,7 @@ public:
                                      Conserved3D,
                                      EquationOfState,
                                      ENERGY_GROUPS_NUM,
+                                     RICHRadiationOpacityAdapter,
                                      RICHRadiationIMCTraits,
                                      RICHRadiationPositionSampler>;
     using ImplSourceAllocationSummary = typename Impl::SourceAllocationSummary;

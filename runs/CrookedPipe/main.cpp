@@ -31,6 +31,9 @@
 #include "utils/arguments/ArgumentParser.hpp"
 #include "CrookedPipeBoundary.hpp"
 #include "CrookedPipeOpacity.hpp"
+#ifdef STORM_WITH_GPU
+#include <rocprofiler-sdk-roctx/roctx.h>
+#endif
 
 std::shared_ptr<RadiationMCStep> mcStep = nullptr;
 bool do_output = false;
@@ -384,6 +387,8 @@ int main(int argc, char *argv[])
             .flagAlias("new_ibv", "new-rdma-ibv")
             .flagAlias("ibv", "new-rdma-ibv")
             .flagAlias("p2p", "p2p");
+        arguments.addOption<size_t>("profile-cycle", 0,
+            "If >0, resume ROCTx collection only for this 1-based cycle (use with rocprofv3)");
 
         try
         {
@@ -411,7 +416,24 @@ int main(int argc, char *argv[])
         do_output = !outputDir.empty();
         bool withRandomWalk = arguments.get<bool>("random-walk");
         size_t cycles = arguments.get<size_t>("cycles");
+        size_t profileCycle = arguments.get<size_t>("profile-cycle");
         std::string managerName = arguments.get<std::string>("manager");
+#ifdef STORM_WITH_GPU
+        if(profileCycle > 0)
+        {
+            roctxProfilerPause(0);
+            if(rank == 0)
+            {
+                std::cout << "ROCTx profiler paused; will resume for cycle "
+                          << profileCycle << std::endl;
+            }
+        }
+#else
+        if(profileCycle > 0 and rank == 0)
+        {
+            std::cerr << "--profile-cycle requires a --with-gpu build" << std::endl;
+        }
+#endif
 
         #ifdef RICH_MPI
         RadiationMCStep::ManagerType managerType =
@@ -590,9 +612,42 @@ int main(int argc, char *argv[])
 
         while(time < totalTime and sim.GetCycle() < cycles)
         {
+            const size_t upcomingCycle = sim.GetCycle() + 1;
+#ifdef STORM_WITH_GPU
+            const bool profileThisCycle =
+                profileCycle > 0 and upcomingCycle == profileCycle;
+            if(profileThisCycle)
+            {
+                MPI_Barrier(MPI_COMM_WORLD);
+                if(rank == 0)
+                {
+                    std::cout << "ROCTx profiler resume for cycle "
+                              << profileCycle << std::endl;
+                }
+                roctxRangePush("crookedpipe_profile_cycle");
+                roctxProfilerResume(0);
+            }
+#endif
             auto stepStart = std::chrono::high_resolution_clock::now();
             sim.step();
             auto stepEnd = std::chrono::high_resolution_clock::now();
+#ifdef STORM_WITH_GPU
+            if(profileThisCycle)
+            {
+                if(Kokkos::is_initialized())
+                {
+                    Kokkos::fence();
+                }
+                roctxProfilerPause(0);
+                roctxRangePop();
+                MPI_Barrier(MPI_COMM_WORLD);
+                if(rank == 0)
+                {
+                    std::cout << "ROCTx profiler pause after cycle "
+                              << profileCycle << std::endl;
+                }
+            }
+#endif
 
             time += dt;
             dt = std::min(1.1 * dt, std::min(max_step, totalTime - time));

@@ -51,4 +51,4 @@ export FI_CXI_RX_MATCH_MODE=hybrid
 # filesystem copy: the spool path does not exist on the other nodes.
 exec mpirun -np "${SLURM_NTASKS:-32}" --map-by ppr:8:node \
     "$run_dir/run_gpu.sh" --bind "$run_dir/rich_gpu" \
-    10000 50 --cycles 80 --no-rw --manager new-rdma-auto
+    10000 50 --cycles 80 --rw --manager new-rdma-auto
