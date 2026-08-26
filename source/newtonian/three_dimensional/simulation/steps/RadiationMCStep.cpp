@@ -55,6 +55,8 @@ RadiationMCStep::RadiationMCStep(const Tessellation3D &tess,
     this->stepCounter = 0;
     this->suggested_dt = std::numeric_limits<double>::max();
     #ifdef RICH_MPI
+        std::shared_ptr<::RadiationIMC> concreteIMC =
+            std::dynamic_pointer_cast<::RadiationIMC>(physics);
         switch(this->managerType)
         {
             case ManagerType::LEGACY_MPI_RMA:
@@ -75,10 +77,38 @@ RadiationMCStep::RadiationMCStep(const Tessellation3D &tess,
                 this->manager = std::make_shared<TwoSidedMonteCarloManager3D>(tess, physics, popControl, boundaryCond);
                 break;
             case ManagerType::RDMA:
-                this->manager = std::make_shared<RDMAMonteCarloManager3D>(tess, physics, popControl, boundaryCond, monteCarloConfig, MPI_COMM_WORLD, RDMA_Type::AUTO_RDMA);
+                if(concreteIMC)
+                {
+                    this->manager =
+                        std::make_shared<StaticPhysicsRDMAMonteCarloManager3D<::RadiationIMC>>(
+                            tess, concreteIMC, popControl, boundaryCond,
+                            monteCarloConfig, MPI_COMM_WORLD,
+                            RDMA_Type::AUTO_RDMA);
+                }
+                else
+                {
+                    this->manager = std::make_shared<RDMAMonteCarloManager3D>(
+                        tess, physics, popControl, boundaryCond,
+                        monteCarloConfig, MPI_COMM_WORLD,
+                        RDMA_Type::AUTO_RDMA);
+                }
                 break;
             case ManagerType::RDMA_IBV:
-                this->manager = std::make_shared<RDMAMonteCarloManager3D>(tess, physics, popControl, boundaryCond, monteCarloConfig, MPI_COMM_WORLD, RDMA_Type::IBV_RDMA);
+                if(concreteIMC)
+                {
+                    this->manager =
+                        std::make_shared<StaticPhysicsRDMAMonteCarloManager3D<::RadiationIMC>>(
+                            tess, concreteIMC, popControl, boundaryCond,
+                            monteCarloConfig, MPI_COMM_WORLD,
+                            RDMA_Type::IBV_RDMA);
+                }
+                else
+                {
+                    this->manager = std::make_shared<RDMAMonteCarloManager3D>(
+                        tess, physics, popControl, boundaryCond,
+                        monteCarloConfig, MPI_COMM_WORLD,
+                        RDMA_Type::IBV_RDMA);
+                }
                 break;
         }
     #else // RICH_MPI
