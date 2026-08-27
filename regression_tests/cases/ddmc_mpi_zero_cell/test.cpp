@@ -22,7 +22,7 @@
 #include "source/newtonian/three_dimensional/simulation/Simulation.hpp"
 #include "source/misc/mesh_generator3D.hpp"
 #include "source/3D/radiation/RadiationIMC.hpp"
-#include "source/monte/radiation/ddmc/DDMCGhostExchange.hpp"
+#include "source/monte/utils/MpiExchangeGrid.hpp"
 #include "source/monte/boundary/RigidBoundary.hpp"
 #include "source/monte/population/CombPopulationControl.hpp"
 #include "source/newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
@@ -151,7 +151,7 @@ bool CheckAsymmetricDDMCReduction(int rank)
     std::vector<double> localOnly = rank == 1
         ? std::vector<double>{20.0, 30.0}
         : std::vector<double>{10.0 + rank};
-    STORM::ddmc::ReducePointContributions(grid, localOnly);
+    STORM::MPI_reduce_ghost_data(grid, localOnly);
 
     bool localPass = localOnly.size() == grid.GetTotalPointNumber();
     if(rank == 0)
@@ -170,7 +170,7 @@ bool CheckAsymmetricDDMCReduction(int rank)
         contributions = {20.0, 30.0, 4.0};
     else
         contributions = {10.0 + rank};
-    STORM::ddmc::ReducePointContributions(grid, contributions);
+    STORM::MPI_reduce_ghost_data(grid, contributions);
 
     if(rank == 0)
         localPass = localPass && contributions.size() == 3 &&
