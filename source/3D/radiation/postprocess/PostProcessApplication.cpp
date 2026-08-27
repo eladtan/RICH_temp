@@ -147,6 +147,7 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.comptonSamples = publicConfig.transport.compton.matrixSamples;
     cfg.comptonAngleDependent = publicConfig.transport.compton.angleDependent;
     cfg.nGenerations = publicConfig.transport.generations;
+    cfg.communication = publicConfig.transport.communication;
     cfg.ddmc = publicConfig.transport.ddmc;
     cfg.randomWalk = publicConfig.transport.randomWalk;
     cfg.useCellVelocities = publicConfig.transport.useCellVelocities;
@@ -510,6 +511,12 @@ int PostProcessIMC::RunPostProcessMain(
             return 0;
         }
 
+        AdaptiveGenerationSchedule const generationSchedule =
+            MakeAdaptiveGenerationSchedule(
+                cfg.adaptiveSourceCells,
+                cfg.adaptiveSourceBurnin,
+                cfg.nGenerations);
+
         if (rank == 0) {
             std::cout << "=== TDE IMC Post-Processing ===\n"
                       << "Input:           " << cfg.inputPath << "\n"
@@ -529,6 +536,9 @@ int PostProcessIMC::RunPostProcessMain(
                       << (cfg.fluxSourceCompare && cfg.ddmc
                           ? " (native thermalizing CER boundary)" : "") << "\n"
                       << "Cell velocities: " << (cfg.useCellVelocities ? "yes" : "no") << "\n"
+                      << "MPI MC communication: "
+                      << (cfg.communication == MonteCarloCommunication::TwoSided
+                          ? "two-sided" : "RDMA") << "\n"
                       << "Polarization:    " << (cfg.polarization ? "yes" : "no") << "\n"
                       << "Photosphere:     " << (cfg.photosphere ? "yes" : "no") << "\n"
                       << "Flux source test:" << (cfg.fluxSourceCompare ? " yes" : " no") << "\n"
@@ -548,8 +558,14 @@ int PostProcessIMC::RunPostProcessMain(
                       << "Opacity scale:   " << (cfg.opacityScaleMode == imc_postprocess_tde::OpacityScaleMode::Planck ? "planck" :
                                                   cfg.opacityScaleMode == imc_postprocess_tde::OpacityScaleMode::Rosseland ? "rosseland" : "disabled") << "\n"
                       << "Adaptive source: " << (cfg.adaptiveSourceCells ? "enabled" : "disabled") << "\n"
-                      << "  MG schedule:   1 exact-1 burn-in, 19 exact-3 burn-in, learned-only exact-75 probe, LB, "
-                      << cfg.nGenerations << " learned-only final steps (min=500 max=2000)\n"
+                      << "  learning generations (discarded): "
+                      << generationSchedule.statisticsStartGeneration << "\n"
+                      << "  learning schedule exact-1/exact-3/exact-75: "
+                      << generationSchedule.initialLearningGenerations << "/"
+                      << generationSchedule.uniformLearningGenerations << "/"
+                      << generationSchedule.learnedProbeGenerations << "\n"
+                      << "  statistics generations (included): "
+                      << generationSchedule.statisticsGenerations << "\n"
                       << "  final LB cadence: every 10 learned-final steps before the last\n"
                       << "  min esc frac:  " << cfg.adaptiveSourceMinEscapedFrac << "\n"
                       << "  strength:      " << cfg.adaptiveSourceStrength << "\n"
@@ -570,8 +586,7 @@ int PostProcessIMC::RunPostProcessMain(
                       << "  observer deficit max/EMA:  " << cfg.adaptiveObserverDeficitMax << "/" << cfg.adaptiveObserverDeficitEma << "\n"
                       << "  observer extra budget max: " << cfg.adaptiveObserverExtraBudgetFrac << "\n"
                       << "  burnin/adapt LB: " << ((cfg.adaptiveSourceCells && cfg.measuredLoadBalance) ? "requested" : "disabled") << "\n"
-                      << "Requested generations: " << cfg.nGenerations << "\n"
-                      << "MPI ranks:       " << mpiSize << "\n"
+                       << "MPI ranks:       " << mpiSize << "\n"
                       << std::endl;
         }
 
@@ -937,14 +952,8 @@ int PostProcessIMC::RunPostProcessMain(
         // ============================================================
         // Construct manager
         // ============================================================
-        std::shared_ptr<MonteCarloManager3D> manager;
-#ifdef RICH_MPI
-        manager = std::make_shared<RDMAMonteCarloManager3D>(
-            tess, physics, popControl, boundary);
-#else
-        manager = std::make_shared<MonteCarloManagerSerial3D>(
-            tess, physics, popControl, boundary);
-#endif
+        std::shared_ptr<MonteCarloManager3D> manager =
+            CreateMonteCarloManager(cfg, tess, physics, popControl, boundary);
 
         if (rank == 0)
         {

@@ -121,14 +121,9 @@ ForwardPostprocessResult RunGreyPostprocess(
 
             auto greyPopControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Tessellation3D>>(tess);
 
-            std::shared_ptr<MonteCarloManager3D> greyManager;
-    #ifdef RICH_MPI
-            greyManager = std::make_shared<RDMAMonteCarloManager3D>(
-                tess, greyPhysics, greyPopControl, greyBoundary);
-    #else
-            greyManager = std::make_shared<MonteCarloManagerSerial3D>(
-                tess, greyPhysics, greyPopControl, greyBoundary);
-    #endif
+            std::shared_ptr<MonteCarloManager3D> greyManager =
+                CreateMonteCarloManager(
+                    cfg, tess, greyPhysics, greyPopControl, greyBoundary);
 
             bool const greyMeasuredLBActive =
                 cfg.measuredLoadBalance && (cfg.adaptiveSourceCells || nGreyGens > 1);
@@ -154,14 +149,21 @@ ForwardPostprocessResult RunGreyPostprocess(
             greyObserver->clearGenerationStatistics();
             size_t greyIncludedFinalGenerations = 0;
             size_t greyDiscardedBurninGenerations = 0;
-            size_t const greyInitialBurninGenerations = cfg.adaptiveSourceCells ? 1 : 0;
-            size_t const greyUniformBurninGenerations = cfg.adaptiveSourceCells ? 19 : 0;
+            AdaptiveGenerationSchedule const greySchedule =
+                MakeAdaptiveGenerationSchedule(
+                    cfg.adaptiveSourceCells,
+                    cfg.adaptiveSourceBurnin,
+                    nGreyGens);
+            size_t const greyInitialBurninGenerations =
+                greySchedule.initialLearningGenerations;
+            size_t const greyUniformBurninGenerations =
+                greySchedule.uniformLearningGenerations;
             size_t const greyBurninGenerations = greyInitialBurninGenerations + greyUniformBurninGenerations;
-            size_t const greyLearnedProbeGenerations = cfg.adaptiveSourceCells ? 1 : 0;
-            size_t const greyFinalStartGeneration = greyBurninGenerations + greyLearnedProbeGenerations;
-            size_t const greyTotalGenerations = cfg.adaptiveSourceCells
-                ? greyFinalStartGeneration + nGreyGens
-                : nGreyGens;
+            size_t const greyLearnedProbeGenerations =
+                greySchedule.learnedProbeGenerations;
+            size_t const greyFinalStartGeneration =
+                greySchedule.statisticsStartGeneration;
+            size_t const greyTotalGenerations = greySchedule.totalGenerations;
             for (size_t gen = 0; gen < greyTotalGenerations; ++gen) {
                 bool const greyFirstBurninThisGen =
                     cfg.adaptiveSourceCells && gen < greyInitialBurninGenerations;
@@ -519,8 +521,8 @@ ForwardPostprocessResult RunGreyPostprocess(
 
                         greyPopControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Tessellation3D>>(tess);
 
-                        greyManager = std::make_shared<RDMAMonteCarloManager3D>(
-                            tess, greyPhysics, greyPopControl, greyBoundary);
+                        greyManager = CreateMonteCarloManager(
+                            cfg, tess, greyPhysics, greyPopControl, greyBoundary);
 
                         if (rank == 0)
                             std::cout << greyLBLabel

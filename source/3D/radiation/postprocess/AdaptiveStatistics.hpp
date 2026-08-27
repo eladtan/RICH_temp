@@ -34,6 +34,21 @@ struct AdaptiveSourceState
     size_t lastAdaptiveMeasuredLBGeneration = std::numeric_limits<size_t>::max();
 };
 
+struct AdaptiveGenerationSchedule
+{
+    size_t initialLearningGenerations = 0;
+    size_t uniformLearningGenerations = 0;
+    size_t learnedProbeGenerations = 0;
+    size_t statisticsGenerations = 0;
+    size_t statisticsStartGeneration = 0;
+    size_t totalGenerations = 0;
+};
+
+AdaptiveGenerationSchedule MakeAdaptiveGenerationSchedule(
+    bool adaptiveSampling,
+    size_t learningGenerations,
+    size_t statisticsGenerations);
+
 struct ObserverQualityDiagnostics
 {
     bool enabled = false;

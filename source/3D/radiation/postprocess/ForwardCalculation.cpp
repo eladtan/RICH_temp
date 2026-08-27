@@ -83,15 +83,22 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
             size_t mgIncludedFinalGenerations = 0;
             size_t mgDiscardedBurninGenerations = 0;
 
-            size_t const mgInitialBurninGenerations = cfg.adaptiveSourceCells ? 1 : 0;
-            size_t const mgUniformBurninGenerations = cfg.adaptiveSourceCells ? 19 : 0;
+            AdaptiveGenerationSchedule const mgSchedule =
+                MakeAdaptiveGenerationSchedule(
+                    cfg.adaptiveSourceCells,
+                    cfg.adaptiveSourceBurnin,
+                    cfg.nGenerations);
+            size_t const mgInitialBurninGenerations =
+                mgSchedule.initialLearningGenerations;
+            size_t const mgUniformBurninGenerations =
+                mgSchedule.uniformLearningGenerations;
             size_t const mgBurninGenerations = mgInitialBurninGenerations + mgUniformBurninGenerations;
-            size_t const mgLearnedProbeGenerations = cfg.adaptiveSourceCells ? 1 : 0;
-            size_t const mgFinalStartGeneration = mgBurninGenerations + mgLearnedProbeGenerations;
-            size_t const mgFinalGenerations = cfg.nGenerations;
-            size_t const mgTotalGenerations = cfg.adaptiveSourceCells
-                ? mgFinalStartGeneration + mgFinalGenerations
-                : cfg.nGenerations;
+            size_t const mgLearnedProbeGenerations =
+                mgSchedule.learnedProbeGenerations;
+            size_t const mgFinalStartGeneration =
+                mgSchedule.statisticsStartGeneration;
+            size_t const mgFinalGenerations = mgSchedule.statisticsGenerations;
+            size_t const mgTotalGenerations = mgSchedule.totalGenerations;
             for (size_t gen = 0; gen < mgTotalGenerations; ++gen)
             {
                 bool const firstBurninThisGen =
@@ -541,8 +548,8 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
 
                         popControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Tessellation3D>>(tess);
 
-                        manager = std::make_shared<RDMAMonteCarloManager3D>(
-                            tess, physics, popControl, boundary);
+                        manager = CreateMonteCarloManager(
+                            cfg, tess, physics, popControl, boundary);
 
                         if (rank == 0)
                             std::cout << mgLBLabel

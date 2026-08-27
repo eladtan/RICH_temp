@@ -185,6 +185,29 @@ void AddOpacityMode(std::vector<Option>& options, OpacityScaleMode& target)
         }});
 }
 
+void AddMonteCarloCommunication(
+    std::vector<Option>& options, MonteCarloCommunication& target)
+{
+    options.push_back(Option{
+        "transport.communication", "two-sided|rdma",
+        "MPI particle communication used by Monte Carlo transport.",
+        [&target](std::string const& text, std::string& error) {
+            if (text == "two-sided")
+                target = MonteCarloCommunication::TwoSided;
+            else if (text == "rdma")
+                target = MonteCarloCommunication::Rdma;
+            else {
+                error = "expected two-sided or rdma";
+                return false;
+            }
+            return true;
+        },
+        [&target]() {
+            return target == MonteCarloCommunication::TwoSided
+                ? std::string("two-sided") : std::string("rdma");
+        }});
+}
+
 std::vector<Option> MakeRegistry(PostProcessConfig& c)
 {
     std::vector<Option> options;
@@ -206,7 +229,8 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddDouble(options, "transport.source-dt", "Source emission interval [s].", c.transport.sourceDt);
     AddDouble(options, "transport.duration", "Transport duration [s], or zero for the snapshot default.", c.transport.duration);
     AddSize(options, "transport.photons-per-cell", "Base packet count per source cell.", c.transport.photonsPerCell);
-    AddSize(options, "transport.generations", "Number of learning/transport generations.", c.transport.generations);
+    AddSize(options, "transport.generations", "Number of generations included in statistical estimates.", c.transport.generations);
+    AddMonteCarloCommunication(options, c.transport.communication);
     AddBool(options, "transport.ddmc", "Enable DDMC acceleration.", c.transport.ddmc);
     AddBool(options, "transport.random-walk", "Enable random-walk acceleration.", c.transport.randomWalk);
     AddBool(options, "transport.use-cell-velocities", "Include snapshot cell velocities.", c.transport.useCellVelocities);
@@ -227,7 +251,7 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddOpacityMode(options, c.opacityScaling.mode);
 
     AddBool(options, "adaptive.source.enabled", "Learn source-cell allocation.", c.adaptive.source.enabled);
-    AddSize(options, "adaptive.source.burnin-generations", "Compatibility burn-in generation count.", c.adaptive.source.burninGenerations);
+    AddSize(options, "adaptive.source.burnin-generations", "Learning generations excluded from statistical estimates.", c.adaptive.source.burninGenerations);
     AddDouble(options, "adaptive.source.strength", "Learned-score allocation fraction.", c.adaptive.source.strength);
     AddDouble(options, "adaptive.source.ema", "Source-score exponential averaging factor.", c.adaptive.source.ema);
     AddDouble(options, "adaptive.source.min-escaped-fraction", "Minimum learned escaped-energy fraction.", c.adaptive.source.minEscapedFraction);

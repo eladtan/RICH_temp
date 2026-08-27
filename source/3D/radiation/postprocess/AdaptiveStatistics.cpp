@@ -19,6 +19,33 @@
 
 namespace imc_postprocess_tde {
 
+AdaptiveGenerationSchedule MakeAdaptiveGenerationSchedule(
+    bool adaptiveSampling,
+    size_t learningGenerations,
+    size_t statisticsGenerations)
+{
+    AdaptiveGenerationSchedule schedule;
+    schedule.statisticsGenerations = statisticsGenerations;
+
+    if (!adaptiveSampling) {
+        schedule.totalGenerations = statisticsGenerations;
+        return schedule;
+    }
+    if (learningGenerations < 2)
+        throw UniversalError(
+            "Adaptive postprocessing requires at least two learning generations");
+
+    // The first uniform sample discovers escaping cells. The last learning
+    // sample probes the learned allocation before any statistical sample is
+    // accepted. All learning samples between them refine the uniform estimate.
+    schedule.initialLearningGenerations = 1;
+    schedule.learnedProbeGenerations = 1;
+    schedule.uniformLearningGenerations = learningGenerations - 2;
+    schedule.statisticsStartGeneration = learningGenerations;
+    schedule.totalGenerations = learningGenerations + statisticsGenerations;
+    return schedule;
+}
+
 double EffectiveMeasuredLBWeightCompression(Config const& cfg)
 {
     if (cfg.measuredLBWeightCompression > 0.0)

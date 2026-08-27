@@ -12,6 +12,7 @@
 namespace imc_postprocess_tde {
 
 using OpacityScaleMode = PostProcessIMC::OpacityScaleMode;
+using MonteCarloCommunication = PostProcessIMC::MonteCarloCommunication;
 
 struct Config
 {
@@ -32,6 +33,7 @@ struct Config
     size_t comptonSamples = 200000;
     bool comptonAngleDependent = true;
     size_t nGenerations = 1;
+    MonteCarloCommunication communication = MonteCarloCommunication::Rdma;
     bool ddmc = true;
     bool randomWalk = true;
     bool useCellVelocities = true;
@@ -47,7 +49,7 @@ struct Config
     bool measuredLoadBalance = true;
     OpacityScaleMode opacityScaleMode = OpacityScaleMode::Planck;
     bool adaptiveSourceCells = false;
-    size_t adaptiveSourceBurnin = 3;
+    size_t adaptiveSourceBurnin = 21;
     double adaptiveSourceStrength = 0.95;
     double adaptiveSourceEma = 0.5;
     double adaptiveSourceMinEscapedFrac = 1e-12;

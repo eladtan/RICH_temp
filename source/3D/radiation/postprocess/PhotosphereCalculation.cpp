@@ -463,14 +463,9 @@ ProbePassResult RunInwardProbePass(Config const& cfg,
         cfg.center, cfg.radius, channels, particleCount);
     auto probePopControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Tessellation3D>>(runtime.tess);
 
-    std::shared_ptr<MonteCarloManager3D> probeManager;
-#ifdef RICH_MPI
-    probeManager = std::make_shared<RDMAMonteCarloManager3D>(
-        runtime.tess, probePhysics, probePopControl, probeBoundary);
-#else
-    probeManager = std::make_shared<MonteCarloManagerSerial3D>(
-        runtime.tess, probePhysics, probePopControl, probeBoundary);
-#endif
+    std::shared_ptr<MonteCarloManager3D> probeManager =
+        CreateMonteCarloManager(
+            cfg, runtime.tess, probePhysics, probePopControl, probeBoundary);
 
     double const fullDistance = cfg.radius * 2.01;
     auto const chunkStart = std::chrono::steady_clock::now();

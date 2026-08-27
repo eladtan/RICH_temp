@@ -524,17 +524,13 @@ void InitializeFluxSourceSurface(
         cfg.center, cfg.fluxSourceThermalizationTau, nSourceRays);
     auto population = std::make_shared<
         STORM::NoPopulationControl<Vector3D, Tessellation3D>>(runtime.tess);
-    std::shared_ptr<MonteCarloManager3D> manager;
-#ifdef RICH_MPI
-    manager = std::make_shared<RDMAMonteCarloManager3D>(
-        runtime.tess, physics, population, boundary);
-#else
-    manager = std::make_shared<MonteCarloManagerSerial3D>(
-        runtime.tess, physics, population, boundary);
-#endif
+    std::shared_ptr<MonteCarloManager3D> manager =
+        CreateMonteCarloManager(
+            cfg, runtime.tess, physics, population, boundary);
 
-    // Keep the global number of live probe rays below the default 500-slot
-    // RDMA peer buffer.  The probe creates no secondary particles, so a
+    // Keep the global number of live probe rays below the established
+    // 500-slot RDMA peer-buffer limit when that backend is selected. The probe
+    // creates no secondary particles, so a
     // 400-ray global batch cannot require remote-handler reallocation.
     size_t constexpr probeBatchSize = 400;
     size_t const batchCount =

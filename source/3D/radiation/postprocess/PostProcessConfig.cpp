@@ -170,6 +170,16 @@ bool ValidateConfig(Config &cfg, int rank)
         if (rank == 0) std::cerr << "--input.eos-directory is required\n";
         return false;
     }
+    if (cfg.nGenerations == 0) {
+        if (rank == 0)
+            std::cerr << "--transport.generations must be positive\n";
+        return false;
+    }
+    if (cfg.adaptiveSourceCells && cfg.adaptiveSourceBurnin < 2) {
+        if (rank == 0)
+            std::cerr << "--adaptive.source.burnin-generations must be at least 2 when adaptive source sampling is enabled\n";
+        return false;
+    }
 #if 0
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];

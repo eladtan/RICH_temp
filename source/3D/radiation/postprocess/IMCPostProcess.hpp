@@ -22,6 +22,7 @@ struct ComputationalCell3D;
 namespace PostProcessIMC {
 
 enum class OpacityScaleMode { None, Rosseland, Planck };
+enum class MonteCarloCommunication { TwoSided, Rdma };
 
 struct PostProcessConfig
 {
@@ -51,7 +52,8 @@ struct PostProcessConfig
         double sourceDt = 1.0;
         double duration = 0.0;
         size_t photonsPerCell = 100;
-        size_t generations = 1;
+        size_t generations = 1; // Independent generations included in statistics.
+        MonteCarloCommunication communication = MonteCarloCommunication::Rdma;
         bool ddmc = true;
         bool randomWalk = true;
         bool useCellVelocities = true;
@@ -95,7 +97,7 @@ struct PostProcessConfig
         struct Source
         {
             bool enabled = false;
-            size_t burninGenerations = 3;
+            size_t burninGenerations = 21; // Learning generations excluded from statistics.
             double strength = 0.95;
             double ema = 0.5;
             double minEscapedFraction = 1e-12;

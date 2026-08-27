@@ -181,6 +181,27 @@ public:
 using VacuumBoundary3D = VacuumBoundaryCondition<Vector3D, Tessellation3D>;
 using NoPopulationControl3D = STORM::NoPopulationControl<Vector3D, Tessellation3D>;
 
+inline std::shared_ptr<MonteCarloManager3D> CreateMonteCarloManager(
+    Config const& config,
+    Tessellation3D const& tessellation,
+    std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> const& physics,
+    std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> const& population,
+    std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> const& boundary)
+{
+#ifdef RICH_MPI
+    if (config.communication == MonteCarloCommunication::TwoSided) {
+        return std::make_shared<TwoSidedMonteCarloManager3D>(
+            tessellation, physics, population, boundary);
+    }
+    return std::make_shared<RDMAMonteCarloManager3D>(
+        tessellation, physics, population, boundary);
+#else
+    (void)config;
+    return std::make_shared<MonteCarloManagerSerial3D>(
+        tessellation, physics, population, boundary);
+#endif
+}
+
 class PostProcessSession
 {
 public:
