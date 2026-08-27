@@ -326,11 +326,7 @@ target_link_libraries(
 )
 target_link_options(${EXE_NAME} PRIVATE -rdynamic)
 
-# STORM is added EXCLUDE_FROM_ALL, so its device-side translation unit is never
-# reached by a plain build. Until the Kokkos executor is wired into transport,
-# this is the only thing that compiles the grey IMC kernel for the GPU target.
 if(STORM_WITH_GPU)
-    add_dependencies(${EXE_NAME} storm_gpu_compile_test)
     set(_rocm_root "$ENV{ROCM_PATH}")
     if(NOT _rocm_root)
         set(_rocm_root "/opt/rocm")
