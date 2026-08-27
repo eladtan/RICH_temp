@@ -173,11 +173,13 @@ For a DDMC-to-DDMC leak:
   before the packet's next transport event, exactly as `stepImpl()` does now.
 
 At `postStep`, synchronize device DDMC tally buffers to host, add them to the
-existing host accumulators, then perform the existing
-`ddmc::ReducePointContributions()` operation once.  This preserves the
-asymmetric halo-map and zero-cell-rank behavior in `DDMCGhostExchange.hpp`.
-GPU-aware MPI can be investigated later, but it must not be a prerequisite or
-an implicit assumption about the MPI build.
+existing host accumulators, then call `STORM::MPI_reduce_ghost_data()` once
+on the flux RHS.  That is the reverse of `MPI_exchange_data` (ghost → owner
+`+=`) in `source/monte/utils/MpiExchangeGrid.hpp`.  Halo **fill** of
+eligibility/`D` during precompute is `MPI_exchange_data(grid, field, true)`.
+There is no DDMC-specific MPI file.  GPU-aware MPI can be investigated later,
+but it must not be a prerequisite or an implicit assumption about the MPI
+build.
 
 Use device atomics for scalar energy and flux tallies initially.  Expect
 contention in highly populated cells; if profiling shows it dominates, reduce
