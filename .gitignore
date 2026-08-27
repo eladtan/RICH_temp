@@ -60,3 +60,11 @@ RDMA_paper/
 compilation/runs/*/rich*
 runs/*/rich_*
 **/mpi_tmp*
+
+# Crash dumps and NFS silly-rename leftovers
+core
+core.*
+.nfs*
+
+# Profiler output dumps
+runs/*/rocprof_*/
