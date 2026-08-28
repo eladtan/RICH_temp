@@ -391,6 +391,12 @@ int main(int argc, char *argv[])
         arguments.addFlag("ddmc-device", "run eligible DDMC transport on the GPU")
             .defaultValue(true)
             .flagAlias("ddmc-cpu", false);
+        arguments.addOption<size_t>("gpu-inner-steps", 64,
+            "maximum transport events per packet and GPU wave");
+        arguments.addOption<size_t>("gpu-min-launch", 1024,
+            "minimum resident packets before launching a GPU wave");
+        arguments.addOption<size_t>("gpu-hold-skips", 64,
+            "maximum small-pool holds before forcing a GPU wave");
         arguments.addOption<std::string>("manager", "new-rdma-auto", "Monte Carlo communication manager")
             .choices({"new-rdma-auto", "new-rdma-ibv", "p2p"})
             .flagAlias("new-rdma", "new-rdma-auto")
@@ -430,6 +436,9 @@ int main(int argc, char *argv[])
         bool withRandomWalk = arguments.get<bool>("random-walk");
         bool withDDMC = arguments.get<bool>("ddmc");
         bool ddmcDevice = arguments.get<bool>("ddmc-device");
+        size_t gpuInnerSteps = arguments.get<size_t>("gpu-inner-steps");
+        size_t gpuMinLaunch = arguments.get<size_t>("gpu-min-launch");
+        size_t gpuHoldSkips = arguments.get<size_t>("gpu-hold-skips");
         size_t cycles = arguments.get<size_t>("cycles");
         size_t snapshotInterval = arguments.get<size_t>("snapshot-interval");
         size_t profileCycle = arguments.get<size_t>("profile-cycle");
@@ -558,6 +567,9 @@ int main(int argc, char *argv[])
                       << ", random_walk=" << withRandomWalk
                       << ", ddmc=" << withDDMC
                       << ", ddmc_device=" << (withDDMC && ddmcDevice)
+                      << ", gpu_inner_steps=" << gpuInnerSteps
+                      << ", gpu_min_launch=" << gpuMinLaunch
+                      << ", gpu_hold_skips=" << gpuHoldSkips
                       << ", manager=" << managerName
                       << ", cycles=" << cycles
                       << ", injected photons/cell=" << particlesPerCell / 4
@@ -600,10 +612,20 @@ int main(int argc, char *argv[])
 
         std::vector<Particle3D> initialParticles;
 
+        STORM::MonteCarloConfig monteCarloConfig;
+#ifdef STORM_WITH_GPU
+        monteCarloConfig.gpuMaxInnerSteps = gpuInnerSteps;
+        monteCarloConfig.gpuMinLaunchSize = gpuMinLaunch;
+        monteCarloConfig.gpuHoldMaxSkips = gpuHoldSkips;
+#else
+        (void)gpuInnerSteps;
+        (void)gpuMinLaunch;
+        (void)gpuHoldSkips;
+#endif
         mcStep = std::make_shared<RadiationMCStep>(
             tess, cells, extensives, physics, popControl, boundaryCond, initialParticles, 0, withHydro
             #ifdef RICH_MPI
-                , managerType
+                , managerType, nullptr, monteCarloConfig
             #endif
         );
         sim.addPhysics(mcStep);

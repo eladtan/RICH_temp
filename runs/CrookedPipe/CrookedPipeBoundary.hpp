@@ -24,6 +24,11 @@ public:
         size_t insideCellIndex,
         size_t outsidePointIndex) const override;
 
+    STORM::DDMCBoundaryFaceBehavior getDDMCBoundaryFaceBehavior(
+        size_t faceIdx,
+        size_t insideCellIndex,
+        size_t outsidePointIndex) const override;
+
 private:
     const std::vector<ComputationalCell3D> &cells;
  };
@@ -81,6 +86,23 @@ CrookedPipeBoundaryCondition<T, Grid>::getDeviceBoundaryFaceBehavior(
     return escapesThroughOpenEnd
         ? STORM::DeviceBoundaryFaceBehavior::HostOnly
         : STORM::DeviceBoundaryFaceBehavior::ReflectingRigid;
+}
+
+template<typename T, typename Grid>
+STORM::DDMCBoundaryFaceBehavior
+CrookedPipeBoundaryCondition<T, Grid>::getDDMCBoundaryFaceBehavior(
+    size_t faceIdx,
+    size_t insideCellIndex,
+    size_t outsidePointIndex) const
+{
+    (void)outsidePointIndex;
+    T normal = normalize(this->grid.Normal(faceIdx));
+    const bool openPipeEnd =
+        std::abs(normal.x) > 0.99 &&
+        this->cells[insideCellIndex].tracers[1] > 0.5;
+    return openPipeEnd
+        ? STORM::DDMCBoundaryFaceBehavior::Unsupported
+        : STORM::DDMCBoundaryFaceBehavior::ReflectingRigid;
 }
 
 template<typename T, typename Grid>
