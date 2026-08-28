@@ -3,6 +3,7 @@
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <iomanip>
 #include <iostream>
 #include <vector>
 #include <string>
@@ -37,10 +38,11 @@
 
 std::shared_ptr<RadiationMCStep> mcStep = nullptr;
 bool do_output = false;
+bool do_snapshots = true;
 
 void Output(const std::string &fname)
 {
-    if(not do_output)
+    if(not do_output || not do_snapshots)
     {
         return;
     }
@@ -375,10 +377,20 @@ int main(int argc, char *argv[])
         arguments.addOption<std::string>("output", "", "output directory");
         arguments.addOption<size_t>("cycles", 200, "maximum number of cycles")
             .optionAlias("iterations");
+        arguments.addOption<size_t>("snapshot-interval", 5,
+            "write intermediate snapshots every N cycles (0 disables them)");
+        arguments.addFlag("snapshots", "write start/final HDF5 and VTK snapshots")
+            .defaultValue(true)
+            .flagAlias("no-snapshots", false);
         arguments.addFlag("random-walk", "enable random walk acceleration")
             .defaultValue(true)
             .flagAlias("rw", true)
             .flagAlias("no-rw", false);
+        arguments.addFlag("ddmc", "enable DDMC acceleration")
+            .defaultValue(false);
+        arguments.addFlag("ddmc-device", "run eligible DDMC transport on the GPU")
+            .defaultValue(true)
+            .flagAlias("ddmc-cpu", false);
         arguments.addOption<std::string>("manager", "new-rdma-auto", "Monte Carlo communication manager")
             .choices({"new-rdma-auto", "new-rdma-ibv", "p2p"})
             .flagAlias("new-rdma", "new-rdma-auto")
@@ -414,8 +426,12 @@ int main(int argc, char *argv[])
         size_t particlesPerCell = arguments.get<size_t>("particles_per_cell");
         std::string outputDir = arguments.get<std::string>("output");
         do_output = !outputDir.empty();
+        do_snapshots = arguments.get<bool>("snapshots");
         bool withRandomWalk = arguments.get<bool>("random-walk");
+        bool withDDMC = arguments.get<bool>("ddmc");
+        bool ddmcDevice = arguments.get<bool>("ddmc-device");
         size_t cycles = arguments.get<size_t>("cycles");
+        size_t snapshotInterval = arguments.get<size_t>("snapshot-interval");
         size_t profileCycle = arguments.get<size_t>("profile-cycle");
         std::string managerName = arguments.get<std::string>("manager");
 #ifdef STORM_WITH_GPU
@@ -531,10 +547,17 @@ int main(int argc, char *argv[])
             {
                 WriteProbeHeader(probeFiles[i]);
             }
+            std::ofstream metrics(prefix + "crookedpipe_metrics.txt",
+                                  std::ios::trunc);
+            metrics << "cycle,time_s,step_wall_s,census_particles,"
+                       "census_weight,ddmc_steps,ddmc_leaks,ddmc_census,"
+                       "ddmc_fallback,max_temperature_K\n";
             std::cout << "Crooked pipe benchmark:"
                       << " points=" << N
                       << ", particles/cell=" << particlesPerCell
                       << ", random_walk=" << withRandomWalk
+                      << ", ddmc=" << withDDMC
+                      << ", ddmc_device=" << (withDDMC && ddmcDevice)
                       << ", manager=" << managerName
                       << ", cycles=" << cycles
                       << ", injected photons/cell=" << particlesPerCell / 4
@@ -563,6 +586,8 @@ int main(int argc, char *argv[])
             .withMultigroupOpacity = false,
             .withRandomWalk = withRandomWalk,
             .rwMinCellOpticalDepth = 25,
+            .withDDMC = withDDMC,
+            .ddmcGpuEnable = withDDMC && ddmcDevice,
             .energyBoundaries = {0.0, 1.0e30},
             .energyBoundariesProvided = true,
             .postProcess = {}
@@ -631,6 +656,31 @@ int main(int argc, char *argv[])
             auto stepStart = std::chrono::high_resolution_clock::now();
             sim.step();
             auto stepEnd = std::chrono::high_resolution_clock::now();
+            const double stepWallSeconds =
+                std::chrono::duration<double>(stepEnd - stepStart).count();
+            unsigned long long localCounts[5] = {
+                static_cast<unsigned long long>(mcStep->getParticles().size()),
+                static_cast<unsigned long long>(physics->getDDMCStepCount()),
+                static_cast<unsigned long long>(physics->getDDMCLeakCount()),
+                static_cast<unsigned long long>(physics->getDDMCCensusCount()),
+                static_cast<unsigned long long>(physics->getDDMCFallbackCount())
+            };
+            unsigned long long globalCounts[5] = {};
+            MPI_Reduce(localCounts, globalCounts, 5, MPI_UNSIGNED_LONG_LONG,
+                       MPI_SUM, 0, MPI_COMM_WORLD);
+            double localCensusWeight = 0.0;
+            for(const Particle3D &particle : mcStep->getParticles())
+                localCensusWeight += particle.weight;
+            double globalCensusWeight = 0.0;
+            MPI_Reduce(&localCensusWeight, &globalCensusWeight, 1, MPI_DOUBLE,
+                       MPI_SUM, 0, MPI_COMM_WORLD);
+            double localMaxTemperature = 0.0;
+            for(size_t i = 0; i < tess.GetPointNo(); ++i)
+                localMaxTemperature =
+                    std::max(localMaxTemperature, cells[i].temperature);
+            double globalMaxTemperature = 0.0;
+            MPI_Reduce(&localMaxTemperature, &globalMaxTemperature, 1,
+                       MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 #ifdef STORM_WITH_GPU
             if(profileThisCycle)
             {
@@ -655,13 +705,25 @@ int main(int argc, char *argv[])
 
             if(rank == 0)
             {
-                double timeTaken = std::chrono::duration<double>(stepEnd - stepStart).count();
-                std::cout << "Ended Cycle " << sim.GetCycle() << ", dt: " << dt << ", simulation time: " << time << " (" << time / totalTime * 100 << "%), time taken: " << timeTaken << " seconds" << std::endl;
+                std::cout << "Ended Cycle " << sim.GetCycle() << ", dt: " << dt << ", simulation time: " << time << " (" << time / totalTime * 100 << "%), time taken: " << stepWallSeconds << " seconds" << std::endl;
+                if(do_output)
+                {
+                    std::ofstream metrics(
+                        prefix + "crookedpipe_metrics.txt", std::ios::app);
+                    metrics << std::setprecision(17)
+                            << sim.GetCycle() << "," << time << ","
+                            << stepWallSeconds << "," << globalCounts[0] << ","
+                            << globalCensusWeight << "," << globalCounts[1]
+                            << "," << globalCounts[2] << "," << globalCounts[3]
+                            << "," << globalCounts[4] << ","
+                            << globalMaxTemperature << "\n";
+                }
             }
             if(do_output)
             {
                 AppendProbes(tess, cells, time, sim.GetCycle(), probeFiles);
-                if(sim.GetCycle() % 5 == 0)
+                if(snapshotInterval > 0 &&
+                   sim.GetCycle() % snapshotInterval == 0)
                 {
                     Output(prefix + std::to_string(sim.GetCycle()));
                 }

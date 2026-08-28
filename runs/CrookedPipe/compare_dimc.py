@@ -7,8 +7,6 @@ Usage:
     python3 compare_dimc.py
     python3 compare_dimc.py crookedpipe_probes.txt
 """
-from __future__ import annotations
-
 import argparse
 import glob
 import os

@@ -26,6 +26,9 @@
 #include "source/monte/boundary/RigidBoundary.hpp"
 #include "source/monte/population/CombPopulationControl.hpp"
 #include "source/newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
+#ifdef STORM_WITH_GPU
+#include "source/monte/gpu/KokkosRuntime.hpp"
+#endif
 
 namespace fs = std::filesystem;
 
@@ -324,6 +327,7 @@ int main(int argc, char **argv)
         parameters.withMultigroupOpacity = false;
         parameters.withRandomWalk = false;
         parameters.withDDMC = true;
+        parameters.ddmcGpuEnable = true;
         parameters.ddmcMinCellOpticalDepth = 15.0;
         parameters.ddmcUseMovingInterfaceCorrection = false;
         parameters.noHydroFeedback = true;
@@ -341,7 +345,7 @@ int main(int argc, char **argv)
         auto mcStep = std::make_shared<RadiationMCStep>(
             tess, cells, extensives, physics, population, boundary,
             initialParticles, initialParticlesPerCell, false,
-            RadiationMCStep::ManagerType::P2P);
+            RadiationMCStep::ManagerType::RDMA);
 
         double localInitialWeight = SumParticleWeights(mcStep->getParticles());
         double initialWeight = 0.0;
@@ -524,6 +528,10 @@ int main(int argc, char **argv)
 
     int globalExitCode = 0;
     MPI_Allreduce(&exitCode, &globalExitCode, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    RMAFactory::Finalize(RDMA_Type::AUTO_RDMA);
+#ifdef STORM_WITH_GPU
+    STORM::gpu::KokkosRuntime::Finalize();
+#endif
     MPI_Finalize();
     return globalExitCode;
 }
