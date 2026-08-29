@@ -407,6 +407,10 @@ int main(int argc, char *argv[])
             .flagAlias("p2p", "p2p");
         arguments.addOption<size_t>("profile-cycle", 0,
             "If >0, resume ROCTx collection only for this 1-based cycle (use with rocprofv3)");
+        arguments.addOption<double>("max-dt", 1e-9,
+            "upper bound on the time step in seconds");
+        arguments.addOption<double>("stop-time", 1e-6,
+            "stop once this simulation time in seconds is reached");
 
         try
         {
@@ -442,6 +446,8 @@ int main(int argc, char *argv[])
         size_t cycles = arguments.get<size_t>("cycles");
         size_t snapshotInterval = arguments.get<size_t>("snapshot-interval");
         size_t profileCycle = arguments.get<size_t>("profile-cycle");
+        double maximumTimeStep = arguments.get<double>("max-dt");
+        double stopTime = arguments.get<double>("stop-time");
         std::string managerName = arguments.get<std::string>("manager");
 #ifdef STORM_WITH_GPU
         if(profileCycle > 0)
@@ -572,6 +578,8 @@ int main(int argc, char *argv[])
                       << ", gpu_hold_skips=" << gpuHoldSkips
                       << ", manager=" << managerName
                       << ", cycles=" << cycles
+                      << ", max_dt=" << maximumTimeStep
+                      << ", stop_time=" << stopTime
                       << ", injected photons/cell=" << particlesPerCell / 4
                       << ", output=" << (do_output ? outputDir : "<disabled>")
                       << std::endl;
@@ -641,8 +649,9 @@ int main(int argc, char *argv[])
 
         double dt = 1e-11;
         double time = 0;
-        const double totalTime = 1e-6;
-        double max_step = 1e-9;
+        const double totalTime = stopTime;
+        double max_step = maximumTimeStep;
+        dt = std::min(dt, max_step);
 
         if(do_output)
         {
@@ -657,7 +666,7 @@ int main(int argc, char *argv[])
 
         auto start_total = std::chrono::high_resolution_clock::now();
 
-        while(time < totalTime and sim.GetCycle() < cycles)
+        while(time < totalTime * (1.0 - 1e-9) and sim.GetCycle() < cycles)
         {
             const size_t upcomingCycle = sim.GetCycle() + 1;
 #ifdef STORM_WITH_GPU

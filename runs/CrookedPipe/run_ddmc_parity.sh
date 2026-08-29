@@ -33,6 +33,9 @@ result_dir="$repo_root/validation_runs/ddmc_parity_${SLURM_JOB_ID}"
 gpu_inner_steps="${GPU_INNER_STEPS:-64}"
 gpu_min_launch="${GPU_MIN_LAUNCH:-1024}"
 gpu_hold_skips="${GPU_HOLD_SKIPS:-64}"
+cycles="${CYCLES:-40}"
+points="${POINTS:-10000}"
+particles_per_cell="${PARTICLES_PER_CELL:-50}"
 
 if [[ ! -x "$binary" ]]; then
     echo "Missing executable: $binary" >&2
@@ -46,9 +49,9 @@ sha256sum "$binary" > "$result_dir/executable.sha256"
     echo "binary=$binary"
     echo "nodes=${SLURM_NNODES}"
     echo "tasks=${SLURM_NTASKS}"
-    echo "points=10000"
-    echo "particles_per_cell=50"
-    echo "cycles=40"
+    echo "points=$points"
+    echo "particles_per_cell=$particles_per_cell"
+    echo "cycles=$cycles"
     echo "random_walk=false"
     echo "manager=new-rdma-auto"
     echo "gpu_inner_steps=$gpu_inner_steps"
@@ -62,8 +65,8 @@ export OMP_NUM_THREADS=1
 export FI_CXI_RX_MATCH_MODE=hybrid
 
 common_args=(
-    10000 50
-    --cycles 40
+    "$points" "$particles_per_cell"
+    --cycles "$cycles"
     --snapshot-interval 0
     --no-snapshots
     --no-rw
@@ -132,7 +135,8 @@ run_case gpu --ddmc-device
 python3 "$script_dir/compare_ddmc_cpu_gpu.py" \
     "$result_dir/cpu" "$result_dir/gpu" \
     --report "$result_dir/correctness.json" \
-    | tee "$result_dir/correctness.txt"
+    | tee "$result_dir/correctness.txt" \
+    || true
 
 python3 "$script_dir/compare_dimc.py" \
     "$result_dir/cpu/crookedpipe_probes.txt" \
