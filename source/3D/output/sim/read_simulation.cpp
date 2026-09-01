@@ -1,4 +1,5 @@
 #include "newtonian/three_dimensional/simulation/Simulation.hpp"
+#include "newtonian/three_dimensional/conserved_3d.hpp"
 #include "3D/output/cellData.hpp"
 #include <filesystem>
 #include <thread>
@@ -106,10 +107,13 @@ namespace
     }
     #endif
 
-    void readTessellation(const HDF5Reader &reader, const std::string &prefix, Simulation &sim)
+    void readTessellation(const HDF5Reader &reader, const std::string &prefix, Simulation &sim
+                          #ifdef RICH_MPI
+                              , const std::shared_ptr<LoadBalancer<Vector3D>> &loadBalancer
+                          #endif
+                          )
     {
         Tessellation3D &tess = sim.getTessellation();
-
 
         if(reader.Exists(prefix + "/volumes"))
         {
@@ -130,10 +134,15 @@ namespace
             Voronoi3D *voronoi = dynamic_cast<Voronoi3D *>(&tess);
             if(voronoi)
             {
-                auto coords = tess.GetBoxCoordinates();
-                auto pm = PointsManagerIO::readPointsManager(reader, prefix + "/points_manager", coords.first, coords.second);
+                std::pair<Vector3D, Vector3D> coords = tess.GetBoxCoordinates();
+                std::shared_ptr<PointsManagerIO::PointsManager> pm =
+                    PointsManagerIO::readPointsManager(reader, prefix + "/points_manager", coords.first, coords.second);
                 voronoi->SetPointsManager(pm);
             }
+        }
+        if(loadBalancer != nullptr)
+        {
+            tess.PresetLoadBalancer(loadBalancer);
         }
 #endif
 
@@ -175,6 +184,27 @@ namespace
         reader.ReadElement(prefix + "/cells", cells);
         sim.getCells() = std::move(cells);
     }
+
+    void syncRestartState(Simulation &sim)
+    {
+        Tessellation3D &tess = sim.getTessellation();
+        std::vector<ComputationalCell3D> &cells = sim.getCells();
+        std::vector<Conserved3D> &extensives = sim.getExtensives();
+        extensives.resize(cells.size());
+        const std::size_t ownedCells = tess.GetPointNo();
+        for(std::size_t cellIndex = 0; cellIndex < ownedCells; ++cellIndex)
+        {
+            PrimitiveToConserved(cells[cellIndex], tess.GetVolume(cellIndex), extensives[cellIndex]);
+        }
+
+        #ifdef RICH_MPI
+            sim.buildDataTransfer();
+            for(const std::shared_ptr<PhysicsStep> &step : sim.getPhysicsSteps())
+            {
+                step->afterLB();
+            }
+        #endif
+    }
 }
 
 void ReadSimulation(const std::string &filename,
@@ -193,9 +223,19 @@ void ReadSimulation(const std::string &filename,
 
     #ifdef RICH_MPI
     std::string currentLBName;
+    std::shared_ptr<LoadBalancer<Vector3D>> currentLoadBalancer;
     if(parallel)
     {
         currentLBName = readLoadBalancers(globalReader, sim);
+        std::vector<std::pair<std::string, std::shared_ptr<LoadBalancer<Vector3D>>>> loads = sim.GetLoads();
+        for(const std::pair<std::string, std::shared_ptr<LoadBalancer<Vector3D>>> &entry : loads)
+        {
+            if(entry.first == currentLBName)
+            {
+                currentLoadBalancer = entry.second;
+                break;
+            }
+        }
 
         int rank = 0;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -218,20 +258,15 @@ void ReadSimulation(const std::string &filename,
         openReader(*dataReader, filename);
     }
 
-    readTessellation(*dataReader, "/tess", sim);
+    readTessellation(*dataReader, "/tess", sim
+                     #ifdef RICH_MPI
+                         , currentLoadBalancer
+                     #endif
+                     );
 
     #ifdef RICH_MPI
     if(parallel && !currentLBName.empty())
     {
-        auto loads = sim.GetLoads();
-        for(const auto &[name, lb] : loads)
-        {
-            if(name == currentLBName)
-            {
-                sim.getTessellation().PresetLoadBalancer(lb);
-                break;
-            }
-        }
         sim.PresetLoadBalance(currentLBName);
     }
     #endif
@@ -239,4 +274,5 @@ void ReadSimulation(const std::string &filename,
     readPhysicsGroups(*dataReader, "", sim);
     readPrivateInfo(*dataReader, "", sim);
     sim.recomputeMaxID();
+    syncRestartState(sim);
 }
