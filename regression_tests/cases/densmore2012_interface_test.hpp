@@ -801,7 +801,7 @@ namespace densmore2012_interface_test
                 .withMultigroupOpacity = true,
                 .withRandomWalk = useRandomWalk,
                 .withDDMC = EnableDDMC,
-                .ddmcUseMultigroupPGRW = EnableDDMC,
+                .withMultigroupDDMC = EnableDDMC,
                 .ddmcMaxGroupCutoff = options.ddmcMaxGroupCutoff,
                 .ddmcInterfaceDiagnostics = options.ddmcInterfaceDiagnostics,
                 .noHydroFeedback = false,

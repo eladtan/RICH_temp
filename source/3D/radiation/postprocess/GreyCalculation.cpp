@@ -98,7 +98,7 @@ ForwardPostprocessResult RunGreyPostprocess(
             greyParams.ddmcMinCellOpticalDepth = 15;
             greyParams.ddmcExternalSourceMinFaceOpticalDepth =
                 cfg.fluxSourceDDMCFaceOpticalDepth;
-            greyParams.ddmcUseMultigroupPGRW = false;
+            greyParams.withMultigroupDDMC = false;
             greyParams.MMC = false;
             greyParams.diffusionPressureGradient = false;
             greyParams.withMultigroupOpacity = false;

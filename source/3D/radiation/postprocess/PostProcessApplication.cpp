@@ -903,7 +903,7 @@ int PostProcessIMC::RunPostProcessMain(
         params.ddmcMinCellOpticalDepth = 15;
         params.ddmcExternalSourceMinFaceOpticalDepth =
             cfg.fluxSourceDDMCFaceOpticalDepth;
-        params.ddmcUseMultigroupPGRW = true;
+        params.withMultigroupDDMC = true;
         params.MMC = false;
         params.diffusionPressureGradient = false;
 #if ENERGY_GROUPS_NUM > 1
