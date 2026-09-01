@@ -5,6 +5,7 @@
 #ifndef RICH_CARTESIAN3D_HPP
 #define RICH_CARTESIAN3D_HPP 1
 
+#include <numeric>
 #include <vector>
 #include "Tessellation3D.hpp"
 #include "cartesian/CartesianMesh3D.hpp"
@@ -55,9 +56,16 @@ public:
     void SetImbalanceTolerance(double tolerance) override { engine_.SetImbalanceTolerance(tolerance); }
     void SetLoadBalancer(std::shared_ptr<LoadBalancer<Vector3D>> lb) override { engine_.SetLoadBalancer(lb); }
     void PresetLoadBalancer(std::shared_ptr<LoadBalancer<Vector3D>> lb) override { engine_.PresetLoadBalancer(lb); }
-    void Rebalance(const std::vector<double> &weights) override { engine_.Rebalance(weights); }
-    bool ShouldRebalance(const std::vector<double> &weights) const override { return engine_.ShouldRebalance(weights); }
-    bool ShouldRebalance(void) const override { return engine_.ShouldRebalance(); }
+    /*
+     * The mesh is static: MadCart fixes the decomposition when the mesh is
+     * built and never migrates cell data afterwards, while RICH's rebalancing
+     * protocol assumes the tessellation hands back a migration for the cell
+     * arrays.  Keeping the build-time decomposition is the only consistent
+     * answer, so a rebalance request is declined rather than half honoured.
+     */
+    void Rebalance(const std::vector<double> &weights) override { (void)weights; }
+    bool ShouldRebalance(const std::vector<double> &weights) const override { (void)weights; return false; }
+    bool ShouldRebalance(void) const override { return false; }
     std::shared_ptr<LoadBalancer<Vector3D>> GetLoadBalancer(void) override { return engine_.GetLoadBalancer(); }
     const std::shared_ptr<LoadBalancer<Vector3D>> GetLoadBalancer(void) const override { return engine_.GetLoadBalancer(); }
 
@@ -77,12 +85,19 @@ public:
     vector<vector<size_t>> &GetDuplicatedPoints(void) override { return engine_.GetDuplicatedPoints(); }
     vector<vector<size_t>> const &GetDuplicatedPoints(void) const override { return engine_.GetDuplicatedPoints(); }
     vector<int> GetDuplicatedProcs(void) const override { return engine_.GetDuplicatedProcs(); }
-    vector<int> GetSentProcs(void) const override { return engine_.GetSentProcs(); }
-    vector<vector<size_t>> const &GetSentPoints(void) const override { return engine_.GetSentPoints(); }
-    vector<size_t> const &GetSelfIndex(void) const override { return engine_.GetSelfIndex(); }
-    vector<int> &GetSentProcs(void) override { return engine_.GetSentProcs(); }
-    vector<vector<size_t>> &GetSentPoints(void) override { return engine_.GetSentPoints(); }
-    vector<size_t> &GetSelfIndex(void) override { return engine_.GetSelfIndex(); }
+    /*
+     * MadCart distributes the mesh points inside the build itself, so by the
+     * time RICH sees the tessellation the cell arrays are already indexed by
+     * local cell and no cell ever migrates afterwards.  Report that empty
+     * migration instead of MadCart's internal build-time exchange, whose
+     * indices refer to the global point list and do not address RICH's arrays.
+     */
+    vector<int> GetSentProcs(void) const override { return std::vector<int>(); }
+    vector<vector<size_t>> const &GetSentPoints(void) const override { return sentPoints_; }
+    vector<size_t> const &GetSelfIndex(void) const override { syncSelfIndex(); return selfIndex_; }
+    vector<int> &GetSentProcs(void) override { return sentProcs_; }
+    vector<vector<size_t>> &GetSentPoints(void) override { return sentPoints_; }
+    vector<size_t> &GetSelfIndex(void) override { syncSelfIndex(); return selfIndex_; }
     vector<vector<size_t>> const &GetGhostIndeces(void) const override { return engine_.GetGhostIndeces(); }
     vector<vector<size_t>> &GetGhostIndeces(void) override { return engine_.GetGhostIndeces(); }
 #endif // RICH_MPI
@@ -135,6 +150,41 @@ public:
     bool IsPointInCell(const Vector3D &point, size_t cellIndex, bool verbose = false) const override
     {
         return engine_.IsPointInCell(point, cellIndex, verbose);
+    }
+
+    void SetPeriodic(bool periodicX, bool periodicY, bool periodicZ) override
+    {
+        engine_.SetPeriodicity(periodicX, periodicY, periodicZ);
+    }
+
+    std::array<bool, 3> GetPeriodic() const override
+    {
+        return engine_.GetPeriodic();
+    }
+
+    bool HasPeriodic() const override
+    {
+        return engine_.HasPeriodic();
+    }
+
+    void WrapPeriodicPoint(Vector3D &point) const override
+    {
+        engine_.WrapPeriodicPoint(point);
+    }
+
+    bool IsPeriodicImage(size_t index) const override
+    {
+        return engine_.IsPeriodicImage(index);
+    }
+
+    Vector3D GetPeriodicImageTranslation(size_t index) const override
+    {
+        return engine_.GetPeriodicImageTranslation(index);
+    }
+
+    size_t ResolvePeriodicImageIndex(size_t meshIndex) const override
+    {
+        return engine_.ResolvePeriodicImageIndex(meshIndex);
     }
 
     size_t GetTotalPointNumber(void) const override { return engine_.GetTotalPointNumber(); }
@@ -219,6 +269,22 @@ public:
     size_t GetBuildGeneration(void) const override { return engine_.GetBuildGeneration(); }
 
     // ---- Cartesian-specific accessors ----
+    void SetPeriodicity(bool periodicX, bool periodicY, bool periodicZ)
+    {
+        SetPeriodic(periodicX, periodicY, periodicZ);
+    }
+
+#ifdef RICH_MPI
+    // The mesh is static, so the decomposition is driven by cell weights alone.
+    using Tessellation3D::BuildParallel;
+
+    void BuildParallel(const std::vector<double> &weights)
+    {
+        engine_.BuildParallel(weights);
+        box_faces_dirty_ = true;
+    }
+#endif // RICH_MPI
+
     std::size_t nx() const { return engine_.nx(); }
     std::size_t ny() const { return engine_.ny(); }
     std::size_t nz() const { return engine_.nz(); }
@@ -230,6 +296,22 @@ public:
     const MadCart::CartesianMesh3D<Vector3D> &engine() const { return engine_; }
 
 private:
+#ifdef RICH_MPI
+    void syncSelfIndex(void) const
+    {
+        const std::size_t localCells = engine_.GetPointNo();
+        if(selfIndex_.size() != localCells)
+        {
+            selfIndex_.resize(localCells);
+            std::iota(selfIndex_.begin(), selfIndex_.end(), static_cast<std::size_t>(0));
+        }
+    }
+
+    mutable std::vector<int> sentProcs_;
+    mutable std::vector<std::vector<std::size_t>> sentPoints_;
+    mutable std::vector<std::size_t> selfIndex_;
+#endif // RICH_MPI
+
     MadCart::CartesianMesh3D<Vector3D> engine_;
     mutable std::vector<Face> box_faces_cache_;
     mutable bool box_faces_dirty_ = true;
