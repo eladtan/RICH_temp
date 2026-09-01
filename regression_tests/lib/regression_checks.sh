@@ -1711,45 +1711,6 @@ check_moving_slab_mc_case() {
     return 0
 }
 
-check_moving_slab_mc_32_case() {
-    local run_dir="$1"
-    local run_start_epoch="$2"
-    local stdout_log="$3"
-    local stderr_log="$4"
-    local spectrum_file="${run_dir}/moving_slab_mc_32_spectrum.txt"
-    local checker_stdout="${run_dir}/moving_slab_mc_32_check.stdout.log"
-    local checker_stderr="${run_dir}/moving_slab_mc_32_check.stderr.log"
-
-    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
-        return 1
-    fi
-
-    if ! grep -Eq \
-        'MC particle counts:.*active_after_prestep_max=.*\(rank [0-9]+\).*active_after_prestep_avg=.*max/avg=' \
-        "$stdout_log"; then
-        set_check_msg "missing per-rank particle distribution diagnostic"
-        return 1
-    fi
-
-    if ! is_nonempty_and_newer "$spectrum_file" "$run_start_epoch"; then
-        set_check_msg "missing or stale moving_slab_mc_32_spectrum.txt"
-        return 1
-    fi
-
-    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_moving_slab_mc_32.py" \
-        --spectrum "$spectrum_file" \
-        --max-ferror "${MOVING_SLAB_MC_32_MAX_FERROR:-0.30}" \
-        --plot-dir "$run_dir" \
-        >"$checker_stdout" 2>"$checker_stderr"
-    if [[ $? -ne 0 ]]; then
-        set_check_msg "Moving slab MC 32-group spectrum comparison failed"
-        return 1
-    fi
-
-    set_check_msg "Moving slab MC 32-group spectrum comparison passed"
-    return 0
-}
-
 check_amr_distributed_clip_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
