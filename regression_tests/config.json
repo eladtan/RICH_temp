@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "description": "RICH and embedded STORM regression tests",
+  "description": "RICH, embedded STORM, and MadVoro regression tests",
   "project_root": "..",
   "artifact_root": "regression_results",
   "test_categories": ["physics", "code_correctness"],
@@ -21,6 +21,14 @@
         "deps_dir": "{project_root}/source/utils",
         "madvoro_dir": "{project_root}/source/3D/tessellation/voronoi",
         "madcart_dir": "{project_root}/source/3D/tessellation/cartesian",
+        "mesh_decomposer_dir": "{project_root}/source/3D/tessellation/MeshDecomposer3D"
+      }
+    },
+    {
+      "name": "madvoro",
+      "config": "source/3D/tessellation/voronoi/regression_tests/config.json",
+      "option_overrides": {
+        "deps_dir": "{project_root}/source/utils",
         "mesh_decomposer_dir": "{project_root}/source/3D/tessellation/MeshDecomposer3D"
       }
     }
