@@ -1,0 +1,12 @@
+# LinearGauss3D periodic image and MPI halo ownership test
+TEST_ID="linear_gauss_periodic_mpi"
+TAGS="mpi"
+CATEGORY="code_correctness"
+BUILD_TEST_NAME="regression_tests/cases/linear_gauss_periodic_mpi"
+RUN_DIR_REL="regression_tests/cases/linear_gauss_periodic_mpi"
+RUN_COMMAND="mpirun -np ${SLURM_NTASKS} \"${RICH_BIN}\""
+CHECK_FUNCTION="check_linear_gauss_periodic_mpi_case"
+RUN_MODE="slurm"
+SLURM_NTASKS="4"
+SLURM_PARTITION="bigrun"
+TIMEOUT=600
