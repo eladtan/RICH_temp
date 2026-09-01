@@ -24,6 +24,7 @@ namespace
 {
 constexpr double timestep = 0.4;
 constexpr double maximumAllowedError = 1e-10;
+constexpr double maximumLightSpeedRelativeError = 1e-7;
 const Vector3D exactGradient(0.23, -0.31, 0.17);
 
 class ZeroOpacity final : public OpacityCalculator
@@ -56,6 +57,13 @@ struct ModeResult
 {
     double maxAbsError = 0.0;
     std::size_t cellsChecked = 0;
+};
+
+struct LightSpeedResult
+{
+    double configuredRelativeError = 0.0;
+    double defaultRelativeError = 0.0;
+    std::size_t particlesChecked = 0;
 };
 
 double RadiationEnergy(const Vector3D &position)
@@ -150,6 +158,64 @@ ModeResult RunMode(Tessellation3D &tess, const Mode &mode)
     }
     return result;
 }
+
+LightSpeedResult CheckLightSpeed(Tessellation3D &tess)
+{
+    IdealGas eos(5.0 / 3.0, 1.0, 1.0, 0.0);
+    std::vector<ComputationalCell3D> cells = MakeCells(tess, eos);
+    std::vector<Conserved3D> extensives(cells.size());
+    for(std::size_t i = 0; i < cells.size(); ++i)
+    {
+        cells[i].Erad = 1.0;
+        PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
+    }
+    std::shared_ptr<IdealGas> eosPtr = std::make_shared<IdealGas>(eos);
+    std::shared_ptr<ZeroOpacity> opacity = std::make_shared<ZeroOpacity>();
+    std::shared_ptr<RigidBoundaryCondition<Vector3D, Tessellation3D>> boundary =
+        std::make_shared<RigidBoundaryCondition<Vector3D, Tessellation3D>>(tess);
+
+    constexpr double configuredLightSpeed = 17.0;
+    RadiationIMCParameters configuredParameters;
+    configuredParameters.newPhotonsPerCell = 1;
+    configuredParameters.lightSpeed = configuredLightSpeed;
+    for(std::size_t group = 0;
+        group < configuredParameters.energyBoundaries.size(); ++group)
+    {
+        configuredParameters.energyBoundaries[group] =
+            static_cast<double>(group + 1);
+    }
+    configuredParameters.energyBoundariesProvided = true;
+    RadiationIMC configuredPhysics(
+        tess, boundary, cells, extensives, eosPtr, opacity, configuredParameters);
+    const std::vector<RadiationIMC::Particle> configuredParticles =
+        configuredPhysics.generateInitialParticles(1);
+
+    RadiationIMCParameters defaultParameters;
+    defaultParameters.newPhotonsPerCell = 1;
+    defaultParameters.energyBoundaries =
+        configuredParameters.energyBoundaries;
+    defaultParameters.energyBoundariesProvided = true;
+    RadiationIMC defaultPhysics(
+        tess, boundary, cells, extensives, eosPtr, opacity, defaultParameters);
+    const std::vector<RadiationIMC::Particle> defaultParticles =
+        defaultPhysics.generateInitialParticles(1);
+
+    LightSpeedResult result;
+    result.particlesChecked =
+        std::min(configuredParticles.size(), defaultParticles.size());
+    for(std::size_t i = 0; i < result.particlesChecked; ++i)
+    {
+        result.configuredRelativeError = std::max(
+            result.configuredRelativeError,
+            std::abs(abs(configuredParticles[i].velocity) /
+                     configuredLightSpeed - 1.0));
+        result.defaultRelativeError = std::max(
+            result.defaultRelativeError,
+            std::abs(abs(defaultParticles[i].velocity) /
+                     units::clight - 1.0));
+    }
+    return result;
+}
 }
 
 int main()
@@ -182,6 +248,12 @@ int main()
             pass = pass && results[i].cellsChecked > 0
                 && results[i].maxAbsError < maximumAllowedError;
         }
+        const LightSpeedResult lightSpeedResult = CheckLightSpeed(tess);
+        pass = pass && lightSpeedResult.particlesChecked > 0 &&
+            lightSpeedResult.configuredRelativeError <
+                maximumLightSpeedRelativeError &&
+            lightSpeedResult.defaultRelativeError <
+                maximumLightSpeedRelativeError;
 
         std::ofstream out("radiation_pressure_gradient_3d_metrics.txt");
         out << std::scientific << std::setprecision(16);
@@ -192,6 +264,12 @@ int main()
             out << modes[i].name << "_cells "
                 << results[i].cellsChecked << '\n';
         }
+        out << "configured_light_speed_rel_error "
+            << lightSpeedResult.configuredRelativeError << '\n';
+        out << "default_light_speed_rel_error "
+            << lightSpeedResult.defaultRelativeError << '\n';
+        out << "light_speed_particles "
+            << lightSpeedResult.particlesChecked << '\n';
         out << "pass " << (pass ? 1 : 0) << '\n';
 
         for(std::size_t i = 0; i < modes.size(); ++i)
@@ -200,6 +278,10 @@ int main()
                       << results[i].maxAbsError << ", cells="
                       << results[i].cellsChecked << '\n';
         }
+        std::cout << "light speed: configured_rel="
+                  << lightSpeedResult.configuredRelativeError
+                  << ", default_rel=" << lightSpeedResult.defaultRelativeError
+                  << ", particles=" << lightSpeedResult.particlesChecked << '\n';
         std::cout << (pass ? "PASS" : "FAIL") << std::endl;
         return pass ? 0 : 1;
     }
