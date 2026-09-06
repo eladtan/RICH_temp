@@ -142,7 +142,35 @@ private:
     {
         MigrationBuffer buff;
         buff.ref = std::ref(buffer);
-        buff.transfer = [&buffer, this](void){MPI_exchange_data<T>(tess, buffer, false);};
+        buff.transfer = [&buffer, this](void)
+        {
+            // A restart can register per-cell buffers before the tessellation is
+            // restored, leaving them empty until the first data transfer.
+            if(buffer.empty())
+            {
+                size_t originalSize = 0;
+                for(size_t index : this->tess.GetSelfIndex())
+                {
+                    if(index >= originalSize)
+                    {
+                        originalSize = index + 1;
+                    }
+                }
+                const std::vector<std::vector<size_t>> &sentPoints = this->tess.GetSentPoints();
+                for(const std::vector<size_t> &indices : sentPoints)
+                {
+                    for(size_t index : indices)
+                    {
+                        if(index >= originalSize)
+                        {
+                            originalSize = index + 1;
+                        }
+                    }
+                }
+                buffer.resize(originalSize);
+            }
+            MPI_exchange_data<T>(this->tess, buffer, false);
+        };
         buff.transferChain = [&buffer, this](const ExchangeChain &chain){MPI_exchange_data<T>(chain, buffer);};
         this->migrationBuffers.push_back(buff);
     }

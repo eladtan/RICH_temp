@@ -191,7 +191,7 @@ pair<bool, bool> IsBoundaryFace3D::operator()(size_t face_index, const Tessellat
 {
 	if (!tess.BoundaryFace(face_index))
 		return pair<bool, bool>(false, false);
-	if (tess.GetFaceNeighbors(face_index).first > tess.GetPointNo())
+	if (tess.GetFaceNeighbors(face_index).first >= tess.GetPointNo())
 		return pair<bool, bool>(true, false);
 	else
 		return pair<bool, bool>(true, true);
