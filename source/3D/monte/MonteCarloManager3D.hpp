@@ -2,256 +2,276 @@
 #define MONTECARLO_MANAGER_3D_HPP
 
 #include <cassert>
+#include <memory>
+#include <utility>
+#include <vector>
 
-#ifdef STORM_WITH_MPI
-#include "monte/manager/parallel/MonteCarloManagerLegacy.hpp"
-#include "monte/manager/parallel/RDMAMonteCarloManager.hpp"
-#include "monte/manager/parallel/TwoSidedMonteCarloManager.hpp"
-#endif // STORM_WITH_MPI
-#include "monte/manager/MonteCarloManagerSerial.hpp"
 #include "3D/tessellation/Tessellation3D.hpp"
+#include "monte/manager/MonteCarloManager.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 
 using STORM::BoundaryCondition;
 using STORM::dt_t;
 using STORM::MonteCarloConfig;
-using STORM::MonteCarloManagerSerial;
 using STORM::MonteCarloPhysics;
 using STORM::PopulationControl;
-#ifdef STORM_WITH_MPI
-using STORM::MonteCarloManagerLegacy;
-using STORM::RDMAMonteCarloManager;
-using STORM::TwoSidedMonteCarloManager;
-#endif
 
 class MonteCarloManager3D
 {
     using MCParticle = MonteCarloParticle<Vector3D>;
 
 public:
-    virtual ~MonteCarloManager3D() = default;
+    template<typename Physics>
+    MonteCarloManager3D(const Tessellation3D &grid,
+                        const std::shared_ptr<Physics> &physics,
+                        const std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> &populationControl,
+                        const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition,
+                        const MonteCarloConfig &config = MonteCarloConfig(),
+                        std::unique_ptr<STORM::CommunicationEngine<Vector3D>> engine =
+                            std::make_unique<STORM::SerialCommunicationEngine<Vector3D>>());
 
-    virtual const std::vector<size_t> &GetCellsStepsCounters(void) const = 0;
+    const std::vector<size_t> &GetCellsStepsCounters(void) const;
+    std::vector<size_t> &GetCellsStepsCounters(void);
+    const std::vector<size_t> &GetCellsParticleCounters(void) const;
+    size_t GetStartParticleCount(void) const;
+    size_t GetInitialParticleCount(void) const;
+    size_t GetPreStepParticleCount(void) const;
+    size_t GetEndParticleCount(void) const;
+    double GetPureComputeTime(void) const;
+    const std::vector<size_t> &GetBeginningParticleCount(void) const;
+    std::vector<size_t> &GetBeginningParticleCount(void);
+    size_t GetHandlerMemoryBytes(void) const;
 
-    virtual std::vector<size_t> &GetCellsStepsCounters(void) = 0;
+    /// References returned by getParticles() are invalidated by step().
+    const std::vector<MCParticle> &getParticles(void) const;
+    std::vector<MCParticle> &getParticles(void);
+    void step(const std::vector<ComputationalCell3D> &cells, dt_t fullDt);
 
-    virtual const std::vector<size_t> &GetCellsParticleCounters(void) const
+private:
+    class Implementation
     {
-        static const std::vector<size_t> empty;
-        return empty;
+    public:
+        virtual ~Implementation() = default;
+
+        virtual const std::vector<size_t> &GetCellsStepsCounters(void) const = 0;
+        virtual std::vector<size_t> &GetCellsStepsCounters(void) = 0;
+        virtual const std::vector<size_t> &GetCellsParticleCounters(void) const = 0;
+        virtual size_t GetStartParticleCount(void) const = 0;
+        virtual size_t GetInitialParticleCount(void) const = 0;
+        virtual size_t GetPreStepParticleCount(void) const = 0;
+        virtual size_t GetEndParticleCount(void) const = 0;
+        virtual double GetPureComputeTime(void) const = 0;
+        virtual const std::vector<size_t> &GetBeginningParticleCount(void) const = 0;
+        virtual std::vector<size_t> &GetBeginningParticleCount(void) = 0;
+        virtual size_t GetHandlerMemoryBytes(void) const = 0;
+        virtual const std::vector<MCParticle> &GetParticles(void) const = 0;
+        virtual std::vector<MCParticle> &GetParticles(void) = 0;
+        virtual void Step(const std::vector<ComputationalCell3D> &cells, dt_t fullDt) = 0;
+    };
+
+    template<typename Physics>
+    class TypedImplementation : public Implementation
+    {
+        using Manager = STORM::MonteCarloManager<Vector3D, Tessellation3D, Physics>;
+
+    public:
+        TypedImplementation(const Tessellation3D &grid,
+                            const std::shared_ptr<Physics> &physics,
+                            const std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> &populationControl,
+                            const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition,
+                            const MonteCarloConfig &config,
+                            std::unique_ptr<STORM::CommunicationEngine<Vector3D>> engine)
+            : manager(grid, physics, populationControl, boundaryCondition, config, std::move(engine)), latestCells(nullptr)
+        {
+        }
+
+        const std::vector<size_t> &GetCellsStepsCounters(void) const override
+        {
+            return this->manager.GetCellsStepsCounters();
+        }
+
+        std::vector<size_t> &GetCellsStepsCounters(void) override
+        {
+            return this->manager.GetCellsStepsCounters();
+        }
+
+        const std::vector<size_t> &GetCellsParticleCounters(void) const override
+        {
+            return this->manager.GetCellsParticleCounters();
+        }
+
+        size_t GetStartParticleCount(void) const override
+        {
+            return this->manager.GetStartParticleCount();
+        }
+
+        size_t GetInitialParticleCount(void) const override
+        {
+            return this->manager.GetInitialParticleCount();
+        }
+
+        size_t GetPreStepParticleCount(void) const override
+        {
+            return this->manager.GetPreStepParticleCount();
+        }
+
+        size_t GetEndParticleCount(void) const override
+        {
+            return this->manager.GetEndParticleCount();
+        }
+
+        double GetPureComputeTime(void) const override
+        {
+            return this->manager.GetPureComputeTime();
+        }
+
+        const std::vector<size_t> &GetBeginningParticleCount(void) const override
+        {
+            return this->manager.GetBeginningParticleCount();
+        }
+
+        std::vector<size_t> &GetBeginningParticleCount(void) override
+        {
+            return this->manager.GetBeginningParticleCount();
+        }
+
+        size_t GetHandlerMemoryBytes(void) const override
+        {
+            return this->manager.GetHandlerMemoryBytes();
+        }
+
+        const std::vector<MCParticle> &GetParticles(void) const override
+        {
+            this->SyncCellIDs();
+            return this->manager.getParticles();
+        }
+
+        std::vector<MCParticle> &GetParticles(void) override
+        {
+            this->SyncCellIDs();
+            return this->manager.getParticles();
+        }
+
+        void Step(const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override
+        {
+            this->latestCells = &cells;
+            this->manager.step(fullDt);
+        }
+
+    private:
+        Manager manager;
+        mutable const std::vector<ComputationalCell3D> *latestCells;
+
+        void SyncCellIDs(void) const
+        {
+            if(this->latestCells == nullptr)
+            {
+                return;
+            }
+
+            const std::vector<MCParticle> &particles = this->manager.getParticles();
+            for(MCParticle &particle : const_cast<std::vector<MCParticle> &>(particles))
+            {
+                assert(particle.cellIndex < this->latestCells->size());
+                particle.cellID = (*this->latestCells)[particle.cellIndex].ID;
+            }
+        }
+    };
+
+    std::unique_ptr<Implementation> implementation;
+
+    const Implementation &GetImplementation(void) const
+    {
+        return *this->implementation;
     }
 
-    virtual size_t GetStartParticleCount(void) const = 0;
-
-    virtual size_t GetInitialParticleCount(void) const = 0;
-
-    virtual size_t GetPreStepParticleCount(void) const = 0;
-
-    virtual size_t GetEndParticleCount(void) const = 0;
-
-    virtual double GetPureComputeTime(void) const = 0;
-
-    virtual const std::vector<size_t> &GetBeginningParticleCount(void) const = 0;
-
-    virtual std::vector<size_t> &GetBeginningParticleCount(void) = 0;
-
-    virtual size_t GetHandlerMemoryBytes(void) const = 0;
-
-    virtual std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) = 0;
-};
-
-class MonteCarloManagerSerial3D : public MonteCarloManagerSerial<Vector3D, Tessellation3D>, public MonteCarloManager3D
-{
-    using MCParticle = MonteCarloParticle<Vector3D>;
-
-public:
-    MonteCarloManagerSerial3D(const Tessellation3D &grid, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics,
-                        const std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> &populationControl,
-                        const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition);
-
-    inline const std::vector<size_t> &GetCellsStepsCounters(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
-
-    inline std::vector<size_t> &GetCellsStepsCounters(void) override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
-
-    inline size_t GetStartParticleCount(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetStartParticleCount();};
-
-    inline size_t GetInitialParticleCount(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetInitialParticleCount();};
-
-    inline size_t GetPreStepParticleCount(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetPreStepParticleCount();};
-
-    inline size_t GetEndParticleCount(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetEndParticleCount();};
-
-    inline double GetPureComputeTime(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetPureComputeTime();};
-
-    inline const std::vector<size_t> &GetBeginningParticleCount(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetBeginningParticleCount();};
-
-    inline std::vector<size_t> &GetBeginningParticleCount(void) override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetBeginningParticleCount();};
-
-    inline size_t GetHandlerMemoryBytes(void) const override{return MonteCarloManagerSerial<Vector3D, Tessellation3D>::GetHandlerMemoryBytes();};
-
-    std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
-};
-
-#ifdef STORM_WITH_MPI
-
-class RDMAMonteCarloManagerLegacy3D : public MonteCarloManagerLegacy<Vector3D, Tessellation3D>, public MonteCarloManager3D
-{
-    using MCParticle = MonteCarloParticle<Vector3D>;
-
-public:
-    RDMAMonteCarloManagerLegacy3D(const Tessellation3D &grid, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics,
-                        const std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> &populationControl,
-                        const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition,
-                        const MonteCarloConfig &config = MonteCarloConfig(),
-                        const MPI_Comm &comm = MPI_COMM_WORLD,
-                        RDMA_Type rdma_type = RDMA_Type::AUTO_RDMA);
-
-    inline const std::vector<size_t> &GetCellsStepsCounters(void) const override{return MonteCarloManagerLegacy<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
-
-    inline std::vector<size_t> &GetCellsStepsCounters(void) override{return MonteCarloManagerLegacy<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
-
-    inline const std::vector<size_t> &GetCellsParticleCounters(void) const override{return MonteCarloManagerLegacy<Vector3D, Tessellation3D>::GetCellsParticleCounters();};
-
-    inline size_t GetStartParticleCount(void) const override{return MonteCarloManagerLegacy<Vector3D, Tessellation3D>::GetStartParticleCount();};
-
-    inline size_t GetEndParticleCount(void) const override{return MonteCarloManagerLegacy<Vector3D, Tessellation3D>::GetEndParticleCount();};
-
-    inline size_t GetPreStepParticleCount(void) const override{return MonteCarloManagerLegacy<Vector3D, Tessellation3D>::GetStartParticleCount();};
-
-    inline size_t GetInitialParticleCount(void) const override{return MonteCarloManagerLegacy<Vector3D, Tessellation3D>::GetInitialParticleCount();};
-
-    inline double GetPureComputeTime(void) const override{return MonteCarloManagerLegacy<Vector3D, Tessellation3D>::GetPureComputeTime();};
-
-    inline const std::vector<size_t> &GetBeginningParticleCount(void) const override{return MonteCarloManagerLegacy<Vector3D, Tessellation3D>::GetBeginningParticleCount();};
-
-    inline std::vector<size_t> &GetBeginningParticleCount(void) override{return MonteCarloManagerLegacy<Vector3D, Tessellation3D>::GetBeginningParticleCount();};
-
-    inline size_t GetHandlerMemoryBytes(void) const override{return MonteCarloManagerLegacy<Vector3D, Tessellation3D>::GetHandlerMemoryBytes();};
-
-    std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
-};
-
-class RDMAMonteCarloManager3D : public RDMAMonteCarloManager<Vector3D, Tessellation3D>, public MonteCarloManager3D
-{
-    using MCParticle = MonteCarloParticle<Vector3D>;
-
-public:
-    RDMAMonteCarloManager3D(const Tessellation3D &grid, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics,
-                        const std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> &populationControl,
-                        const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition,
-                        const MonteCarloConfig &config = MonteCarloConfig(),
-                        const MPI_Comm &comm = MPI_COMM_WORLD,
-                        RDMA_Type rdma_type = RDMA_Type::AUTO_RDMA);
-
-    inline const std::vector<size_t> &GetCellsStepsCounters(void) const override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
-
-    inline std::vector<size_t> &GetCellsStepsCounters(void) override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
-
-    inline const std::vector<size_t> &GetCellsParticleCounters(void) const override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetCellsParticleCounters();};
-
-    inline size_t GetStartParticleCount(void) const override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetStartParticleCount();};
-
-    inline size_t GetInitialParticleCount(void) const override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetInitialParticleCount();};
-
-    inline size_t GetPreStepParticleCount(void) const override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetPreStepParticleCount();};
-
-    inline size_t GetEndParticleCount(void) const override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetEndParticleCount();};
-
-    inline double GetPureComputeTime(void) const override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetPureComputeTime();};
-
-    inline const std::vector<size_t> &GetBeginningParticleCount(void) const override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetBeginningParticleCount();};
-
-    inline std::vector<size_t> &GetBeginningParticleCount(void) override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetBeginningParticleCount();};
-
-    inline size_t GetHandlerMemoryBytes(void) const override{return RDMAMonteCarloManager<Vector3D, Tessellation3D>::GetHandlerMemoryBytes();};
-
-    std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
+    Implementation &GetImplementation(void)
+    {
+        return *this->implementation;
+    }
 };
 
 template<typename Physics>
-class StaticPhysicsRDMAMonteCarloManager3D
-    : public RDMAMonteCarloManager<Vector3D, Tessellation3D, Physics>,
-      public MonteCarloManager3D
+MonteCarloManager3D::MonteCarloManager3D(
+    const Tessellation3D &grid,
+    const std::shared_ptr<Physics> &physics,
+    const std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> &populationControl,
+    const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition,
+    const MonteCarloConfig &config,
+    std::unique_ptr<STORM::CommunicationEngine<Vector3D>> engine)
+    : implementation(std::make_unique<TypedImplementation<Physics>>(
+          grid, physics, populationControl, boundaryCondition, config, std::move(engine)))
 {
-    using Base = RDMAMonteCarloManager<Vector3D, Tessellation3D, Physics>;
-    using MCParticle = MonteCarloParticle<Vector3D>;
+}
 
-public:
-    StaticPhysicsRDMAMonteCarloManager3D(
-        const Tessellation3D &grid,
-        const std::shared_ptr<Physics> &physics,
-        const std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> &populationControl,
-        const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition,
-        const MonteCarloConfig &config = MonteCarloConfig(),
-        const MPI_Comm &comm = MPI_COMM_WORLD,
-        RDMA_Type rdmaType = RDMA_Type::AUTO_RDMA)
-        : Base(grid, physics, populationControl, boundaryCondition,
-               config, comm, rdmaType)
-    {}
-
-    const std::vector<size_t> &GetCellsStepsCounters(void) const override { return Base::GetCellsStepsCounters(); }
-    std::vector<size_t> &GetCellsStepsCounters(void) override { return Base::GetCellsStepsCounters(); }
-    const std::vector<size_t> &GetCellsParticleCounters(void) const override { return Base::GetCellsParticleCounters(); }
-    size_t GetStartParticleCount(void) const override { return Base::GetStartParticleCount(); }
-    size_t GetInitialParticleCount(void) const override { return Base::GetInitialParticleCount(); }
-    size_t GetPreStepParticleCount(void) const override { return Base::GetPreStepParticleCount(); }
-    size_t GetEndParticleCount(void) const override { return Base::GetEndParticleCount(); }
-    double GetPureComputeTime(void) const override { return Base::GetPureComputeTime(); }
-    const std::vector<size_t> &GetBeginningParticleCount(void) const override { return Base::GetBeginningParticleCount(); }
-    std::vector<size_t> &GetBeginningParticleCount(void) override { return Base::GetBeginningParticleCount(); }
-    size_t GetHandlerMemoryBytes(void) const override { return Base::GetHandlerMemoryBytes(); }
-
-    std::vector<MCParticle> step(
-        std::vector<MCParticle> &&particleList,
-        const std::vector<ComputationalCell3D> &cells,
-        dt_t fullDt) override
-    {
-        std::vector<MCParticle> newParticles =
-            Base::step(std::move(particleList), fullDt);
-        for(MCParticle &particle : newParticles)
-        {
-            size_t cellIndex = particle.cellIndex;
-            assert(cells.size() > cellIndex);
-            particle.cellID = cells[cellIndex].ID;
-        }
-        return newParticles;
-    }
-};
-
-
-class TwoSidedMonteCarloManager3D : public TwoSidedMonteCarloManager<Vector3D, Tessellation3D>, public MonteCarloManager3D
+inline const std::vector<size_t> &MonteCarloManager3D::GetCellsStepsCounters(void) const
 {
-    using MCParticle = MonteCarloParticle<Vector3D>;
+    return this->GetImplementation().GetCellsStepsCounters();
+}
 
-public:
-    TwoSidedMonteCarloManager3D(const Tessellation3D &grid, const std::shared_ptr<MonteCarloPhysics<Vector3D, Tessellation3D>> &physics,
-                                const std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> &populationControl,
-                                const std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> &boundaryCondition,
-                                const MPI_Comm &comm = MPI_COMM_WORLD);
+inline std::vector<size_t> &MonteCarloManager3D::GetCellsStepsCounters(void)
+{
+    return this->GetImplementation().GetCellsStepsCounters();
+}
 
-    inline const std::vector<size_t> &GetCellsStepsCounters(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
+inline const std::vector<size_t> &MonteCarloManager3D::GetCellsParticleCounters(void) const
+{
+    return this->GetImplementation().GetCellsParticleCounters();
+}
 
-    inline std::vector<size_t> &GetCellsStepsCounters(void) override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetCellsStepsCounters();};
+inline size_t MonteCarloManager3D::GetStartParticleCount(void) const
+{
+    return this->GetImplementation().GetStartParticleCount();
+}
 
-    inline size_t GetStartParticleCount(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetStartParticleCount();};
+inline size_t MonteCarloManager3D::GetInitialParticleCount(void) const
+{
+    return this->GetImplementation().GetInitialParticleCount();
+}
 
-    inline size_t GetInitialParticleCount(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetInitialParticleCount();};
+inline size_t MonteCarloManager3D::GetPreStepParticleCount(void) const
+{
+    return this->GetImplementation().GetPreStepParticleCount();
+}
 
-    inline size_t GetPreStepParticleCount(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetPreStepParticleCount();};
+inline size_t MonteCarloManager3D::GetEndParticleCount(void) const
+{
+    return this->GetImplementation().GetEndParticleCount();
+}
 
-    inline size_t GetEndParticleCount(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetEndParticleCount();};
+inline double MonteCarloManager3D::GetPureComputeTime(void) const
+{
+    return this->GetImplementation().GetPureComputeTime();
+}
 
-    inline double GetPureComputeTime(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetPureComputeTime();};
+inline const std::vector<size_t> &MonteCarloManager3D::GetBeginningParticleCount(void) const
+{
+    return this->GetImplementation().GetBeginningParticleCount();
+}
 
-    inline const std::vector<size_t> &GetBeginningParticleCount(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetBeginningParticleCount();};
+inline std::vector<size_t> &MonteCarloManager3D::GetBeginningParticleCount(void)
+{
+    return this->GetImplementation().GetBeginningParticleCount();
+}
 
-    inline std::vector<size_t> &GetBeginningParticleCount(void) override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetBeginningParticleCount();};
+inline size_t MonteCarloManager3D::GetHandlerMemoryBytes(void) const
+{
+    return this->GetImplementation().GetHandlerMemoryBytes();
+}
 
-    inline size_t GetHandlerMemoryBytes(void) const override{return TwoSidedMonteCarloManager<Vector3D, Tessellation3D>::GetHandlerMemoryBytes();};
+inline const std::vector<MonteCarloManager3D::MCParticle> &MonteCarloManager3D::getParticles(void) const
+{
+    return this->GetImplementation().GetParticles();
+}
 
-    std::vector<MCParticle> step(std::vector<MCParticle> &&particleList, const std::vector<ComputationalCell3D> &cells, dt_t fullDt) override;
-};
+inline std::vector<MonteCarloManager3D::MCParticle> &MonteCarloManager3D::getParticles(void)
+{
+    return this->GetImplementation().GetParticles();
+}
 
-#endif // STORM_WITH_MPI
+inline void MonteCarloManager3D::step(const std::vector<ComputationalCell3D> &cells, dt_t fullDt)
+{
+    this->GetImplementation().Step(cells, fullDt);
+}
 
-#endif // MONTECARLO_MANAGER_3D_HPP
+#endif

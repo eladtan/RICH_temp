@@ -137,6 +137,41 @@ public:
         return engine_.IsPointInCell(point, cellIndex, verbose);
     }
 
+    void SetPeriodic(bool periodicX, bool periodicY, bool periodicZ) override
+    {
+        engine_.SetPeriodicity(periodicX, periodicY, periodicZ);
+    }
+
+    std::array<bool, 3> GetPeriodic() const override
+    {
+        return engine_.GetPeriodic();
+    }
+
+    bool HasPeriodic() const override
+    {
+        return engine_.HasPeriodic();
+    }
+
+    void WrapPeriodicPoint(Vector3D &point) const override
+    {
+        engine_.WrapPeriodicPoint(point);
+    }
+
+    bool IsPeriodicImage(size_t index) const override
+    {
+        return engine_.IsPeriodicImage(index);
+    }
+
+    Vector3D GetPeriodicImageTranslation(size_t index) const override
+    {
+        return engine_.GetPeriodicImageTranslation(index);
+    }
+
+    size_t ResolvePeriodicImageIndex(size_t meshIndex) const override
+    {
+        return engine_.ResolvePeriodicImageIndex(meshIndex);
+    }
+
     size_t GetTotalPointNumber(void) const override { return engine_.GetTotalPointNumber(); }
 
     vector<Vector3D> &GetAllCM(void) override { return engine_.GetAllCM(); }

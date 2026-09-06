@@ -1,6 +1,9 @@
 #include "RadiationMCStep.hpp"
 #include "3D/radiation/MonteCarloPhysics3D.hpp"
 #include "3D/radiation/RadiationIMC.hpp"
+#ifdef RICH_MPI
+#include "monte/manager/MonteCarloManagerFactory.hpp"
+#endif // RICH_MPI
 #include "utils/rma/RMAFactory.hpp"
 #include "misc/universal_error.hpp"
 #include <algorithm>
@@ -8,6 +11,7 @@
 #include <cmath>
 #include <iterator>
 #include <limits>
+#include <utility>
 #include <vector>
 
 namespace
@@ -47,7 +51,7 @@ RadiationMCStep::RadiationMCStep(const Tessellation3D &tess,
                                     , std::shared_ptr<CostCalculator3D> cost
                                     , const MonteCarloConfig &monteCarloConfig
                                 #endif // RICH_MPI
-                            ) : tess(tess), cells(cells), extensives(extensives), particles(particles), popControl(popControl), boundaryCond(boundaryCond), physics(physics), withHydro(withHydro)
+                            ) : tess(tess), cells(cells), extensives(extensives), popControl(popControl), boundaryCond(boundaryCond), physics(physics), withHydro(withHydro)
                                 #ifdef RICH_MPI
                                 , managerType(managerType), cost(cost)
                                 #endif // RICH_MPI
@@ -57,84 +61,65 @@ RadiationMCStep::RadiationMCStep(const Tessellation3D &tess,
     #ifdef RICH_MPI
         std::shared_ptr<::RadiationIMC> concreteIMC =
             std::dynamic_pointer_cast<::RadiationIMC>(physics);
+        STORM::ManagerType strategy = STORM::ManagerType::RDMA;
+        STORM::RDMAEngine backend = STORM::RDMAEngine::OFI;
         switch(this->managerType)
         {
-            case ManagerType::LEGACY_MPI_RMA:
-            case ManagerType::LEGACY_IBV_RDMA:
-            case ManagerType::LEGACY_AUTO_RDMA:
-            {
-                RDMA_Type type;
-                if(managerType == ManagerType::LEGACY_IBV_RDMA)
-                    type = RDMA_Type::IBV_RDMA;
-                else if(managerType == ManagerType::LEGACY_MPI_RMA)
-                    type = RDMA_Type::MPI_RMA;
-                else
-                    type = RDMA_Type::AUTO_RDMA;
-                this->manager = std::make_shared<RDMAMonteCarloManagerLegacy3D>(tess, physics, popControl, boundaryCond, monteCarloConfig, MPI_COMM_WORLD, type);
-                break;
-            }
             case ManagerType::P2P:
-                this->manager = std::make_shared<TwoSidedMonteCarloManager3D>(tess, physics, popControl, boundaryCond);
+                strategy = STORM::ManagerType::P2P;
                 break;
-            case ManagerType::RDMA:
-                if(concreteIMC)
-                {
-                    this->manager =
-                        std::make_shared<StaticPhysicsRDMAMonteCarloManager3D<::RadiationIMC>>(
-                            tess, concreteIMC, popControl, boundaryCond,
-                            monteCarloConfig, MPI_COMM_WORLD,
-                            RDMA_Type::AUTO_RDMA);
-                }
-                else
-                {
-                    this->manager = std::make_shared<RDMAMonteCarloManager3D>(
-                        tess, physics, popControl, boundaryCond,
-                        monteCarloConfig, MPI_COMM_WORLD,
-                        RDMA_Type::AUTO_RDMA);
-                }
+            case ManagerType::LEGACY_MPI_RMA:
+                backend = STORM::RDMAEngine::MPI;
                 break;
+            case ManagerType::LEGACY_IBV_RDMA:
             case ManagerType::RDMA_IBV:
-                if(concreteIMC)
-                {
-                    this->manager =
-                        std::make_shared<StaticPhysicsRDMAMonteCarloManager3D<::RadiationIMC>>(
-                            tess, concreteIMC, popControl, boundaryCond,
-                            monteCarloConfig, MPI_COMM_WORLD,
-                            RDMA_Type::IBV_RDMA);
-                }
-                else
-                {
-                    this->manager = std::make_shared<RDMAMonteCarloManager3D>(
-                        tess, physics, popControl, boundaryCond,
-                        monteCarloConfig, MPI_COMM_WORLD,
-                        RDMA_Type::IBV_RDMA);
-                }
+                backend = STORM::RDMAEngine::IBV;
+                break;
+            case ManagerType::LEGACY_AUTO_RDMA:
+            case ManagerType::RDMA:
+                strategy = STORM::ManagerType::Auto;
                 break;
         }
+        std::unique_ptr<STORM::CommunicationEngine<Vector3D>> engine = STORM::CreateCommunicationEngine<Vector3D>(
+            tess, strategy, backend, monteCarloConfig, MPI_COMM_WORLD);
+        if(concreteIMC)
+        {
+            this->manager = std::make_shared<MonteCarloManager3D>(
+                tess, concreteIMC, popControl, boundaryCond, monteCarloConfig, std::move(engine));
+        }
+        else
+        {
+            this->manager = std::make_shared<MonteCarloManager3D>(
+                tess, physics, popControl, boundaryCond, monteCarloConfig, std::move(engine));
+        }
     #else // RICH_MPI
-        this->manager = std::make_shared<MonteCarloManagerSerial3D>(tess, physics, popControl, boundaryCond);
+        this->manager = std::make_shared<MonteCarloManager3D>(tess, physics, popControl, boundaryCond);
     #endif // RICH_MPI
 
-    if(this->particles.empty())
+    this->manager->getParticles() = particles;
+    if(std::as_const(*this->manager).getParticles().empty())
     {
-        this->particles = this->physics->generateInitialParticles(initialParticlesPerCell);
+        this->manager->getParticles() =
+            this->physics->generateInitialParticles(initialParticlesPerCell);
         int rank = 0;
         #ifdef RICH_MPI
             MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         #endif
         if(rank == 0)
-            std::cout << "RadiationMCStep: generated " << this->particles.size() << " initial photon particles" << std::endl;
+        {
+            std::cout << "RadiationMCStep: generated " << std::as_const(*this->manager).getParticles().size() << " initial photon particles" << std::endl;
+        }
     }
 }
 
 std::vector<Particle3D> &RadiationMCStep::getParticles(void)
 {
-    return this->particles;
+    return this->manager->getParticles();
 }
 
 const std::vector<Particle3D> &RadiationMCStep::getParticles(void) const
 {
-    return this->particles;
+    return std::as_const(*this->manager).getParticles();
 }
 
 double RadiationMCStep::suggestTimeStep(void) const
@@ -166,20 +151,17 @@ void RadiationMCStep::step(double dt)
     auto preManagerStart = std::chrono::high_resolution_clock::now();
     if(this->withHydro)
     {
-        UpdateNewCells(this->tess, this->particles, this->cells);
+        UpdateNewCells(this->tess, this->manager->getParticles(), this->cells);
     }
-    // it's adjustExistingParticles's reponsibility to call UNC inside, if needed
-    this->physics->adjustExistingParticles(this->particles, dt);
-    // if(this->withHydro)
-    // {
-    //     UpdateNewCells(this->tess, this->particles, this->cells);
-    // }
+    if(this->physics->requiresHostParticleAdjustment())
+    {
+        // adjustExistingParticles calls UNC itself when required.
+        this->physics->adjustExistingParticles(this->manager->getParticles(), dt);
+    }
     double preManagerTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - preManagerStart).count();
 
     auto managerStart = std::chrono::high_resolution_clock::now();
-    this->particles = this->manager->step(std::move(this->particles), this->cells, dt);
-    SyncParticleCellIDs(this->cells, this->particles,
-                        "RadiationMCStep::step after manager");
+    this->manager->step(this->cells, dt);
     double managerTime = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - managerStart).count();
 
     int rank = 0;
@@ -365,14 +347,14 @@ void RadiationMCStep::step(double dt)
         if(this->withHydro)
         {
             // update to current cells first
-            UpdateNewCells(this->tess, this->particles, this->cells);
+            UpdateNewCells(this->tess, this->manager->getParticles(), this->cells);
         }
     }
 
     void RadiationMCStep::afterLB(void)
     {
-        UpdateNewCellsAfterExchange(this->tess, this->particles);
-        SyncParticleCellIDs(this->cells, this->particles,
+        UpdateNewCellsAfterExchange(this->tess, this->manager->getParticles());
+        SyncParticleCellIDs(this->cells, this->manager->getParticles(),
                             "RadiationMCStep::afterLB");
     }
 

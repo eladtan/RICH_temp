@@ -1,5 +1,9 @@
 #include "ForwardCalculation.hpp"
 
+#ifdef RICH_MPI
+#include "source/monte/manager/communication/RDMACommunicationEngine.hpp"
+#endif // RICH_MPI
+
 #include <algorithm>
 #include <cmath>
 #include <fstream>
@@ -219,9 +223,8 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
 
                 physics->reseedRNG(static_cast<uint64_t>(rank+12345678) * mgTotalGenerations + gen);
 
-                std::vector<Particle3D> empty;
-                auto remaining = manager->step(std::move(empty), cells, cfg.transportTime);
-                (void)remaining;
+                manager->getParticles().clear();
+                manager->step(cells, cfg.transportTime);
                 IMCPostProcessGenerationDiagnostics const generationDiagnostics =
                     physics->getPostProcessGenerationDiagnostics();
 
@@ -541,8 +544,13 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
 
                         popControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Tessellation3D>>(tess);
 
-                        manager = std::make_shared<RDMAMonteCarloManager3D>(
-                            tess, physics, popControl, boundary);
+                        MonteCarloConfig monteCarloConfig;
+                        std::unique_ptr<STORM::CommunicationEngine<Vector3D>> rebuiltEngine =
+                            std::make_unique<STORM::RDMACommunicationEngine<Vector3D, Tessellation3D>>(
+                                tess, monteCarloConfig, MPI_COMM_WORLD, RDMA_Type::AUTO_RDMA);
+                        manager = std::make_shared<MonteCarloManager3D>(
+                            tess, physics, popControl, boundary,
+                            monteCarloConfig, std::move(rebuiltEngine));
 
                         if (rank == 0)
                             std::cout << mgLBLabel

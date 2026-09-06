@@ -3,6 +3,9 @@
 #include "source/monte/physics/MonteCarloPhysics.hpp"
 #include "source/monte/particle/StepResult.hpp"
 #include "source/monte/particle/ParticleStatus.hpp"
+#ifdef RICH_MPI
+#include "source/monte/manager/communication/RDMACommunicationEngine.hpp"
+#endif // RICH_MPI
 
 #include <algorithm>
 #include <chrono>
@@ -465,16 +468,21 @@ ProbePassResult RunInwardProbePass(Config const& cfg,
 
     std::shared_ptr<MonteCarloManager3D> probeManager;
 #ifdef RICH_MPI
-    probeManager = std::make_shared<RDMAMonteCarloManager3D>(
-        runtime.tess, probePhysics, probePopControl, probeBoundary);
+    MonteCarloConfig monteCarloConfig;
+    std::unique_ptr<STORM::CommunicationEngine<Vector3D>> engine =
+        std::make_unique<STORM::RDMACommunicationEngine<Vector3D, Tessellation3D>>(
+            runtime.tess, monteCarloConfig, MPI_COMM_WORLD, RDMA_Type::AUTO_RDMA);
+    probeManager = std::make_shared<MonteCarloManager3D>(
+        runtime.tess, probePhysics, probePopControl, probeBoundary, monteCarloConfig, std::move(engine));
 #else
-    probeManager = std::make_shared<MonteCarloManagerSerial3D>(
+    probeManager = std::make_shared<MonteCarloManager3D>(
         runtime.tess, probePhysics, probePopControl, probeBoundary);
 #endif
 
     double const fullDistance = cfg.radius * 2.01;
     auto const chunkStart = std::chrono::steady_clock::now();
-    (void)probeManager->step(std::move(particles), runtime.cells, fullDistance);
+    probeManager->getParticles() = std::move(particles);
+    probeManager->step(runtime.cells, fullDistance);
 
     ProbePassResult result;
     result.value = probePhysics->values();

@@ -303,6 +303,18 @@ struct RICHRadiationPositionSampler
         return location * (1.0 - nudge) + nudge * grid.GetMeshPoint(cellIndex);
     }
 
+    Vector3D Sample(const Tessellation3D &grid,
+                    std::size_t cellIndex,
+                    const Decomposition &decomp,
+                    std::uint64_t rngKey,
+                    std::uint64_t &rngCounter) const
+    {
+        Vector3D location =
+            Sampler().Sample(grid, cellIndex, decomp, rngKey, rngCounter);
+        static constexpr double nudge = 1e-10;
+        return location * (1.0 - nudge) + nudge * grid.GetMeshPoint(cellIndex);
+    }
+
     Vector3D operator()(const Tessellation3D &grid,
                         std::size_t cellIndex,
                         std::mt19937_64 &rng,

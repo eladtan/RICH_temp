@@ -14,6 +14,7 @@ RICH is a compressible hydrodynamic simulation code on a 3D moving Voronoi mesh,
 | [Output and Visualization](user-guide/output-and-visualization.md) | HDF5 snapshots, VTK, Python post-processing |
 | [Equations of State](user-guide/equations-of-state.md) | IdealGas, Tillotson, OndrejEOS, MixedEOS |
 | [Radiation Transport](user-guide/radiation.md) | Grey diffusion, multigroup, Compton/CMMC |
+| [STORM GPU offload](radiation/gpu_offload.md) | What runs on GPU, what should not, and a review of the current path |
 | [Gravity](user-guide/gravity.md) | Self-gravity trees, TDE gravity |
 | [AMR](user-guide/amr.md) | Adaptive mesh refinement |
 | [Boundary Conditions](user-guide/boundary-conditions.md) | Rigid wall, periodic, inflow/outflow |

@@ -1,4 +1,8 @@
 #include "GreyCalculation.hpp"
+
+#ifdef RICH_MPI
+#include "source/monte/manager/communication/RDMACommunicationEngine.hpp"
+#endif // RICH_MPI
 #include "PostProcessResultWriter.hpp"
 
 #include <algorithm>
@@ -98,7 +102,7 @@ ForwardPostprocessResult RunGreyPostprocess(
             greyParams.ddmcMinCellOpticalDepth = 15;
             greyParams.ddmcExternalSourceMinFaceOpticalDepth =
                 cfg.fluxSourceDDMCFaceOpticalDepth;
-            greyParams.ddmcUseMultigroupPGRW = false;
+            greyParams.withMultigroupDDMC = false;
             greyParams.MMC = false;
             greyParams.diffusionPressureGradient = false;
             greyParams.withMultigroupOpacity = false;
@@ -123,10 +127,14 @@ ForwardPostprocessResult RunGreyPostprocess(
 
             std::shared_ptr<MonteCarloManager3D> greyManager;
     #ifdef RICH_MPI
-            greyManager = std::make_shared<RDMAMonteCarloManager3D>(
-                tess, greyPhysics, greyPopControl, greyBoundary);
+            MonteCarloConfig monteCarloConfig;
+            std::unique_ptr<STORM::CommunicationEngine<Vector3D>> engine =
+                std::make_unique<STORM::RDMACommunicationEngine<Vector3D, Tessellation3D>>(
+                    tess, monteCarloConfig, MPI_COMM_WORLD, RDMA_Type::AUTO_RDMA);
+            greyManager = std::make_shared<MonteCarloManager3D>(
+                tess, greyPhysics, greyPopControl, greyBoundary, monteCarloConfig, std::move(engine));
     #else
-            greyManager = std::make_shared<MonteCarloManagerSerial3D>(
+            greyManager = std::make_shared<MonteCarloManager3D>(
                 tess, greyPhysics, greyPopControl, greyBoundary);
     #endif
 
@@ -270,9 +278,8 @@ ForwardPostprocessResult RunGreyPostprocess(
 
                 greyPhysics->reseedRNG(static_cast<uint64_t>(rank + 87654321) * greyTotalGenerations + gen);
 
-                std::vector<Particle3D> empty;
-                auto remaining = greyManager->step(std::move(empty), cells, cfg.transportTime);
-                (void)remaining;
+                greyManager->getParticles().clear();
+                greyManager->step(cells, cfg.transportTime);
                 IMCPostProcessGenerationDiagnostics const generationDiagnostics =
                     greyPhysics->getPostProcessGenerationDiagnostics();
 
@@ -519,8 +526,12 @@ ForwardPostprocessResult RunGreyPostprocess(
 
                         greyPopControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Tessellation3D>>(tess);
 
-                        greyManager = std::make_shared<RDMAMonteCarloManager3D>(
-                            tess, greyPhysics, greyPopControl, greyBoundary);
+                        std::unique_ptr<STORM::CommunicationEngine<Vector3D>> rebuiltEngine =
+                            std::make_unique<STORM::RDMACommunicationEngine<Vector3D, Tessellation3D>>(
+                                tess, monteCarloConfig, MPI_COMM_WORLD, RDMA_Type::AUTO_RDMA);
+                        greyManager = std::make_shared<MonteCarloManager3D>(
+                            tess, greyPhysics, greyPopControl, greyBoundary,
+                            monteCarloConfig, std::move(rebuiltEngine));
 
                         if (rank == 0)
                             std::cout << greyLBLabel

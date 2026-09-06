@@ -78,7 +78,7 @@ int main(int argc, char *argv[])
     {
         MonteCarloManagerLegacy<Vector3D, Tessellation3D> manager(tess, physics, popControl, boundaryCond);
         
-        std::vector<MonteCarloParticle<Vector3D>> particles;
+        manager.getParticles().clear();
         size_t iterations = 500 / 0.03 / 4;
         std::chrono::high_resolution_clock::time_point start, end;
 
@@ -90,10 +90,13 @@ int main(int argc, char *argv[])
             {
                 std::cout << "Iteration " << i << " (out of " << iterations << ")" << std::endl;
             }
-            particles = manager.step(particles, 0.03 / units::clight);
+            manager.step(0.03 / units::clight);
             if(i % 100 == 0 and rank == 0)
             {
-                std::cout << "Particles: " << particles.size() << std::endl;
+                std::cout << "Particles: "
+                          << static_cast<const decltype(manager) &>(
+                                 manager).getParticles().size()
+                          << std::endl;
             }
         }
         end = std::chrono::high_resolution_clock::now();

@@ -15,6 +15,9 @@
 #include <vector>
 
 #include "source/3D/monte/MonteCarloManager3D.hpp"
+#ifdef RICH_MPI
+#include "source/monte/manager/communication/RDMACommunicationEngine.hpp"
+#endif // RICH_MPI
 #include "source/Radiation/Diffusion.hpp"
 #include "source/misc/mesh_generator3D.hpp"
 #include "source/misc/universal_error.hpp"
@@ -526,10 +529,14 @@ void InitializeFluxSourceSurface(
         STORM::NoPopulationControl<Vector3D, Tessellation3D>>(runtime.tess);
     std::shared_ptr<MonteCarloManager3D> manager;
 #ifdef RICH_MPI
-    manager = std::make_shared<RDMAMonteCarloManager3D>(
-        runtime.tess, physics, population, boundary);
+    MonteCarloConfig monteCarloConfig;
+    std::unique_ptr<STORM::CommunicationEngine<Vector3D>> engine =
+        std::make_unique<STORM::RDMACommunicationEngine<Vector3D, Tessellation3D>>(
+            runtime.tess, monteCarloConfig, MPI_COMM_WORLD, RDMA_Type::AUTO_RDMA);
+    manager = std::make_shared<MonteCarloManager3D>(
+        runtime.tess, physics, population, boundary, monteCarloConfig, std::move(engine));
 #else
-    manager = std::make_shared<MonteCarloManagerSerial3D>(
+    manager = std::make_shared<MonteCarloManager3D>(
         runtime.tess, physics, population, boundary);
 #endif
 
@@ -610,8 +617,10 @@ void InitializeFluxSourceSurface(
                       << std::endl;
 
         if(globalLaunched > 0)
-            (void)manager->step(
-                std::move(particles), runtime.cells, 2.01 * cfg.radius);
+        {
+            manager->getParticles() = std::move(particles);
+            manager->step(runtime.cells, 2.01 * cfg.radius);
+        }
     }
 
     runtime.fluxSourceRadius = physics->radius();

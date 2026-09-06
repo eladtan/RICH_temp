@@ -20,6 +20,9 @@
 #include "source/3D/output/Snapshot3D.hpp"
 #include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "source/3D/monte/MonteCarloManager3D.hpp"
+#ifdef RICH_MPI
+#include "source/monte/manager/communication/RDMACommunicationEngine.hpp"
+#endif // RICH_MPI
 #include "source/3D/radiation/RadiationIMC.hpp"
 #include "source/3D/radiation/SphericalObserver.hpp"
 #include "source/monte/boundary/Vacuum.hpp"
@@ -903,7 +906,7 @@ int PostProcessIMC::RunPostProcessMain(
         params.ddmcMinCellOpticalDepth = 15;
         params.ddmcExternalSourceMinFaceOpticalDepth =
             cfg.fluxSourceDDMCFaceOpticalDepth;
-        params.ddmcUseMultigroupPGRW = true;
+        params.withMultigroupDDMC = true;
         params.MMC = false;
         params.diffusionPressureGradient = false;
 #if ENERGY_GROUPS_NUM > 1
@@ -939,10 +942,14 @@ int PostProcessIMC::RunPostProcessMain(
         // ============================================================
         std::shared_ptr<MonteCarloManager3D> manager;
 #ifdef RICH_MPI
-        manager = std::make_shared<RDMAMonteCarloManager3D>(
-            tess, physics, popControl, boundary);
+        MonteCarloConfig monteCarloConfig;
+        std::unique_ptr<STORM::CommunicationEngine<Vector3D>> engine =
+            std::make_unique<STORM::RDMACommunicationEngine<Vector3D, Tessellation3D>>(
+                tess, monteCarloConfig, MPI_COMM_WORLD, RDMA_Type::AUTO_RDMA);
+        manager = std::make_shared<MonteCarloManager3D>(
+            tess, physics, popControl, boundary, monteCarloConfig, std::move(engine));
 #else
-        manager = std::make_shared<MonteCarloManagerSerial3D>(
+        manager = std::make_shared<MonteCarloManager3D>(
             tess, physics, popControl, boundary);
 #endif
 

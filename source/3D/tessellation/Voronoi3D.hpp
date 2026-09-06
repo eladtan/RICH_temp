@@ -234,6 +234,41 @@ public:
         return engine_.IsPointInCell(point, cellIndex, verbose);
     }
 
+    void SetPeriodic(bool periodicX, bool periodicY, bool periodicZ) override
+    {
+        engine_.SetPeriodicBoundaries(periodicX, periodicY, periodicZ);
+    }
+
+    std::array<bool, 3> GetPeriodic() const override
+    {
+        return engine_.GetPeriodicBoundaries();
+    }
+
+    bool HasPeriodic() const override
+    {
+        return engine_.HasPeriodicBoundaries();
+    }
+
+    void WrapPeriodicPoint(Vector3D &point) const override
+    {
+        engine_.WrapPeriodicPoint(point);
+    }
+
+    bool IsPeriodicImage(size_t delaunayIndex) const override
+    {
+        return engine_.IsPeriodicImage(delaunayIndex);
+    }
+
+    Vector3D GetPeriodicImageTranslation(size_t delaunayIndex) const override
+    {
+        return engine_.GetPeriodicImageTranslation(delaunayIndex);
+    }
+
+    size_t ResolvePeriodicImageIndex(size_t meshIndex) const override
+    {
+        return engine_.ResolvePeriodicImageIndex(meshIndex);
+    }
+
     std::pair<bool, size_t> FindViolatedFaceNeighbor(const Vector3D& point, size_t cellIndex) const override
     {
         return engine_.FindViolatedFaceNeighbor(point, cellIndex);

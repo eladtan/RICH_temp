@@ -29,6 +29,8 @@
 #include "3D/radiation/MonteCarloPhysics3D.hpp"
 #include "3D/monte/MonteCarloManager3D.hpp"
 #include "3D/monte/STORMVoronoi3DMovement.hpp"
+#include "monte/manager/communication/P2PCommunicationEngine.hpp"
+#include "monte/manager/communication/RDMACommunicationEngine.hpp"
 #include "monte/population/PopulationControl.hpp"
 #include "monte/boundary/BoundaryCondition.hpp"
 #include "monte/boundary/RigidBoundary.hpp"
@@ -413,22 +415,23 @@ int main(int argc, char *argv[])
 
         std::shared_ptr<MonteCarloManager3D> manager;
         #ifdef RICH_MPI
+        std::unique_ptr<STORM::CommunicationEngine<Vector3D>> engine;
         if(managerKind == MANAGER_P2P)
         {
-            manager = std::make_shared<TwoSidedMonteCarloManager3D>(tess, physics, popControl, boundary, MPI_COMM_WORLD);
-        }
-        else if(managerKind == MANAGER_OLD_RDMA)
-        {
-            manager = std::make_shared<RDMAMonteCarloManagerLegacy3D>(tess, physics, popControl, boundary, config, MPI_COMM_WORLD, rdmaType);
+            engine = std::make_unique<STORM::P2PCommunicationEngine<Vector3D, Tessellation3D>>(
+                tess, config, MPI_COMM_WORLD);
         }
         else
         {
-            manager = std::make_shared<RDMAMonteCarloManager3D>(tess, physics, popControl, boundary, config, MPI_COMM_WORLD, rdmaType);
+            engine = std::make_unique<STORM::RDMACommunicationEngine<Vector3D, Tessellation3D>>(
+                tess, config, MPI_COMM_WORLD, rdmaType);
         }
+        manager = std::make_shared<MonteCarloManager3D>(
+            tess, physics, popControl, boundary, config, std::move(engine));
         #else
         (void) managerKind;
         managerName = "serial";
-        manager = std::make_shared<MonteCarloManagerSerial3D>(tess, physics, popControl, boundary);
+        manager = std::make_shared<MonteCarloManager3D>(tess, physics, popControl, boundary, config);
         #endif
 
         if(rank == 0)
@@ -448,7 +451,7 @@ int main(int argc, char *argv[])
                       << std::endl;
         }
 
-        std::vector<Particle3D> particles;
+        manager->getParticles().clear();
         double simTime = 0.0;
         double totalStepWall = 0.0;
 
@@ -456,9 +459,8 @@ int main(int argc, char *argv[])
         {
             MPI_Barrier(MPI_COMM_WORLD);
             auto stepStart = std::chrono::high_resolution_clock::now();
-            particles = manager->step(std::move(particles), cells, dt);
+            manager->step(cells, dt);
             auto stepEnd = std::chrono::high_resolution_clock::now();
-            // particles.clear();
 
             const double localStepWall = std::chrono::duration<double>(stepEnd - stepStart).count();
             const double stepWall = GlobalMax(localStepWall);
@@ -466,7 +468,9 @@ int main(int argc, char *argv[])
             simTime += dt;
 
             const size_t emitted = GlobalSum(physics->getLastEmittedCount());
-            const size_t remaining = GlobalSum(particles.size());
+            const size_t remaining = GlobalSum(
+                static_cast<const MonteCarloManager3D &>(
+                    *manager).getParticles().size());
 
             if(rank == 0)
             {

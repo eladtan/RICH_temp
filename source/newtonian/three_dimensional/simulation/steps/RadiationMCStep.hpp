@@ -101,7 +101,6 @@ private:
     const Tessellation3D &tess;
     std::vector<ComputationalCell3D> &cells;
     std::vector<Conserved3D> &extensives;
-    std::vector<Particle3D> particles;
     std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl;
     std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond;
     std::shared_ptr<MonteCarloRadiationPhysics3D> physics;

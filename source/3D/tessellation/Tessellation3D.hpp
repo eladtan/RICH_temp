@@ -6,6 +6,7 @@
 #ifndef TESSELLATION3D_HPP
 #define TESSELLATION3D_HPP 1
 
+#include <array>
 #include <cassert>
 #include <chrono>
 #include <algorithm>
@@ -279,6 +280,68 @@ public:
     (void)point;
     (void)cellIndex;
     return {false, std::numeric_limits<size_t>::max()};
+  }
+
+  /*! \brief Enables periodicity along each axis of the domain box.
+   *  The default leaves the tessellation non-periodic.
+   */
+  virtual void SetPeriodic(bool periodicX, bool periodicY, bool periodicZ)
+  {
+    (void)periodicX;
+    (void)periodicY;
+    (void)periodicZ;
+  }
+
+  /*! \brief Returns periodicity flags for x, y, and z. */
+  virtual std::array<bool, 3> GetPeriodic() const
+  {
+    return {false, false, false};
+  }
+
+  /*! \brief Returns true if at least one axis is periodic. */
+  virtual bool HasPeriodic() const
+  {
+    return false;
+  }
+
+  /*! \brief Wraps a point into the primary domain of a periodic tessellation.
+   *  The default leaves the point untouched, which is what every non periodic tessellation needs.
+   */
+  virtual void WrapPeriodicPoint(Vector3D &point) const
+  {
+    (void)point;
+  }
+
+  virtual bool IsPeriodicImage(size_t meshIndex) const
+  {
+    (void)meshIndex;
+    return false;
+  }
+
+  virtual Vector3D GetPeriodicImageTranslation(size_t meshIndex) const
+  {
+    (void)meshIndex;
+    return Vector3D();
+  }
+
+  virtual size_t ResolvePeriodicImageIndex(size_t meshIndex) const
+  {
+    const size_t cellNumber = GetPointNo();
+    if(meshIndex < cellNumber)
+    {
+      return meshIndex;
+    }
+    if(HasPeriodic())
+    {
+      Vector3D periodicPoint = GetMeshPoint(meshIndex);
+      WrapPeriodicPoint(periodicPoint);
+      const size_t containing = GetContainingCell(periodicPoint);
+      if(containing < cellNumber)
+      {
+        return containing;
+      }
+    }
+    return meshIndex;
   }
 
   #ifdef RICH_MPI

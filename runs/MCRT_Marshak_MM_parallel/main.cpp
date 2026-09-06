@@ -149,7 +149,7 @@ int main(int argc, char *argv[])
     {
         MonteCarloManagerLegacy<Vector3D, Tessellation3D> manager(tess, physics, popControl, boundaryCond);
         
-        std::vector<MonteCarloParticle<Vector3D>> particles;
+        manager.getParticles().clear();
         size_t iterations = 10000;
         std::chrono::high_resolution_clock::time_point start, end;
 
@@ -166,7 +166,7 @@ int main(int argc, char *argv[])
                 Output("MCRT_MM_" + std::to_string(i) + ".vtu");
             }
 
-            particles = manager.step(particles, 0.03 / units::clight);
+            manager.step(0.03 / units::clight);
             
             // // move points a little bit
             // for(size_t j = 0; j < points.size(); j++)
