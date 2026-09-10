@@ -58,6 +58,13 @@ public:
 
     std::vector<Particle3D> &getParticles(void);
 
+    /*! \brief Re-synchronise the photons with a cell list that was rebuilt outside a
+      load-balance exchange (e.g. after AMR removed or inserted cells).
+      Cell indices may have shifted and cells may have been merged or split, so every
+      photon is put back into the cell that now contains it, the manager's cached cell
+      pointers are dropped, and the per-cell counters used for load balancing are resized. */
+    void afterMeshChange(void);
+
     inline const Tessellation3D &getTessellation(void) const{return this->tess;};
 
     inline const std::vector<ComputationalCell3D> &getCells(void) const{return this->cells;};
@@ -85,6 +92,10 @@ public:
 
         bool allowRebalance(void) override;
 
+        //! \brief How often the load balancer is offered this step's weights,
+        //! in MC steps. 1 checks every step, 0 never checks. Default 10.
+        void setRebalanceInterval(size_t interval);
+
         std::string getRequiredLB(void) const override;
 
         std::vector<double> getLoadBalanceWeights(void) override;
@@ -98,6 +109,8 @@ public:
     #endif // RICH_MPI
 
 private:
+        size_t rebalanceInterval = 10;
+
     const Tessellation3D &tess;
     std::vector<ComputationalCell3D> &cells;
     std::vector<Conserved3D> &extensives;

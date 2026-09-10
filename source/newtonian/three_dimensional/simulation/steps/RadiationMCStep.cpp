@@ -127,6 +127,25 @@ double RadiationMCStep::suggestTimeStep(void) const
     return suggested_dt;
 }
 
+void RadiationMCStep::afterMeshChange(void)
+{
+    // Same hazard as afterLB: the cells vector was resized and renumbered, so the
+    // manager's cached pointer into it must not be dereferenced.
+    this->manager->invalidateCellCache();
+    std::vector<Particle3D> &particles = this->manager->getParticles();
+    // Cell-ID matching keeps photons whose cell survived unchanged, the face walk
+    // fixes photons whose stale index now points at a neighbour, and the tree
+    // search (plus an inter-rank exchange under MPI) handles the rest.
+    UpdateNewCells(this->tess, particles, this->cells);
+    SyncParticleCellIDs(this->cells, particles, "RadiationMCStep::afterMeshChange");
+    size_t const N = this->tess.GetPointNo();
+    this->manager->GetCellsStepsCounters().resize(N, 0);
+    // The physics reassigns its per-cell tallies at the next step; until then keep
+    // them at the cell count so outputs taken in between see consistent sizes.
+    this->physics->getEradTimeAvg().resize(N, 0.0);
+    this->physics->getEgTimeAvg().resize(N);
+}
+
 void RadiationMCStep::step(double dt)
 {
     this->stepCounter++;
@@ -329,7 +348,20 @@ void RadiationMCStep::step(double dt)
 
     bool RadiationMCStep::allowRebalance(void)
     {
-        return (this->stepCounter % 10 == 0) and this->stepCounter != 0;
+        // The MC partition goes stale fast when the load is concentrated in a
+        // few cells: the balancer fixes a 30x weight imbalance whenever it is
+        // asked, but by the tenth step the work has drifted back. Drivers with
+        // a moving hotspot should ask every step.
+        if(this->rebalanceInterval == 0)
+        {
+            return false;
+        }
+        return (this->stepCounter % this->rebalanceInterval == 0) and this->stepCounter != 0;
+    }
+
+    void RadiationMCStep::setRebalanceInterval(size_t interval)
+    {
+        this->rebalanceInterval = interval;
     }
 
     std::string RadiationMCStep::getRequiredLB(void) const
@@ -353,6 +385,12 @@ void RadiationMCStep::step(double dt)
 
     void RadiationMCStep::afterLB(void)
     {
+        // The rebalance renumbered the cells, so the manager's cached pointer
+        // to the pre-rebalance cells no longer matches the particles' cell
+        // indices. Drop it before touching the particles: indexing it here is
+        // out of bounds, and the SyncParticleCellIDs call below re-stamps every
+        // cellID against the live cells anyway.
+        this->manager->invalidateCellCache();
         UpdateNewCellsAfterExchange(this->tess, this->manager->getParticles());
         SyncParticleCellIDs(this->cells, this->manager->getParticles(),
                             "RadiationMCStep::afterLB");
