@@ -1,0 +1,28 @@
+{
+  "time_unit": 0.0256,
+  "temperature_unit": 937.5,
+  "sampled_xi_interval": [
+    0.02,
+    1.99
+  ],
+  "profiles": [
+    {
+      "heat_front": 0.45,
+      "age": 0.00048208462655560517,
+      "max_radiation_heat_capacity_ratio": 0.00012838985337312314,
+      "max_v_over_c": 9.570080453698823e-09,
+      "max_Kn_excluding_front": 0.008880666080337794,
+      "max_F_over_cEr_excluding_front": 0.011840888107117057,
+      "max_equilibration_time_over_age": 1.1860977969719903e-10
+    },
+    {
+      "heat_front": 0.9,
+      "age": 0.0013120318781093328,
+      "max_radiation_heat_capacity_ratio": 8.735581429700021e-05,
+      "max_v_over_c": 7.032738668326837e-09,
+      "max_Kn_excluding_front": 0.00959164988791965,
+      "max_F_over_cEr_excluding_front": 0.0127888665172262,
+      "max_equilibration_time_over_age": 9.414450716598792e-11
+    }
+  ]
+}

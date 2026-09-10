@@ -1,0 +1,7 @@
+{
+  "max_table_vs_upstream_relative_error": 4.6140359113433504e-05,
+  "mass_inside_front_relative_error": 1.4367053102759542e-08,
+  "shock_jump": "passed",
+  "unit_mapping": "passed",
+  "energy_similarity": "passed"
+}

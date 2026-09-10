@@ -1,0 +1,279 @@
+{
+  "reference": {
+    "max_table_vs_upstream_relative_error": 4.6140359113433504e-05,
+    "mass_inside_front_relative_error": 1.4367053102759542e-08,
+    "shock_jump": "passed",
+    "unit_mapping": "passed",
+    "energy_similarity": "passed"
+  },
+  "physical_limit": {
+    "time_unit": 0.0256,
+    "temperature_unit": 937.5,
+    "sampled_xi_interval": [
+      0.02,
+      1.99
+    ],
+    "profiles": [
+      {
+        "heat_front": 0.45,
+        "age": 0.00048208462655560517,
+        "max_radiation_heat_capacity_ratio": 0.00012838985337312314,
+        "max_v_over_c": 9.570080453698823e-09,
+        "max_Kn_excluding_front": 0.008880666080337794,
+        "max_F_over_cEr_excluding_front": 0.011840888107117057,
+        "max_equilibration_time_over_age": 1.1860977969719903e-10
+      },
+      {
+        "heat_front": 0.9,
+        "age": 0.0013120318781093328,
+        "max_radiation_heat_capacity_ratio": 8.735581429700021e-05,
+        "max_v_over_c": 7.032738668326837e-09,
+        "max_Kn_excluding_front": 0.00959164988791965,
+        "max_F_over_cEr_excluding_front": 0.0127888665172262,
+        "max_equilibration_time_over_age": 9.414450716598792e-11
+      }
+    ]
+  },
+  "serial_mpi_hydro": {
+    "initial": {
+      "rho": 4.607490959194122e-16,
+      "T": 7.051510288107633e-16,
+      "p": 4.994420586497308e-16,
+      "e": 7.220746535022215e-16,
+      "vx": 5.20936859369725e-16,
+      "vy": 1.215519338529356e-15,
+      "vz": 3.472912395798162e-16
+    },
+    "final": {
+      "rho": 1.519239755255057e-13,
+      "T": 9.46655640502409e-16,
+      "p": 8.302667550841216e-16,
+      "e": 8.7243783828702e-16,
+      "vx": 7.425000032590245e-14,
+      "vy": 8.539884342248349e-14,
+      "vz": 7.058753541363883e-14
+    }
+  },
+  "full_octant16": {
+    "L1_rho": 0.13991143551721397,
+    "L1_T": 0.37720407615619456,
+    "L1_p": 0.3223656296955401,
+    "L1_e": 0.37720407615619445,
+    "snapshot": "final",
+    "L1_radial_velocity": 0.4319910059403081,
+    "reference_transverse_to_radial_rms": 0.0021588490260696647,
+    "transverse_to_radial_rms": 0.026995136146022482,
+    "max_energy_drift": 1.384775232279195e-14,
+    "max_mass_drift": 1.0385347163123531e-14,
+    "max_radiation_heat_capacity_ratio": 0.00011375874326299696,
+    "max_boundary_T": 1.0871216406297197,
+    "initial_floor_energy_fraction": 0.00023489955778872897,
+    "physical_age_s": 0.0013120318781093328,
+    "octant": true,
+    "shock_radius_shell_peak": 0.4125,
+    "shock_radius_reference_shell_peak": 0.4125,
+    "heat_front_thresholds": {
+      "0.01": {
+        "simulation": 1.05,
+        "averaged_reference": 0.975
+      },
+      "0.05": {
+        "simulation": 1.05,
+        "averaged_reference": 0.8999999999999999
+      },
+      "0.1": {
+        "simulation": 1.05,
+        "averaged_reference": 0.8999999999999999
+      }
+    },
+    "exact_heat_front": 0.9,
+    "exact_shock": 0.45,
+    "ddmc_steps": 93833339.0,
+    "reached_end": true,
+    "age": 0.0013120318781093328,
+    "cycles": 201
+  },
+  "checkpoint100_octant16": {
+    "L1_rho": 0.11810254510747871,
+    "L1_T": 0.3412133541480237,
+    "L1_p": 0.3698391015752646,
+    "L1_e": 0.3412133541480236,
+    "L1_radial_velocity": 0.39080858502098337,
+    "transverse_to_radial_rms": 0.028312767023767806,
+    "max_energy_drift": 1.384775232279195e-14,
+    "max_mass_drift": 7.162308388361057e-15,
+    "max_radiation_heat_capacity_ratio": 0.00011375874326299696,
+    "max_boundary_T": 1.0003317366363758,
+    "initial_floor_energy_fraction": 0.00023489955778872897,
+    "physical_age_s": 0.0007938335650828849,
+    "octant": true,
+    "shock_radius_shell_peak": 0.26249999999999996,
+    "shock_radius_reference_shell_peak": 0.26249999999999996,
+    "heat_front_thresholds": {
+      "0.01": {
+        "simulation": 0.75,
+        "averaged_reference": 0.6749999999999999
+      },
+      "0.05": {
+        "simulation": 0.75,
+        "averaged_reference": 0.6749999999999999
+      },
+      "0.1": {
+        "simulation": 0.75,
+        "averaged_reference": 0.6749999999999999
+      }
+    },
+    "exact_heat_front": 0.6355806039967488,
+    "exact_shock": 0.3177903019983744,
+    "ddmc_steps": 17387197.0
+  },
+  "checkpoint100_octant32": {
+    "L1_rho": 0.08053163657122042,
+    "L1_T": 0.1584257580488347,
+    "L1_p": 0.22236744008091835,
+    "L1_e": 0.15842575804883458,
+    "snapshot": "step100",
+    "L1_radial_velocity": 0.23712704185409791,
+    "reference_transverse_to_radial_rms": 0.0016296369152820906,
+    "transverse_to_radial_rms": 0.016143752160114478,
+    "max_energy_drift": 2.931621267301002e-14,
+    "max_mass_drift": 3.222817589252638e-14,
+    "max_radiation_heat_capacity_ratio": 0.00015083892419800083,
+    "max_boundary_T": 1.0041628031165728,
+    "initial_floor_energy_fraction": 0.00023483469698721963,
+    "physical_age_s": 0.0007938335650828849,
+    "octant": true,
+    "shock_radius_shell_peak": 0.28125,
+    "shock_radius_reference_shell_peak": 0.28125,
+    "heat_front_thresholds": {
+      "0.01": {
+        "simulation": 0.7125,
+        "averaged_reference": 0.6749999999999999
+      },
+      "0.05": {
+        "simulation": 0.6749999999999999,
+        "averaged_reference": 0.6375
+      },
+      "0.1": {
+        "simulation": 0.6749999999999999,
+        "averaged_reference": 0.6375
+      }
+    },
+    "exact_heat_front": 0.6355806039967488,
+    "exact_shock": 0.3177903019983744,
+    "ddmc_steps": 201968184.0
+  },
+  "coupled_mpi_smoke": {
+    "L1_rho": 0.008291315636157976,
+    "L1_T": 0.07562719416533362,
+    "L1_p": 0.05779232832450402,
+    "L1_e": 0.07562719416533363,
+    "L1_radial_velocity": 0.05854797193474403,
+    "transverse_to_radial_rms": 0.01296916811143932,
+    "max_energy_drift": 1.3023809751433943e-15,
+    "max_mass_drift": 8.951711719336867e-16,
+    "max_radiation_heat_capacity_ratio": 5.1920342603525666e-05,
+    "max_boundary_T": 1.0000037710552299,
+    "initial_floor_energy_fraction": 0.00023472410344425513,
+    "physical_age_s": 0.0004917988731243168,
+    "octant": true,
+    "shock_radius_shell_peak": 0.075,
+    "shock_radius_reference_shell_peak": 0.075,
+    "heat_front_thresholds": {
+      "0.01": {
+        "simulation": 0.6,
+        "averaged_reference": 0.6
+      },
+      "0.05": {
+        "simulation": 0.44999999999999996,
+        "averaged_reference": 0.44999999999999996
+      },
+      "0.1": {
+        "simulation": 0.44999999999999996,
+        "averaged_reference": 0.44999999999999996
+      }
+    },
+    "exact_heat_front": 0.4562583637244587,
+    "exact_shock": 0.22812918186222936,
+    "ddmc_steps": 7584.0,
+    "reached_end": false,
+    "age": 0.0004917988731243168,
+    "cycles": 4
+  },
+  "ddmc_short_interval": {
+    "L1_rho": 3.377872046366823e-05,
+    "L1_T": 0.0008783502458105211,
+    "L1_p": 0.00045980676805305843,
+    "L1_e": 0.000878350245810524,
+    "L1_radial_velocity": 0.00023956012845055257,
+    "transverse_to_radial_rms": 0.0033997553798013613,
+    "max_energy_drift": 7.648367427437352e-15,
+    "max_mass_drift": 5.907555493898337e-15,
+    "max_radiation_heat_capacity_ratio": 6.994271074667734e-05,
+    "max_boundary_T": 1.000000110847385,
+    "initial_floor_energy_fraction": 0.00023463284204867037,
+    "physical_age_s": 0.00048210391022992014,
+    "octant": false,
+    "shock_radius_shell_peak": 0.15,
+    "shock_radius_reference_shell_peak": 0.15,
+    "heat_front_thresholds": {
+      "0.01": {
+        "simulation": 0.6,
+        "averaged_reference": 0.6
+      },
+      "0.05": {
+        "simulation": 0.6,
+        "averaged_reference": 0.6
+      },
+      "0.1": {
+        "simulation": 0.6,
+        "averaged_reference": 0.6
+      }
+    },
+    "exact_heat_front": 0.45001246164869857,
+    "exact_shock": 0.22500623082434928,
+    "ddmc_steps": 19798.0,
+    "reached_end": false,
+    "age": 0.00048210391022992014,
+    "cycles": 4
+  },
+  "imc_short_interval": {
+    "L1_rho": 3.377872046366204e-05,
+    "L1_T": 0.03125573395548168,
+    "L1_p": 0.012874903847043729,
+    "L1_e": 0.03125573395548166,
+    "L1_radial_velocity": 0.00023935787465882835,
+    "transverse_to_radial_rms": 0.0033995429142704447,
+    "max_energy_drift": 7.322904983716612e-15,
+    "max_mass_drift": 5.907555493898337e-15,
+    "max_radiation_heat_capacity_ratio": 6.978157211872425e-05,
+    "max_boundary_T": 1.0000004198592072,
+    "initial_floor_energy_fraction": 0.00023463284204867037,
+    "physical_age_s": 0.00048210391022992014,
+    "octant": false,
+    "shock_radius_shell_peak": 0.15,
+    "shock_radius_reference_shell_peak": 0.15,
+    "heat_front_thresholds": {
+      "0.01": {
+        "simulation": 0.6,
+        "averaged_reference": 0.6
+      },
+      "0.05": {
+        "simulation": 0.6,
+        "averaged_reference": 0.6
+      },
+      "0.1": {
+        "simulation": 0.6,
+        "averaged_reference": 0.6
+      }
+    },
+    "exact_heat_front": 0.45001246164869857,
+    "exact_shock": 0.22500623082434928,
+    "ddmc_steps": 0.0,
+    "reached_end": false,
+    "age": 0.00048210391022992014,
+    "cycles": 4
+  },
+  "imc_ddmc_short_interval_T_L1_difference": 0.03039401764347657,
+  "accuracy_certified": false
+}

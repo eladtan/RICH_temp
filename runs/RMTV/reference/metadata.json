@@ -1,0 +1,13 @@
+{
+  "upstream": "lanl/ExactPack",
+  "revision": "9bacc477eb791e959c9621e771fc7a725db755fa",
+  "alpha": 0.6923076923076923,
+  "kappa": -2.111111111111111,
+  "beta0": 71975340.0,
+  "zeta": 3.519606150149746,
+  "core_xi": 0.02,
+  "inner_rows": 2402,
+  "outer_rows": 2401,
+  "upstream_rtol": 4e-10,
+  "upstream_atol": 4e-10
+}

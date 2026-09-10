@@ -1,0 +1,6 @@
+/output*/
+/verification/
+__pycache__/
+*.pyc
+!.gitignore
+!reference/vendor/LICENSE.txt

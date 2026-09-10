@@ -1,0 +1,71 @@
+#include "../RMTVReference.hpp"
+#include <array>
+#include <cassert>
+#include <iomanip>
+#include <iostream>
+int main(int argc, char **argv)
+{
+    assert(argc == 2);
+    rmtv::Reference ref(argv[1]);
+    rmtv::Scales s;
+    const double t = s.age(.45);
+    assert(std::abs(s.front(t) - .45) < 1e-14);
+    assert(std::abs(s.age(.9) / t - std::pow(2., 13. / 9)) < 1e-14);
+    rmtv::State center = ref(0, t, s);
+    assert(std::isfinite(center.rho) && center.rho > 0 && center.T > 0 && center.v == 0);
+    rmtv::State ambient = ref(.6, t, s);
+    assert(ambient.T == 0 && ambient.v == 0);
+    assert(std::abs(ambient.rho / std::pow(.6, rmtv::kappa) - 1) < 1e-14);
+    rmtv::State l = ref(.225 * (1 - 1e-9), t, s), r = ref(.225 * (1 + 1e-9), t, s);
+    assert(l.rho / r.rho > 7 && std::abs(l.T / r.T - 1) < 1e-7);
+    // Conservative averaging and Cartesian reflection symmetry.
+    std::array<double, 6> a = ref.average(.1, .1, .1, .15, t, s, 12, 1);
+    std::array<double, 6> b = ref.average(-.1, .1, .1, .15, t, s, 12, 1);
+    for(int k : {0, 2, 3, 4, 5})
+    {
+        assert(std::abs(a[k] - b[k]) < 1e-12 * std::max(1., std::abs(a[k])));
+    }
+    assert(std::abs(a[1] + b[1]) < 1e-12 * std::abs(a[1]));
+    double e = a[4] / a[0] - .5 * (a[1] * a[1] + a[2] * a[2] + a[3] * a[3]) / (a[0] * a[0]);
+    assert(e > 0);
+    // A cell tangent to the heat front must choose the same integration rule
+    // under roundoff-sized changes of its centroid (serial/MPI geometry).
+    std::array<double, 6> tangent1 = ref.average(std::nextafter(.525, 0.), .075, .075, .15, t, s, 8, 1);
+    std::array<double, 6> tangent2 = ref.average(std::nextafter(.525, 1.), .075, .075, .15, t, s, 8, 1);
+    for(int k = 0; k < 6; ++k)
+    {
+        assert(std::abs(tangent1[k] - tangent2[k]) < 1e-12 * std::max(1., std::abs(tangent1[k])));
+    }
+    std::cout << std::setprecision(17);
+    // Integrated initial mass/energy vs quadrature refinement on a whole sphere.
+    // Sum over the positive octant and restore the other seven octants.
+    for(int n : {8, 16, 32})
+    {
+        double oldM = 0, oldE = 0;
+        for(int q : {4, 8, 16})
+        {
+            double M = 0, E = 0, dx = 2.4 / n;
+            for(int i = 0; i < n / 2; ++i)
+            {
+                for(int j = 0; j < n / 2; ++j)
+                {
+                    for(int k = 0; k < n / 2; ++k)
+                    {
+                        std::array<double, 6> v = ref.average((i + .5) * dx, (j + .5) * dx,
+                                                               (k + .5) * dx, dx, t, s, q, 1);
+                        M += 8 * v[0] * dx * dx * dx;
+                        E += 8 * v[4] * dx * dx * dx;
+                    }
+                }
+            }
+            std::cout << n << ' ' << q << ' ' << M << ' ' << E << '\n';
+            if(q == 16)
+            {
+                assert(std::abs(M / oldM - 1) < .005);
+                assert(std::abs(E / oldE - 1) < .02);
+            }
+            oldM = M;
+            oldE = E;
+        }
+    }
+}
