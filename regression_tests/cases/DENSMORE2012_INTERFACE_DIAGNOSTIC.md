@@ -1,10 +1,10 @@
 # Densmore exposed IMC-DDMC interface diagnostic
 
 These two cases deliberately remove the ten-cell geometric refinement used by
-`desmore2012_mc` and `desmore2012_mc_ddmc`:
+`densmore2012_mc` and `densmore2012_mc_ddmc`:
 
-- `desmore2012_interface_mc`: pure multigroup IMC.
-- `desmore2012_interface_ddmc`: the identical problem and mesh with DDMC on.
+- `densmore2012_interface_mc`: pure multigroup IMC.
+- `densmore2012_interface_ddmc`: the identical problem and mesh with DDMC on.
 
 The mesh has 100 nominal 0.02-cm thin-material cells and 200 exact 0.005-cm
 thick-material cells.  The opacity face is exactly at `x=2 cm`; the first thick
@@ -18,12 +18,12 @@ Example MPI runs with 30 energy groups:
 
 ```bash
 ./build_rich.sh intelReleaseMPI \
-  --test_name=regression_tests/cases/desmore2012_interface_mc \
+  --test_name=regression_tests/cases/densmore2012_interface_mc \
   --energy_groups_num=30
 mpirun -np 8 ./build/intelReleaseMPI/rich
 
 ./build_rich.sh intelReleaseMPI \
-  --test_name=regression_tests/cases/desmore2012_interface_ddmc \
+  --test_name=regression_tests/cases/densmore2012_interface_ddmc \
   --energy_groups_num=30
 mpirun -np 8 ./build/intelReleaseMPI/rich
 

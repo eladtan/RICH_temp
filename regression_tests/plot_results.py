@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Densmore sections read historical RICH densmore2012_mc* artifacts.
+# Current STORM discovery IDs are densmore2012, densmore2012_serial, densmore2012_ddmc.
 """
 Plot regression test results against analytical/reference solutions.
 
@@ -678,16 +680,16 @@ def plot_gresho_lagrangian(root: Path, out_dir: Path) -> bool:
 # --------------------------------------------------------------------------- #
 
 
-def plot_desmore2012_mc(root: Path, out_dir: Path) -> bool:
-    """Densmore 2012 heterogeneous MC: MPI (no RW), serial (RW), DDMC vs reference."""
+def plot_densmore2012_mc(root: Path, out_dir: Path) -> bool:
+    """Densmore 2012 heterogeneous MC: MPI+RW, serial+RW, and DDMC vs reference."""
     cases = root / "regression_tests" / "cases"
-    profile_mpi = cases / "desmore2012_mc" / "desmore2012_mc_profile.txt"
-    profile_serial = cases / "desmore2012_mc_serial" / "desmore2012_mc_serial_profile.txt"
-    profile_ddmc = cases / "desmore2012_mc_ddmc" / "desmore2012_mc_ddmc_profile.txt"
-    ref_file = cases / "desmore2012_mc" / "data" / "densmore2012_fig4_mc.csv"
+    profile_mpi = cases / "densmore2012_mc" / "densmore2012_mc_profile.txt"
+    profile_serial = cases / "densmore2012_mc_serial" / "densmore2012_mc_serial_profile.txt"
+    profile_ddmc = cases / "densmore2012_mc_ddmc" / "densmore2012_mc_ddmc_profile.txt"
+    ref_file = cases / "densmore2012_mc" / "data" / "densmore2012_fig4_mc.csv"
 
     if not profile_mpi.exists() and not profile_serial.exists() and not profile_ddmc.exists():
-        print(f"  [desmore2012_mc] no profile found for any variant")
+        print(f"  [densmore2012_mc] no profile found for any variant")
         return False
 
     keV_K = 1.602176634e-9 / 1.380649e-16
@@ -705,7 +707,7 @@ def plot_desmore2012_mc(root: Path, out_dir: Path) -> bool:
         if raw.ndim == 1:
             raw = np.expand_dims(raw, axis=0)
         ax.plot(raw[:, 0], raw[:, 1] / keV_K, "ko", markersize=3,
-                markerfacecolor="none", label="RICH MC (MPI, no RW)")
+                markerfacecolor="none", label="RICH MC (MPI, RW)")
 
     if profile_serial.exists():
         raw = np.loadtxt(str(profile_serial))
@@ -729,9 +731,9 @@ def plot_desmore2012_mc(root: Path, out_dir: Path) -> bool:
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
-    _save_fig(fig, out_dir, "desmore2012_mc")
+    _save_fig(fig, out_dir, "densmore2012_mc")
     plt.close(fig)
-    print(f"  [desmore2012_mc] saved desmore2012_mc.png/pdf")
+    print(f"  [densmore2012_mc] saved densmore2012_mc.png/pdf")
     return True
 
 
@@ -1115,9 +1117,9 @@ ALL_PLOTTERS = {
     "marshak_wave_4_diffusion": plot_marshak_wave_4_diffusion,
     "gresho_euler": plot_gresho_euler,
     "gresho_lagrangian": plot_gresho_lagrangian,
-    "desmore2012_mc": plot_desmore2012_mc,
-    "desmore2012_mc_serial": plot_desmore2012_mc,
-    "desmore2012_mc_ddmc": plot_desmore2012_mc,
+    "densmore2012_mc": plot_densmore2012_mc,
+    "densmore2012_mc_serial": plot_densmore2012_mc,
+    "densmore2012_mc_ddmc": plot_densmore2012_mc,
     "yee_vortex_64": plot_yee_isentropic_vortex,
     "yee_vortex_128": plot_yee_isentropic_vortex,
     "rayleigh_taylor_mpi": plot_rayleigh_taylor,

@@ -284,9 +284,6 @@ reject fatal markers and missing or stale artifacts.
 | `amr_random` | Correctness; serial and MPI 64 | Random AMR stress; maximum drift at most `1e-8` serial or `1e-6` MPI. |
 | `cartesian_gauss_linear` | Correctness; serial | Cartesian/spherical Gauss reconstruction of linear fields. Limits: scalar relative error `1e-6`, Cartesian velocity `0.1`, spherical velocity `0.5`. |
 | `ddmc_mpi_zero_cell` | Correctness; MPI 8 | Zero-cell ranks and cross-rank DDMC faces; reciprocity, rate/conductance, and packet-weight errors within `1e-10` to `1e-12` limits. |
-| `desmore2012_mc` | Physics; MPI 32; 30 groups | Densmore 2012 heterogeneous-opacity MC benchmark; gas-temperature L1 at most `0.05`. |
-| `desmore2012_mc_ddmc` | Physics; MPI 32; 30 groups | Coupled MC+DDMC Densmore benchmark; gas-temperature L1 at most `0.06`. |
-| `desmore2012_mc_serial` | Physics; serial; 30 groups | Serial MC plus random-walk Densmore benchmark; gas-temperature L1 at most `0.05`. |
 | `eulerian_diffusion_freefree_1d` | Physics; MPI 16 | 512-cell grey free-free profile; requires fresh temperature/shock data and gas/radiation-temperature and velocity plots. |
 | `eulerian_diffusion_freefree_1d_32` | Physics; MPI 4 | 32-cell grey counterpart with the same data and plot checks. |
 | `eulerian_diffusion_freefree_1d_32_limited` | Physics; MPI 4 | 32-cell limited grey case with fresh profiles and plots. |
@@ -336,7 +333,9 @@ STORM at the checked-out RICH dependency submodules.
 | Test ID | Category; mode/resources | Coverage and pass criteria |
 |---|---|---|
 | `cartesian_parallel_check` | Correctness; MPI, metadata default 1 task | Parallel Cartesian transport self-check; requires the explicit `cartesian_parallel_check PASS` marker. |
-| `densmore2012` | Physics; MPI 4 | Native STORM Densmore benchmark; requires `PASS` (`DENSMORE2012_TGAS_L1`, documented threshold `0.10 keV`). |
+| `densmore2012` | Physics; MPI 4 | STORM Densmore benchmark; requires `PASS` with gas-temperature L1 below `0.10 keV`. |
+| `densmore2012_serial` | Physics; serial | STORM Densmore benchmark; gas-temperature L1 at most `0.05 keV`. |
+| `densmore2012_ddmc` | Physics; MPI 4 | STORM DDMC variant; gas-temperature L1 at most `0.06 keV`. |
 | `hohlraum_parallel` | Physics; MPI 512 | Large hohlraum run; clean completion without fatal markers. No analytic threshold. |
 | `marshak_wave_1` | Physics; serial | Native Marshak problem 1. `PASS` succeeds; reported `WARN` above nominal `0.10` L1 is also accepted as MC noise. |
 | `marshak_wave_2` | Physics; serial | Native Marshak problem 2 with the same PASS-or-WARN policy. |

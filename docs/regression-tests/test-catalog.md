@@ -1,17 +1,24 @@
 # Regression Test Catalog
 
+Densmore discovery now uses the STORM provider IDs `densmore2012`,
+`densmore2012_serial`, and `densmore2012_ddmc` (four MPI ranks
+for the MPI variants). The `densmore2012_mc*` names retained below and in
+the report scripts describe historical RICH result files; they are not
+current discovery IDs. Use `regression_tests/run_all.sh --list-tests` for
+the current inventory.
+
 This document describes the regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
 
 ## Category Inventory
 
-The unified runner discovers 56 tests. Every test belongs to exactly one
+The historical inventory below predates the STORM provider consolidation. Every test belongs to exactly one
 primary category; execution tags such as `serial`, `mpi`, `manual`, and
 `benchmark` remain independent.
 
 ### Physics (39)
 
-- **RICH (31):** `desmore2012_mc`, `desmore2012_mc_ddmc`,
-  `desmore2012_mc_serial`, `eulerian_diffusion_freefree_1d`,
+- **RICH (31):** `densmore2012_mc`, `densmore2012_mc_ddmc`,
+  `densmore2012_mc_serial`, `eulerian_diffusion_freefree_1d`,
   `eulerian_diffusion_freefree_1d_32`,
   `eulerian_diffusion_freefree_1d_32_limited`,
   `eulerian_diffusion_freefree_1d_512_limited`,

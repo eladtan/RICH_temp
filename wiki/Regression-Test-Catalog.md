@@ -1,5 +1,12 @@
 # Regression Test Catalog
 
+Densmore discovery now uses the STORM provider IDs `densmore2012`,
+`densmore2012_serial`, and `densmore2012_ddmc` (four MPI ranks
+for the MPI variants). The `densmore2012_mc*` names retained below and in
+the report scripts describe historical RICH result files; they are not
+current discovery IDs. Use `regression_tests/run_all.sh --list-tests` for
+the current inventory.
+
 This document describes all 29 regression tests in the RICH suite. Each entry covers the physics being tested, the simulation configuration, validation methodology, pass/fail criteria, and references.
 
 ---
@@ -574,7 +581,7 @@ Same as `gresho_euler`.
 
 ---
 
-## 16. desmore2012_mc -- Densmore 2012 Heterogeneous Step-Opacity (MC IMC, MPI, no RW)
+## 16. densmore2012_mc -- Densmore 2012 Heterogeneous Step-Opacity (MC IMC, MPI, no RW)
 
 **Tags:** `mpi`
 
@@ -590,21 +597,21 @@ Densmore et al. (2012) heterogeneous step-opacity slab problem: optically thin (
 - **Build flags:** `--energy_groups_num=30`
 
 ### Output
-- `desmore2012_mc_profile.txt` -- (x, T_K) profile
+- `densmore2012_mc_profile.txt` -- (x, T_K) profile
 
 ### Pass Criteria
 | Metric | Threshold | Override variable |
 |--------|-----------|-------------------|
-| Tgas L1 error (keV) | <= 0.05 | `DESMORE2012_MC_MAX_TGAS_L1` |
+| Tgas L1 error (keV) | <= 0.05 | `DENSMORE2012_MC_MAX_TGAS_L1` |
 
 ---
 
-## 17. desmore2012_mc_serial -- Densmore 2012 Heterogeneous Step-Opacity (Serial MC, RW)
+## 17. densmore2012_mc_serial -- Densmore 2012 Heterogeneous Step-Opacity (Serial MC, RW)
 
 **Tags:** `serial`
 
 ### Physics
-Same problem as `desmore2012_mc` but run serially with random walk enabled. Validates the serial (non-MPI) execution path and random walk acceleration of the MC IMC solver.
+Same problem as `densmore2012_mc` but run serially with random walk enabled. Validates the serial (non-MPI) execution path and random walk acceleration of the MC IMC solver.
 
 ### Configuration
 - **Mesh:** 256 Eulerian cells, x in [0, 3] cm
@@ -613,12 +620,12 @@ Same problem as `desmore2012_mc` but run serially with random walk enabled. Vali
 - **Build flags:** `--energy_groups_num=30`
 
 ### Output
-- `desmore2012_mc_serial_profile.txt` -- (x, T_K) profile
+- `densmore2012_mc_serial_profile.txt` -- (x, T_K) profile
 
 ### Pass Criteria
 | Metric | Threshold | Override variable |
 |--------|-----------|-------------------|
-| Tgas L1 error (keV) | <= 0.05 | `DESMORE2012_MC_SERIAL_MAX_TGAS_L1` |
+| Tgas L1 error (keV) | <= 0.05 | `DENSMORE2012_MC_SERIAL_MAX_TGAS_L1` |
 
 ---
 
@@ -953,8 +960,8 @@ Checks that all four temperature profiles and comparison plots are generated wit
 | `marshak_wave_4_diffusion` | serial | Marshak wave (divergent) | Fitted profiles | rel L1 <= 1e-2 |
 | `gresho_euler` | serial | Gresho vortex (fixed) | IC comparison | rel L1 <= 0.1 |
 | `gresho_lagrangian` | mpi | Gresho vortex (moving) | IC comparison | rel L1 <= 0.05 |
-| `desmore2012_mc` | mpi | MC IMC (no RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
-| `desmore2012_mc_serial` | serial | MC IMC (RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
+| `densmore2012_mc` | mpi | MC IMC (no RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
+| `densmore2012_mc_serial` | serial | MC IMC (RW, 30 groups) | Densmore 2012 Fig. 4 | Tgas L1 <= 0.05 keV |
 | `moving_slab_mc_32` | serial | Freq-dependent moving slab (original vacuum, 32-group collapsed) | Semi-analytic solution (collapsed) | f-error <= 0.30 |
 | `yee_vortex_64` | mpi | Isentropic vortex (64x64) | IC density comparison | L1 <= 0.05 |
 | `yee_vortex_128` | mpi | Isentropic vortex (128x128) | IC density comparison | L1 <= 0.05 |

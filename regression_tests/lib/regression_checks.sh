@@ -1221,22 +1221,22 @@ check_gresho_case() {
     return 0
 }
 
-check_desmore2012_mc_case() {
+check_densmore2012_mc_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
     local stdout_log="$3"
     local stderr_log="$4"
-    local profile_file="${run_dir}/desmore2012_mc_profile.txt"
-    local reference_file="${REGRESSION_ROOT}/cases/desmore2012_mc/data/densmore2012_fig4_mc.csv"
-    local checker_stdout="${run_dir}/desmore2012_mc_check.stdout.log"
-    local checker_stderr="${run_dir}/desmore2012_mc_check.stderr.log"
+    local profile_file="${run_dir}/densmore2012_mc_profile.txt"
+    local reference_file="${REGRESSION_ROOT}/cases/densmore2012_mc/data/densmore2012_fig4_mc.csv"
+    local checker_stdout="${run_dir}/densmore2012_mc_check.stdout.log"
+    local checker_stderr="${run_dir}/densmore2012_mc_check.stderr.log"
 
     if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
         return 1
     fi
 
     if ! is_nonempty_and_newer "$profile_file" "$run_start_epoch"; then
-        set_check_msg "missing or stale desmore2012_mc_profile.txt"
+        set_check_msg "missing or stale densmore2012_mc_profile.txt"
         return 1
     fi
 
@@ -1245,10 +1245,10 @@ check_desmore2012_mc_case() {
         return 1
     fi
 
-    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_desmore2012_mc.py" \
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_densmore2012_mc.py" \
         --profile "$profile_file" \
         --reference "$reference_file" \
-        --max-tgas-l1 "${DESMORE2012_MC_MAX_TGAS_L1:-0.05}" \
+        --max-tgas-l1 "${DENSMORE2012_MC_MAX_TGAS_L1:-0.05}" \
         >"$checker_stdout" 2>"$checker_stderr"
     if [[ $? -ne 0 ]]; then
         set_check_msg "Densmore 2012 MC gas temperature comparison failed"
@@ -1259,22 +1259,22 @@ check_desmore2012_mc_case() {
     return 0
 }
 
-check_desmore2012_mc_ddmc_case() {
+check_densmore2012_mc_ddmc_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
     local stdout_log="$3"
     local stderr_log="$4"
-    local profile_file="${run_dir}/desmore2012_mc_ddmc_profile.txt"
-    local reference_file="${REGRESSION_ROOT}/cases/desmore2012_mc/data/densmore2012_fig4_mc.csv"
-    local checker_stdout="${run_dir}/desmore2012_mc_ddmc_check.stdout.log"
-    local checker_stderr="${run_dir}/desmore2012_mc_ddmc_check.stderr.log"
+    local profile_file="${run_dir}/densmore2012_mc_ddmc_profile.txt"
+    local reference_file="${REGRESSION_ROOT}/cases/densmore2012_mc/data/densmore2012_fig4_mc.csv"
+    local checker_stdout="${run_dir}/densmore2012_mc_ddmc_check.stdout.log"
+    local checker_stderr="${run_dir}/densmore2012_mc_ddmc_check.stderr.log"
 
     if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
         return 1
     fi
 
     if ! is_nonempty_and_newer "$profile_file" "$run_start_epoch"; then
-        set_check_msg "missing or stale desmore2012_mc_ddmc_profile.txt"
+        set_check_msg "missing or stale densmore2012_mc_ddmc_profile.txt"
         return 1
     fi
 
@@ -1286,10 +1286,10 @@ check_desmore2012_mc_ddmc_case() {
     # DDMC has a small additional interface/statistical error relative to the
     # pure-MC variant.  Keep its independently configurable envelope above the
     # two reproducible ~0.0534-keV L1 results while retaining a narrow bound.
-    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_desmore2012_mc.py" \
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_densmore2012_mc.py" \
         --profile "$profile_file" \
         --reference "$reference_file" \
-        --max-tgas-l1 "${DESMORE2012_MC_DDMC_MAX_TGAS_L1:-0.06}" \
+        --max-tgas-l1 "${DENSMORE2012_MC_DDMC_MAX_TGAS_L1:-0.06}" \
         >"$checker_stdout" 2>"$checker_stderr"
     if [[ $? -ne 0 ]]; then
         set_check_msg "Densmore 2012 MC+DDMC gas temperature comparison failed"
@@ -1300,22 +1300,22 @@ check_desmore2012_mc_ddmc_case() {
     return 0
 }
 
-check_desmore2012_mc_serial_case() {
+check_densmore2012_mc_serial_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
     local stdout_log="$3"
     local stderr_log="$4"
-    local profile_file="${run_dir}/desmore2012_mc_serial_profile.txt"
-    local reference_file="${REGRESSION_ROOT}/cases/desmore2012_mc/data/densmore2012_fig4_mc.csv"
-    local checker_stdout="${run_dir}/desmore2012_mc_serial_check.stdout.log"
-    local checker_stderr="${run_dir}/desmore2012_mc_serial_check.stderr.log"
+    local profile_file="${run_dir}/densmore2012_mc_serial_profile.txt"
+    local reference_file="${REGRESSION_ROOT}/cases/densmore2012_mc/data/densmore2012_fig4_mc.csv"
+    local checker_stdout="${run_dir}/densmore2012_mc_serial_check.stdout.log"
+    local checker_stderr="${run_dir}/densmore2012_mc_serial_check.stderr.log"
 
     if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
         return 1
     fi
 
     if ! is_nonempty_and_newer "$profile_file" "$run_start_epoch"; then
-        set_check_msg "missing or stale desmore2012_mc_serial_profile.txt"
+        set_check_msg "missing or stale densmore2012_mc_serial_profile.txt"
         return 1
     fi
 
@@ -1324,10 +1324,10 @@ check_desmore2012_mc_serial_case() {
         return 1
     fi
 
-    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_desmore2012_mc.py" \
+    "${PYTHON_BIN}" "${REGRESSION_ROOT}/lib/check_densmore2012_mc.py" \
         --profile "$profile_file" \
         --reference "$reference_file" \
-        --max-tgas-l1 "${DESMORE2012_MC_SERIAL_MAX_TGAS_L1:-0.05}" \
+        --max-tgas-l1 "${DENSMORE2012_MC_SERIAL_MAX_TGAS_L1:-0.05}" \
         >"$checker_stdout" 2>"$checker_stderr"
     if [[ $? -ne 0 ]]; then
         set_check_msg "Densmore 2012 serial MC+RW gas temperature comparison failed"

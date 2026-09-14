@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Densmore sections read historical RICH densmore2012_mc* artifacts.
+# Current STORM discovery IDs are densmore2012, densmore2012_serial, densmore2012_ddmc.
 """
 Generate a standalone LaTeX report documenting the RICH regression test suite.
 
@@ -46,7 +48,7 @@ TEST_GROUPS: dict[str, tuple[str, list[str]]] = {
     ]),
     "till_compton_group": ("Till Compton Equilibration", ["till_compton"]),
     "densmore": ("Densmore 2012 Heterogeneous Step-Opacity (Monte Carlo)", [
-        "desmore2012_mc", "desmore2012_mc_serial",
+        "densmore2012_mc", "densmore2012_mc_serial",
     ]),
     "lsq_gradient": ("LSQ Gradient Verification", [
         "spherical_gauss_linear", "cartesian_gauss_linear",
@@ -940,7 +942,7 @@ TESTS = [
         ),
     },
     {
-        "id": "desmore2012_mc",
+        "id": "densmore2012_mc",
         "title": "Densmore 2012 Heterogeneous Step-Opacity (Monte Carlo IMC)",
         "description": (
             "The first heterogeneous test problem from Densmore et al.\\ "
@@ -995,19 +997,19 @@ TESTS = [
             r"  \item $L_1 = \mathrm{mean}(|T_{\mathrm{sim}} - T_{\mathrm{ref}}|) \le 0.05$~keV." "\n"
             r"\end{itemize}"
         ),
-        "plots": ["desmore2012_mc.png"],
+        "plots": ["densmore2012_mc.png"],
         "plot_caption": (
             "Densmore 2012 heterogeneous step-opacity at $t = 1$~ns: RICH MPI MC "
-            "without random walk (black circles), RICH serial MC with random walk "
+            "with random walk (black circles), RICH serial MC with random walk "
             "(red crosses), and digitized reference from Figure~4 of "
             "Densmore et al.\\ (2012) (blue line)."
         ),
     },
     {
-        "id": "desmore2012_mc_serial",
+        "id": "densmore2012_mc_serial",
         "title": "Densmore 2012 Heterogeneous Step-Opacity (Serial MC, Random Walk)",
         "description": (
-            "The same heterogeneous problem as \\texttt{desmore2012\\_mc} but run "
+            "The same heterogeneous problem as \\texttt{densmore2012\\_mc} but run "
             "serially with the random walk acceleration enabled. This exercises the "
             "serial (non-MPI) execution path and RW acceleration of the Monte Carlo IMC solver.\n\n"
             "\\textbf{Code and physics aspects verified:}\n"
@@ -1020,7 +1022,7 @@ TESTS = [
             "\\end{itemize}"
         ),
         "initial_conditions": (
-            r"Identical to \texttt{desmore2012\_mc}: 256 cells, $x \in [0,\,3]$~cm, "
+            r"Identical to \texttt{densmore2012\_mc}: 256 cells, $x \in [0,\,3]$~cm, "
             r"$\sigma_0 = 10 / 1000$~keV$^{7/2}$/cm, $T_0 = 1$~eV, "
             r"$t_{\mathrm{end}} = 1$~ns, $\Delta t = 5 \times 10^{-12}$~s."
         ),
@@ -1031,7 +1033,7 @@ TESTS = [
         "mesh_movement": "Eulerian (fixed mesh), no hydrodynamics.",
         "execution": "Serial (single core).",
         "pass_criteria": (
-            r"Same as \texttt{desmore2012\_mc}: "
+            r"Same as \texttt{densmore2012\_mc}: "
             r"$L_1 = \mathrm{mean}(|T_{\mathrm{sim}} - T_{\mathrm{ref}}|) \le 0.05$~keV."
         ),
         "plots": [],
@@ -1755,24 +1757,24 @@ def _read_gresho_metrics(cases_dir: Path, test_id: str) -> list[MetricRow]:
     return rows
 
 
-def _read_desmore2012_mc_metrics(cases_dir: Path) -> list[MetricRow]:
-    kv = _parse_kv_equals(cases_dir / "desmore2012_mc" / "desmore2012_mc_check.stdout.log")
+def _read_densmore2012_mc_metrics(cases_dir: Path) -> list[MetricRow]:
+    kv = _parse_kv_equals(cases_dir / "densmore2012_mc" / "densmore2012_mc_check.stdout.log")
     if not kv:
         return []
     rows = []
-    val = kv.get("DESMORE2012_MC_TGAS_L1")
+    val = kv.get("DENSMORE2012_MC_TGAS_L1")
     if val is not None:
         passed = float(val) <= 0.05
         rows.append(("$T_{\\mathrm{gas}}$ $L_1$ [keV]", val, "0.05", passed))
     return rows
 
 
-def _read_desmore2012_mc_serial_metrics(cases_dir: Path) -> list[MetricRow]:
-    kv = _parse_kv_equals(cases_dir / "desmore2012_mc_serial" / "desmore2012_mc_serial_check.stdout.log")
+def _read_densmore2012_mc_serial_metrics(cases_dir: Path) -> list[MetricRow]:
+    kv = _parse_kv_equals(cases_dir / "densmore2012_mc_serial" / "densmore2012_mc_serial_check.stdout.log")
     if not kv:
         return []
     rows = []
-    val = kv.get("DESMORE2012_MC_TGAS_L1")
+    val = kv.get("DENSMORE2012_MC_TGAS_L1")
     if val is not None:
         passed = float(val) <= 0.05
         rows.append(("$T_{\\mathrm{gas}}$ $L_1$ [keV]", val, "0.05", passed))
@@ -1929,8 +1931,8 @@ METRIC_READERS: dict[str, object] = {
     "marshak_wave_4_diffusion": lambda cd: _read_marshak_wave_metrics(cd, 4),
     "gresho_euler": lambda cd: _read_gresho_metrics(cd, "gresho_euler"),
     "gresho_lagrangian": lambda cd: _read_gresho_metrics(cd, "gresho_lagrangian"),
-    "desmore2012_mc": lambda cd: _read_desmore2012_mc_metrics(cd),
-    "desmore2012_mc_serial": lambda cd: _read_desmore2012_mc_serial_metrics(cd),
+    "densmore2012_mc": lambda cd: _read_densmore2012_mc_metrics(cd),
+    "densmore2012_mc_serial": lambda cd: _read_densmore2012_mc_serial_metrics(cd),
     "yee_vortex_64": lambda cd: _read_yee_vortex_metrics(cd, "yee_vortex_64"),
     "yee_vortex_128": lambda cd: _read_yee_vortex_metrics(cd, "yee_vortex_128"),
     "cartesian_gauss_linear": lambda cd: _read_cartesian_gauss_linear_metrics(cd),
@@ -2336,8 +2338,8 @@ _SUMMARY_TABLE_ROWS: dict[str, tuple[str, str, str, str, str]] = {
     "eulerian_diffusion_freefree_suite": ("Gray Free--Free Suite", "MPI", "4--16", "Eulerian", "Yes"),
     "eulerian_diffusion_freefree_multigroup_suite": ("Multigroup Free--Free Suite", "MPI", "4--16", "Eulerian", "Yes"),
     "till_compton": ("Till Compton", "Serial", "1", "Lagrangian", "Yes"),
-    "desmore2012_mc": ("Densmore 2012 MC (MPI, no RW)", "MPI", "32", "Eulerian", "Yes"),
-    "desmore2012_mc_serial": ("Densmore 2012 MC (serial+RW)", "Serial", "1", "Eulerian", "No"),
+    "densmore2012_mc": ("Densmore 2012 MC (MPI+RW)", "MPI", "32", "Eulerian", "Yes"),
+    "densmore2012_mc_serial": ("Densmore 2012 MC (serial+RW)", "Serial", "1", "Eulerian", "No"),
     "lane_self_gravity": ("Lane--Emden", "MPI", "512", "Lagrangian", "Yes"),
     "lane_self_gravity_fmm": ("Lane--Emden FMM", "MPI", "512", "Lagrangian", "Yes"),
     "amr_random": ("AMR Random", "Serial + MPI", "1 / 64", "Lagrangian + AMR", "No"),

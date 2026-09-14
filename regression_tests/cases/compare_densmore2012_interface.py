@@ -177,15 +177,15 @@ def parse_args() -> argparse.Namespace:
         "--mc",
         type=Path,
         default=cases
-        / "desmore2012_interface_mc"
-        / "desmore2012_interface_mc_cells.tsv",
+        / "densmore2012_interface_mc"
+        / "densmore2012_interface_mc_cells.tsv",
     )
     parser.add_argument(
         "--ddmc",
         type=Path,
         default=cases
-        / "desmore2012_interface_ddmc"
-        / "desmore2012_interface_ddmc_cells.tsv",
+        / "densmore2012_interface_ddmc"
+        / "densmore2012_interface_ddmc_cells.tsv",
     )
     parser.add_argument(
         "--output",

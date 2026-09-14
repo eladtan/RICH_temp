@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+# Densmore sections read historical RICH densmore2012_mc* artifacts.
+# Current STORM discovery IDs are densmore2012, densmore2012_serial, densmore2012_ddmc.
 """
 Generate a Validation & Verification LaTeX report for RICH.
 
@@ -348,8 +350,8 @@ _TABLE_ROWS: dict[str, tuple[str, str, str, str, str]] = {
     "eulerian_diffusion_freefree_suite": ("Gray Free--Free Suite", "MPI", "4--16", "Eulerian", "Yes"),
     "eulerian_diffusion_freefree_multigroup_suite": ("Multigroup Free--Free Suite", "MPI", "4--16", "Eulerian", "Yes"),
     "till_compton": ("Till Compton", "Serial", "1", "Lagrangian", "Yes"),
-    "desmore2012_mc": ("Densmore 2012 MC (MPI)", "MPI", "32", "Eulerian", "Yes"),
-    "desmore2012_mc_serial": ("Densmore 2012 MC (serial+RW)", "Serial", "1", "Eulerian", "No"),
+    "densmore2012_mc": ("Densmore 2012 MC (MPI)", "MPI", "32", "Eulerian", "Yes"),
+    "densmore2012_mc_serial": ("Densmore 2012 MC (serial+RW)", "Serial", "1", "Eulerian", "No"),
     "lane_self_gravity": ("Lane--Emden", "MPI", "512", "Lagrangian", "Yes"),
     "lane_self_gravity_fmm": ("Lane--Emden FMM", "MPI", "512", "Lagrangian", "Yes"),
     "amr_random": ("AMR Random", "Serial + MPI", "1 / 64", "Lagrangian + AMR", "No"),
