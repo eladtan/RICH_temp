@@ -30,17 +30,32 @@ const Vector3D exactGradient(0.23, -0.31, 0.17);
 class ZeroOpacity final : public OpacityCalculator
 {
 public:
-    double CalcPlanckOpacity(const ComputationalCell3D &) const override
+    double CalcPlanckOpacity(const ComputationalCell3D &cell) const override
+    {
+        return CalcPlanckOpacityAtTemperature(cell, cell.temperature);
+    }
+
+    double CalcPlanckOpacityAtTemperature(const ComputationalCell3D &cell, double /*temperature*/) const override
     {
         return 0.0;
     }
 
-    double CalcScatteringOpacity(const ComputationalCell3D &) const override
+    double CalcScatteringOpacity(const ComputationalCell3D &cell) const override
+    {
+        return CalcScatteringOpacityAtTemperature(cell, cell.temperature);
+    }
+
+    double CalcScatteringOpacityAtTemperature(const ComputationalCell3D &cell, double /*temperature*/) const override
     {
         return 0.0;
     }
 
-    double CalcAbsorptionOpacity(const ComputationalCell3D &, double) const override
+    double CalcAbsorptionOpacity(const ComputationalCell3D &cell, double energy) const override
+    {
+        return CalcAbsorptionOpacityAtTemperature(cell, energy, cell.temperature);
+    }
+
+    double CalcAbsorptionOpacityAtTemperature(const ComputationalCell3D &cell, double energy, double /*temperature*/) const override
     {
         return 0.0;
     }

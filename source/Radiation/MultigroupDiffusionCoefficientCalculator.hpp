@@ -20,8 +20,10 @@ public:
     double CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const override;
 
     double CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const override;
+    double CalcAbsorptionOpacityAtTemperature(ComputationalCell3D const& cell, double energy, double temperature) const override;
 
     double CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const override;
+    double CalcScatteringOpacityAtTemperature(ComputationalCell3D const& cell, double energy, double temperature) const override;
 };
 
 double interpolateTable(double const T, double const d,
@@ -33,21 +35,32 @@ double interpolateTable(double const T, double const d,
 
 class AnalyticOpacity : public OpacityCalculator {
 public:
+    // Arguments are the original cell, photon energy, and evaluation temperature.
+    using TemperatureOpacityFunction =
+        std::function<double(const ComputationalCell3D &, double, double)>;
     AnalyticOpacity(std::function<double(ComputationalCell3D const&, double)> diffusion_coefficient_groups_function_,
                     std::function<double(ComputationalCell3D const&, double)> sigma_absorption_groups_function_,
                     std::function<double(ComputationalCell3D const&, double)> sigma_scattering_groups_function_,
                     std::vector<double> const& energy_groups_center_,
-                    std::vector<double> const& energy_groups_boundary_);
+                    std::vector<double> const& energy_groups_boundary_,
+                    TemperatureOpacityFunction absorption_at_temperature = {},
+                    TemperatureOpacityFunction scattering_at_temperature = {});
 
     double CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const override;
 
     double CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const override;
+    double CalcAbsorptionOpacityAtTemperature(ComputationalCell3D const& cell, double energy, double temperature) const override;
 
     double CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const override;
+    double CalcScatteringOpacityAtTemperature(ComputationalCell3D const& cell, double energy, double temperature) const override;
 
     std::function<double(ComputationalCell3D const&, double)> const diffusion_coefficient_groups_function;
     std::function<double(ComputationalCell3D const&, double)> const sigma_absorption_groups_function;
     std::function<double(ComputationalCell3D const&, double)> const sigma_scattering_groups_function;
+
+private:
+    TemperatureOpacityFunction const absorption_at_temperature_;
+    TemperatureOpacityFunction const scattering_at_temperature_;
 };
 
 //! D=D0*rho^alpha*T^beta, sigma_planck=sigma_planck0*rho^alpha_planck*T^beta_planck
@@ -66,8 +79,10 @@ public:
     double CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const override;
 
     double CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const override;
+    double CalcAbsorptionOpacityAtTemperature(ComputationalCell3D const& cell, double energy, double temperature) const override;
 
     double CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const override;
+    double CalcScatteringOpacityAtTemperature(ComputationalCell3D const& cell, double energy, double temperature) const override;
 
 };
 
@@ -100,8 +115,10 @@ public:
     double CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const override;
 
     double CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const override;
+    double CalcAbsorptionOpacityAtTemperature(ComputationalCell3D const& cell, double energy, double temperature) const override;
 
     double CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const override;
+    double CalcScatteringOpacityAtTemperature(ComputationalCell3D const& cell, double energy, double temperature) const override;
 };
 
 class ZeroAbsorptionZeroDiffusionMultigroup : public OpacityCalculator {
@@ -113,9 +130,21 @@ public:
 
     double CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const override { return std::sqrt(std::numeric_limits<double>::min()*1e50); }
 
-    double CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const override { return std::numeric_limits<double>::min()*1e50; }
+    double CalcAbsorptionOpacity(const ComputationalCell3D &cell, double energy) const override
+    {
+        return CalcAbsorptionOpacityAtTemperature(cell, energy, cell.temperature);
+    }
 
-    double CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const override { return std::numeric_limits<double>::min()*1e50; }
+    double CalcAbsorptionOpacityAtTemperature(const ComputationalCell3D &cell, double energy, double /*temperature*/) const override
+    { return std::numeric_limits<double>::min()*1e50; }
+
+    double CalcScatteringOpacity(const ComputationalCell3D &cell, double energy) const override
+    {
+        return CalcScatteringOpacityAtTemperature(cell, energy, cell.temperature);
+    }
+
+    double CalcScatteringOpacityAtTemperature(const ComputationalCell3D &cell, double energy, double /*temperature*/) const override
+    { return std::numeric_limits<double>::min()*1e50; }
 };
 
 using MultigroupDiffusionCoefficientCalculator = OpacityCalculator;

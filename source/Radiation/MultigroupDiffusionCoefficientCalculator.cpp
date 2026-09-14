@@ -3,6 +3,7 @@
 
 #include <cmath>
 #include <limits>
+#include <utility>
 
 double interpolateTable(double const T,
                         double const d,
@@ -92,15 +93,27 @@ double GraySTAopacity::CalcDiffusionCoefficient(ComputationalCell3D const& cell,
     return CG::speed_of_light / (3.0 * interpolateTable(T, d, T_, rho_, rossland_));
 }
 
-double GraySTAopacity::CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const {
-    double const T = std::log(cell.temperature);
+double GraySTAopacity::CalcAbsorptionOpacity(const ComputationalCell3D &cell, double energy) const
+{
+    return CalcAbsorptionOpacityAtTemperature(cell, energy, cell.temperature);
+}
+
+double GraySTAopacity::CalcAbsorptionOpacityAtTemperature(const ComputationalCell3D &cell, double energy, double temperature) const
+{
+    double const T = std::log(temperature);
     double const d = std::log(cell.density);
 
     return interpolateTable(T, d, T_, rho_, planck_, -3.5);
 }
 
-double GraySTAopacity::CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const {
-    double const T = std::log(cell.temperature);
+double GraySTAopacity::CalcScatteringOpacity(const ComputationalCell3D &cell, double energy) const
+{
+    return CalcScatteringOpacityAtTemperature(cell, energy, cell.temperature);
+}
+
+double GraySTAopacity::CalcScatteringOpacityAtTemperature(const ComputationalCell3D &cell, double energy, double temperature) const
+{
+    double const T = std::log(temperature);
     double const d = std::log(cell.density);
     return interpolateTable(T, d, T_, rho_, scatter_);
 }
@@ -109,10 +122,14 @@ AnalyticOpacity::AnalyticOpacity(std::function<double(ComputationalCell3D const&
                                  std::function<double(ComputationalCell3D const& cell, double)> sigma_absorption_groups_function_,
                                  std::function<double(ComputationalCell3D const& cell, double)> sigma_scattering_groups_function_,
                                  std::vector<double> const& energy_groups_center_,
-                                 std::vector<double> const& energy_groups_boundary_) :
+                                 std::vector<double> const& energy_groups_boundary_,
+                                 TemperatureOpacityFunction absorption_at_temperature,
+                                 TemperatureOpacityFunction scattering_at_temperature) :
     diffusion_coefficient_groups_function(diffusion_coefficient_groups_function_),
     sigma_absorption_groups_function(sigma_absorption_groups_function_),
-    sigma_scattering_groups_function(sigma_scattering_groups_function_) {
+    sigma_scattering_groups_function(sigma_scattering_groups_function_),
+    absorption_at_temperature_(std::move(absorption_at_temperature)),
+    scattering_at_temperature_(std::move(scattering_at_temperature)) {
     energy_groups_center = energy_groups_center_;
     energy_groups_boundary = energy_groups_boundary_;
 }
@@ -124,12 +141,36 @@ double AnalyticOpacity::CalcDiffusionCoefficient(ComputationalCell3D const& cell
 
 double AnalyticOpacity::CalcAbsorptionOpacity(ComputationalCell3D const& cell,
                                                        double energy) const {
-    return sigma_absorption_groups_function(cell, energy);
+    return CalcAbsorptionOpacityAtTemperature(cell, energy, cell.temperature);
+}
+
+// A legacy callback has no way to observe a different temperature without a
+// cell copy. Require an explicit callback instead of silently using stale T.
+double AnalyticOpacity::CalcAbsorptionOpacityAtTemperature(
+    const ComputationalCell3D &cell, double energy, double temperature) const
+{
+    if(absorption_at_temperature_)
+        return absorption_at_temperature_(cell, energy, temperature);
+    if(temperature == cell.temperature)
+        return sigma_absorption_groups_function(cell, energy);
+    throw UniversalError("AnalyticOpacity requires a temperature-aware absorption callback");
 }
 
 double AnalyticOpacity::CalcScatteringOpacity(ComputationalCell3D const& cell,
                                                        double energy) const {
-    return sigma_scattering_groups_function(cell, energy);
+    return CalcScatteringOpacityAtTemperature(cell, energy, cell.temperature);
+}
+
+// A legacy callback has no way to observe a different temperature without a
+// cell copy. Require an explicit callback instead of silently using stale T.
+double AnalyticOpacity::CalcScatteringOpacityAtTemperature(
+    const ComputationalCell3D &cell, double energy, double temperature) const
+{
+    if(scattering_at_temperature_)
+        return scattering_at_temperature_(cell, energy, temperature);
+    if(temperature == cell.temperature)
+        return sigma_scattering_groups_function(cell, energy);
+    throw UniversalError("AnalyticOpacity requires a temperature-aware scattering callback");
 }
 
 GrayPowerLawOpacity::GrayPowerLawOpacity(double const D0,
@@ -150,11 +191,23 @@ double GrayPowerLawOpacity::CalcDiffusionCoefficient(ComputationalCell3D const& 
     return D0_ * std::pow(cell.density, alpha_) * std::pow(cell.temperature, beta_);
 }
 
-double GrayPowerLawOpacity::CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const {
-    return planck0_ * std::pow(cell.density, alpha_planck_) * std::pow(cell.temperature, beta_planck_);
+double GrayPowerLawOpacity::CalcAbsorptionOpacity(const ComputationalCell3D &cell, double energy) const
+{
+    return CalcAbsorptionOpacityAtTemperature(cell, energy, cell.temperature);
 }
 
-double GrayPowerLawOpacity::CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const {
+double GrayPowerLawOpacity::CalcAbsorptionOpacityAtTemperature(const ComputationalCell3D &cell, double energy, double temperature) const
+{
+    return planck0_ * std::pow(cell.density, alpha_planck_) * std::pow(temperature, beta_planck_);
+}
+
+double GrayPowerLawOpacity::CalcScatteringOpacity(const ComputationalCell3D &cell, double energy) const
+{
+    return CalcScatteringOpacityAtTemperature(cell, energy, cell.temperature);
+}
+
+double GrayPowerLawOpacity::CalcScatteringOpacityAtTemperature(const ComputationalCell3D &cell, double energy, double /*temperature*/) const
+{
     return 0.0;
 }
 
@@ -182,16 +235,22 @@ double FreeFreeAbsorptionOpacityMultigroup::CalcDiffusionCoefficient(Computation
     return CG::speed_of_light / (3.0 * total_opacity);
 }
 
-double FreeFreeAbsorptionOpacityMultigroup::CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const {
+double FreeFreeAbsorptionOpacityMultigroup::CalcAbsorptionOpacity(const ComputationalCell3D &cell, double energy) const
+{
+    return CalcAbsorptionOpacityAtTemperature(cell, energy, cell.temperature);
+}
+
+double FreeFreeAbsorptionOpacityMultigroup::CalcAbsorptionOpacityAtTemperature(const ComputationalCell3D &cell, double energy, double temperature) const
+{
     double const nu_g = energy/h;
     double const e = energy;
-    double const kT = kB*cell.temperature;
+    double const kT = kB*temperature;
 
     double const m_p = 1.6726231e-24;
     double const n_i = cell.density/m_p;
     double const n_e = Z*n_i;
 
-    double g_ff = std::max(1.0, std::log(std::exp(5.960) * std::pow(cell.temperature, 1.5) / (nu_g * Z)));
+    double g_ff = std::max(1.0, std::log(std::exp(5.960) * std::pow(temperature, 1.5) / (nu_g * Z)));
 
     double plasma_cutoff_factor = 1.0;
     if (include_plasma_cutoff_) {
@@ -205,14 +264,20 @@ double FreeFreeAbsorptionOpacityMultigroup::CalcAbsorptionOpacity(ComputationalC
 
     double const absorption_opacity =
         use_free_free_cgs_formula_
-            ? 3.7e8*Z*Z*n_e*n_i/std::sqrt(cell.temperature)*(1.-std::exp(-e/kT))*std::pow(nu_g, -3)
-            : 3.7e8*Z*Z*Z*std::pow(cell.density*6.02214076e23, 2)/std::sqrt(cell.temperature)*
+            ? 3.7e8*Z*Z*n_e*n_i/std::sqrt(temperature)*(1.-std::exp(-e/kT))*std::pow(nu_g, -3)
+            : 3.7e8*Z*Z*Z*std::pow(cell.density*6.02214076e23, 2)/std::sqrt(temperature)*
                   (1.-std::exp(-e/kT))*std::pow(nu_g, -3);
 
     return g_ff * absorption_opacity * plasma_cutoff_factor;
 }
 
-double FreeFreeAbsorptionOpacityMultigroup::CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const {
+double FreeFreeAbsorptionOpacityMultigroup::CalcScatteringOpacity(const ComputationalCell3D &cell, double energy) const
+{
+    return CalcScatteringOpacityAtTemperature(cell, energy, cell.temperature);
+}
+
+double FreeFreeAbsorptionOpacityMultigroup::CalcScatteringOpacityAtTemperature(const ComputationalCell3D &cell, double energy, double /*temperature*/) const
+{
     return 0.0;
 }
 

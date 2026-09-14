@@ -61,8 +61,13 @@ namespace
 
         double CalcPlanckOpacity(const ComputationalCell3D &cell) const override
         {
+            return CalcPlanckOpacityAtTemperature(cell, cell.temperature);
+        }
+
+        double CalcPlanckOpacityAtTemperature(const ComputationalCell3D &cell, double temperature) const override
+        {
             double sigma0 = getSigma0(cell);
-            double kT = units::k_boltz * cell.temperature;
+            double kT = units::k_boltz * temperature;
             double sqrtKT = std::sqrt(kT);
             size_t G = groupCenters.size();
 
@@ -80,15 +85,25 @@ namespace
             return weightedSum / totalWeight;
         }
 
-        double CalcScatteringOpacity(const ComputationalCell3D &) const override
+        double CalcScatteringOpacity(const ComputationalCell3D &cell) const override
+        {
+            return CalcScatteringOpacityAtTemperature(cell, cell.temperature);
+        }
+
+        double CalcScatteringOpacityAtTemperature(const ComputationalCell3D &cell, double /*temperature*/) const override
         {
             return 0.0;
         }
 
         double CalcAbsorptionOpacity(const ComputationalCell3D &cell, double energy) const override
         {
+            return CalcAbsorptionOpacityAtTemperature(cell, energy, cell.temperature);
+        }
+
+        double CalcAbsorptionOpacityAtTemperature(const ComputationalCell3D &cell, double energy, double temperature) const override
+        {
             double sigma0 = getSigma0(cell);
-            double kT = units::k_boltz * cell.temperature;
+            double kT = units::k_boltz * temperature;
             energy = std::clamp(energy, groupBoundaries.front(), groupBoundaries.back());
             auto it = std::upper_bound(groupBoundaries.begin(), groupBoundaries.end(), energy);
             size_t idx = static_cast<size_t>(std::distance(groupBoundaries.begin(), it));

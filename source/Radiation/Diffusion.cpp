@@ -1070,9 +1070,14 @@ double PowerLawOpacity::CalcDiffusionCoefficient(ComputationalCell3D const& cell
     return D0_ * std::pow(cell.density, alpha_) * std::pow(cell.temperature, beta_);
 }
 
-double PowerLawOpacity::CalcPlanckOpacity(ComputationalCell3D const& cell) const
+double PowerLawOpacity::CalcPlanckOpacity(const ComputationalCell3D &cell) const
 {
-    return planck0_ * std::pow(cell.density, alpha_planck_) * std::pow(cell.temperature, beta_planck_);
+    return CalcPlanckOpacityAtTemperature(cell, cell.temperature);
+}
+
+double PowerLawOpacity::CalcPlanckOpacityAtTemperature(const ComputationalCell3D &cell, double temperature) const
+{
+    return planck0_ * std::pow(cell.density, alpha_planck_) * std::pow(temperature, beta_planck_);
 }
 
 void DiffusionXInflowBoundary::SetBoundaryValues(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt, 

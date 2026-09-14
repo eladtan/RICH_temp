@@ -62,11 +62,15 @@ namespace densmore2012_interface_test
             this->energy_groups_boundary = groupBoundaries_;
         }
 
-        double CalcPlanckOpacity(
-            const ComputationalCell3D &cell) const override
+        double CalcPlanckOpacity(const ComputationalCell3D &cell) const override
+        {
+            return CalcPlanckOpacityAtTemperature(cell, cell.temperature);
+        }
+
+        double CalcPlanckOpacityAtTemperature(const ComputationalCell3D &cell, double temperature) const override
         {
             double const sigma0 = getSigma0(cell);
-            double const kT = units::k_boltz * cell.temperature;
+            double const kT = units::k_boltz * temperature;
             double const sqrtKT = std::sqrt(kT);
 
             double weightedSum = 0.0;
@@ -84,17 +88,25 @@ namespace densmore2012_interface_test
             return weightedSum / totalWeight;
         }
 
-        double CalcScatteringOpacity(
-            const ComputationalCell3D &) const override
+        double CalcScatteringOpacity(const ComputationalCell3D &cell) const override
+        {
+            return CalcScatteringOpacityAtTemperature(cell, cell.temperature);
+        }
+
+        double CalcScatteringOpacityAtTemperature(const ComputationalCell3D &cell, double /*temperature*/) const override
         {
             return 0.0;
         }
 
-        double CalcAbsorptionOpacity(const ComputationalCell3D &cell,
-                                     double energy) const override
+        double CalcAbsorptionOpacity(const ComputationalCell3D &cell, double energy) const override
+        {
+            return CalcAbsorptionOpacityAtTemperature(cell, energy, cell.temperature);
+        }
+
+        double CalcAbsorptionOpacityAtTemperature(const ComputationalCell3D &cell, double energy, double temperature) const override
         {
             double const sigma0 = getSigma0(cell);
-            double const kT = units::k_boltz * cell.temperature;
+            double const kT = units::k_boltz * temperature;
             energy = std::clamp(energy, groupBoundaries_.front(),
                                 groupBoundaries_.back());
             auto const it = std::upper_bound(groupBoundaries_.begin(),

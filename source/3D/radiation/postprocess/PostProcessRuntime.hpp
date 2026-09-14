@@ -94,10 +94,15 @@ public:
         }
     }
 
-    double CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const override
+    double CalcAbsorptionOpacity(const ComputationalCell3D &cell, double energy) const override
+    {
+        return CalcAbsorptionOpacityAtTemperature(cell, energy, cell.temperature);
+    }
+
+    double CalcAbsorptionOpacityAtTemperature(const ComputationalCell3D &cell, double energy, double temperature) const override
     {
         size_t const group = findGroup(energy);
-        double T = std::log(cell.temperature);
+        double T = std::log(temperature);
         double d = std::log(cell.density);
         double d_ratio = 1;
         double T_ratio = 1;
@@ -115,7 +120,7 @@ public:
             T = T_[0];
         if (T > T_.back())
         {
-            T_ratio = std::pow(cell.temperature / std::exp(T_.back()), -1.5);
+            T_ratio = std::pow(temperature / std::exp(T_.back()), -1.5);
             T = T_.back();
         }
         double result = std::exp(BiLinearInterpolation(rho_, T_, planck_[group], d, T)) * d_ratio * T_ratio;
@@ -129,10 +134,15 @@ public:
         return result;
     }
 
-    double CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const override
+    double CalcScatteringOpacity(const ComputationalCell3D &cell, double energy) const override
+    {
+        return CalcScatteringOpacityAtTemperature(cell, energy, cell.temperature);
+    }
+
+    double CalcScatteringOpacityAtTemperature(const ComputationalCell3D &cell, double energy, double temperature) const override
     {
         size_t const group = findGroup(energy);
-        double T = std::log(cell.temperature);
+        double T = std::log(temperature);
         double d = std::log(cell.density);
         double d_ratio = 1;
         if (d < rho_[0])
@@ -152,17 +162,27 @@ public:
         return std::exp(BiLinearInterpolation(rho_, T_, scatter_[group], d, T)) * d_ratio;
     }
 
-    double CalcScatteringOpacity(ComputationalCell3D const& cell) const override
+    double CalcScatteringOpacity(const ComputationalCell3D &cell) const override
+    {
+        return CalcScatteringOpacityAtTemperature(cell, cell.temperature);
+    }
+
+    double CalcScatteringOpacityAtTemperature(const ComputationalCell3D &cell, double temperature) const override
     {
         double avg = 0.0;
         for (size_t g = 0; g < energy_groups_center.size(); ++g)
-            avg += CalcScatteringOpacity(cell, energy_groups_center[g]);
+            avg += CalcScatteringOpacityAtTemperature(cell, energy_groups_center[g], temperature);
         return avg / static_cast<double>(energy_groups_center.size());
     }
 
-    double CalcPlanckOpacity(ComputationalCell3D const& cell) const override
+    double CalcPlanckOpacity(const ComputationalCell3D &cell) const override
     {
-        double kT = CG::boltzmann_constant * cell.temperature;
+        return CalcPlanckOpacityAtTemperature(cell, cell.temperature);
+    }
+
+    double CalcPlanckOpacityAtTemperature(const ComputationalCell3D &cell, double temperature) const override
+    {
+        double kT = CG::boltzmann_constant * temperature;
         double weightedSum = 0.0;
         double totalWeight = 0.0;
         for (size_t g = 0; g < energy_groups_center.size(); ++g)
@@ -170,7 +190,7 @@ public:
             double nu = energy_groups_center[g];
             double x = nu / kT;
             double planckWeight = (x > 0.0 && x < 500.0) ? x * x * x / std::expm1(x) : 0.0;
-            weightedSum += CalcAbsorptionOpacity(cell, nu) * planckWeight;
+            weightedSum += CalcAbsorptionOpacityAtTemperature(cell, nu, temperature) * planckWeight;
             totalWeight += planckWeight;
         }
         return (totalWeight > 0.0) ? weightedSum / totalWeight : 0.0;

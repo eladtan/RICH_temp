@@ -46,9 +46,19 @@ public:
         return this->opacity_->CalcPlanckOpacity(cell);
     }
 
+    double CalcPlanckOpacityAtTemperature(const ComputationalCell3D &cell, double temperature) override
+    {
+        return this->opacity_->CalcPlanckOpacityAtTemperature(cell, temperature);
+    }
+
     double CalcAbsorptionOpacity(const ComputationalCell3D &cell, double frequency) override
     {
         return this->opacity_->CalcAbsorptionOpacity(cell, frequency);
+    }
+
+    double CalcAbsorptionOpacityAtTemperature(const ComputationalCell3D &cell, double frequency, double temperature) override
+    {
+        return this->opacity_->CalcAbsorptionOpacityAtTemperature(cell, frequency, temperature);
     }
 
     double CalcScatteringOpacity(const ComputationalCell3D &cell) override
@@ -59,6 +69,16 @@ public:
     double CalcScatteringOpacity(const ComputationalCell3D &cell, double frequency) override
     {
         return this->opacity_->CalcScatteringOpacity(cell, frequency);
+    }
+
+    double CalcScatteringOpacityAtTemperature(const ComputationalCell3D &cell, double temperature) override
+    {
+        return this->opacity_->CalcScatteringOpacityAtTemperature(cell, temperature);
+    }
+
+    double CalcScatteringOpacityAtTemperature(const ComputationalCell3D &cell, double frequency, double temperature) override
+    {
+        return this->opacity_->CalcScatteringOpacityAtTemperature(cell, frequency, temperature);
     }
 
     Vector3D getRandomVelocity(const ComputationalCell3D &cell,

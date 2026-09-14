@@ -54,14 +54,19 @@ public:
 
     double CalcPlanckOpacity(ComputationalCell3D const& cell) const override
     {
-        double const kT = CG::boltzmann_constant * cell.temperature;
+        return CalcPlanckOpacityAtTemperature(cell, cell.temperature);
+    }
+
+    double CalcPlanckOpacityAtTemperature(const ComputationalCell3D &cell, double temperature) const override
+    {
+        double const kT = CG::boltzmann_constant * temperature;
         double weightedSum = 0.0;
         double totalWeight = 0.0;
         for (std::size_t g = 0; g < energy_groups_center.size(); ++g) {
             double a = energy_groups_boundary[g] / kT;
             double b = energy_groups_boundary[g + 1] / kT;
             double Bg = ::planck_integral::planck_integral(a, b);
-            double sigma_g = CalcAbsorptionOpacity(cell, energy_groups_center[g]);
+            double sigma_g = CalcAbsorptionOpacityAtTemperature(cell, energy_groups_center[g], temperature);
             weightedSum += sigma_g * Bg;
             totalWeight += Bg;
         }

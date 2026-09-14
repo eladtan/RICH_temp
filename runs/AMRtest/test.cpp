@@ -122,16 +122,26 @@ namespace
 			return CG::speed_of_light / (3 * sig);
 		}
 
-		double CalcPlanckOpacity(ComputationalCell3D const& cell) const override
+		double CalcPlanckOpacity(const ComputationalCell3D &cell) const override
 		{
-			double const T = std::log(cell.temperature);
+		    return CalcPlanckOpacityAtTemperature(cell, cell.temperature);
+		}
+
+		double CalcPlanckOpacityAtTemperature(const ComputationalCell3D &cell, double temperature) const override
+		{
+			double const T = std::log(temperature);
 			double const d = std::log(cell.density);
 			return InterpolateTable(T, d, T_, rho_, planck_, -3.5);
 		}
 
-		double CalcScatteringOpacity(ComputationalCell3D const& cell) const override
+		double CalcScatteringOpacity(const ComputationalCell3D &cell) const override
 		{
-			double const T = std::log(cell.temperature);
+		    return CalcScatteringOpacityAtTemperature(cell, cell.temperature);
+		}
+
+		double CalcScatteringOpacityAtTemperature(const ComputationalCell3D &cell, double temperature) const override
+		{
+			double const T = std::log(temperature);
 			double const d = std::log(cell.density);
 			return InterpolateTable(T, d, T_, rho_, scatter_);
 		}

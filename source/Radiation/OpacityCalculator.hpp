@@ -33,8 +33,21 @@ public:
     virtual double CalcPlanckOpacity(ComputationalCell3D const& cell) const
     { throw UniversalError("CalcPlanckOpacity not implemented"); }
 
+    // Evaluate at an explicit temperature without copying or modifying the cell.
+    // Models must override the temperature-dependent laws; ordinary entry points
+    // should delegate with cell.temperature. The base scattering law is zero.
+    virtual double CalcPlanckOpacityAtTemperature(ComputationalCell3D const & /*cell*/, double /*temperature*/) const
+    {
+        throw UniversalError("CalcPlanckOpacityAtTemperature not implemented");
+    }
+
     virtual double CalcScatteringOpacity(ComputationalCell3D const& cell) const
     { return 0.0; }
+
+    virtual double CalcScatteringOpacityAtTemperature(ComputationalCell3D const & /*cell*/, double /*temperature*/) const
+    {
+        return 0.0;
+    }
 
     virtual double CalcDiffusionCoefficient(ComputationalCell3D const& cell) const
     { throw UniversalError("CalcDiffusionCoefficient not implemented"); }
@@ -42,8 +55,18 @@ public:
     virtual double CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const
     { throw UniversalError("CalcAbsorptionOpacity not implemented"); }
 
+    virtual double CalcAbsorptionOpacityAtTemperature(ComputationalCell3D const & /*cell*/, double /*energy*/, double /*temperature*/) const
+    {
+        throw UniversalError("CalcAbsorptionOpacityAtTemperature not implemented");
+    }
+
     virtual double CalcScatteringOpacity(ComputationalCell3D const& cell, double /*energy*/) const
     { return CalcScatteringOpacity(cell); }
+
+    virtual double CalcScatteringOpacityAtTemperature(ComputationalCell3D const &cell, double /*energy*/, double temperature) const
+    {
+        return CalcScatteringOpacityAtTemperature(cell, temperature);
+    }
 
     virtual bool ComptonIncludedInTransport() const { return false; }
 

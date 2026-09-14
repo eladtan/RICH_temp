@@ -35,6 +35,7 @@ public:
      * @return The calculated Planck opacity.
      */
     double CalcPlanckOpacity(ComputationalCell3D const& cell) const override;
+    double CalcPlanckOpacityAtTemperature(ComputationalCell3D const& cell, double temperature) const override;
 
     /**
      * @brief Calculates the scattering opacity based on the given computational cell properties.
@@ -42,6 +43,7 @@ public:
      * @return The calculated scattering opacity.
      */
     double CalcScatteringOpacity(ComputationalCell3D const& cell) const override;
+    double CalcScatteringOpacityAtTemperature(ComputationalCell3D const& cell, double temperature) const override;
 };
 
 #endif // STA_OPACITY_HPP

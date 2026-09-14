@@ -284,6 +284,7 @@ public:
     double CalcDiffusionCoefficient(ComputationalCell3D const& cell) const override;
 
     double CalcPlanckOpacity(ComputationalCell3D const& cell) const override;
+    double CalcPlanckOpacityAtTemperature(ComputationalCell3D const& cell, double temperature) const override;
 };
 //! \brief Class with constant states on the x sides and zero flux on other sides
 class DiffusionXInflowBoundary : public DiffusionBoundaryCalculator

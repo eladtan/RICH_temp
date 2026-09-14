@@ -78,9 +78,14 @@ namespace
             return CG::speed_of_light / (3.0 * sigma_t);
         }
  
-        double CalcPlanckOpacity(ComputationalCell3D const& cell) const override
+        double CalcPlanckOpacity(const ComputationalCell3D &cell) const override
         {
-            const double T = std::max(cell.temperature, 1.0);
+            return CalcPlanckOpacityAtTemperature(cell, cell.temperature);
+        }
+
+        double CalcPlanckOpacityAtTemperature(const ComputationalCell3D &cell, double temperature) const override
+        {
+            const double T = std::max(temperature, 1.0);
             const double n = std::max(cell.density, 1e-80) * 6.02214076e23;
             const double kT = CG::boltzmann_constant * T;
             const double e_peak = 2.8214393721220787 * kT;
@@ -91,7 +96,12 @@ namespace
                 stim * std::pow(nu_peak, -3);
         }
  
-        double CalcScatteringOpacity(ComputationalCell3D const& cell) const override
+        double CalcScatteringOpacity(const ComputationalCell3D &cell) const override
+        {
+            return CalcScatteringOpacityAtTemperature(cell, cell.temperature);
+        }
+
+        double CalcScatteringOpacityAtTemperature(const ComputationalCell3D &cell, double /*temperature*/) const override
         {
             // Thomson scattering: sigma_s = kappa_T * rho, with kappa_T in cm^2/g.
             constexpr double kappa_thomson = 0.004;

@@ -119,10 +119,15 @@ namespace
 			return CG::speed_of_light / (3 * sig);
 		}
 
-		double CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const override
+		double CalcAbsorptionOpacity(const ComputationalCell3D &cell, double energy) const override
+		{
+		    return CalcAbsorptionOpacityAtTemperature(cell, energy, cell.temperature);
+		}
+
+		double CalcAbsorptionOpacityAtTemperature(const ComputationalCell3D &cell, double energy, double temperature) const override
 		{
 			std::size_t const group = findGroup(energy);
-			double T = std::log(cell.temperature);
+			double T = std::log(temperature);
 			double d = std::log(cell.density);
 			double d_ratio = 1, T_ratio = 1;
 			if(d < rho_[0])
@@ -146,10 +151,15 @@ namespace
 			return sig;
 		}
 
-		double CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const override
+		double CalcScatteringOpacity(const ComputationalCell3D &cell, double energy) const override
+		{
+		    return CalcScatteringOpacityAtTemperature(cell, energy, cell.temperature);
+		}
+
+		double CalcScatteringOpacityAtTemperature(const ComputationalCell3D &cell, double energy, double temperature) const override
 		{
 			std::size_t const group = findGroup(energy);
-			double T = std::log(cell.temperature);
+			double T = std::log(temperature);
 			double d = std::log(cell.density);
 			double d_ratio = 1;
 			if(d < rho_[0])

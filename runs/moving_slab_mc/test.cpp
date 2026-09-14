@@ -146,9 +146,14 @@ public:
 
     double CalcPlanckOpacity(const ComputationalCell3D &cell) const override
     {
+        return CalcPlanckOpacityAtTemperature(cell, cell.temperature);
+    }
+
+    double CalcPlanckOpacityAtTemperature(const ComputationalCell3D &cell, double temperature) const override
+    {
         if (isVacuum(cell))
             return 1e-12;
-        double T_kelvin = cell.temperature;
+        double T_kelvin = temperature;
         double numerator = 0.0;
         double denominator = 0.0;
         for (size_t g = 0; g < N_OPACITY_GROUPS; ++g)
@@ -166,6 +171,11 @@ public:
 
     double CalcAbsorptionOpacity(const ComputationalCell3D &cell, double energy) const override
     {
+        return CalcAbsorptionOpacityAtTemperature(cell, energy, cell.temperature);
+    }
+
+    double CalcAbsorptionOpacityAtTemperature(const ComputationalCell3D &cell, double energy, double /*temperature*/) const override
+    {
         if (isVacuum(cell))
             return 1e-12;
         size_t g = findGroup(energy);
@@ -174,12 +184,22 @@ public:
         return sigma_g_[g];
     }
 
-    double CalcScatteringOpacity(const ComputationalCell3D & /*cell*/, double /*energy*/) const override
+    double CalcScatteringOpacity(const ComputationalCell3D &cell, double energy) const override
+    {
+        return CalcScatteringOpacityAtTemperature(cell, energy, cell.temperature);
+    }
+
+    double CalcScatteringOpacityAtTemperature(const ComputationalCell3D &cell, double energy, double /*temperature*/) const override
     {
         return 0.0;
     }
 
-    double CalcScatteringOpacity(const ComputationalCell3D & /*cell*/) const override
+    double CalcScatteringOpacity(const ComputationalCell3D &cell) const override
+    {
+        return CalcScatteringOpacityAtTemperature(cell, cell.temperature);
+    }
+
+    double CalcScatteringOpacityAtTemperature(const ComputationalCell3D &cell, double /*temperature*/) const override
     {
         return 0.0;
     }
@@ -461,7 +481,7 @@ int main(int argc, char *argv[])
             tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, imcParams);
 
         auto popControl =
-            std::make_shared<NoPopulationControl<Vector3D, Tessellation3D>>(tess);
+            std::make_shared<STORM::NoPopulationControl<Vector3D, Tessellation3D>>(tess);
 
         std::vector<MonteCarloParticle<Vector3D>> emptyParticles;
         auto mcStep = std::make_shared<RadiationMCStep>(

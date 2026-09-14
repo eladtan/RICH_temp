@@ -35,6 +35,7 @@
 #include "3D/monte/STORMVoronoi3DMovement.hpp"
 #include "HohlraumOpacity.hpp"
 #include "HohlraumBoundary.hpp"
+#include "utils/debug/SmartTimer.hpp"
 #include "utils/debug/vtune.h"
 #include "runs/mc_results_dir.hpp"
 
@@ -611,24 +612,27 @@ int main(int argc, char *argv[]) {
         STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> params = {.newPhotonsPerCell = newPhotonsPerCell,
                 .withHydro = withHydro,
                 .withRandomWalk = true};
+        // HohlraumOpacity is gray, so nothing ever fills the multigroup
+        // ComputationalCell3D::energyBoundaries static and it stays NaN.  State
+        // the single group spanning all energies explicitly, matching STORM's
+        // own hohlraum_parallel example.
+        static_assert(ENERGY_GROUPS_NUM == 1,
+            "the hohlraum case is gray; rebuild without --energy_groups_num");
+        params.energyBoundaries = {0.0, 1e30};
+        params.energyBoundariesProvided = true;
         std::shared_ptr<MonteCarloRadiationPhysics3D> physics =
             std::make_shared<::RadiationIMC>(tess, boundaryCond, cells, extensives,
                 eosPtr, opacityPtr, params);
 
         size_t comb_factor = 6;
         std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
-            std::make_shared<CombPopulationControl<Vector3D, Tessellation3D>>(
+            std::make_shared<STORM::CombPopulationControl<Vector3D, Tessellation3D>>(
                 tess, minPhotonsPerCell, comb_factor);
 
         MonteCarloConfig monteCarloConfig;
-        monteCarloConfig.holdSmallIdleFlushes = holdSmallIdleFlushes;
-        if(rank == 0)
+        if(rank == 0 and holdSmallIdleFlushes)
         {
-            std::cout << "Hohlraum MonteCarloConfig: holdSmallIdleFlushes="
-                << monteCarloConfig.holdSmallIdleFlushes
-                << ", smallIdleFlushHoldoffCycles="
-                << monteCarloConfig.GetSmallIdleFlushHoldoffCycles()
-                << std::endl;
+            std::cout << "Small-idle flush handling is automatic in the current communication manager." << std::endl;
         }
 
         std::vector<Particle3D> initialParticles;

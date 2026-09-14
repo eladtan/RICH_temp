@@ -47,6 +47,12 @@ public:
     std::vector<MCParticle> &getParticles(void);
     void step(const std::vector<ComputationalCell3D> &cells, dt_t fullDt);
 
+    /// Drop the cached cells pointer used to stamp particle cellIDs. A mesh
+    /// rebalance renumbers cells, so that cache and the particles" cell
+    /// indices no longer refer to the same vector; call this before touching
+    /// particles after a rebalance and let the next step() re-establish it.
+    void invalidateCellCache(void);
+
 private:
     class Implementation
     {
@@ -67,6 +73,7 @@ private:
         virtual const std::vector<MCParticle> &GetParticles(void) const = 0;
         virtual std::vector<MCParticle> &GetParticles(void) = 0;
         virtual void Step(const std::vector<ComputationalCell3D> &cells, dt_t fullDt) = 0;
+        virtual void InvalidateCellCache(void) = 0;
     };
 
     template<typename Physics>
@@ -156,6 +163,11 @@ private:
         {
             this->latestCells = &cells;
             this->manager.step(fullDt);
+        }
+
+        void InvalidateCellCache(void) override
+        {
+            this->latestCells = nullptr;
         }
 
     private:
@@ -272,6 +284,11 @@ inline std::vector<MonteCarloManager3D::MCParticle> &MonteCarloManager3D::getPar
 inline void MonteCarloManager3D::step(const std::vector<ComputationalCell3D> &cells, dt_t fullDt)
 {
     this->GetImplementation().Step(cells, fullDt);
+}
+
+inline void MonteCarloManager3D::invalidateCellCache(void)
+{
+    this->GetImplementation().InvalidateCellCache();
 }
 
 #endif

@@ -1,0 +1,8 @@
+TEST_ID="opacity_temperature"
+TAGS="serial"
+CATEGORY="code_correctness"
+BUILD_TEST_NAME="regression_tests/cases/opacity_temperature"
+RUN_DIR_REL="regression_tests/cases/opacity_temperature"
+RUN_MODE="direct"
+RUN_COMMAND='"${RICH_BIN}"'
+CHECK_FUNCTION="check_opacity_temperature_case"

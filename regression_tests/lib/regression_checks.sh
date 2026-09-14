@@ -2797,3 +2797,14 @@ check_compton_marshak_wave_diffusion_no_compton_case() {
     set_check_msg "Marshak diffusion-without-Compton profiles passed"
     return 0
 }
+
+check_opacity_temperature_case() {
+    local run_dir="$1" run_start_epoch="$2" stdout_log="$3" stderr_log="$4"
+    check_no_fatal_markers "$stdout_log" "$stderr_log" || return 1
+    if ! grep -qx 'OPACITY_TEMPERATURE_PASS' "$stdout_log"; then
+        set_check_msg "missing successful explicit-temperature opacity checks"
+        return 1
+    fi
+    set_check_msg "explicit-temperature opacity formulas, tables, callbacks and cell preservation passed"
+    return 0
+}

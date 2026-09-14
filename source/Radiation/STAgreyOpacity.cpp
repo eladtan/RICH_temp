@@ -50,9 +50,14 @@ double STAgreyOpacity::CalcDiffusionCoefficient(ComputationalCell3D const& cell)
     return CG::speed_of_light / (3 * Interpolate2DTable(T, d, T_, rho_, rossland_) * d_ratio);
 }
 
-double STAgreyOpacity::CalcPlanckOpacity(ComputationalCell3D const& cell) const 
+double STAgreyOpacity::CalcPlanckOpacity(const ComputationalCell3D &cell) const
 {
-    double const T = std::log(cell.temperature);
+    return CalcPlanckOpacityAtTemperature(cell, cell.temperature);
+}
+
+double STAgreyOpacity::CalcPlanckOpacityAtTemperature(const ComputationalCell3D &cell, double temperature) const
+{
+    double const T = std::log(temperature);
     double d = std::log(cell.density);
     double d_ratio = 1;
     double d_slope = 2;
@@ -81,9 +86,14 @@ double STAgreyOpacity::CalcPlanckOpacity(ComputationalCell3D const& cell) const
     return Interpolate2DTable(T, d, T_, rho_, planck_, -3.5) * std::pow(d_ratio, d_slope);
 }
 
-double STAgreyOpacity::CalcScatteringOpacity(ComputationalCell3D const& cell) const 
+double STAgreyOpacity::CalcScatteringOpacity(const ComputationalCell3D &cell) const
 {
-    double const T = std::log(cell.temperature);
+    return CalcScatteringOpacityAtTemperature(cell, cell.temperature);
+}
+
+double STAgreyOpacity::CalcScatteringOpacityAtTemperature(const ComputationalCell3D &cell, double temperature) const
+{
+    double const T = std::log(temperature);
     double d = std::log(cell.density);
     double d_ratio = 1;
     if(d < rho_[0])
