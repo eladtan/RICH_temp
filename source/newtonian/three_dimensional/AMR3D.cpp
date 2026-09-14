@@ -890,7 +890,7 @@ namespace
 	}
 
 	std::vector<Vector3D> GetNewPoints(Tessellation3D const& tess, std::pair<vector<size_t>,
-		vector<Vector3D> > &ToRefine)
+		vector<Vector3D> > &ToRefine, bool absolute_positions)
 	{
 #ifdef RICH_MPI
 		int rank = 0;
@@ -901,8 +901,20 @@ namespace
 		size_t Nrefine = ToRefine.first.size();
 		std::vector<Vector3D> res;
 		res.reserve(Nrefine);
+		if (absolute_positions)
+		{
+			// The refinement scheme supplied the new mesh points explicitly.
+			if (ToRefine.second.size() != Nrefine)
+			{
+				UniversalError eo("AMR3D: absolute refine positions require one position per refined cell");
+				eo.addEntry("cells to refine", static_cast<double>(Nrefine));
+				eo.addEntry("positions", static_cast<double>(ToRefine.second.size()));
+				throw eo;
+			}
+			res = ToRefine.second;
+		}
 		// Do we have a prefred direction?
-		if (!ToRefine.second.empty())
+		else if (!ToRefine.second.empty())
 		{
 			for (size_t i = 0; i < Nrefine; ++i)
 			{
@@ -3016,7 +3028,8 @@ AMR3D::AMR3D(EquationOfState const& eos,
 	     SpatialReconstruction3D &interp,
 	     AMRCellUpdater3D* cu,
 	     AMRExtensiveUpdater3D* eu,
-	     bool distribute_clips):
+	     bool distribute_clips,
+	     bool absolute_refine_positions):
   eos_(eos), 
   refine_(refine), 
   remove_(remove),
@@ -3025,7 +3038,8 @@ AMR3D::AMR3D(EquationOfState const& eos,
   interp_(interp), 
   cu_(cu), 
   eu_(eu),
-  distribute_clips_(distribute_clips)
+  distribute_clips_(distribute_clips),
+  absolute_refine_positions_(absolute_refine_positions)
 {
 	if (!cu)
 		cu_ = &scu_;
@@ -3089,7 +3103,7 @@ void AMR3D::operator() (Simulation &sim)
 
 	interp_.BuildSlopes(tess, cells, time);
 	// Get new points from refine
-	std::vector<Vector3D> new_points = GetNewPoints(tess, ToRefine);
+	std::vector<Vector3D> new_points = GetNewPoints(tess, ToRefine, absolute_refine_positions_);
 	// Create copy of old tess
 	boost::scoped_ptr<Tessellation3D> oldtess(tess.clone());
 	// Build new tess

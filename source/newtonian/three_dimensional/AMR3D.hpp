@@ -196,6 +196,7 @@ private:
 	AMRCellUpdater3D* cu_;
 	AMRExtensiveUpdater3D* eu_;
 	bool distribute_clips_;
+	bool absolute_refine_positions_;
 	AMR3D(AMR3D const& amr);
 	AMR3D& operator=(AMR3D const&);
 	
@@ -214,9 +215,13 @@ public:
 	\param eos Equation of state
 	\param interp Interpolation scheme
 	\param distribute_clips Whether to distribute clip work across idle MPI ranks
+	\param absolute_refine_positions When true, the vectors returned by CellsToRefine3D::ToRefine are the
+	positions of the new mesh points themselves instead of split directions. Use this for strongly
+	anisotropic cells (e.g. 1D slabs), where the default offset of a quarter of the cell radius is
+	unrelated to the cell extent along the split direction.
 	*/
 	AMR3D(EquationOfState const& eos, CellsToRefine3D const& refine, CellsToRemove3D const& remove,SpatialReconstruction3D &interp, AMRCellUpdater3D* cu = nullptr,
-		AMRExtensiveUpdater3D* eu = nullptr, bool distribute_clips = true);
+		AMRExtensiveUpdater3D* eu = nullptr, bool distribute_clips = true, bool absolute_refine_positions = false);
 
 	//! \brief Enable or disable distributed clip offloading
 	void SetDistributeClips(bool v) { distribute_clips_ = v; }
