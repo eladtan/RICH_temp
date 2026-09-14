@@ -343,6 +343,26 @@ endif()
 
 if(DEFINED MPI)
     target_link_libraries(${EXE_NAME} PRIVATE MPI::MPI_CXX)
+    add_executable(rich_particle_mpi_dtype_test EXCLUDE_FROM_ALL
+        "${PROJECT_SOURCE_DIR}/../regression_tests/mpi_particle_dtype/test.cpp")
+    target_include_directories(rich_particle_mpi_dtype_test PRIVATE
+        $<TARGET_PROPERTY:${EXE_NAME},INCLUDE_DIRECTORIES>)
+    target_link_libraries(rich_particle_mpi_dtype_test PRIVATE
+        MPI::MPI_CXX storm mpi_utils mesh_decomposer)
+    add_test(NAME rich_particle_mpi_dtype_test COMMAND ${MPIEXEC_EXECUTABLE}
+        ${MPIEXEC_NUMPROC_FLAG} 2 $<TARGET_FILE:rich_particle_mpi_dtype_test>)
+    set_tests_properties(rich_particle_mpi_dtype_test PROPERTIES TIMEOUT 30 PROCESSORS 2)
+    add_executable(rich_particle_mpi_dtype_extended_test EXCLUDE_FROM_ALL
+        "${PROJECT_SOURCE_DIR}/../regression_tests/mpi_particle_dtype/test.cpp")
+    target_include_directories(rich_particle_mpi_dtype_extended_test PRIVATE
+        $<TARGET_PROPERTY:${EXE_NAME},INCLUDE_DIRECTORIES>)
+    target_compile_definitions(rich_particle_mpi_dtype_extended_test PRIVATE
+        STORM_DEBUG=1 STORM_WITH_TRACING_HISTORY=3 MONTECARLO_POLARIZATION)
+    target_link_libraries(rich_particle_mpi_dtype_extended_test PRIVATE
+        MPI::MPI_CXX storm mpi_utils mesh_decomposer)
+    add_test(NAME rich_particle_mpi_dtype_extended_test COMMAND ${MPIEXEC_EXECUTABLE}
+        ${MPIEXEC_NUMPROC_FLAG} 2 $<TARGET_FILE:rich_particle_mpi_dtype_extended_test>)
+    set_tests_properties(rich_particle_mpi_dtype_extended_test PROPERTIES TIMEOUT 30 PROCESSORS 2)
 endif()
 
 if(DEFINED JSONCPP_LIB)
