@@ -52,7 +52,7 @@ class FreeFreeOpacityMC : public FreeFreeAbsorptionOpacityMultigroup
 public:
     using FreeFreeAbsorptionOpacityMultigroup::FreeFreeAbsorptionOpacityMultigroup;
 
-    double CalcPlanckOpacity(ComputationalCell3D const& cell) const override
+    double CalcPlanckOpacity(const ComputationalCell3D &cell) const override
     {
         return CalcPlanckOpacityAtTemperature(cell, cell.temperature);
     }
@@ -104,11 +104,14 @@ std::string mode_string(Mode m)
 
 int main(int argc, char* argv[])
 {
-    feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
-
 #ifdef RICH_MPI
     MPI_Init(&argc, &argv);
 #endif
+
+    // OpenMPI's opal_arch_init can leave x87 exception flags pending.
+    // Clear them before enabling traps for application calculations.
+    feclearexcept(FE_ALL_EXCEPT);
+    feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 
     try {
         std::size_t const G = ENERGY_GROUPS_NUM;
