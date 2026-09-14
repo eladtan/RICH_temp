@@ -99,6 +99,7 @@ include(${CMAKE_SOURCE_DIR}/../config/find_vtune.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_ParMETIS.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_ibverbs.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/include_3rdparty.cmake)
+include(${CMAKE_SOURCE_DIR}/../config/find_python.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/find_pybind11.cmake)
 include(${CMAKE_SOURCE_DIR}/../config/set_placeholders.cmake)
 
