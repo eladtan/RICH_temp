@@ -2,6 +2,7 @@
 
 #ifdef RICH_MPI
 #include "source/monte/manager/communication/RDMACommunicationEngine.hpp"
+#include "PostProcessCommunication.hpp"
 #endif // RICH_MPI
 
 #include <algorithm>
@@ -546,8 +547,8 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
 
                         MonteCarloConfig monteCarloConfig;
                         std::unique_ptr<STORM::CommunicationEngine<Vector3D>> rebuiltEngine =
-                            std::make_unique<STORM::RDMACommunicationEngine<Vector3D, Tessellation3D>>(
-                                tess, monteCarloConfig, MPI_COMM_WORLD, RDMA_Type::AUTO_RDMA);
+                            MakeCommunicationEngine(
+                tess, monteCarloConfig, cfg.communication, MPI_COMM_WORLD);
                         manager = std::make_shared<MonteCarloManager3D>(
                             tess, physics, popControl, boundary,
                             monteCarloConfig, std::move(rebuiltEngine));

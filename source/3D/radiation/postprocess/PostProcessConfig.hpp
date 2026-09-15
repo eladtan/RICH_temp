@@ -13,6 +13,14 @@ namespace imc_postprocess_tde {
 
 using OpacityScaleMode = PostProcessIMC::OpacityScaleMode;
 
+//! \brief Monte Carlo particle-exchange engine selection
+enum class CommunicationMode
+{
+    Auto,      //!< try RDMA, fall back to two-sided MPI
+    Rdma,      //!< force RDMA
+    TwoSided   //!< force two-sided MPI point-to-point
+};
+
 struct Config
 {
     std::string inputPath;
@@ -35,6 +43,7 @@ struct Config
     bool ddmc = true;
     bool randomWalk = true;
     bool useCellVelocities = true;
+    CommunicationMode communication = CommunicationMode::Auto;
     bool polarization = true;
     bool photosphere = true;
     bool fluxSourceCompare = false;

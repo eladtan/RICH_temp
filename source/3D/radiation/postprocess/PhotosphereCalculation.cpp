@@ -5,6 +5,7 @@
 #include "source/monte/particle/ParticleStatus.hpp"
 #ifdef RICH_MPI
 #include "source/monte/manager/communication/RDMACommunicationEngine.hpp"
+#include "PostProcessCommunication.hpp"
 #endif // RICH_MPI
 
 #include <algorithm>
@@ -470,8 +471,8 @@ ProbePassResult RunInwardProbePass(Config const& cfg,
 #ifdef RICH_MPI
     MonteCarloConfig monteCarloConfig;
     std::unique_ptr<STORM::CommunicationEngine<Vector3D>> engine =
-        std::make_unique<STORM::RDMACommunicationEngine<Vector3D, Tessellation3D>>(
-            runtime.tess, monteCarloConfig, MPI_COMM_WORLD, RDMA_Type::AUTO_RDMA);
+        MakeCommunicationEngine(
+                runtime.tess, monteCarloConfig, cfg.communication, MPI_COMM_WORLD);
     probeManager = std::make_shared<MonteCarloManager3D>(
         runtime.tess, probePhysics, probePopControl, probeBoundary, monteCarloConfig, std::move(engine));
 #else

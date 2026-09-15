@@ -17,6 +17,7 @@
 #include "source/3D/monte/MonteCarloManager3D.hpp"
 #ifdef RICH_MPI
 #include "source/monte/manager/communication/RDMACommunicationEngine.hpp"
+#include "PostProcessCommunication.hpp"
 #endif // RICH_MPI
 #include "source/Radiation/Diffusion.hpp"
 #include "source/misc/mesh_generator3D.hpp"
@@ -531,8 +532,8 @@ void InitializeFluxSourceSurface(
 #ifdef RICH_MPI
     MonteCarloConfig monteCarloConfig;
     std::unique_ptr<STORM::CommunicationEngine<Vector3D>> engine =
-        std::make_unique<STORM::RDMACommunicationEngine<Vector3D, Tessellation3D>>(
-            runtime.tess, monteCarloConfig, MPI_COMM_WORLD, RDMA_Type::AUTO_RDMA);
+        MakeCommunicationEngine(
+                runtime.tess, monteCarloConfig, cfg.communication, MPI_COMM_WORLD);
     manager = std::make_shared<MonteCarloManager3D>(
         runtime.tess, physics, population, boundary, monteCarloConfig, std::move(engine));
 #else

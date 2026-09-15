@@ -158,6 +158,34 @@ void AddInt(std::vector<Option>& options, std::string name,
         [&target]() { return std::to_string(target); }});
 }
 
+void AddCommunicationMode(std::vector<Option>& options,
+                          MonteCarloCommunication& target)
+{
+    options.push_back(Option{
+        "transport.communication", "auto|rdma|p2p",
+        "Monte Carlo particle-exchange engine; p2p is two-sided MPI.",
+        [&target](std::string const& text, std::string& error) {
+            if (text == "auto")
+                target = MonteCarloCommunication::Auto;
+            else if (text == "rdma")
+                target = MonteCarloCommunication::Rdma;
+            else if (text == "p2p" || text == "two-sided")
+                target = MonteCarloCommunication::TwoSided;
+            else {
+                error = "expected auto, rdma, or p2p";
+                return false;
+            }
+            return true;
+        },
+        [&target]() {
+            if (target == MonteCarloCommunication::Rdma)
+                return std::string("rdma");
+            if (target == MonteCarloCommunication::TwoSided)
+                return std::string("p2p");
+            return std::string("auto");
+        }});
+}
+
 void AddOpacityMode(std::vector<Option>& options, OpacityScaleMode& target)
 {
     options.push_back(Option{
@@ -210,6 +238,7 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddBool(options, "transport.ddmc", "Enable DDMC acceleration.", c.transport.ddmc);
     AddBool(options, "transport.random-walk", "Enable random-walk acceleration.", c.transport.randomWalk);
     AddBool(options, "transport.use-cell-velocities", "Include snapshot cell velocities.", c.transport.useCellVelocities);
+    AddCommunicationMode(options, c.transport.communication);
     AddBool(options, "transport.compton.enabled", "Enable Compton transport.", c.transport.compton.enabled);
     AddSize(options, "transport.compton.matrix-samples", "Compton redistribution samples.", c.transport.compton.matrixSamples);
     AddBool(options, "transport.compton.angle-dependent", "Use angle-dependent Compton scattering.", c.transport.compton.angleDependent);

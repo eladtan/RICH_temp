@@ -23,6 +23,11 @@ namespace PostProcessIMC {
 
 enum class OpacityScaleMode { None, Rosseland, Planck };
 
+//! \brief Monte Carlo particle-exchange engine.  TwoSided has the smaller memory
+//! footprint; Rdma is usually faster where the fabric supports it; Auto tries
+//! RDMA and falls back to TwoSided, reporting which it used.
+enum class MonteCarloCommunication { Auto, Rdma, TwoSided };
+
 struct PostProcessConfig
 {
     struct Input
@@ -55,6 +60,7 @@ struct PostProcessConfig
         bool ddmc = true;
         bool randomWalk = true;
         bool useCellVelocities = true;
+        MonteCarloCommunication communication = MonteCarloCommunication::Auto;
 
         struct Compton
         {

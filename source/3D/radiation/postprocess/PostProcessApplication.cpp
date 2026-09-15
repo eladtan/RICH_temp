@@ -22,6 +22,7 @@
 #include "source/3D/monte/MonteCarloManager3D.hpp"
 #ifdef RICH_MPI
 #include "source/monte/manager/communication/RDMACommunicationEngine.hpp"
+#include "PostProcessCommunication.hpp"
 #endif // RICH_MPI
 #include "source/3D/radiation/RadiationIMC.hpp"
 #include "source/3D/radiation/SphericalObserver.hpp"
@@ -153,6 +154,14 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.ddmc = publicConfig.transport.ddmc;
     cfg.randomWalk = publicConfig.transport.randomWalk;
     cfg.useCellVelocities = publicConfig.transport.useCellVelocities;
+    switch (publicConfig.transport.communication) {
+    case PostProcessIMC::MonteCarloCommunication::Rdma:
+        cfg.communication = CommunicationMode::Rdma; break;
+    case PostProcessIMC::MonteCarloCommunication::TwoSided:
+        cfg.communication = CommunicationMode::TwoSided; break;
+    default:
+        cfg.communication = CommunicationMode::Auto; break;
+    }
     cfg.polarization = publicConfig.polarization.enabled;
     cfg.photosphere = publicConfig.photosphere.enabled;
     cfg.fluxSourceCompare = publicConfig.fluxSource.enabled;
@@ -531,6 +540,8 @@ int PostProcessIMC::RunPostProcessMain(
                       << (cfg.ddmc ? "yes" : "no")
                       << (cfg.fluxSourceCompare && cfg.ddmc
                           ? " (native thermalizing CER boundary)" : "") << "\n"
+                      << "Communication:   "
+                      << CommunicationModeName(cfg.communication) << "\n"
                       << "Cell velocities: " << (cfg.useCellVelocities ? "yes" : "no") << "\n"
                       << "Polarization:    " << (cfg.polarization ? "yes" : "no") << "\n"
                       << "Photosphere:     " << (cfg.photosphere ? "yes" : "no") << "\n"
@@ -643,7 +654,17 @@ int PostProcessIMC::RunPostProcessMain(
         Snapshot3D snapshot =
             scenario.factories.loadSnapshot(effectiveInput, parallel);
 
-        if (snapshot.mesh_points.empty()) {
+        // Ranks beyond the count that wrote the snapshot legitimately hold no
+        // points, so only a globally empty snapshot is an error. Deciding this
+        // per rank would make those ranks return while the rest went on to the
+        // collectives in the tessellation build.
+        unsigned long long localMeshPoints = snapshot.mesh_points.size();
+        unsigned long long globalMeshPoints = localMeshPoints;
+#ifdef RICH_MPI
+        MPI_Allreduce(&localMeshPoints, &globalMeshPoints, 1,
+                      MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+#endif
+        if (globalMeshPoints == 0) {
             if (rank == 0) std::cerr << "Empty snapshot\n";
 #ifdef RICH_MPI
             if (ownsMpi) MPI_Finalize();
@@ -944,8 +965,8 @@ int PostProcessIMC::RunPostProcessMain(
 #ifdef RICH_MPI
         MonteCarloConfig monteCarloConfig;
         std::unique_ptr<STORM::CommunicationEngine<Vector3D>> engine =
-            std::make_unique<STORM::RDMACommunicationEngine<Vector3D, Tessellation3D>>(
-                tess, monteCarloConfig, MPI_COMM_WORLD, RDMA_Type::AUTO_RDMA);
+            MakeCommunicationEngine(
+                tess, monteCarloConfig, cfg.communication, MPI_COMM_WORLD);
         manager = std::make_shared<MonteCarloManager3D>(
             tess, physics, popControl, boundary, monteCarloConfig, std::move(engine));
 #else
