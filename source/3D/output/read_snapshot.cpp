@@ -221,9 +221,27 @@ Snapshot3D ReadSnapshot3D(const string &fname
             }
             else
             {
-                rank_file = dirname + "/0.h5";
+                // This rank holds no part of the snapshot, which happens when the
+                // run uses more ranks than wrote the file. Open rank 0's data only
+                // so the tracer and sticker names agree with every other rank;
+                // good_open == false suppresses all of the per-cell reads below.
                 good_open = false;
-                reader = std::make_shared<HDF5Reader>(rank_file);
+                rank_file = dirname + "/0.h5";
+                if(std::filesystem::exists(rank_file))
+                {
+                    reader = std::make_shared<HDF5Reader>(rank_file);
+                }
+                else
+                {
+                    // Single-file snapshot: the per-rank data lives in embedded
+                    // "/rank<i>" groups, so there is no sidecar file to fall back
+                    // on and we reuse the file already open as globalfile.
+                    reader = std::make_shared<HDF5Reader>(fname);
+                    if(globalfile.Exists("/rank0"))
+                    {
+                        rank_prefix = "/rank0";
+                    }
+                }
             }
         }
         else
