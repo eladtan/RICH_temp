@@ -27,6 +27,13 @@ enum class OpacityScaleMode { None, Rosseland, Planck };
 //! footprint; Rdma is usually faster where the fabric supports it; Auto tries
 //! RDMA and falls back to TwoSided, reporting which it used.
 enum class MonteCarloCommunication { Auto, Rdma, TwoSided };
+// Where the flux-source (CER) surface sits. Grey: the grey effective optical
+// depth reaches the target. MultigroupInnermost: each energy group's own
+// effective depth reaches the target and the deepest of those radii is taken
+// per direction, so every group is thermalized at the surface and a Planck
+// spectrum there is exact; the transport then handles each group's own
+// thermalization layer.
+enum class FluxSourceSurfaceMode { Grey, MultigroupInnermost };
 
 struct PostProcessConfig
 {
@@ -59,6 +66,11 @@ struct PostProcessConfig
         size_t generations = 1;
         bool ddmc = true;
         bool randomWalk = true;
+        // Per-group cell optical depth above which DDMC takes over from
+        // explicit IMC. Densmore's asymptotic boundary treatment holds down to
+        // a few; 15 is very conservative and leaves mid-depth cells to
+        // explicit random walks.
+        double ddmcMinCellOpticalDepth = 15.0;
         bool useCellVelocities = true;
         MonteCarloCommunication communication = MonteCarloCommunication::Auto;
 
@@ -89,11 +101,53 @@ struct PostProcessConfig
         double thermalizationTau = 5.0;
         size_t constructionRays = 0;
         double ddmcFaceOpticalDepth = 5.0;
+        FluxSourceSurfaceMode surfaceMode = FluxSourceSurfaceMode::Grey;
     } fluxSource;
+
+    // Thermal emission from every cell outside the flux-source surface at its
+    // snapshot temperature (Fleck factor 1, no temperature update): the
+    // instantaneous emissivity of the frozen state, on top of the face sources.
+    struct VolumeEmission
+    {
+        bool enabled = false;
+        // A cell emits packets only if its gross luminosity is at least this
+        // fraction of the escaping luminosity (last generation's observer
+        // crossings; the face-source flux before the first generation).
+        double cutoffFraction = 1e-10;
+        // Burn-in generations include a random subset of emitting cells sized
+        // so that about this many volume packets are launched per generation.
+        size_t burninPacketsTarget = 2000000;
+        // true: a cell emits only in the groups whose own thermalization
+        // surface lies inside it (radial escape gate). false: every cell
+        // outside the deep surface emits its full spectrum and the learned
+        // allocation decides which cells matter from the crossings it sees.
+        bool gateGroups = true;
+        // true: burn-in gives every emitting cell exactly newPhotonsPerCell
+        // packets instead of an energy-proportional count, so thin cells are
+        // explored even when thick cells hold nearly all the emitted energy.
+        bool burninExact = true;
+        // Exploration packets of a cell left at zero by the allocation are
+        // split so that none carries more than this fraction of the previous
+        // generation's escaping energy. 0 = one packet per cell.
+        double explorationWeightFraction = 0.0;
+        // Neyman budget and bounds for learned volume cells (face cells keep
+        // adaptive.source.learned*).
+        size_t learnedPhotonsPerCellBudget = 10;
+        // Grey pass budget; 0 means the same as learnedPhotonsPerCellBudget.
+        size_t learnedPhotonsPerCellBudgetGrey = 0;
+        size_t learnedMinPhotons = 1;
+        size_t learnedMaxPhotons = 5000;
+    } volumeEmission;
 
     struct OpacityScaling
     {
         OpacityScaleMode mode = OpacityScaleMode::Planck;
+        // Bounds on the per-cell scale factor alpha (multigroup absorption
+        // multiplied to match the grey mean). 0 means unbounded. Cells whose
+        // ratio falls outside are clamped, so the multigroup opacity there no
+        // longer reproduces the grey mean but keeps the table's own magnitude.
+        double alphaMin = 0.0;
+        double alphaMax = 0.0;
     } opacityScaling;
 
     struct Adaptive
@@ -109,9 +163,15 @@ struct PostProcessConfig
             size_t burninPhotonMultiplier = 2;
             double learnedReserveFraction = 0.25;
             double learnedMinFactor = 20.0;
-            size_t learnedMinPhotons = 100;
+            // Final-phase allocation. Each learned cell receives a packet
+            // count proportional to score^scorePower (0.5 is the Neyman
+            // optimum for the variance-fraction score), clamped to
+            // [learnedMinPhotons, learnedMaxPhotons], with a total budget of
+            // learnedPhotonsPerCellBudget packets per learned cell.
+            size_t learnedMinPhotons = 10;
             size_t learnedMaxPhotons = 5000;
-            double scorePower = 2.0;
+            size_t learnedPhotonsPerCellBudget = 100;
+            double scorePower = 0.5;
             double weightScoreFraction = 0.85;
         } source;
 
@@ -121,6 +181,13 @@ struct PostProcessConfig
             double extraBudgetFraction = 2.0;
             double targetEffectivePackets = 1e6;
             double targetPolarizationSnr = 10.0;
+            // When > 0 the observer deficit is sigma_P / targetPolarizationSigma
+            // instead of the SNR ratio, so unpolarized observers are not
+            // chased for an SNR they cannot reach.
+            double targetPolarizationSigma = 0.0;
+            // Divide raw deficits by their median before clamping so the
+            // clamp never flattens the whole map to maxDeficit.
+            bool normalizeDeficits = true;
             double maxDeficit = 100.0;
             double deficitEma = 0.8;
         } observer;

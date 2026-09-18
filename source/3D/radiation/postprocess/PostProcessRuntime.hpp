@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <unordered_set>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -182,15 +183,28 @@ public:
 
     double CalcPlanckOpacityAtTemperature(const ComputationalCell3D &cell, double temperature) const override
     {
-        double kT = CG::boltzmann_constant * temperature;
+        // Planck mean of the group opacities with the *integrated* Planck
+        // fraction of each group as weight. This is the same average the
+        // opacity scale factors are fitted with, so after scaling the mean
+        // reproduces the grey Planck opacity, and it matches the group sums
+        // used for thermal emission in the transport. (The former point
+        // weights x^3/(e^x-1) at the group centres were off by ~2x for these
+        // broad log-spaced groups.)
+        double const kT = CG::boltzmann_constant * temperature;
+        if (!(kT > 0.0) || !std::isfinite(kT))
+            return 0.0;
         double weightedSum = 0.0;
         double totalWeight = 0.0;
         for (size_t g = 0; g < energy_groups_center.size(); ++g)
         {
-            double nu = energy_groups_center[g];
-            double x = nu / kT;
-            double planckWeight = (x > 0.0 && x < 500.0) ? x * x * x / std::expm1(x) : 0.0;
-            weightedSum += CalcAbsorptionOpacityAtTemperature(cell, nu, temperature) * planckWeight;
+            double const a = energy_groups_boundary[g] / kT;
+            double const b = std::min(energy_groups_boundary[g + 1] / kT, 500.0);
+            if (!(b > a) || a > 500.0)
+                continue;
+            double const planckWeight = planck_integral::planck_integral(a, b);
+            if (!(planckWeight > 0.0) || !std::isfinite(planckWeight))
+                continue;
+            weightedSum += CalcAbsorptionOpacityAtTemperature(cell, energy_groups_center[g], temperature) * planckWeight;
             totalWeight += planckWeight;
         }
         return (totalWeight > 0.0) ? weightedSum / totalWeight : 0.0;
@@ -272,12 +286,32 @@ public:
     std::vector<Vector3D> fluxSourceDirections;
     std::vector<double> fluxSourceRadius;
     std::vector<int> fluxSourceRadiusDirectlyResolved;
+    // Probe channels kept for diagnostics: the grey radius per direction, and in
+    // mg-innermost mode the per-group radii the surface was taken from.
+    std::vector<double> fluxSourceGreyRadius;
+    std::vector<int> fluxSourceGreyResolved;
+    std::vector<std::vector<double>> fluxSourceGroupRadius;
+    std::vector<std::vector<int>> fluxSourceGroupResolved;
     double fluxSourceDirectlyResolvedFraction = 0.0;
     double fluxSourceInjectedLuminosity = 0.0;
     double fluxSourceNetLuminosity = 0.0;
     double fluxSourceInwardLuminosity = 0.0;
     uint64_t fluxSourceBoundaryFaceCount = 0;
     uint64_t fluxSourceEmittingFaceCount = 0;
+    // Global IDs of the cells that own emitting faces (all ranks hold the
+    // full set; ~1e5 entries at most). Used to tell face cells from volume
+    // cells in the learned allocation.
+    std::unordered_set<size_t> fluxSourceCellIDs;
+    // Volume emission of the current decomposition (global counts).
+    uint64_t volumeEmissionOutsideCells = 0;
+    uint64_t volumeEmissionCells = 0;
+    double volumeEmissionLuminosity = 0.0;      // all outside cells
+    double volumeEmissionKeptLuminosity = 0.0;  // cells above the cutoff
+    bool volumeEmissionReported = false;
+    // Escaping (observer-crossing) luminosity of the last transported
+    // generation, erg/s; 0 before the first one. Reference for the volume
+    // emission cutoff.
+    double lastEscapingLuminosity = 0.0;
 };
 
 using PostprocessRuntime = PostProcessSession;

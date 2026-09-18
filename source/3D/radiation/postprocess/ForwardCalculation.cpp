@@ -16,6 +16,9 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+#ifdef __linux__
+#include <malloc.h>
+#endif
 
 #ifdef RICH_MPI
 #include <mpi.h>
@@ -121,7 +124,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     !mgAdaptive.scoreByCellID.empty();
                 size_t const photonsThisGen = firstBurninThisGen ? 1
                     : (uniformBurninThisGen ? 3
-                       : (learnedProbeThisGen ? 75
+                       : (learnedProbeThisGen ? (cfg.volumeEmissionEnabled ? 10 : 75)
                           : (cfg.adaptiveSourceCells ? 1 : genPhotonsPerCell)));
                 std::string phase = "final";
                 if (firstBurninThisGen)
@@ -147,34 +150,32 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                                              adaptiveActiveThisGen, rank);
 
                 IMCPostProcessControl postProcessControl;
-                if (adaptiveActiveThisGen) {
+                if (adaptiveActiveThisGen && finalThisGen) {
+                    // Final generations: explicit Neyman allocation from the
+                    // learned variance shares (see BuildNeymanSourceAllocation).
+                    SourceAllocationPlan const plan = BuildNeymanSourceAllocation(
+                        BuildCombinedSourceScoresForIMC(mgAdaptive, mgGroupSourceState),
+                        cfg, &runtime.fluxSourceCellIDs);
+                    ApplyNeymanAllocationToControl(postProcessControl, plan, cfg);
+                    PrintSourceAllocationPlan("MG", plan, gen, rank);
+                } else if (adaptiveActiveThisGen) {
+                    // Learned-only probe: flat 75 packets per learned cell,
+                    // used to measure costs for the load balance.
                     postProcessControl.adaptiveCells.enabled = true;
                     postProcessControl.adaptiveCells.scores =
                         BuildCombinedSourceScoresForIMC(mgAdaptive, mgGroupSourceState);
-                    double const learnedMinFactorThisGen =
-                        learnedProbeThisGen ? 1.0 : cfg.adaptiveSourceLearnedMinFactor;
-                    size_t const learnedMinPhotonsThisGen =
-                        finalThisGen ? cfg.adaptiveSourceLearnedMinPhotons : 0;
-                    size_t const learnedMaxPhotonsThisGen =
-                        finalThisGen ? cfg.adaptiveSourceLearnedMaxPhotons : 0;
-                    double const scorePowerThisGen =
-                        finalThisGen ? cfg.adaptiveSourceScorePower : 1.0;
                     postProcessControl.adaptiveCells.strength =
                         cfg.adaptiveSourceStrength;
                     postProcessControl.adaptiveCells.maxFactor =
                         cfg.adaptiveSourceMaxFactor;
                     postProcessControl.adaptiveCells.learnedReserveFraction =
                         cfg.adaptiveSourceLearnedReserveFrac;
-                    postProcessControl.adaptiveCells.learnedMinFactor =
-                        learnedMinFactorThisGen;
+                    postProcessControl.adaptiveCells.learnedMinFactor = 1.0;
                     postProcessControl.adaptiveCells.observerBudgetMultiplier =
                         mgAdaptive.observerBudgetMultiplier;
-                    postProcessControl.adaptiveCells.learnedMinPhotons =
-                        learnedMinPhotonsThisGen;
-                    postProcessControl.adaptiveCells.learnedMaxPhotons =
-                        learnedMaxPhotonsThisGen;
-                    postProcessControl.adaptiveCells.scorePower =
-                        scorePowerThisGen;
+                    postProcessControl.adaptiveCells.learnedMinPhotons = 0;
+                    postProcessControl.adaptiveCells.learnedMaxPhotons = 0;
+                    postProcessControl.adaptiveCells.scorePower = 1.0;
                 }
                 if (firstBurninThisGen) {
                     postProcessControl.emission.enabled = true;
@@ -189,7 +190,11 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     postProcessControl.emission.useLearnedScores = true;
                     postProcessControl.emission.includeUniformBase = false;
                     postProcessControl.emission.learnedBoostFactor = 1;
-                } else if (cfg.adaptiveSourceCells && finalThisGen) {
+                } else if (cfg.adaptiveSourceCells && finalThisGen &&
+                           !adaptiveActiveThisGen) {
+                    // No learned cells at all: keep the legacy behaviour so the
+                    // run fails loudly (zero emission) rather than silently
+                    // switching to uniform sampling.
                     postProcessControl.emission.enabled = true;
                     postProcessControl.emission.useLearnedScores = true;
                     postProcessControl.emission.includeUniformBase = false;
@@ -220,12 +225,59 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     std::move(postProcessControl));
                 if (cfg.fluxSourceCompare)
                     ConfigureFluxSourceForCurrentDecomposition(
-                        cfg, runtime, *physics);
+                        cfg, runtime, *physics, *opacity, true);
+
+                if (cfg.volumeEmissionEnabled && physics->hasPostProcessVolumeEmission()) {
+                    // Burn-in generations sample a random subset of the emitting
+                    // volume cells sized to the packet target; learned phases
+                    // emit from every cell the allocation names.
+                    double fraction = 1.0;
+                    if (burninThisGen && runtime.volumeEmissionCells > 0) {
+                        double const wanted = static_cast<double>(cfg.volumeEmissionBurninPacketsTarget);
+                        double const full = static_cast<double>(photonsThisGen) *
+                                            static_cast<double>(runtime.volumeEmissionCells);
+                        fraction = std::clamp(wanted / std::max(1.0, full), 1e-6, 1.0);
+                    }
+                    physics->setPostProcessVolumeEmissionSubsample(fraction, static_cast<uint64_t>(gen) + 1);
+                    // Bound the weight of exploration packets by a fraction of the
+                    // escaping energy of the previous generation (face flux before
+                    // the first one).
+                    double const escapingReference = runtime.lastEscapingLuminosity > 0.0
+                        ? runtime.lastEscapingLuminosity : runtime.fluxSourceInjectedLuminosity;
+                    physics->setPostProcessExplorationMaxWeight(
+                        cfg.volumeEmissionExplorationWeightFraction * escapingReference * cfg.sourceDt);
+                }
 
                 physics->reseedRNG(static_cast<uint64_t>(rank+12345678) * mgTotalGenerations + gen);
 
                 manager->getParticles().clear();
                 manager->step(cells, cfg.transportTime);
+                if (cfg.volumeEmissionEnabled && physics->hasPostProcessVolumeEmission()) {
+                    double volumeEnergy = physics->getLastVolumeEmissionEnergy();
+                    unsigned long long counts[2] = {
+                        static_cast<unsigned long long>(physics->getLastVolumeEmissionCells()),
+                        static_cast<unsigned long long>(physics->getLastVolumeEmissionSelectedCells())};
+#ifdef RICH_MPI
+                    MPI_Allreduce(MPI_IN_PLACE, &volumeEnergy, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+                    MPI_Allreduce(MPI_IN_PLACE, counts, 2, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+#endif
+                    if (rank == 0)
+                        std::cout << "VOLUME_EMISSION gen=" << gen + 1
+                                  << " emitting_cells=" << counts[0]
+                                  << " selected_cells=" << counts[1]
+                                  << " volume_luminosity=" << volumeEnergy / cfg.sourceDt
+                                  << " face_luminosity=" << runtime.fluxSourceInjectedLuminosity
+                                  << " erg/s" << std::endl;
+                }
+#ifdef RICH_MPI
+                ReportGenerationMemory("MG", gen + 1, rank, runtime.mpiSize, tess, manager->getParticles().size());
+#endif
+#ifdef __linux__
+                // Return freed heap to the OS between generations; per-step
+                // particle and communication buffers otherwise leave the RSS
+                // high through fragmentation.
+                malloc_trim(0);
+#endif
                 IMCPostProcessGenerationDiagnostics const generationDiagnostics =
                     physics->getPostProcessGenerationDiagnostics();
 
@@ -271,8 +323,13 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 }
 
                 auto mgUpdate = UpdateAdaptiveSourceScoresDistributed(
-                    mgSourceStats, cfg, mgAdaptive, mgObserverQuality,
+                    mgSourceStats,
+                    BuildLocalSourceCellEmission(
+                        cells, generationDiagnostics.sourcePhotonsPerCell),
+                    cfg, mgAdaptive, mgObserverQuality,
                     !burninThisGen, rank, mpiSize);
+                if (cfg.sourceDt > 0.0 && mgUpdate.totalEscapedEnergy > 0.0)
+                    runtime.lastEscapingLuminosity = mgUpdate.totalEscapedEnergy / cfg.sourceDt;
                 std::vector<SphericalObserver::SourceCellEscapeStat>().swap(mgSourceStats);
 
                 AdaptiveGroupSourceUpdateSummary mgGroupUpdate;
@@ -299,6 +356,14 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     photonsThisGen, finalThisGen, finalGenerationIndex,
                     mgFinalGenerations, adaptiveActiveThisGen,
                     includeGenerationInFinal, rank);
+                if (finalThisGen && cfg.adaptiveSourceCells && cfg.adaptiveObserverEquity) {
+                    bool const printBlock =
+                        (finalGenerationIndex + 1) % 5 == 0 ||
+                        finalGenerationIndex + 1 == mgFinalGenerations;
+                    PrintAdaptiveConvergenceReport(
+                        "MG", cfg, mgObserverQuality, finalGenerationIndex,
+                        mgFinalGenerations, printBlock, rank);
+                }
                 PrintAdaptiveGroupGenerationStats(mgGroupQuality, mgGroupSamplingDiag, gen, rank);
                 if (rank == 0 && cfg.adaptiveSourceCells)
                     std::cout << "MG learned cells after iteration " << (gen + 1)
@@ -373,6 +438,10 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     PrintVmRSS("before_measured_lb", rank);
 
                     std::vector<double> measuredWeightsForExchange;
+                    // Set on every rank once the mesh was rebuilt; a rank that received
+                    // no cells has an empty weight vector but must still rebuild its
+                    // physics and join the collectives below.
+                    bool meshRepartitioned = false;
                     imc_measured_lb::Parameters measuredLBParamsThisPass =
                         measuredLBParams;
 
@@ -482,13 +551,32 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                             for (auto& w : lbWeightsNew)
                                 w = std::pow(w, measuredLBWeightCompression);
 
+                            // Release the pre-repartition transport objects before
+                            // the rebuild: the parallel Voronoi build is the memory
+                            // peak of the whole run, and every rank on a node hits
+                            // it at the same moment. Their measured costs were
+                            // copied above; nothing below reads them until they
+                            // are rebuilt on the new decomposition.
+                            manager.reset();
+                            physics.reset();
+                            popControl.reset();
+                            boundary.reset();
+#ifdef __linux__
+                            malloc_trim(0);
+#endif
+                            PrintVmRSS("after_release_old_physics", rank);
+
                             tess.BuildParallel(currentPoints, lbWeightsNew);
+                            meshRepartitioned = true;
+                            // The rebuild leaves every mesh container with the capacity of
+                            // the largest mesh this rank ever held; hand it back.
+                            tess.ShrinkToFit();
                         }
                     }
 
                     PrintVmRSS("after_build_parallel", rank);
 
-                    if (!measuredWeightsForExchange.empty()) {
+                    if (meshRepartitioned) {
                         MPI_exchange_data(tess, cells, false, 1, &runtime.dummyCell);
 
                         double dummyWeight =
@@ -517,9 +605,14 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
 
                         PrintVmRSS("after_exchange", rank);
 
+                        cells.shrink_to_fit();
                         extensives.resize(Ncells);
                         for (size_t i = 0; i < Ncells; ++i)
                             PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
+                        extensives.shrink_to_fit();
+#ifdef __linux__
+                        malloc_trim(0);
+#endif
 
     #if ENERGY_GROUPS_NUM > 1
                         if (cfg.opacityScaleMode != OpacityScaleMode::None) {
@@ -529,11 +622,13 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                             RecomputeOpacityScaleFactors(
                                 *opacity, *greyOpacity, cells, Ncells, rank,
                                 cfg.opacityScaleMode,
+                                cfg.opacityScaleAlphaMin, cfg.opacityScaleAlphaMax,
                                 runtime.applyOpacityScaleFactors,
                                 "after measured LB repartition");
                         }
     #endif
 
+                        // Old transport objects were released before the rebuild.
                         boundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
 
                         physics = std::make_shared<RadiationIMC>(
@@ -541,7 +636,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                         physics->setObserver(observer);
                         if(cfg.fluxSourceCompare)
                             ConfigureFluxSourceForCurrentDecomposition(
-                                cfg, runtime, *physics);
+                                cfg, runtime, *physics, *opacity, true);
 
                         popControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Tessellation3D>>(tess);
 

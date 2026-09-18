@@ -4,6 +4,8 @@
 #include <chrono>
 #include <climits>
 #include <cstdint>
+#include <functional>
+#include <string>
 #include <cmath>
 #include <iostream>
 #include <limits>
@@ -20,6 +22,7 @@
 #include "PostProcessCommunication.hpp"
 #endif // RICH_MPI
 #include "source/Radiation/Diffusion.hpp"
+#include "source/Radiation/planck_integral/planck_integral.hpp"
 #include "source/misc/mesh_generator3D.hpp"
 #include "source/misc/universal_error.hpp"
 #include "source/misc/utils.hpp"
@@ -51,6 +54,37 @@ double EffectiveThermalizationOpacity(
     return std::sqrt(std::max(
         0.0, 3.0 * absorption * (absorption + scattering)));
 }
+
+// Same effective thermalization opacity, evaluated for one energy group of a
+// multigroup opacity at the group's representative energy.
+double EffectiveThermalizationOpacityAtEnergy(
+    OpacityCalculator const& opacity,
+    ComputationalCell3D const& cell,
+    double energy)
+{
+    double const absorption = opacity.CalcAbsorptionOpacity(cell, energy);
+    double const scattering = opacity.CalcScatteringOpacity(cell, energy);
+    if(!std::isfinite(absorption) || !std::isfinite(scattering) ||
+       absorption < 0.0 || scattering < 0.0)
+    {
+        UniversalError eo(
+            "Flux-source thermalization probe encountered invalid group opacity");
+        eo.addEntry("Energy", energy);
+        eo.addEntry("Absorption", absorption);
+        eo.addEntry("Scattering", scattering);
+        throw eo;
+    }
+    return std::sqrt(std::max(
+        0.0, 3.0 * absorption * (absorption + scattering)));
+}
+
+// One optical-depth channel followed by a probe ray: the grey effective
+// opacity, or one energy group's effective opacity.
+struct ThermalizationProbeChannel
+{
+    std::string name;
+    std::function<double(ComputationalCell3D const&)> effectiveOpacity;
+};
 
 #ifdef RICH_MPI
 constexpr int fluxSourceSlowRayMpiTag = 9942;
@@ -260,7 +294,7 @@ private:
     std::unordered_map<size_t, TrackedRay> tracked_;
 };
 
-class GreyThermalizationProbePhysics
+class ThermalizationProbePhysics
     : public MonteCarloPhysics<Vector3D, Tessellation3D>
 {
 public:
@@ -268,23 +302,35 @@ public:
     using Functionality = MonteCarloFunctionality;
     using BoundaryCond = BoundaryCondition<Vector3D, Tessellation3D>;
 
-    GreyThermalizationProbePhysics(
+    // Every ray integrates all channels at once, inward from the observer
+    // sphere, and records for each channel the radius where that channel's
+    // effective optical depth first reaches targetTau. The ray ends when all
+    // channels have resolved, when it leaves the box, or at its closest
+    // approach to the centre (beyond that it would be climbing out the far
+    // side and any later crossing would belong to the opposite direction).
+    ThermalizationProbePhysics(
         Tessellation3D const& grid,
         std::shared_ptr<BoundaryCond> const& boundary,
         std::vector<ComputationalCell3D> const& cells,
-        OpacityCalculator const& opacity,
+        std::vector<ThermalizationProbeChannel> channels,
+        OpacityCalculator const& monitorOpacity,
         Vector3D center,
         double targetTau,
-        size_t observerCount)
+        size_t rayCount)
         : MonteCarloPhysics<Vector3D, Tessellation3D>(grid, boundary),
-          cells_(cells), opacity_(opacity), center_(center),
-          targetTau_(targetTau), radius_(observerCount, -1.0),
-          valid_(observerCount, 0),
+          cells_(cells), channels_(std::move(channels)), center_(center),
+          targetTau_(targetTau), rayCount_(rayCount),
+          tau_(rayCount * channels_.size(), 0.0),
+          radius_(channels_.size(), std::vector<double>(rayCount, -1.0)),
+          valid_(channels_.size(), std::vector<int>(rayCount, 0)),
           slowRayMonitor_(std::make_unique<FluxSourceSlowRayMonitor>(
-              cells, opacity, center, targetTau))
-    {}
+              cells, monitorOpacity, center, targetTau))
+    {
+        if(channels_.empty())
+            throw UniversalError("Flux-source probe needs at least one opacity channel");
+    }
 
-    ~GreyThermalizationProbePhysics() override = default;
+    ~ThermalizationProbePhysics() override = default;
 
     std::vector<Particle> preStep(double) override { return {}; }
     void postStep(std::vector<Particle> const&, double) override {}
@@ -294,7 +340,7 @@ public:
         slowRayMonitor_->poll();
         Functionality result;
         result.change = MonteCarloParticleStatus::REMOVE;
-        if(particle.id >= radius_.size() || particle.cellIndex >= cells_.size())
+        if(particle.id >= rayCount_ || particle.cellIndex >= cells_.size())
             return result;
 
         double const directionNorm = abs(particle.velocity);
@@ -317,24 +363,50 @@ public:
             return result;
         }
 
-        double const sigma = EffectiveThermalizationOpacity(
-            opacity_, cells_[particle.cellIndex]);
-        double const oldTau = particle.weight;
-        double const newTau = oldTau + sigma * ds;
-        if(oldTau < targetTau_ && newTau >= targetTau_)
+        // Distance left before the ray passes the centre; never integrate
+        // beyond it.
+        double const remainingInward =
+            -ScalarProd(particle.location - center_, direction);
+        bool const reachesCentre = !(remainingInward > ds);
+        double const dsEffective = reachesCentre
+            ? std::max(0.0, remainingInward) : ds;
+
+        size_t const channelCount = channels_.size();
+        double* tau = &tau_[particle.id * channelCount];
+        bool allResolved = true;
+        for(size_t channel = 0; channel < channelCount; ++channel)
         {
-            double fraction = (sigma > 0.0 && ds > 0.0)
-                ? (targetTau_ - oldTau) / (sigma * ds) : 0.0;
-            fraction = std::clamp(fraction, 0.0, 1.0);
-            Vector3D const crossing = particle.location
-                + direction * (fraction * ds);
-            radius_[particle.id] = fastabs(crossing - center_);
-            valid_[particle.id] = 1;
+            if(valid_[channel][particle.id])
+                continue;
+            double const sigma =
+                channels_[channel].effectiveOpacity(cells_[particle.cellIndex]);
+            double const oldTau = tau[channel];
+            double const newTau = oldTau + sigma * dsEffective;
+            if(oldTau < targetTau_ && newTau >= targetTau_)
+            {
+                double fraction = (sigma > 0.0 && dsEffective > 0.0)
+                    ? (targetTau_ - oldTau) / (sigma * dsEffective) : 0.0;
+                fraction = std::clamp(fraction, 0.0, 1.0);
+                Vector3D const crossing = particle.location
+                    + direction * (fraction * dsEffective);
+                radius_[channel][particle.id] = fastabs(crossing - center_);
+                valid_[channel][particle.id] = 1;
+                tau[channel] = targetTau_;
+            }
+            else
+            {
+                tau[channel] = newTau;
+                allResolved = false;
+            }
+        }
+        particle.weight = tau[0];
+
+        if(allResolved || reachesCentre)
+        {
             slowRayMonitor_->unregisterRay(particle.id);
             return result;
         }
 
-        particle.weight = newTau;
         particle.location += direction * ds;
         particle.timeLeft -= ds;
         if(this->grid.IsPointOutsideBox(nextCell))
@@ -347,18 +419,50 @@ public:
         return result;
     }
 
-    std::vector<double> const& radius() const { return radius_; }
-    std::vector<int> const& valid() const { return valid_; }
+    size_t channelCount() const { return channels_.size(); }
+    std::string const& channelName(size_t channel) const { return channels_[channel].name; }
+    std::vector<double> const& radius(size_t channel) const { return radius_[channel]; }
+    std::vector<int> const& valid(size_t channel) const { return valid_[channel]; }
 
 private:
     std::vector<ComputationalCell3D> const& cells_;
-    OpacityCalculator const& opacity_;
+    std::vector<ThermalizationProbeChannel> channels_;
     Vector3D center_;
     double targetTau_;
-    std::vector<double> radius_;
-    std::vector<int> valid_;
+    size_t rayCount_;
+    std::vector<double> tau_;                 // rayCount * channels, ray-major
+    std::vector<std::vector<double>> radius_; // [channel][ray]
+    std::vector<std::vector<int>> valid_;     // [channel][ray]
     std::unique_ptr<FluxSourceSlowRayMonitor> slowRayMonitor_;
 };
+
+// Percentiles of the resolved radii of one channel, for the surface report.
+struct RadiusSummary
+{
+    size_t resolved = 0;
+    double p05 = 0.0, median = 0.0, p95 = 0.0;
+};
+
+RadiusSummary SummarizeRadii(std::vector<double> const& radius, std::vector<int> const& valid)
+{
+    RadiusSummary summary;
+    std::vector<double> values;
+    values.reserve(radius.size());
+    for(size_t i = 0; i < radius.size() && i < valid.size(); ++i)
+        if(valid[i]) values.push_back(radius[i]);
+    summary.resolved = values.size();
+    if(values.empty())
+        return summary;
+    std::sort(values.begin(), values.end());
+    auto at = [&](double q) {
+        size_t idx = static_cast<size_t>(q * static_cast<double>(values.size() - 1) + 0.5);
+        return values[std::min(idx, values.size() - 1)];
+    };
+    summary.p05 = at(0.05);
+    summary.median = at(0.5);
+    summary.p95 = at(0.95);
+    return summary;
+}
 
 size_t NearestObserverDirection(
     Vector3D const& point,
@@ -384,36 +488,67 @@ size_t NearestObserverDirection(
     return best;
 }
 
-std::vector<unsigned char> BuildOutsideSurfaceMask(
+// Nearest probe direction for every mesh point (local and ghost), or SIZE_MAX
+// for a point at the centre.
+std::vector<size_t> BuildNearestDirectionIndex(
     Config const& cfg,
     PostprocessRuntime const& runtime)
 {
     size_t const pointCount = runtime.tess.getMeshPoints().size();
-    std::vector<unsigned char> outside(pointCount, 0);
+    std::vector<size_t> nearest(pointCount, std::numeric_limits<size_t>::max());
     std::vector<Vector3D> const& directions = runtime.fluxSourceDirections;
-    if(directions.empty() || directions.size() != runtime.fluxSourceRadius.size())
+    if(directions.empty())
         throw UniversalError("Flux-source directions are unavailable");
     for(size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex)
     {
         Vector3D const point = runtime.tess.GetMeshPoint(pointIndex);
-        double const radius = fastabs(point - cfg.center);
-        if(!(radius > 0.0))
+        if(!(fastabs(point - cfg.center) > 0.0))
             continue;
-        size_t const direction = NearestObserverDirection(
-            point, cfg.center, directions);
-        if(direction >= runtime.fluxSourceRadius.size() ||
-           direction >= runtime.fluxSourceRadiusDirectlyResolved.size())
+        nearest[pointIndex] = NearestObserverDirection(point, cfg.center, directions);
+    }
+    return nearest;
+}
+
+// Points at or beyond the per-direction surface `radius` (1) or inside it (0).
+// A direction whose ray never reached the target depth has no surface and is
+// treated as open.
+std::vector<unsigned char> BuildOutsideMaskForRadii(
+    Config const& cfg,
+    PostprocessRuntime const& runtime,
+    std::vector<size_t> const& nearestDirection,
+    std::vector<double> const& surfaceRadius,
+    std::vector<int> const& surfaceResolved)
+{
+    size_t const pointCount = runtime.tess.getMeshPoints().size();
+    std::vector<unsigned char> outside(pointCount, 0);
+    if(surfaceRadius.size() != runtime.fluxSourceDirections.size() ||
+       surfaceResolved.size() != surfaceRadius.size())
+        throw UniversalError("Flux-source surface radii do not match the direction set");
+    for(size_t pointIndex = 0; pointIndex < pointCount; ++pointIndex)
+    {
+        size_t const direction = nearestDirection[pointIndex];
+        if(direction == std::numeric_limits<size_t>::max())
+            continue;
+        if(direction >= surfaceRadius.size())
             throw UniversalError("Flux-source angular surface index is out of range");
-        // A direction that never reaches the requested tau_eff has no CER.
-        // Treat that angular channel as open instead of inventing a surface
-        // radius from a neighboring ray.
-        if(runtime.fluxSourceRadiusDirectlyResolved[direction] == 0)
+        if(surfaceResolved[direction] == 0)
             outside[pointIndex] = 1;
         else
-            outside[pointIndex] =
-                radius >= runtime.fluxSourceRadius[direction] ? 1 : 0;
+        {
+            double const radius = fastabs(runtime.tess.GetMeshPoint(pointIndex) - cfg.center);
+            outside[pointIndex] = radius >= surfaceRadius[direction] ? 1 : 0;
+        }
     }
     return outside;
+}
+
+std::vector<unsigned char> BuildOutsideSurfaceMask(
+    Config const& cfg,
+    PostprocessRuntime const& runtime)
+{
+    return BuildOutsideMaskForRadii(
+        cfg, runtime, BuildNearestDirectionIndex(cfg, runtime),
+        runtime.fluxSourceRadius, runtime.fluxSourceRadiusDirectlyResolved);
 }
 
 std::vector<Vector3D> ComputeGreyFldFlux(PostprocessRuntime& runtime)
@@ -523,9 +658,52 @@ void InitializeFluxSourceSurface(
 
     auto boundary = std::make_shared<
         VacuumBoundaryCondition<Vector3D, Tessellation3D>>(runtime.tess);
-    auto physics = std::make_shared<GreyThermalizationProbePhysics>(
-        runtime.tess, boundary, runtime.cells, *runtime.greyOpacity,
-        cfg.center, cfg.fluxSourceThermalizationTau, nSourceRays);
+    // Channel 0 is always the grey effective depth (kept for the report). In
+    // mg-innermost mode one channel per energy group follows, evaluated with
+    // the multigroup opacity at the group's representative energy.
+    bool const mgSurface =
+        cfg.fluxSourceSurfaceMode == FluxSourceSurfaceMode::MultigroupInnermost;
+    std::vector<ThermalizationProbeChannel> channels;
+    {
+        OpacityCalculator const& grey = *runtime.greyOpacity;
+        channels.push_back(ThermalizationProbeChannel{
+            "grey",
+            [&grey](ComputationalCell3D const& cell) {
+                return EffectiveThermalizationOpacity(grey, cell);
+            }});
+    }
+#if ENERGY_GROUPS_NUM > 1
+    if(mgSurface)
+    {
+        if(!runtime.opacity)
+            throw UniversalError("mg-innermost flux-source surface needs the multigroup opacity");
+        OpacityCalculator const& mg = *runtime.opacity;
+        if(mg.energy_groups_center.size() != static_cast<size_t>(ENERGY_GROUPS_NUM))
+        {
+            UniversalError eo("Multigroup opacity group count does not match ENERGY_GROUPS_NUM");
+            eo.addEntry("Opacity groups", mg.energy_groups_center.size());
+            eo.addEntry("ENERGY_GROUPS_NUM", static_cast<double>(ENERGY_GROUPS_NUM));
+            throw eo;
+        }
+        for(size_t group = 0; group < static_cast<size_t>(ENERGY_GROUPS_NUM); ++group)
+        {
+            double const energy = mg.energy_groups_center[group];
+            channels.push_back(ThermalizationProbeChannel{
+                "group" + std::to_string(group),
+                [&mg, energy](ComputationalCell3D const& cell) {
+                    return EffectiveThermalizationOpacityAtEnergy(mg, cell, energy);
+                }});
+        }
+    }
+#else
+    if(mgSurface && runtime.rank == 0)
+        std::cout << "FLUX_SOURCE_SURFACE note: single-group build, mg-innermost equals grey"
+                  << std::endl;
+#endif
+    auto physics = std::make_shared<ThermalizationProbePhysics>(
+        runtime.tess, boundary, runtime.cells, std::move(channels),
+        *runtime.greyOpacity, cfg.center, cfg.fluxSourceThermalizationTau,
+        nSourceRays);
     auto population = std::make_shared<
         STORM::NoPopulationControl<Vector3D, Tessellation3D>>(runtime.tess);
     std::shared_ptr<MonteCarloManager3D> manager;
@@ -552,7 +730,7 @@ void InitializeFluxSourceSurface(
     {
         size_t const batchEnd = std::min(
             nSourceRays, batchBegin + probeBatchSize);
-        std::vector<GreyThermalizationProbePhysics::Particle> particles;
+        std::vector<ThermalizationProbePhysics::Particle> particles;
         particles.reserve(
             (batchEnd - batchBegin) / std::max(1, runtime.mpiSize) + 1);
 
@@ -578,7 +756,7 @@ void InitializeFluxSourceSurface(
             size_t const cellIndex = runtime.tess.GetContainingCell(spherePoint);
             if(cellIndex >= runtime.tess.GetPointNo())
                 continue;
-            GreyThermalizationProbePhysics::Particle particle;
+            ThermalizationProbePhysics::Particle particle;
             particle.id = rayIndex;
             particle.location = spherePoint;
             particle.velocity = -1.0 * direction;
@@ -624,20 +802,96 @@ void InitializeFluxSourceSurface(
         }
     }
 
-    runtime.fluxSourceRadius = physics->radius();
-    runtime.fluxSourceRadiusDirectlyResolved = physics->valid();
-#ifdef RICH_MPI
-    if(!runtime.fluxSourceRadius.empty())
+    // Each ray ran on exactly one rank; a max-reduction assembles every
+    // channel's radii (unresolved entries stay at -1 / 0).
+    size_t const channelCount = physics->channelCount();
+    std::vector<std::vector<double>> channelRadius(channelCount);
+    std::vector<std::vector<int>> channelValid(channelCount);
+    for(size_t channel = 0; channel < channelCount; ++channel)
     {
-        MPI_Allreduce(MPI_IN_PLACE, runtime.fluxSourceRadius.data(),
-                      static_cast<int>(runtime.fluxSourceRadius.size()),
-                      MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-        MPI_Allreduce(MPI_IN_PLACE,
-                      runtime.fluxSourceRadiusDirectlyResolved.data(),
-                      static_cast<int>(runtime.fluxSourceRadiusDirectlyResolved.size()),
-                      MPI_INT, MPI_MAX, MPI_COMM_WORLD);
-    }
+        channelRadius[channel] = physics->radius(channel);
+        channelValid[channel] = physics->valid(channel);
+#ifdef RICH_MPI
+        if(!channelRadius[channel].empty())
+        {
+            MPI_Allreduce(MPI_IN_PLACE, channelRadius[channel].data(),
+                          static_cast<int>(channelRadius[channel].size()),
+                          MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+            MPI_Allreduce(MPI_IN_PLACE, channelValid[channel].data(),
+                          static_cast<int>(channelValid[channel].size()),
+                          MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+        }
 #endif
+    }
+    runtime.fluxSourceGreyRadius = channelRadius[0];
+    runtime.fluxSourceGreyResolved = channelValid[0];
+    runtime.fluxSourceGroupRadius.clear();
+    runtime.fluxSourceGroupResolved.clear();
+
+    size_t directionsMissingAGroup = 0;
+    if(!mgSurface || channelCount == 1)
+    {
+        runtime.fluxSourceRadius = channelRadius[0];
+        runtime.fluxSourceRadiusDirectlyResolved = channelValid[0];
+    }
+    else
+    {
+        // Innermost resolved group radius per direction. A group that never
+        // reaches the target along a ray has no thermalization surface there
+        // and is left out of the minimum; count those directions.
+        runtime.fluxSourceRadius.assign(nSourceRays, -1.0);
+        runtime.fluxSourceRadiusDirectlyResolved.assign(nSourceRays, 0);
+        for(size_t i = 0; i < nSourceRays; ++i)
+        {
+            double innermost = std::numeric_limits<double>::infinity();
+            bool anyGroup = false;
+            bool allGroups = true;
+            for(size_t channel = 1; channel < channelCount; ++channel)
+            {
+                if(channelValid[channel][i])
+                {
+                    anyGroup = true;
+                    innermost = std::min(innermost, channelRadius[channel][i]);
+                }
+                else
+                    allGroups = false;
+            }
+            if(anyGroup)
+            {
+                runtime.fluxSourceRadius[i] = innermost;
+                runtime.fluxSourceRadiusDirectlyResolved[i] = 1;
+            }
+            if(!allGroups)
+                ++directionsMissingAGroup;
+        }
+        runtime.fluxSourceGroupRadius.assign(channelRadius.begin() + 1, channelRadius.end());
+        runtime.fluxSourceGroupResolved.assign(channelValid.begin() + 1, channelValid.end());
+    }
+
+    if(runtime.rank == 0)
+    {
+        for(size_t channel = 0; channel < channelCount; ++channel)
+        {
+            RadiusSummary const summary = SummarizeRadii(channelRadius[channel], channelValid[channel]);
+            std::cout << "FLUX_SOURCE_CHANNEL name=" << physics->channelName(channel)
+                      << " resolved=" << summary.resolved << "/" << nSourceRays
+                      << " radius_p05/med/p95=" << summary.p05 << "/" << summary.median
+                      << "/" << summary.p95 << " cm" << std::endl;
+        }
+        if(mgSurface && channelCount > 1)
+        {
+            RadiusSummary const grey = SummarizeRadii(channelRadius[0], channelValid[0]);
+            RadiusSummary const surface = SummarizeRadii(
+                runtime.fluxSourceRadius, runtime.fluxSourceRadiusDirectlyResolved);
+            std::cout << "FLUX_SOURCE_SURFACE_MG innermost_radius_p05/med/p95="
+                      << surface.p05 << "/" << surface.median << "/" << surface.p95
+                      << " cm grey_median=" << grey.median
+                      << " median_ratio_to_grey="
+                      << (grey.median > 0.0 ? surface.median / grey.median : 0.0)
+                      << " directions_missing_a_group=" << directionsMissingAGroup
+                      << "/" << nSourceRays << std::endl;
+        }
+    }
 
     size_t const directCount = static_cast<size_t>(std::count(
         runtime.fluxSourceRadiusDirectlyResolved.begin(),
@@ -663,6 +917,7 @@ void InitializeFluxSourceSurface(
     if(runtime.rank == 0)
         std::cout << "FLUX_SOURCE_SURFACE tau_eff="
                   << runtime.fluxSourceTau
+                  << " surface_mode=" << (mgSurface ? "mg-innermost" : "grey")
                   << " source_rays=" << nSourceRays
                   << " output_observers=" << runtime.observer->getNumObservers()
                   << " directly_resolved=" << directCount << "/"
@@ -675,7 +930,9 @@ void InitializeFluxSourceSurface(
 void ConfigureFluxSourceForCurrentDecomposition(
     Config const& cfg,
     PostprocessRuntime& runtime,
-    RadiationIMC& physics)
+    RadiationIMC& physics,
+    OpacityCalculator const& emissionOpacity,
+    bool multigroupPass)
 {
     if(!cfg.fluxSourceCompare)
     {
@@ -857,7 +1114,207 @@ void ConfigureFluxSourceForCurrentDecomposition(
         for(auto& source : sources)
             source.luminosity *= luminosityScale;
     }
+    // Every rank needs the full set of face-cell IDs to tell face cells from
+    // volume cells in the learned allocation.
+    {
+        std::vector<std::uint64_t> localIDs;
+        localIDs.reserve(sources.size());
+        for(auto const& source : sources)
+            localIDs.push_back(static_cast<std::uint64_t>(source.cellID));
+        std::sort(localIDs.begin(), localIDs.end());
+        localIDs.erase(std::unique(localIDs.begin(), localIDs.end()), localIDs.end());
+        std::vector<std::uint64_t> allIDs = localIDs;
+#ifdef RICH_MPI
+        int const localCount = static_cast<int>(localIDs.size());
+        std::vector<int> counts(static_cast<size_t>(runtime.mpiSize), 0);
+        MPI_Allgather(&localCount, 1, MPI_INT, counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+        std::vector<int> displs(counts.size(), 0);
+        size_t total = 0;
+        for(size_t r = 0; r < counts.size(); ++r)
+        {
+            displs[r] = static_cast<int>(total);
+            total += static_cast<size_t>(counts[r]);
+        }
+        allIDs.assign(total, 0);
+        MPI_Allgatherv(localIDs.data(), localCount, MPI_UINT64_T,
+                       allIDs.data(), counts.data(), displs.data(), MPI_UINT64_T, MPI_COMM_WORLD);
+#endif
+        runtime.fluxSourceCellIDs.clear();
+        runtime.fluxSourceCellIDs.reserve(allIDs.size());
+        for(std::uint64_t id : allIDs)
+            runtime.fluxSourceCellIDs.insert(static_cast<size_t>(id));
+    }
+
     physics.setPostProcessExternalSources(std::move(sources));
+
+    if(cfg.volumeEmissionEnabled)
+    {
+        // Per group, a cell outside that group's thermalization surface has
+        // Fleck factor 1 (real absorption and emission); inside it has 0
+        // (effective scattering). The grey pass, and the grey surface mode,
+        // use one surface for every group. Cells inside the deepest surface
+        // therefore emit nothing and conserve energy exactly.
+        size_t const groupCount = multigroupPass ? static_cast<size_t>(ENERGY_GROUPS_NUM) : 1;
+        std::vector<size_t> const nearest = BuildNearestDirectionIndex(cfg, runtime);
+        std::vector<std::vector<unsigned char>> outsideGroup(groupCount);
+        bool const perGroupRadii = multigroupPass &&
+            runtime.fluxSourceGroupRadius.size() == groupCount &&
+            runtime.fluxSourceGroupResolved.size() == groupCount;
+        for(size_t g = 0; g < groupCount; ++g)
+        {
+            if(!cfg.volumeEmissionGateGroups)
+                outsideGroup[g] = outside;  // full spectrum from every cell outside the deep surface
+            else if(perGroupRadii)
+                outsideGroup[g] = BuildOutsideMaskForRadii(
+                    cfg, runtime, nearest, runtime.fluxSourceGroupRadius[g], runtime.fluxSourceGroupResolved[g]);
+            else if(!multigroupPass && !runtime.fluxSourceGreyRadius.empty())
+                outsideGroup[g] = BuildOutsideMaskForRadii(
+                    cfg, runtime, nearest, runtime.fluxSourceGreyRadius, runtime.fluxSourceGreyResolved);
+            else
+                outsideGroup[g] = outside;
+        }
+        std::vector<std::uint16_t> groupBits(nCells, 0);
+        for(size_t i = 0; i < nCells; ++i)
+        {
+            std::uint16_t bits = 0;
+            for(size_t g = 0; g < groupCount; ++g)
+                if(i < outsideGroup[g].size() && outsideGroup[g][i])
+                    bits |= static_cast<std::uint16_t>(1u << g);
+            if(!multigroupPass && bits)
+                bits = static_cast<std::uint16_t>((1u << ENERGY_GROUPS_NUM) - 1u); // grey: all groups alike
+            groupBits[i] = bits;
+        }
+
+        // Instantaneous emissivity of each cell at its snapshot temperature,
+        // restricted to the groups it can emit: sum_g f_g c kappa_g u_g(T) V.
+        double constexpr aRad = 7.565732690980505e-15;
+        double constexpr cLight = 2.99792458e10;
+        std::vector<double> const& edges = emissionOpacity.energy_groups_boundary;
+        bool const groupEdgesOk = multigroupPass && edges.size() == groupCount + 1;
+        std::vector<double> cellLuminosity(nCells, 0.0);
+        double localVolumeLuminosity = 0.0;
+        // Hydro-side budget of the same cells: gross emission in all groups and
+        // absorption of the snapshot radiation field with the same Planck mean,
+        // c kappa_P (a T^4 - E_rad) V. The escaping luminosity the transport
+        // should reproduce is the face flux plus this net emission.
+        double localHydroGross = 0.0;
+        double localHydroAbsorbed = 0.0;
+        uint64_t localOutside = 0;
+        for(size_t i = 0; i < nCells; ++i)
+        {
+            if(groupBits[i] == 0)
+                continue;
+            ++localOutside;
+            ComputationalCell3D const& cell = runtime.cells[i];
+            double const T = cell.temperature;
+            double const volume = runtime.tess.GetVolume(i);
+            double luminosity = 0.0;
+            double grossAll = 0.0;
+            if(groupEdgesOk)
+            {
+                for(size_t g = 0; g < groupCount; ++g)
+                {
+                    double const kappa = emissionOpacity.CalcAbsorptionOpacity(
+                        cell, emissionOpacity.energy_groups_center[g]);
+                    double const energyDensity = planck_integral::planck_energy_density_group_integral(
+                        edges[g], edges[g + 1], T);
+                    double const groupLuminosity = cLight * kappa * energyDensity * volume;
+                    grossAll += groupLuminosity;
+                    if((groupBits[i] >> g) & 1u)
+                        luminosity += groupLuminosity;
+                }
+            }
+            else
+            {
+                luminosity = emissionOpacity.CalcPlanckOpacity(cell) * aRad * cLight * T * T * T * T * volume;
+                grossAll = luminosity;
+            }
+            {
+                double const aT4 = aRad * T * T * T * T;
+                double const kappaP = aT4 > 0.0 ? grossAll / (cLight * aT4 * volume) : 0.0;
+                double const radiationEnergyDensity = cell.density * cell.Erad;
+                if(std::isfinite(radiationEnergyDensity) && radiationEnergyDensity > 0.0)
+                    localHydroAbsorbed += cLight * kappaP * radiationEnergyDensity * volume;
+                localHydroGross += grossAll;
+            }
+            if(!std::isfinite(luminosity) || luminosity < 0.0)
+            {
+                UniversalError eo("Volume emission produced an invalid cell luminosity");
+                eo.addEntry("Cell index", i);
+                eo.addEntry("Temperature", T);
+                eo.addEntry("Luminosity", luminosity);
+                throw eo;
+            }
+            cellLuminosity[i] = luminosity;
+            localVolumeLuminosity += luminosity;
+        }
+        double globalVolumeLuminosity = localVolumeLuminosity;
+        double hydroBudget[2] = {localHydroGross, localHydroAbsorbed};
+        uint64_t globalOutside = localOutside;
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &globalVolumeLuminosity, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, hydroBudget, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &globalOutside, 1, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+#endif
+        double const hydroNetEmission = hydroBudget[0] - hydroBudget[1];
+        // A cell cannot add more to the escaping luminosity than it emits, so
+        // testing its gross emission against a fraction of the *escaping*
+        // luminosity is a conservative cut. Before the first generation the
+        // face-source flux stands in for the escaping luminosity.
+        double const escapingReference = runtime.lastEscapingLuminosity > 0.0
+            ? runtime.lastEscapingLuminosity : runtime.fluxSourceInjectedLuminosity;
+        double const cutoff = cfg.volumeEmissionCutoffFraction * escapingReference;
+        std::vector<std::uint8_t> mask(nCells, 0);
+        uint64_t localKept = 0;
+        double localKeptLuminosity = 0.0;
+        for(size_t i = 0; i < nCells; ++i)
+        {
+            if(cellLuminosity[i] > 0.0 && cellLuminosity[i] >= cutoff)
+            {
+                mask[i] = 1;
+                ++localKept;
+                localKeptLuminosity += cellLuminosity[i];
+            }
+        }
+        uint64_t globalKept = localKept;
+        double globalKeptLuminosity = localKeptLuminosity;
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &globalKept, 1, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &globalKeptLuminosity, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+#endif
+        bool const changed = globalKept != runtime.volumeEmissionCells ||
+                             globalOutside != runtime.volumeEmissionOutsideCells;
+        runtime.volumeEmissionOutsideCells = globalOutside;
+        runtime.volumeEmissionCells = globalKept;
+        runtime.volumeEmissionLuminosity = globalVolumeLuminosity;
+        runtime.volumeEmissionKeptLuminosity = globalKeptLuminosity;
+        physics.setPostProcessVolumeEmission(std::move(mask), std::move(groupBits), 1.0, 0);
+        physics.setPostProcessVolumeEmissionExactBase(cfg.volumeEmissionBurninExact);
+        if(runtime.rank == 0 && (changed || !runtime.volumeEmissionReported))
+        {
+            runtime.volumeEmissionReported = true;
+            std::cout << "VOLUME_EMISSION_CONFIG outside_cells=" << globalOutside
+                      << " emitting_cells=" << globalKept
+                      << " cutoff_fraction=" << cfg.volumeEmissionCutoffFraction
+                      << " cutoff_reference_luminosity=" << escapingReference
+                      << " cutoff_luminosity=" << cutoff
+                      << " volume_luminosity=" << globalVolumeLuminosity
+                      << " kept_luminosity=" << globalKeptLuminosity
+                      << " face_luminosity=" << runtime.fluxSourceInjectedLuminosity
+                      << " volume_to_face_ratio="
+                      << (runtime.fluxSourceInjectedLuminosity > 0.0
+                          ? globalVolumeLuminosity / runtime.fluxSourceInjectedLuminosity : 0.0)
+                      << " hydro_gross_emission=" << hydroBudget[0]
+                      << " hydro_absorbed=" << hydroBudget[1]
+                      << " hydro_net_emission=" << hydroNetEmission
+                      << " hydro_implied_luminosity=" << runtime.fluxSourceInjectedLuminosity + hydroNetEmission
+                      << " erg/s" << std::endl;
+        }
+    }
+    else
+    {
+        physics.clearPostProcessVolumeEmission();
+    }
 
     if(runtime.rank == 0)
         std::cout << "FLUX_SOURCE_CONFIG boundary_faces="

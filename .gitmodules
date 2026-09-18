@@ -10,6 +10,7 @@
 [submodule "source/utils/mpi_utils"]
 	path = source/utils/mpi_utils
 	url = git@github.com:maormizrachi/mpi_utils.git
+	branch = main
 [submodule "source/utils/spatial_ds"]
 	path = source/utils/spatial_ds
 	url = git@github.com:maormizrachi/spatial_ds.git
@@ -19,7 +20,7 @@
 [submodule "source/3D/tessellation/voronoi"]
 	path = source/3D/tessellation/voronoi
 	url = git@github.com:maormizrachi/MadVoro.git
-	branch = master
+	branch = periodic_boundaries
 [submodule "source/3D/tessellation/cartesian"]
 	path = source/3D/tessellation/cartesian
 	url = git@github.com:maormizrachi/MadCart.git

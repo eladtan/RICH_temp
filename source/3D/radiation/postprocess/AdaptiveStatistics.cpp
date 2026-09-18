@@ -14,6 +14,9 @@
 
 #ifdef RICH_MPI
 #include <mpi.h>
+#ifdef __linux__
+#include <malloc.h>
+#endif
 #include "source/mpi/mpi_commands.hpp"
 #endif
 
@@ -475,6 +478,82 @@ ExchangeSourceStatsByCellOwner(std::vector<SphericalObserver::SourceCellEscapeSt
 #endif
 }
 
+struct PackedSourceCellEmission
+{
+    unsigned long long cellID = 0;
+    unsigned long long photons = 0;
+};
+
+// Send each emitting cell's packet count to the rank that owns that cell's
+// adaptive score (same hash as the escape statistics), so the owner can put
+// measured weight-squared and emitted count side by side.
+std::unordered_map<size_t, unsigned long long>
+ExchangeSourceCellEmissionByOwner(std::vector<SourceCellEmission> const& localEmission)
+{
+    std::unordered_map<size_t, unsigned long long> result;
+#ifdef RICH_MPI
+    int ranks = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &ranks);
+
+    std::vector<size_t> sendElements(static_cast<size_t>(ranks), 0);
+    for (auto const& e : localEmission) {
+        if (e.photons == 0)
+            continue;
+        ++sendElements[static_cast<size_t>(AdaptiveCellOwner(e.cellID, ranks))];
+    }
+    std::vector<int> sendCounts(static_cast<size_t>(ranks), 0);
+    std::vector<int> recvCounts(static_cast<size_t>(ranks), 0);
+    for (int r = 0; r < ranks; ++r)
+        sendCounts[static_cast<size_t>(r)] = CheckedByteCount(
+            sendElements[static_cast<size_t>(r)], sizeof(PackedSourceCellEmission),
+            "Adaptive source emission shard");
+    MPI_Alltoall(sendCounts.data(), 1, MPI_INT, recvCounts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+
+    std::vector<int> sendDispls(static_cast<size_t>(ranks), 0);
+    std::vector<int> recvDispls(static_cast<size_t>(ranks), 0);
+    unsigned long long totalSend64 = 0;
+    unsigned long long totalRecv64 = 0;
+    for (int r = 0; r < ranks; ++r) {
+        sendDispls[static_cast<size_t>(r)] = CheckedByteTotal(totalSend64, "Adaptive source emission send");
+        recvDispls[static_cast<size_t>(r)] = CheckedByteTotal(totalRecv64, "Adaptive source emission receive");
+        totalSend64 += static_cast<unsigned long long>(sendCounts[static_cast<size_t>(r)]);
+        totalRecv64 += static_cast<unsigned long long>(recvCounts[static_cast<size_t>(r)]);
+    }
+    int const totalRecvBytes = CheckedByteTotal(totalRecv64, "Adaptive source emission receive");
+
+    std::vector<PackedSourceCellEmission> sendData(
+        static_cast<size_t>(totalSend64) / sizeof(PackedSourceCellEmission));
+    std::vector<size_t> next(static_cast<size_t>(ranks), 0);
+    for (int r = 0; r < ranks; ++r)
+        next[static_cast<size_t>(r)] =
+            static_cast<size_t>(sendDispls[static_cast<size_t>(r)]) / sizeof(PackedSourceCellEmission);
+    for (auto const& e : localEmission) {
+        if (e.photons == 0)
+            continue;
+        int const owner = AdaptiveCellOwner(e.cellID, ranks);
+        PackedSourceCellEmission p;
+        p.cellID = static_cast<unsigned long long>(e.cellID);
+        p.photons = static_cast<unsigned long long>(e.photons);
+        sendData[next[static_cast<size_t>(owner)]++] = p;
+    }
+    std::vector<PackedSourceCellEmission> recvData(
+        static_cast<size_t>(totalRecvBytes) / sizeof(PackedSourceCellEmission));
+    MPI_Alltoallv(sendData.empty() ? nullptr : sendData.data(), sendCounts.data(),
+                  sendDispls.data(), MPI_BYTE,
+                  recvData.empty() ? nullptr : recvData.data(), recvCounts.data(),
+                  recvDispls.data(), MPI_BYTE, MPI_COMM_WORLD);
+    result.reserve(recvData.size());
+    for (auto const& p : recvData)
+        result[static_cast<size_t>(p.cellID)] += p.photons;
+#else
+    result.reserve(localEmission.size());
+    for (auto const& e : localEmission)
+        if (e.photons > 0)
+            result[e.cellID] += static_cast<unsigned long long>(e.photons);
+#endif
+    return result;
+}
+
 std::vector<PackedAdaptiveScoreDelta>
 AllgatherAdaptiveScoreDeltas(std::vector<PackedAdaptiveScoreDelta> const& localDeltas)
 {
@@ -671,9 +750,21 @@ ObserverQualityDiagnostics BuildObserverQualityDiagnostics(
         }
     }
 
+    double const deficitCap = cfg.adaptiveObserverDeficitMax;
+    bool const normalizeDeficits = cfg.adaptiveObserverNormalizeDeficits;
+    // Normalized deficits are relative to the median observer, so observers
+    // better than the median legitimately fall below 1.
+    double const deficitFloor = normalizeDeficits ? 1.0 / deficitCap : 1.0;
+    bool const useSigmaTarget =
+        diag.polarizationMode && cfg.adaptiveObserverTargetPolSigma > 0.0;
+
     std::vector<double> rawDeficit(diag.observerCount, 1.0);
+    // An observer whose uncertainty cannot be estimated yet gets the cap as a
+    // sentinel; sentinels are excluded from the median and not rescaled.
+    std::vector<char> sentinel(diag.observerCount, 0);
     diag.neffByObserver.assign(diag.observerCount, 0.0);
     diag.snrByObserver.assign(diag.observerCount, 0.0);
+    diag.sigmaPByObserver.assign(diag.observerCount, 0.0);
     diag.crossingsByObserver = state.cumulativeObserverCrossings;
 
     for (size_t i = 0; i < diag.observerCount; ++i) {
@@ -686,12 +777,12 @@ ObserverQualityDiagnostics BuildObserverQualityDiagnostics(
         diag.neffByObserver[i] = neff;
 
         double deficit = 1.0;
-        if (!includeInIntegratedStats) {
-            deficit = 1.0;
-        } else if (neff > 0.0) {
-            deficit = std::max(deficit, cfg.adaptiveObserverTargetNeff / neff);
+        bool isSentinel = false;
+        if (neff > 0.0) {
+            deficit = cfg.adaptiveObserverTargetNeff / neff;
         } else {
-            deficit = cfg.adaptiveObserverDeficitMax;
+            deficit = deficitCap;
+            isSentinel = true;
         }
 
         if (diag.polarizationMode && energy > 0.0) {
@@ -703,16 +794,56 @@ ObserverQualityDiagnostics BuildObserverQualityDiagnostics(
                 state.cumulativeObserverSumWQ2[i],
                 state.cumulativeObserverSumWU2[i]);
             diag.snrByObserver[i] = quality.snr;
-            if (!includeInIntegratedStats)
-                deficit = 1.0;
-            else if (quality.uncertaintyValid && quality.snr > 0.0)
-                deficit = std::max(
-                    deficit, cfg.adaptiveObserverTargetPolSnr / quality.snr);
-            else
-                deficit = cfg.adaptiveObserverDeficitMax;
+            diag.sigmaPByObserver[i] =
+                quality.uncertaintyValid ? quality.sigmaP : 0.0;
+            if (useSigmaTarget) {
+                // sigma_P is what extra packets actually shrink; SNR is not,
+                // because it also depends on the (possibly ~0) signal.
+                if (quality.uncertaintyValid && quality.sigmaP > 0.0) {
+                    deficit = quality.sigmaP / cfg.adaptiveObserverTargetPolSigma;
+                    isSentinel = false;
+                } else {
+                    deficit = deficitCap;
+                    isSentinel = true;
+                }
+            } else if (quality.uncertaintyValid && quality.snr > 0.0) {
+                deficit = std::max(deficit, cfg.adaptiveObserverTargetPolSnr / quality.snr);
+            } else {
+                deficit = deficitCap;
+                isSentinel = true;
+            }
         }
 
-        rawDeficit[i] = std::clamp(deficit, 1.0, cfg.adaptiveObserverDeficitMax);
+        if (!std::isfinite(deficit) || !(deficit > 0.0)) {
+            deficit = deficitCap;
+            isSentinel = true;
+        }
+        rawDeficit[i] = includeInIntegratedStats ? deficit : 1.0;
+        sentinel[i] = isSentinel ? 1 : 0;
+    }
+
+    diag.deficitNormalization = 1.0;
+    if (includeInIntegratedStats && normalizeDeficits) {
+        std::vector<double> valid;
+        valid.reserve(diag.observerCount);
+        for (size_t i = 0; i < diag.observerCount; ++i)
+            if (!sentinel[i])
+                valid.push_back(rawDeficit[i]);
+        double const median = Percentile(valid, 0.5);
+        if (median > 0.0 && std::isfinite(median)) {
+            diag.deficitNormalization = median;
+            for (size_t i = 0; i < diag.observerCount; ++i)
+                if (!sentinel[i])
+                    rawDeficit[i] /= median;
+        }
+    }
+    diag.sentinelObservers = 0;
+    for (size_t i = 0; i < diag.observerCount; ++i) {
+        rawDeficit[i] = includeInIntegratedStats
+            ? std::clamp(rawDeficit[i], deficitFloor, deficitCap)
+            : 1.0;
+        if (includeInIntegratedStats && sentinel[i])
+            ++diag.sentinelObservers;
     }
 
     if (state.observerDeficitByIndex.size() != diag.observerCount)
@@ -727,7 +858,7 @@ ObserverQualityDiagnostics BuildObserverQualityDiagnostics(
         double const smooth = oldDeficit * (1.0 - cfg.adaptiveObserverDeficitEma)
                             + rawDeficit[i] * cfg.adaptiveObserverDeficitEma;
         double const finalDeficit = includeInIntegratedStats
-            ? std::clamp(smooth, 1.0, cfg.adaptiveObserverDeficitMax)
+            ? std::clamp(smooth, deficitFloor, deficitCap)
             : 1.0;
         if (includeInIntegratedStats)
             state.observerDeficitByIndex[i] = finalDeficit;
@@ -752,6 +883,16 @@ ObserverQualityDiagnostics BuildObserverQualityDiagnostics(
     diag.snrP05 = Percentile(diag.snrByObserver, 0.05);
     diag.snrMedian = Percentile(diag.snrByObserver, 0.50);
     diag.snrP95 = Percentile(diag.snrByObserver, 0.95);
+    {
+        std::vector<double> sigma;
+        sigma.reserve(diag.observerCount);
+        for (double s : diag.sigmaPByObserver)
+            if (s > 0.0 && std::isfinite(s))
+                sigma.push_back(s);
+        diag.sigmaP05 = Percentile(sigma, 0.05);
+        diag.sigmaPMedian = Percentile(sigma, 0.50);
+        diag.sigmaP95 = Percentile(sigma, 0.95);
+    }
 
     double const weakFrac = static_cast<double>(diag.weakObservers) /
                         static_cast<double>(diag.observerCount);
@@ -1165,6 +1306,7 @@ void AccumulateGroupSamplingDiagnostics(
 
 AdaptiveSourceUpdateSummary UpdateAdaptiveSourceScoresDistributed(
     std::vector<SphericalObserver::SourceCellEscapeStat> const& localStats,
+    std::vector<SourceCellEmission> const& localEmission,
     Config const& cfg,
     AdaptiveSourceState& state,
     ObserverQualityDiagnostics const& observerQuality,
@@ -1248,6 +1390,53 @@ AdaptiveSourceUpdateSummary UpdateAdaptiveSourceScoresDistributed(
                        AdaptivePairKeyHash>().swap(byPair);
     summary.topStats = GatherTopSourceStats(ownedStats);
 
+    // Allocation-invariant variance bookkeeping.  A cell emitting n_i equal
+    // packets contributes sum(w^2) = f_io E_i^2 / n_i to observer o, so the
+    // measured weight-squared shrinks as soon as a cell is boosted and a
+    // score built from it would oscillate.  Multiplying by the emitted count
+    // recovers f_io E_i^2, which depends only on the physics.  Normalizing by
+    // the per-observer sum of that invariant keeps each observer's total
+    // contribution equal to its deficit, whatever the current allocation.
+    std::unordered_map<size_t, unsigned long long> const emittedByCell =
+        ExchangeSourceCellEmissionByOwner(localEmission);
+    double referencePhotonsPerCell = 1.0;
+    {
+        unsigned long long sums[2] = {0ULL, 0ULL};
+        for (auto const& e : localEmission) {
+            if (e.photons == 0)
+                continue;
+            sums[0] += static_cast<unsigned long long>(e.photons);
+            ++sums[1];
+        }
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, sums, 2, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+#endif
+        if (sums[1] > 0)
+            referencePhotonsPerCell =
+                static_cast<double>(sums[0]) / static_cast<double>(sums[1]);
+    }
+    auto emittedPhotonsFor = [&](size_t cellID) {
+        auto const it = emittedByCell.find(cellID);
+        return (it != emittedByCell.end() && it->second > 0)
+            ? static_cast<double>(it->second)
+            : referencePhotonsPerCell;
+    };
+    std::vector<double> invariantW2ByObserver(nObs, 0.0);
+    for (auto const& s : ownedStats) {
+        if (s.observerIndex >= nObs)
+            continue;
+        double const w2 = (s.weightSq > 0.0 && std::isfinite(s.weightSq))
+            ? s.weightSq
+            : s.energy * s.energy;
+        invariantW2ByObserver[s.observerIndex] += emittedPhotonsFor(s.cellID) * w2;
+    }
+#ifdef RICH_MPI
+    if (!invariantW2ByObserver.empty())
+        MPI_Allreduce(MPI_IN_PLACE, invariantW2ByObserver.data(),
+                      static_cast<int>(invariantW2ByObserver.size()),
+                      MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+#endif
+
     unsigned long long localPairCount = static_cast<unsigned long long>(ownedStats.size());
     unsigned long long globalPairCount = localPairCount;
 #ifdef RICH_MPI
@@ -1279,10 +1468,11 @@ AdaptiveSourceUpdateSummary UpdateAdaptiveSourceScoresDistributed(
             ? s.weightSq
             : s.energy * s.energy;
 
-        double const w2Total = weightSqByObserver[s.observerIndex];
+        double const invariantW2 = emittedPhotonsFor(s.cellID) * w2;
+        double const w2Total = invariantW2ByObserver[s.observerIndex];
 
         double const w2Frac = (w2Total > 0.0 && std::isfinite(w2Total))
-            ? w2 / w2Total
+            ? invariantW2 / w2Total
             : eFrac;
 
         // In polarization mode, variance matters much more than energy:
@@ -1488,7 +1678,11 @@ void PrintAdaptiveIterationSummary(
         if (observerQuality.polarizationMode)
             std::cout << " pol_snr_p05/med/p95=" << observerQuality.snrP05
                       << "/" << observerQuality.snrMedian
-                      << "/" << observerQuality.snrP95;
+                      << "/" << observerQuality.snrP95
+                      << " pol_sigma_p05/med/p95=" << observerQuality.sigmaP05
+                      << "/" << observerQuality.sigmaPMedian
+                      << "/" << observerQuality.sigmaP95;
+        std::cout << " deficit_median_raw=" << observerQuality.deficitNormalization;
     }
     std::cout << std::endl;
 }
@@ -2442,6 +2636,380 @@ BuildCombinedSourceScoresForIMC(
     return combined;
 }
 
+std::vector<SourceCellEmission> BuildLocalSourceCellEmission(
+    std::vector<ComputationalCell3D> const& cells,
+    std::vector<size_t> const& photonsPerCell)
+{
+    std::vector<SourceCellEmission> result;
+    size_t const n = std::min(cells.size(), photonsPerCell.size());
+    result.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        if (photonsPerCell[i] == 0)
+            continue;
+        SourceCellEmission e;
+        e.cellID = cells[i].ID;
+        e.photons = photonsPerCell[i];
+        result.push_back(e);
+    }
+    return result;
+}
+
+// Neyman allocation.  The score of cell i estimates
+//   V_i = sum_o d_o f_io E_i^2 / W_o,
+// its deficit-weighted share of the observers' packet-weight variance under a
+// flat allocation.  Minimizing sum_o d_o Var_o subject to a fixed packet total
+// gives n_i proportional to sqrt(V_i); scorePower generalizes the exponent
+// (0 is flat, 1 is proportional).  Cells pinned at the floor or cap are
+// removed from the pool and the remaining budget is redistributed until the
+// allocation is self-consistent.
+SourceAllocationPlan BuildNeymanSourceAllocation(
+    std::unordered_map<size_t, double> const& scores,
+    Config const& cfg,
+    std::unordered_set<size_t> const* faceCellIDs)
+{
+    SourceAllocationPlan plan;
+    std::vector<size_t> ids;
+    std::vector<double> weight;
+    std::vector<char> isVolume;
+    ids.reserve(scores.size());
+    weight.reserve(scores.size());
+    isVolume.reserve(scores.size());
+    bool const typed = cfg.volumeEmissionEnabled && faceCellIDs != nullptr && !faceCellIDs->empty();
+    for (auto const& kv : scores) {
+        if (!(kv.second > 0.0) || !std::isfinite(kv.second))
+            continue;
+        double w = std::pow(kv.second, cfg.adaptiveSourceScorePower);
+        if (!std::isfinite(w) || !(w > 0.0))
+            w = std::numeric_limits<double>::min();
+        ids.push_back(kv.first);
+        weight.push_back(w);
+        isVolume.push_back(typed && faceCellIDs->count(kv.first) == 0 ? 1 : 0);
+    }
+    size_t const n = ids.size();
+    plan.cells = n;
+    if (n == 0)
+        return plan;
+
+    // Per-cell floor, cap and budget share: face cells follow the adaptive
+    // source settings, volume cells the volume-emission settings.
+    double const loFace = static_cast<double>(cfg.adaptiveSourceLearnedMinPhotons);
+    double const hiFace = static_cast<double>(cfg.adaptiveSourceLearnedMaxPhotons);
+    double const loVolume = static_cast<double>(cfg.volumeEmissionLearnedMinPhotons);
+    double const hiVolume = static_cast<double>(cfg.volumeEmissionLearnedMaxPhotons);
+    std::vector<double> lo(n), hi(n);
+    plan.budgetPhotons = 0.0;
+    for (size_t i = 0; i < n; ++i) {
+        if (isVolume[i]) {
+            lo[i] = loVolume;
+            hi[i] = hiVolume;
+            plan.budgetPhotons += static_cast<double>(cfg.volumeEmissionLearnedPhotonsPerCellBudget);
+            ++plan.volumeCells;
+        } else {
+            lo[i] = loFace;
+            hi[i] = hiFace;
+            plan.budgetPhotons += static_cast<double>(cfg.adaptiveSourceLearnedPhotonsPerCellBudget);
+            ++plan.faceCells;
+        }
+    }
+
+    std::vector<double> photons(lo);
+    std::vector<char> pinned(n, 0);
+    double pinnedSum = 0.0;
+    for (int iter = 0; iter < 64; ++iter) {
+        double freeWeight = 0.0;
+        size_t freeCells = 0;
+        for (size_t i = 0; i < n; ++i) {
+            if (pinned[i])
+                continue;
+            freeWeight += weight[i];
+            ++freeCells;
+        }
+        if (freeCells == 0 || !(freeWeight > 0.0))
+            break;
+        double const freeBudget = plan.budgetPhotons - pinnedSum;
+        bool changed = false;
+        for (size_t i = 0; i < n; ++i) {
+            if (pinned[i])
+                continue;
+            double const target = freeBudget * weight[i] / freeWeight;
+            if (!(target > lo[i])) {
+                photons[i] = lo[i];
+                pinned[i] = 1;
+                pinnedSum += lo[i];
+                changed = true;
+            } else if (target > hi[i]) {
+                photons[i] = hi[i];
+                pinned[i] = 1;
+                pinnedSum += hi[i];
+                changed = true;
+            } else {
+                photons[i] = target;
+            }
+        }
+        if (!changed)
+            break;
+    }
+
+    double sumN = 0.0;
+    double sumN2 = 0.0;
+    std::vector<double> rounded(n);
+    for (size_t i = 0; i < n; ++i) {
+        double const value = std::clamp(std::round(photons[i]), lo[i], hi[i]);
+        rounded[i] = value;
+        plan.photonsByCell[ids[i]] = value;
+        plan.totalPhotons += static_cast<unsigned long long>(value);
+        if (isVolume[i])
+            plan.volumePhotons += static_cast<unsigned long long>(value);
+        else
+            plan.facePhotons += static_cast<unsigned long long>(value);
+        if (value <= lo[i])
+            ++plan.flooredCells;
+        else if (value >= hi[i])
+            ++plan.cappedCells;
+        sumN += value;
+        sumN2 += value * value;
+    }
+    plan.minPhotons = Percentile(rounded, 0.0);
+    plan.medianPhotons = Percentile(rounded, 0.5);
+    plan.maxPhotons = Percentile(rounded, 1.0);
+    plan.concentration = (sumN2 > 0.0)
+        ? sumN * sumN / (static_cast<double>(n) * sumN2)
+        : 1.0;
+    return plan;
+}
+
+// Drive the STORM learned-cell allocator so that every learned cell receives
+// exactly the planned count.  With newPhotonsPerCell = 1, boost 1, strength 1
+// and score power 1 the allocator computes
+//   1 + ceil(extraBudget * score_i / sum_j score_j),
+// so passing score_i = n_i - 1 and extraBudget = sum_j (n_j - 1) yields n_i.
+// The floor and cap passed alongside are the same ones the plan honoured.
+void ApplyNeymanAllocationToControl(
+    IMCPostProcessControl& control,
+    SourceAllocationPlan const& plan,
+    Config const& cfg)
+{
+    control.adaptiveCells.enabled = true;
+    control.adaptiveCells.scores.clear();
+    control.adaptiveCells.scores.reserve(plan.photonsByCell.size());
+    double extraBudget = 0.0;
+    for (auto const& kv : plan.photonsByCell) {
+        double const extra = std::max(1.0, kv.second - 1.0);
+        control.adaptiveCells.scores[kv.first] = extra;
+        extraBudget += extra;
+    }
+    control.adaptiveCells.strength = 1.0;
+    // The plan already honoured each cell's own floor and cap; the allocator's
+    // global bounds must not clip either type.
+    size_t const minPhotons = cfg.volumeEmissionEnabled
+        ? std::min(cfg.adaptiveSourceLearnedMinPhotons, cfg.volumeEmissionLearnedMinPhotons)
+        : cfg.adaptiveSourceLearnedMinPhotons;
+    size_t const maxPhotons = cfg.volumeEmissionEnabled
+        ? std::max(cfg.adaptiveSourceLearnedMaxPhotons, cfg.volumeEmissionLearnedMaxPhotons)
+        : cfg.adaptiveSourceLearnedMaxPhotons;
+    control.adaptiveCells.maxFactor =
+        static_cast<double>(std::max<size_t>(1, maxPhotons));
+    control.adaptiveCells.learnedReserveFraction = cfg.adaptiveSourceLearnedReserveFrac;
+    control.adaptiveCells.learnedMinFactor = 1.0;
+    control.adaptiveCells.observerBudgetMultiplier = 1.0;
+    control.adaptiveCells.learnedMinPhotons = minPhotons;
+    control.adaptiveCells.learnedMaxPhotons = maxPhotons;
+    control.adaptiveCells.scorePower = 1.0;
+
+    control.emission.enabled = true;
+    control.emission.useLearnedScores = true;
+    control.emission.includeUniformBase = false;
+    control.emission.baseMultiplier = 1;
+    control.emission.learnedBoostFactor = 1;
+    control.emission.learnedExtraBudget =
+        static_cast<size_t>(std::llround(extraBudget));
+}
+
+void PrintAdaptiveConvergenceReport(
+    std::string const& label,
+    Config const& cfg,
+    ObserverQualityDiagnostics const& observerQuality,
+    size_t finalGenerationIndex,
+    size_t finalGenerations,
+    bool printBlock,
+    int rank)
+{
+    if (rank != 0 || !observerQuality.enabled || observerQuality.observerCount == 0)
+        return;
+
+    // Generations accumulated so far (this one included).  The independent
+    // generation estimator shrinks as 1/sqrt(N), which is what the projection
+    // below extrapolates; it ignores any further gain from re-allocation.
+    double const gensSoFar = static_cast<double>(finalGenerationIndex + 1);
+    double const gensRemaining =
+        static_cast<double>(finalGenerations) - gensSoFar;
+
+    bool const sigmaMode =
+        observerQuality.polarizationMode && cfg.adaptiveObserverTargetPolSigma > 0.0;
+    bool const snrMode = observerQuality.polarizationMode && !sigmaMode;
+
+    // "ratio" is how far each observer still is from its target, > 1 means
+    // not yet converged, in units where N must grow by ratio^2.
+    std::vector<double> ratio;
+    ratio.reserve(observerQuality.observerCount);
+    size_t valid = 0;
+    size_t belowTarget = 0;
+    for (size_t i = 0; i < observerQuality.observerCount; ++i) {
+        double r = 0.0;
+        if (sigmaMode) {
+            double const s = observerQuality.sigmaPByObserver[i];
+            if (!(s > 0.0) || !std::isfinite(s))
+                continue;
+            r = s / cfg.adaptiveObserverTargetPolSigma;
+        } else if (snrMode) {
+            double const snr = observerQuality.snrByObserver[i];
+            if (!(snr > 0.0) || !std::isfinite(snr))
+                continue;
+            r = cfg.adaptiveObserverTargetPolSnr / snr;
+        } else {
+            double const neff = observerQuality.neffByObserver[i];
+            if (!(neff > 0.0) || !std::isfinite(neff))
+                continue;
+            r = std::sqrt(cfg.adaptiveObserverTargetNeff / neff);
+        }
+        ++valid;
+        if (r <= 1.0)
+            ++belowTarget;
+        ratio.push_back(r);
+    }
+
+    auto projectedRemaining = [&](double r) {
+        if (!(r > 0.0) || !std::isfinite(r))
+            return 0.0;
+        return std::max(0.0, gensSoFar * r * r - gensSoFar);
+    };
+    double const rP05 = Percentile(ratio, 0.05);
+    double const rP25 = Percentile(ratio, 0.25);
+    double const rMed = Percentile(ratio, 0.50);
+    double const rP75 = Percentile(ratio, 0.75);
+    double const rP95 = Percentile(ratio, 0.95);
+    double const rMax = Percentile(ratio, 1.00);
+    double const fracBelow = valid > 0
+        ? static_cast<double>(belowTarget) / static_cast<double>(valid)
+        : 0.0;
+
+    // Fraction of observers expected to be converged when the run ends, if
+    // every observer keeps its current 1/sqrt(N) trend.
+    size_t convergedAtEnd = 0;
+    double const endFactor = std::sqrt(
+        (gensSoFar + std::max(0.0, gensRemaining)) / gensSoFar);
+    for (double r : ratio)
+        if (r <= endFactor)
+            ++convergedAtEnd;
+    double const fracAtEnd = valid > 0
+        ? static_cast<double>(convergedAtEnd) / static_cast<double>(valid)
+        : 0.0;
+
+    std::string const metric = sigmaMode ? "sigma_P" : (snrMode ? "pol_SNR" : "neff");
+    double const target = sigmaMode ? cfg.adaptiveObserverTargetPolSigma
+        : (snrMode ? cfg.adaptiveObserverTargetPolSnr : cfg.adaptiveObserverTargetNeff);
+
+    std::cout << "ADAPTIVE_REPORT type=" << label
+              << " final_step=" << (finalGenerationIndex + 1) << "/" << finalGenerations
+              << " metric=" << metric
+              << " target=" << target
+              << " observers_valid=" << valid << "/" << observerQuality.observerCount
+              << " observers_unestimated=" << observerQuality.sentinelObservers
+              << " frac_at_target=" << fracBelow
+              << " frac_at_target_projected_end=" << fracAtEnd
+              << " distance_p05/med/p95/max=" << rP05 << "/" << rMed << "/" << rP95 << "/" << rMax
+              << " gens_remaining_median=" << projectedRemaining(rMed)
+              << " gens_remaining_p95=" << projectedRemaining(rP95)
+              << " gens_remaining_worst=" << projectedRemaining(rMax)
+              << " gens_left_in_run=" << std::max(0.0, gensRemaining);
+    if (observerQuality.polarizationMode)
+        std::cout << " sigma_p05/med/p95=" << observerQuality.sigmaP05
+                  << "/" << observerQuality.sigmaPMedian
+                  << "/" << observerQuality.sigmaP95;
+    std::cout << " deficit_min/med_raw/max=" << observerQuality.deficitMin
+              << "/" << observerQuality.deficitNormalization
+              << "/" << observerQuality.deficitMax
+              << std::endl;
+
+    if (!printBlock)
+        return;
+
+    // Histogram of distance-to-target in factors of two.
+    static constexpr double edges[] = {0.5, 1.0, 2.0, 4.0, 8.0, 16.0};
+    constexpr size_t nEdges = sizeof(edges) / sizeof(edges[0]);
+    std::vector<size_t> hist(nEdges + 1, 0);
+    for (double r : ratio) {
+        size_t bin = 0;
+        while (bin < nEdges && r > edges[bin])
+            ++bin;
+        hist[bin] += 1;
+    }
+
+    std::ostringstream out;
+    out << std::setprecision(3);
+    out << "----- " << label << " adaptive convergence after final step "
+        << (finalGenerationIndex + 1) << "/" << finalGenerations << " -----\n";
+    out << "  metric: " << metric << "   target: " << target
+        << "   observers with an estimate: " << valid << "/" << observerQuality.observerCount
+        << " (" << observerQuality.sentinelObservers << " not yet estimable)\n";
+    out << "  distance to target (" << metric << (sigmaMode ? "/target" : ", target/value")
+        << "):  p05 " << rP05 << "  p25 " << rP25 << "  med " << rMed
+        << "  p75 " << rP75 << "  p95 " << rP95 << "  max " << rMax << "\n";
+    out << "  observers at target now: " << belowTarget << "/" << valid
+        << " (" << 100.0 * fracBelow << "%),  projected at end of run: "
+        << convergedAtEnd << "/" << valid << " (" << 100.0 * fracAtEnd << "%)\n";
+    out << "  generations still needed (1/sqrt(N) trend, " << gensSoFar << " done, "
+        << std::max(0.0, gensRemaining) << " left):  median "
+        << projectedRemaining(rMed) << "  p95 " << projectedRemaining(rP95)
+        << "  worst " << projectedRemaining(rMax) << "\n";
+    out << "  distance histogram:";
+    double lower = 0.0;
+    for (size_t b = 0; b <= nEdges; ++b) {
+        if (b < nEdges)
+            out << "  (" << lower << "," << edges[b] << "]:" << hist[b];
+        else
+            out << "  >" << lower << ":" << hist[b];
+        if (b < nEdges)
+            lower = edges[b];
+    }
+    out << "\n";
+    if (observerQuality.polarizationMode)
+        out << "  sigma_P p05/med/p95: " << observerQuality.sigmaP05 << " / "
+            << observerQuality.sigmaPMedian << " / " << observerQuality.sigmaP95
+            << "   pol SNR p05/med/p95: " << observerQuality.snrP05 << " / "
+            << observerQuality.snrMedian << " / " << observerQuality.snrP95 << "\n";
+    out << "  neff p05/med/p95: " << observerQuality.neffP05 << " / "
+        << observerQuality.neffMedian << " / " << observerQuality.neffP95 << "\n";
+    out << "  deficit min/avg/max: " << observerQuality.deficitMin << " / "
+        << observerQuality.deficitAvg << " / " << observerQuality.deficitMax
+        << "   (raw median before normalization " << observerQuality.deficitNormalization
+        << ")\n";
+    std::cout << out.str() << std::flush;
+}
+
+void PrintSourceAllocationPlan(
+    std::string const& label,
+    SourceAllocationPlan const& plan,
+    size_t gen,
+    int rank)
+{
+    if (rank != 0)
+        return;
+    std::cout << label << " NEYMAN_ALLOCATION gen=" << (gen + 1)
+              << " cells=" << plan.cells
+              << " budget_photons=" << plan.budgetPhotons
+              << " planned_photons=" << plan.totalPhotons
+              << " photons/cell min/med/max=" << plan.minPhotons
+              << "/" << plan.medianPhotons
+              << "/" << plan.maxPhotons
+              << " floored_cells=" << plan.flooredCells
+              << " capped_cells=" << plan.cappedCells
+              << " concentration=" << plan.concentration
+              << " face_cells=" << plan.faceCells << " face_photons=" << plan.facePhotons
+              << " volume_cells=" << plan.volumeCells << " volume_photons=" << plan.volumePhotons
+              << std::endl;
+}
+
 // Rosseland weight fraction for a single group with dimensionless boundaries [a, b].
 // Uses: integral_a^b x^4 e^x/(e^x-1)^2 dx = a^4/(e^a-1) - b^4/(e^b-1) + 4*(pi^4/15)*planck_integral(a,b)
 // Normalized by the full-spectrum integral 4*pi^4/15.
@@ -2533,6 +3101,8 @@ void RecomputeOpacityScaleFactors(
     size_t const Ncells,
     int const rank,
     OpacityScaleMode mode,
+    double const alphaMin,
+    double const alphaMax,
     std::function<void(std::unordered_map<size_t, double>)> const&
         applyScaleFactors,
     std::string const& label)
@@ -2548,11 +3118,13 @@ void RecomputeOpacityScaleFactors(
   std::unordered_map<size_t, double> scaleFactors;
   scaleFactors.reserve(Ncells);
 
-  double alphaMin = std::numeric_limits<double>::max();
-  double alphaMax = 0.0;
+  double alphaMinSeen = std::numeric_limits<double>::max();
+  double alphaMaxSeen = 0.0;
   double alphaSum = 0.0;
   size_t alphaCount = 0;
   size_t alphaOutliers = 0;
+  size_t alphaClampedLow = 0;
+  size_t alphaClampedHigh = 0;
 
   bool const usePlanck = (mode == OpacityScaleMode::Planck);
 
@@ -2585,7 +3157,10 @@ void RecomputeOpacityScaleFactors(
     if (usePlanck) {
       double const kappaPGrey = greyOpacity.CalcPlanckOpacity(cells[i]);
       if (kappaPGrey <= 0.0 || !std::isfinite(kappaPGrey)) continue;
-      alpha = 30 * SolvePlanckAlpha(sigA, fWeight, kappaPGrey); // 2 is ad hoc factor to match the gray luminosity
+      // No ad hoc prefactor: alpha is the plain ratio of the grey Planck mean
+      // to the Planck-weighted multigroup absorption, so the scaled MG opacity
+      // integrates back to the grey value.
+      alpha = SolvePlanckAlpha(sigA, fWeight, kappaPGrey);
     } else {
       std::vector<double> sigS(Ng);
       for (size_t g = 0; g < Ng; ++g)
@@ -2596,10 +3171,18 @@ void RecomputeOpacityScaleFactors(
       alpha = SolveRosselandAlpha(sigA, sigS, fWeight, kappaRGrey);
     }
 
+    if (alphaMin > 0.0 && alpha < alphaMin) {
+      alpha = alphaMin;
+      ++alphaClampedLow;
+    }
+    if (alphaMax > 0.0 && alpha > alphaMax) {
+      alpha = alphaMax;
+      ++alphaClampedHigh;
+    }
     scaleFactors[cells[i].ID] = alpha;
 
-    alphaMin = std::min(alphaMin, alpha);
-    alphaMax = std::max(alphaMax, alpha);
+    alphaMinSeen = std::min(alphaMinSeen, alpha);
+    alphaMaxSeen = std::max(alphaMaxSeen, alpha);
     alphaSum += alpha;
     ++alphaCount;
     if (alpha < 0.5 || alpha > 2.0) ++alphaOutliers;
@@ -2608,16 +3191,19 @@ void RecomputeOpacityScaleFactors(
   applyScaleFactors(std::move(scaleFactors));
 
   double globalMin = 0.0, globalMax = 0.0, globalSum = 0.0;
+  size_t clamped[2] = {alphaClampedLow, alphaClampedHigh};
+  size_t globalClamped[2] = {alphaClampedLow, alphaClampedHigh};
   size_t globalCount = 0, globalOutliers = 0;
 #ifdef RICH_MPI
-  MPI_Reduce(&alphaMin, &globalMin, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
-  MPI_Reduce(&alphaMax, &globalMax, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+  MPI_Reduce(&alphaMinSeen, &globalMin, 1, MPI_DOUBLE, MPI_MIN, 0, MPI_COMM_WORLD);
+  MPI_Reduce(&alphaMaxSeen, &globalMax, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+  MPI_Reduce(clamped, globalClamped, 2, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
   MPI_Reduce(&alphaSum, &globalSum, 1, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
   MPI_Reduce(&alphaCount, &globalCount, 1, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
   MPI_Reduce(&alphaOutliers, &globalOutliers, 1, MPI_UNSIGNED_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
 #else
-  globalMin = alphaMin;
-  globalMax = alphaMax;
+  globalMin = alphaMinSeen;
+  globalMax = alphaMaxSeen;
   globalSum = alphaSum;
   globalCount = alphaCount;
   globalOutliers = alphaOutliers;
@@ -2629,6 +3215,9 @@ void RecomputeOpacityScaleFactors(
     std::cout << modeStr << " scale " << label << ": alpha min=" << globalMin
               << " max=" << globalMax << " mean=" << alphaMean
               << " outliers(>2x)=" << globalOutliers << "/" << globalCount
+              << " clamped_low=" << globalClamped[0] << " clamped_high=" << globalClamped[1]
+              << " bounds=[" << alphaMin << ","
+              << (alphaMax > 0.0 ? alphaMax : std::numeric_limits<double>::infinity()) << "]"
               << std::endl;
   }
 }
@@ -2699,21 +3288,110 @@ bool MeasuredLBDebugMemory()
     return cached != 0;
 }
 
-void PrintVmRSS(std::string const& label, int rank) {
-    if (!MeasuredLBDebugMemory())
-        return;
+size_t CurrentVmRSSkB()
+{
 #ifdef __linux__
     std::ifstream f("/proc/self/status");
     std::string line;
     while (std::getline(f, line)) {
         if (line.rfind("VmRSS:", 0) == 0) {
-            std::cerr << "MEMORY_RSS rank=" << rank
-                      << " label=" << label
-                      << " " << line << "\n";
-            break;
+            std::istringstream fields(line.substr(6));
+            size_t kB = 0;
+            fields >> kB;
+            return kB;
         }
     }
 #endif
+    return 0;
+}
+
+ProcessMemoryKB CurrentProcessMemoryKB()
+{
+    ProcessMemoryKB m;
+#ifdef __linux__
+    std::ifstream f("/proc/self/status");
+    std::string line;
+    auto grab = [&](char const* key, size_t& out) {
+        std::string const k(key);
+        if (line.rfind(k, 0) == 0) {
+            std::istringstream fields(line.substr(k.size()));
+            fields >> out;
+        }
+    };
+    while (std::getline(f, line)) {
+        grab("VmRSS:", m.rss);
+        grab("RssAnon:", m.anon);
+        grab("RssFile:", m.file);
+        grab("RssShmem:", m.shmem);
+    }
+    struct mallinfo2 const mi = mallinfo2();
+    m.heapInUse = mi.uordblks / 1024;
+    m.heapFree = mi.fordblks / 1024;
+    m.heapMmap = mi.hblkhd / 1024;
+#endif
+    return m;
+}
+
+void ReportGenerationMemory(char const* pass, size_t generation, int rank, int mpiSize,
+                            Tessellation3D const& tess, size_t censusParticles)
+{
+#ifdef RICH_MPI
+    static MPI_Comm nodeComm = MPI_COMM_NULL;
+    if (nodeComm == MPI_COMM_NULL)
+        MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &nodeComm);
+    ProcessMemoryKB const mem = CurrentProcessMemoryKB();
+    double const rssMB = static_cast<double>(mem.rss) / 1024.0;
+    // rss, anon, shmem, heap in use, heap free (MB)
+    double local[5] = {rssMB, mem.anon / 1024.0, mem.shmem / 1024.0, mem.heapInUse / 1024.0, mem.heapFree / 1024.0};
+    double nodeSum[5] = {0, 0, 0, 0, 0}, worstNode[5] = {0, 0, 0, 0, 0}, globalSum[5] = {0, 0, 0, 0, 0};
+    MPI_Allreduce(local, nodeSum, 5, MPI_DOUBLE, MPI_SUM, nodeComm);
+    MPI_Reduce(nodeSum, worstNode, 5, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(local, globalSum, 5, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    double globalMaxMB = 0.0;
+    MPI_Allreduce(&rssMB, &globalMaxMB, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    int const maxCandidate = (rssMB == globalMaxMB) ? rank : std::numeric_limits<int>::max();
+    int maxRank = 0;
+    MPI_Allreduce(&maxCandidate, &maxRank, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    double const n = static_cast<double>(std::max(1, mpiSize));
+    if (rank == 0)
+        std::cerr << "MEMORY_GEN pass=" << pass << " gen=" << generation
+                  << " rss_mean_MB=" << globalSum[0] / n
+                  << " rss_max_MB=" << globalMaxMB << " max_rank=" << maxRank
+                  << " worst_node_sum_GB=" << worstNode[0] / 1024.0
+                  << " worst_node_anon_GB=" << worstNode[1] / 1024.0
+                  << " worst_node_shmem_GB=" << worstNode[2] / 1024.0
+                  << " worst_node_heap_in_use_GB=" << worstNode[3] / 1024.0
+                  << " worst_node_heap_free_GB=" << worstNode[4] / 1024.0
+                  << " mean_anon_MB=" << globalSum[1] / n
+                  << " mean_shmem_MB=" << globalSum[2] / n
+                  << " mean_heap_in_use_MB=" << globalSum[3] / n
+                  << " mean_heap_free_MB=" << globalSum[4] / n << std::endl;
+    if (rank == maxRank)
+        std::cerr << "MEMORY_GEN_MAXRANK pass=" << pass << " gen=" << generation << " rank=" << rank
+                  << " rss_MB=" << rssMB
+                  << " anon_MB=" << mem.anon / 1024.0 << " shmem_MB=" << mem.shmem / 1024.0
+                  << " heap_in_use_MB=" << mem.heapInUse / 1024.0 << " heap_free_MB=" << mem.heapFree / 1024.0
+                  << " heap_mmap_MB=" << mem.heapMmap / 1024.0
+                  << " local_cells=" << tess.GetPointNo()
+                  << " points_with_ghosts=" << tess.GetTotalPointNumber()
+                  << " faces=" << tess.GetTotalFacesNumber()
+                  << " face_vertices=" << tess.GetFacePoints().size()
+                  << " census_particles=" << censusParticles << std::endl;
+#else
+    (void)pass; (void)generation; (void)rank; (void)mpiSize; (void)tess; (void)censusParticles;
+#endif
+}
+
+void PrintVmRSS(std::string const& label, int rank) {
+    if (!MeasuredLBDebugMemory())
+        return;
+    ProcessMemoryKB const m = CurrentProcessMemoryKB();
+    std::cerr << "MEMORY_RSS rank=" << rank
+              << " label=" << label
+              << " VmRSS: " << m.rss << " kB"
+              << " anon=" << m.anon << " file=" << m.file << " shmem=" << m.shmem
+              << " heap_in_use=" << m.heapInUse << " heap_free=" << m.heapFree
+              << " heap_mmap=" << m.heapMmap << "\n";
 }
 
 

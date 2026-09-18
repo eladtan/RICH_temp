@@ -18,6 +18,9 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
+#ifdef __linux__
+#include <malloc.h>
+#endif
 
 #ifdef RICH_MPI
 #include <mpi.h>
@@ -100,7 +103,7 @@ ForwardPostprocessResult RunGreyPostprocess(
             greyParams.withRandomWalk = cfg.randomWalk && !cfg.fluxSourceCompare;
             greyParams.rwMinCellOpticalDepth = 15;
             greyParams.withDDMC = cfg.ddmc;
-            greyParams.ddmcMinCellOpticalDepth = 15;
+            greyParams.ddmcMinCellOpticalDepth = cfg.ddmcMinCellOpticalDepth;
             greyParams.ddmcExternalSourceMinFaceOpticalDepth =
                 cfg.fluxSourceDDMCFaceOpticalDepth;
             greyParams.withMultigroupDDMC = false;
@@ -122,7 +125,7 @@ ForwardPostprocessResult RunGreyPostprocess(
             greyPhysics->setObserver(greyObserver);
             if(cfg.fluxSourceCompare)
                 ConfigureFluxSourceForCurrentDecomposition(
-                    cfg, runtime, *greyPhysics);
+                    cfg, runtime, *greyPhysics, *greyOpacity, false);
 
             auto greyPopControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Tessellation3D>>(tess);
 
@@ -195,7 +198,7 @@ ForwardPostprocessResult RunGreyPostprocess(
                     !greyAdaptive.scoreByCellID.empty();
                 size_t const greyPhotonsThisGen = greyFirstBurninThisGen ? 1
                     : (greyUniformBurninThisGen ? 3
-                       : (greyLearnedProbeThisGen ? 75
+                       : (greyLearnedProbeThisGen ? (cfg.volumeEmissionEnabled ? 10 : 75)
                           : (cfg.adaptiveSourceCells ? 1 : greyPhotonsPerCell)));
                 std::string greyPhase = "final";
                 if (greyFirstBurninThisGen)
@@ -221,34 +224,32 @@ ForwardPostprocessResult RunGreyPostprocess(
                                              greyAdaptiveActiveThisGen, rank);
 
                 IMCPostProcessControl postProcessControl;
-                if (greyAdaptiveActiveThisGen) {
+                if (greyAdaptiveActiveThisGen && greyFinalThisGen) {
+                    // The grey pass may use its own learned-cell packet budget.
+                    auto greyAllocationCfg = cfg;
+                    if (cfg.volumeEmissionLearnedPhotonsPerCellBudgetGrey > 0)
+                        greyAllocationCfg.volumeEmissionLearnedPhotonsPerCellBudget =
+                            cfg.volumeEmissionLearnedPhotonsPerCellBudgetGrey;
+                    SourceAllocationPlan const plan = BuildNeymanSourceAllocation(
+                        greyAdaptive.scoreByCellID, greyAllocationCfg, &runtime.fluxSourceCellIDs);
+                    ApplyNeymanAllocationToControl(postProcessControl, plan, cfg);
+                    PrintSourceAllocationPlan("Grey", plan, gen, rank);
+                } else if (greyAdaptiveActiveThisGen) {
                     postProcessControl.adaptiveCells.enabled = true;
                     postProcessControl.adaptiveCells.scores =
                         greyAdaptive.scoreByCellID;
-                    double const learnedMinFactorThisGen =
-                        greyLearnedProbeThisGen ? 1.0 : cfg.adaptiveSourceLearnedMinFactor;
-                    size_t const learnedMinPhotonsThisGen =
-                        greyFinalThisGen ? cfg.adaptiveSourceLearnedMinPhotons : 0;
-                    size_t const learnedMaxPhotonsThisGen =
-                        greyFinalThisGen ? cfg.adaptiveSourceLearnedMaxPhotons : 0;
-                    double const scorePowerThisGen =
-                        greyFinalThisGen ? cfg.adaptiveSourceScorePower : 1.0;
                     postProcessControl.adaptiveCells.strength =
                         cfg.adaptiveSourceStrength;
                     postProcessControl.adaptiveCells.maxFactor =
                         cfg.adaptiveSourceMaxFactor;
                     postProcessControl.adaptiveCells.learnedReserveFraction =
                         cfg.adaptiveSourceLearnedReserveFrac;
-                    postProcessControl.adaptiveCells.learnedMinFactor =
-                        learnedMinFactorThisGen;
+                    postProcessControl.adaptiveCells.learnedMinFactor = 1.0;
                     postProcessControl.adaptiveCells.observerBudgetMultiplier =
                         greyAdaptive.observerBudgetMultiplier;
-                    postProcessControl.adaptiveCells.learnedMinPhotons =
-                        learnedMinPhotonsThisGen;
-                    postProcessControl.adaptiveCells.learnedMaxPhotons =
-                        learnedMaxPhotonsThisGen;
-                    postProcessControl.adaptiveCells.scorePower =
-                        scorePowerThisGen;
+                    postProcessControl.adaptiveCells.learnedMinPhotons = 0;
+                    postProcessControl.adaptiveCells.learnedMaxPhotons = 0;
+                    postProcessControl.adaptiveCells.scorePower = 1.0;
                 }
                 if (greyFirstBurninThisGen) {
                     postProcessControl.emission.enabled = true;
@@ -263,7 +264,8 @@ ForwardPostprocessResult RunGreyPostprocess(
                     postProcessControl.emission.useLearnedScores = true;
                     postProcessControl.emission.includeUniformBase = false;
                     postProcessControl.emission.learnedBoostFactor = 1;
-                } else if (cfg.adaptiveSourceCells && greyFinalThisGen) {
+                } else if (cfg.adaptiveSourceCells && greyFinalThisGen &&
+                           !greyAdaptiveActiveThisGen) {
                     postProcessControl.emission.enabled = true;
                     postProcessControl.emission.useLearnedScores = true;
                     postProcessControl.emission.includeUniformBase = false;
@@ -274,13 +276,51 @@ ForwardPostprocessResult RunGreyPostprocess(
                     std::move(postProcessControl));
                 if (cfg.fluxSourceCompare)
                     ConfigureFluxSourceForCurrentDecomposition(
-                        cfg, runtime, *greyPhysics);
+                        cfg, runtime, *greyPhysics, *greyOpacity, false);
                 greyObserver->resetGenerationSourceCellEscapeStats();
+
+                if (cfg.volumeEmissionEnabled && greyPhysics->hasPostProcessVolumeEmission()) {
+                    double fraction = 1.0;
+                    if (greyBurninThisGen && runtime.volumeEmissionCells > 0) {
+                        double const wanted = static_cast<double>(cfg.volumeEmissionBurninPacketsTarget);
+                        double const full = static_cast<double>(greyPhotonsThisGen) *
+                                            static_cast<double>(runtime.volumeEmissionCells);
+                        fraction = std::clamp(wanted / std::max(1.0, full), 1e-6, 1.0);
+                    }
+                    greyPhysics->setPostProcessVolumeEmissionSubsample(fraction, static_cast<uint64_t>(gen) + 1);
+                    double const escapingReference = runtime.lastEscapingLuminosity > 0.0
+                        ? runtime.lastEscapingLuminosity : runtime.fluxSourceInjectedLuminosity;
+                    greyPhysics->setPostProcessExplorationMaxWeight(
+                        cfg.volumeEmissionExplorationWeightFraction * escapingReference * cfg.sourceDt);
+                }
 
                 greyPhysics->reseedRNG(static_cast<uint64_t>(rank + 87654321) * greyTotalGenerations + gen);
 
                 greyManager->getParticles().clear();
                 greyManager->step(cells, cfg.transportTime);
+                if (cfg.volumeEmissionEnabled && greyPhysics->hasPostProcessVolumeEmission()) {
+                    double volumeEnergy = greyPhysics->getLastVolumeEmissionEnergy();
+                    unsigned long long counts[2] = {
+                        static_cast<unsigned long long>(greyPhysics->getLastVolumeEmissionCells()),
+                        static_cast<unsigned long long>(greyPhysics->getLastVolumeEmissionSelectedCells())};
+#ifdef RICH_MPI
+                    MPI_Allreduce(MPI_IN_PLACE, &volumeEnergy, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+                    MPI_Allreduce(MPI_IN_PLACE, counts, 2, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+#endif
+                    if (rank == 0)
+                        std::cout << "Grey VOLUME_EMISSION gen=" << gen + 1
+                                  << " emitting_cells=" << counts[0]
+                                  << " selected_cells=" << counts[1]
+                                  << " volume_luminosity=" << volumeEnergy / cfg.sourceDt
+                                  << " face_luminosity=" << runtime.fluxSourceInjectedLuminosity
+                                  << " erg/s" << std::endl;
+                }
+#ifdef RICH_MPI
+                ReportGenerationMemory("Grey", gen + 1, rank, runtime.mpiSize, tess, greyManager->getParticles().size());
+#endif
+#ifdef __linux__
+                malloc_trim(0);
+#endif
                 IMCPostProcessGenerationDiagnostics const generationDiagnostics =
                     greyPhysics->getPostProcessGenerationDiagnostics();
 
@@ -307,8 +347,13 @@ ForwardPostprocessResult RunGreyPostprocess(
                         cfg, greyAdaptive, greyFinalThisGen);
                 }
                 auto greyUpdate = UpdateAdaptiveSourceScoresDistributed(
-                    greySourceStats, cfg, greyAdaptive, greyObserverQuality,
+                    greySourceStats,
+                    BuildLocalSourceCellEmission(
+                        cells, generationDiagnostics.sourcePhotonsPerCell),
+                    cfg, greyAdaptive, greyObserverQuality,
                     !greyBurninThisGen, rank, mpiSize);
+                if (cfg.sourceDt > 0.0 && greyUpdate.totalEscapedEnergy > 0.0)
+                    runtime.lastEscapingLuminosity = greyUpdate.totalEscapedEnergy / cfg.sourceDt;
                 std::vector<SphericalObserver::SourceCellEscapeStat>().swap(greySourceStats);
                 bool const greyIncludeGenerationInFinal = greyFinalThisGen;
                 PrintAdaptiveGenerationStats(
@@ -323,6 +368,14 @@ ForwardPostprocessResult RunGreyPostprocess(
                     greyFinalGenerationIndex, nGreyGens,
                     greyAdaptiveActiveThisGen, greyIncludeGenerationInFinal,
                     rank);
+                if (greyFinalThisGen && cfg.adaptiveSourceCells && cfg.adaptiveObserverEquity) {
+                    bool const printBlock =
+                        (greyFinalGenerationIndex + 1) % 5 == 0 ||
+                        greyFinalGenerationIndex + 1 == nGreyGens;
+                    PrintAdaptiveConvergenceReport(
+                        "Grey", cfg, greyObserverQuality, greyFinalGenerationIndex,
+                        nGreyGens, printBlock, rank);
+                }
                 if (rank == 0 && cfg.adaptiveSourceCells)
                     std::cout << "Grey learned cells after iteration " << (gen + 1)
                               << ": " << greyAdaptive.scoreByCellID.size() << std::endl;
@@ -396,6 +449,10 @@ ForwardPostprocessResult RunGreyPostprocess(
                     PrintVmRSS("grey_before_measured_lb", rank);
 
                     std::vector<double> greyWeightsForExchange;
+                    // Set on every rank once the mesh was rebuilt; a rank that received
+                    // no cells has an empty weight vector but must still rebuild its
+                    // physics and join the collectives below.
+                    bool meshRepartitioned = false;
                     imc_measured_lb::Parameters greyLBParamsThisPass =
                         greyLBParams;
 
@@ -480,11 +537,26 @@ ForwardPostprocessResult RunGreyPostprocess(
                             for (auto& w : greyLBWeights)
                                 w = std::pow(w, greyLBWeightCompression);
 
+                            // Release the pre-repartition transport objects before the
+                            // rebuild (the memory peak). The boundary's escaped energy is
+                            // folded into the observer first, since the boundary goes too.
+                            greyObserver->addBoxEscapeEnergy(greyBoundary->getEscapedEnergy());
+                            greyManager.reset();
+                            greyPhysics.reset();
+                            greyPopControl.reset();
+                            greyBoundary.reset();
+#ifdef __linux__
+                            malloc_trim(0);
+#endif
+                            PrintVmRSS("grey_after_release_old_physics", rank);
+
                             tess.BuildParallel(greyCurrentPoints, greyLBWeights);
+                            meshRepartitioned = true;
+                            tess.ShrinkToFit();
                         }
                     }
 
-                    if (!greyWeightsForExchange.empty()) {
+                    if (meshRepartitioned) {
                         MPI_exchange_data(tess, cells, false, 1, &runtime.dummyCell);
 
                         double greyDummyWeight =
@@ -511,11 +583,16 @@ ForwardPostprocessResult RunGreyPostprocess(
                             greyWeightsForExchange, greyLBWeightCompression,
                             false, MPI_COMM_WORLD);
 
+                        cells.shrink_to_fit();
                         extensives.resize(Ncells);
                         for (size_t i = 0; i < Ncells; ++i)
                             PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
+                        extensives.shrink_to_fit();
+#ifdef __linux__
+                        malloc_trim(0);
+#endif
 
-                        greyObserver->addBoxEscapeEnergy(greyBoundary->getEscapedEnergy());
+                        // Escaped energy was folded into the observer before the release.
                         greyBoundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
 
                         greyPhysics = std::make_shared<RadiationIMC>(
@@ -523,7 +600,7 @@ ForwardPostprocessResult RunGreyPostprocess(
                         greyPhysics->setObserver(greyObserver);
                         if(cfg.fluxSourceCompare)
                             ConfigureFluxSourceForCurrentDecomposition(
-                                cfg, runtime, *greyPhysics);
+                                cfg, runtime, *greyPhysics, *greyOpacity, false);
 
                         greyPopControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Tessellation3D>>(tess);
 

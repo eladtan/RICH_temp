@@ -186,6 +186,29 @@ void AddCommunicationMode(std::vector<Option>& options,
         }});
 }
 
+void AddFluxSourceSurfaceMode(std::vector<Option>& options,
+                              PostProcessIMC::FluxSourceSurfaceMode& target)
+{
+    using Mode = PostProcessIMC::FluxSourceSurfaceMode;
+    options.push_back(Option{
+        "flux-source.surface-mode", "grey|mg-innermost",
+        "CER surface: grey effective depth, or the innermost per-group depth.",
+        [&target](std::string const& text, std::string& error) {
+            if (text == "grey" || text == "gray")
+                target = Mode::Grey;
+            else if (text == "mg-innermost" || text == "multigroup-innermost")
+                target = Mode::MultigroupInnermost;
+            else {
+                error = "expected grey or mg-innermost";
+                return false;
+            }
+            return true;
+        },
+        [&target]() {
+            return std::string(target == Mode::MultigroupInnermost ? "mg-innermost" : "grey");
+        }});
+}
+
 void AddOpacityMode(std::vector<Option>& options, OpacityScaleMode& target)
 {
     options.push_back(Option{
@@ -237,6 +260,7 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddSize(options, "transport.generations", "Number of learning/transport generations.", c.transport.generations);
     AddBool(options, "transport.ddmc", "Enable DDMC acceleration.", c.transport.ddmc);
     AddBool(options, "transport.random-walk", "Enable random-walk acceleration.", c.transport.randomWalk);
+    AddDouble(options, "transport.ddmc-min-cell-optical-depth", "Per-group cell optical depth above which DDMC is used.", c.transport.ddmcMinCellOpticalDepth);
     AddBool(options, "transport.use-cell-velocities", "Include snapshot cell velocities.", c.transport.useCellVelocities);
     AddCommunicationMode(options, c.transport.communication);
     AddBool(options, "transport.compton.enabled", "Enable Compton transport.", c.transport.compton.enabled);
@@ -253,7 +277,20 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddDouble(options, "flux-source.thermalization-tau", "Flux-source thermalization optical depth.", c.fluxSource.thermalizationTau);
     AddSize(options, "flux-source.construction-rays", "Rays used to construct the source surface.", c.fluxSource.constructionRays);
     AddDouble(options, "flux-source.ddmc-face-optical-depth", "DDMC face optical-depth threshold.", c.fluxSource.ddmcFaceOpticalDepth);
+    AddFluxSourceSurfaceMode(options, c.fluxSource.surfaceMode);
+    AddBool(options, "volume-emission.enabled", "Thermal emission from cells outside the flux-source surface.", c.volumeEmission.enabled);
+    AddDouble(options, "volume-emission.cutoff-fraction", "Minimum cell luminosity as a fraction of the total emission.", c.volumeEmission.cutoffFraction);
+    AddSize(options, "volume-emission.burnin-packets-target", "Volume packets per burn-in generation (cell subsampling).", c.volumeEmission.burninPacketsTarget);
+    AddBool(options, "volume-emission.gate-groups", "Emit each group only outside its own thermalization surface (false: full spectrum everywhere outside the deep surface).", c.volumeEmission.gateGroups);
+    AddDouble(options, "volume-emission.exploration-weight-fraction", "Split exploration packets so none exceeds this fraction of the last generation's escaping energy (0 = one packet per cell).", c.volumeEmission.explorationWeightFraction);
+    AddBool(options, "volume-emission.burnin-exact", "Burn-in gives every emitting cell exactly the per-cell packet count (false: energy-proportional).", c.volumeEmission.burninExact);
+    AddSize(options, "volume-emission.learned-photons-per-cell-budget", "Average packets per learned volume cell per final generation.", c.volumeEmission.learnedPhotonsPerCellBudget);
+    AddSize(options, "volume-emission.learned-photons-per-cell-budget-grey", "Grey-pass average packets per learned volume cell per final generation (0 = same as MG).", c.volumeEmission.learnedPhotonsPerCellBudgetGrey);
+    AddSize(options, "volume-emission.learned-min-photons", "Minimum packets per learned volume cell.", c.volumeEmission.learnedMinPhotons);
+    AddSize(options, "volume-emission.learned-max-photons", "Maximum packets per learned volume cell.", c.volumeEmission.learnedMaxPhotons);
     AddOpacityMode(options, c.opacityScaling.mode);
+    AddDouble(options, "opacity-scaling.alpha-min", "Lower bound on the per-cell multigroup scale factor (0 = none).", c.opacityScaling.alphaMin);
+    AddDouble(options, "opacity-scaling.alpha-max", "Upper bound on the per-cell multigroup scale factor (0 = none).", c.opacityScaling.alphaMax);
 
     AddBool(options, "adaptive.source.enabled", "Learn source-cell allocation.", c.adaptive.source.enabled);
     AddSize(options, "adaptive.source.burnin-generations", "Compatibility burn-in generation count.", c.adaptive.source.burninGenerations);
@@ -266,6 +303,7 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddDouble(options, "adaptive.source.learned-min-factor", "Minimum learned-cell boost.", c.adaptive.source.learnedMinFactor);
     AddSize(options, "adaptive.source.learned-min-photons", "Minimum packets per learned cell.", c.adaptive.source.learnedMinPhotons);
     AddSize(options, "adaptive.source.learned-max-photons", "Maximum packets per learned cell.", c.adaptive.source.learnedMaxPhotons);
+    AddSize(options, "adaptive.source.learned-photons-per-cell-budget", "Average packets per learned cell per final generation.", c.adaptive.source.learnedPhotonsPerCellBudget);
     AddDouble(options, "adaptive.source.score-power", "Learned source score exponent.", c.adaptive.source.scorePower);
     AddDouble(options, "adaptive.source.weight-score-fraction", "Escaped-weight contribution to source score.", c.adaptive.source.weightScoreFraction);
 
@@ -273,6 +311,8 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddDouble(options, "adaptive.observer.extra-budget-fraction", "Extra packet budget for observer equity.", c.adaptive.observer.extraBudgetFraction);
     AddDouble(options, "adaptive.observer.target-effective-packets", "Target effective packets per observer.", c.adaptive.observer.targetEffectivePackets);
     AddDouble(options, "adaptive.observer.target-polarization-snr", "Target observer polarization SNR.", c.adaptive.observer.targetPolarizationSnr);
+    AddDouble(options, "adaptive.observer.target-polarization-sigma", "Target absolute polarization-degree uncertainty (0 uses the SNR target).", c.adaptive.observer.targetPolarizationSigma);
+    AddBool(options, "adaptive.observer.normalize-deficits", "Divide observer deficits by their median before clamping.", c.adaptive.observer.normalizeDeficits);
     AddDouble(options, "adaptive.observer.max-deficit", "Maximum observer allocation deficit.", c.adaptive.observer.maxDeficit);
     AddDouble(options, "adaptive.observer.deficit-ema", "Observer-deficit exponential averaging factor.", c.adaptive.observer.deficitEma);
 
