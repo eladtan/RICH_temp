@@ -1,0 +1,250 @@
+{
+  "date": "2026-09-16",
+  "allocation": 10185744,
+  "nodes": [
+    "d25g133",
+    "d25g135"
+  ],
+  "ranks": 4,
+  "component": {
+    "component": "/software/x86_64/5.14.0/openmpi/4.1.6/gcc/12.3.0/lib/openmpi/mca_op_avx.so",
+    "sha256": "767e163ede9d5c25113b88807323894b48061494215429c10412562954001ef8",
+    "vzeroupper_instructions": 0,
+    "vzeroall_instructions": 0
+  },
+  "counter_runs": {
+    "openmpi_ofi_counters": {
+      "simulation_seconds": 11.9078,
+      "cycles": 1039,
+      "ranks": [
+        {
+          "cycles:u": 42767975834,
+          "instructions:u": 43568249110,
+          "assists.sse_avx_mix:u": 88526561,
+          "assists.fp:u": 3407
+        },
+        {
+          "cycles:u": 51270931335,
+          "instructions:u": 93201566428,
+          "assists.sse_avx_mix:u": 70723267,
+          "assists.fp:u": 3407
+        },
+        {
+          "cycles:u": 51211609727,
+          "instructions:u": 93888012617,
+          "assists.sse_avx_mix:u": 70558589,
+          "assists.fp:u": 3407
+        },
+        {
+          "cycles:u": 51181604363,
+          "instructions:u": 91302802126,
+          "assists.sse_avx_mix:u": 82328983,
+          "assists.fp:u": 3407
+        }
+      ],
+      "profiled": true
+    },
+    "mpich_ofi_counters": {
+      "simulation_seconds": 6.81107,
+      "cycles": 1039,
+      "ranks": [
+        {
+          "cycles:u": 21375905840,
+          "instructions:u": 44549381845,
+          "assists.sse_avx_mix:u": 0,
+          "assists.fp:u": 3407
+        },
+        {
+          "cycles:u": 29782570354,
+          "instructions:u": 92635384884,
+          "assists.sse_avx_mix:u": 0,
+          "assists.fp:u": 3407
+        },
+        {
+          "cycles:u": 29784798853,
+          "instructions:u": 94057708754,
+          "assists.sse_avx_mix:u": 0,
+          "assists.fp:u": 3407
+        },
+        {
+          "cycles:u": 29696578918,
+          "instructions:u": 93289730945,
+          "assists.sse_avx_mix:u": 0,
+          "assists.fp:u": 3407
+        }
+      ],
+      "profiled": true
+    },
+    "openmpi_ofi_no_avx_counters": {
+      "simulation_seconds": 7.2543,
+      "cycles": 1039,
+      "ranks": [
+        {
+          "cycles:u": 22081558443,
+          "instructions:u": 43986522729,
+          "assists.sse_avx_mix:u": 0,
+          "assists.fp:u": 3407
+        },
+        {
+          "cycles:u": 31905976076,
+          "instructions:u": 89731960645,
+          "assists.sse_avx_mix:u": 0,
+          "assists.fp:u": 3407
+        },
+        {
+          "cycles:u": 31864404030,
+          "instructions:u": 92410025488,
+          "assists.sse_avx_mix:u": 0,
+          "assists.fp:u": 3407
+        },
+        {
+          "cycles:u": 31790172632,
+          "instructions:u": 90493420175,
+          "assists.sse_avx_mix:u": 0,
+          "assists.fp:u": 3407
+        }
+      ],
+      "profiled": true
+    }
+  },
+  "production_source_changes_during_diagnosis": {
+    "source/monte": [],
+    "source/utils/rma": []
+  },
+  "profile_commands": {
+    "openmpi_ofi": [
+      "mpirun",
+      "--prefix",
+      "/software/x86_64/5.14.0/openmpi/4.1.6/gcc/12.3.0",
+      "--mca",
+      "plm",
+      "rsh",
+      "--mca",
+      "pml",
+      "ucx",
+      "--mca",
+      "osc",
+      "ucx",
+      "-x",
+      "LD_LIBRARY_PATH",
+      "-x",
+      "OMP_NUM_THREADS=1",
+      "-x",
+      "OPENBLAS_NUM_THREADS=1",
+      "-x",
+      "UCX_TLS=all",
+      "-x",
+      "FI_PROVIDER=verbs",
+      "-x",
+      "BENCHMARK_CPUS=0,2",
+      "--host",
+      "d25g133:2,d25g135:2",
+      "--map-by",
+      "ppr:2:node",
+      "--bind-to",
+      "none",
+      "-np",
+      "4",
+      "/home/maorm/RICH/regression_tests/mpi_rma/timing/pin_rank.sh",
+      "env",
+      "PROFILE_PREFIX=/home/maorm/RICH/regression_tests/mpi_rma/timing/results/diagnosis/openmpi_ofi",
+      "/home/maorm/RICH/regression_tests/mpi_rma/timing/profile_rank.sh",
+      "/home/maorm/RICH/build/mpi_rma_validation/timing_openmpi/crooked_pipe_mpi_rma",
+      "400",
+      "2",
+      "10",
+      "--wall-layers",
+      "1",
+      "--wall-points",
+      "400",
+      "--random-walls",
+      "--boundary-photons",
+      "20",
+      "--final-time",
+      "1e-6",
+      "--energy-ledger",
+      "--manager",
+      "rdma",
+      "--rdma-engine",
+      "ofi",
+      "--output-probes",
+      "/home/maorm/RICH/regression_tests/mpi_rma/timing/results/diagnosis/openmpi_ofi_probes.csv"
+    ],
+    "mpich_ofi": [
+      "srun",
+      "--jobid=10185744",
+      "--mpi=pmi2",
+      "-N2",
+      "-n4",
+      "--ntasks-per-node=2",
+      "--distribution=block:block",
+      "--cpu-bind=none",
+      "/home/maorm/RICH/regression_tests/mpi_rma/timing/pin_rank.sh",
+      "env",
+      "PROFILE_PREFIX=/home/maorm/RICH/regression_tests/mpi_rma/timing/results/diagnosis/mpich_ofi",
+      "/home/maorm/RICH/regression_tests/mpi_rma/timing/profile_rank.sh",
+      "/home/maorm/RICH/build/mpi_rma_validation/timing_mpich/crooked_pipe_mpi_rma",
+      "400",
+      "2",
+      "10",
+      "--wall-layers",
+      "1",
+      "--wall-points",
+      "400",
+      "--random-walls",
+      "--boundary-photons",
+      "20",
+      "--final-time",
+      "1e-6",
+      "--energy-ledger",
+      "--manager",
+      "rdma",
+      "--rdma-engine",
+      "ofi",
+      "--output-probes",
+      "/home/maorm/RICH/regression_tests/mpi_rma/timing/results/diagnosis/mpich_ofi_probes.csv"
+    ],
+    "mpich_p2p": [
+      "srun",
+      "--jobid=10185744",
+      "--mpi=pmi2",
+      "-N2",
+      "-n4",
+      "--ntasks-per-node=2",
+      "--distribution=block:block",
+      "--cpu-bind=none",
+      "/home/maorm/RICH/regression_tests/mpi_rma/timing/pin_rank.sh",
+      "env",
+      "PROFILE_PREFIX=/home/maorm/RICH/regression_tests/mpi_rma/timing/results/diagnosis/mpich_p2p",
+      "/home/maorm/RICH/regression_tests/mpi_rma/timing/profile_rank.sh",
+      "/home/maorm/RICH/build/mpi_rma_validation/timing_mpich/crooked_pipe_mpi_rma",
+      "400",
+      "2",
+      "10",
+      "--wall-layers",
+      "1",
+      "--wall-points",
+      "400",
+      "--random-walls",
+      "--boundary-photons",
+      "20",
+      "--final-time",
+      "1e-6",
+      "--energy-ledger",
+      "--manager",
+      "p2p",
+      "--output-probes",
+      "/home/maorm/RICH/regression_tests/mpi_rma/timing/results/diagnosis/mpich_p2p_probes.csv"
+    ]
+  },
+  "counter_instructions": "Replace profile_rank.sh with stat_rank.sh and choose a separate PROFILE_PREFIX. For the Open MPI control, insert --mca op ^avx after mpirun. Run sequentially outside timing measurements.",
+  "original_runtime_timing_runs": 21,
+  "raw_profiles_directory": "/home/maorm/RICH/regression_tests/mpi_rma/timing/results/diagnosis",
+  "corrected_timing_runs": 42,
+  "validation": {
+    "max_relative_energy_residual": 6.43324e-09,
+    "max_probe_difference_keV": 0.0,
+    "cycles_per_run": 1039,
+    "all_checks_passed": true
+  }
+}
