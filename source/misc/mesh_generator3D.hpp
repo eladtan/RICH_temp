@@ -48,10 +48,21 @@ struct SphericalShellMeshDiagnostics
 \param nz Number of points along the z axis
 \param lower_left Lower left point
 \param upper_right Upper right point
+\param degeneracy_break Displacement of every point, as a fraction of the cell
+	size along each axis, by a deterministic hash of its lattice index. A perfect
+	lattice is a degenerate Delaunay input: the eight corners of each cube are
+	co-spherical, so the diagonal the cube is split along is a tie. A mesh that is
+	built once keeps whichever tie-break it got, but a mesh that is rebuilt every
+	cycle (any moving-mesh run) can have two ranks break the same tie differently
+	wherever the lattice survives intact, and the rank-mismatched ghost pattern
+	then fails MockMesh. A few millionths of a cell removes every tie and shifts
+	cell volumes by the same relative amount. Being a hash of (i, j, k) rather
+	than a random stream, the displacement is identical no matter which rank
+	generates which part of the lattice. 0 keeps the exact lattice.
 \return Set of three dimensional points
 */
 vector<Vector3D> CartesianMesh(std::size_t nx, std::size_t ny, std::size_t nz, Vector3D const& lower_left,
-	Vector3D const& upper_right);
+	Vector3D const& upper_right, double degeneracy_break = 0.0);
 
 /*!
 \brief Generates a random grid with uniform point density and a constant seed

@@ -3,6 +3,7 @@
 #include <boost/random/normal_distribution.hpp>
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include <array>
+#include <cstdint>
 #include <limits>
 #include <numeric>
 #ifdef RICH_MPI
@@ -16,6 +17,22 @@ namespace
 	bool inside_box(Vector3D const& p, Vector3D const& ll, Vector3D const& ur)
 	{
 		return p.x > ll.x && p.x < ur.x && p.y > ll.y && p.y < ur.y && p.z > ll.z && p.z < ur.z;
+	}
+
+	// Deterministic value in [-1, 1) from a lattice index and axis. A hash of
+	// the index, not a random stream, so the same point gets the same
+	// displacement no matter which rank generates it or in what order.
+	double lattice_hash(std::uint64_t i, std::uint64_t j, std::uint64_t k, std::uint64_t axis)
+	{
+		std::uint64_t x = i * 0x9E3779B97F4A7C15ULL ^ j * 0xC2B2AE3D27D4EB4FULL ^
+			k * 0x165667B19E3779F9ULL ^ (axis + 1) * 0xD6E8FEB86659FD93ULL;
+		// splitmix64 finaliser
+		x ^= x >> 30;
+		x *= 0xBF58476D1CE4E5B9ULL;
+		x ^= x >> 27;
+		x *= 0x94D049BB133111EBULL;
+		x ^= x >> 31;
+		return static_cast<double>(x >> 11) * (2.0 / 9007199254740992.0) - 1.0;
 	}
 
 	double shell_spacing_fraction(SphericalShellMeshOptions const& options, size_t n_angular)
@@ -168,11 +185,13 @@ std::vector<Vector3D> fibonacci_sphere_directions(size_t n)
 	return fibonacci_sphere_directions(n, false);
 }
 
- vector<Vector3D> CartesianMesh(std::size_t nx, std::size_t ny, std::size_t nz, Vector3D const& lower_left, Vector3D const& upper_right)
+ vector<Vector3D> CartesianMesh(std::size_t nx, std::size_t ny, std::size_t nz, Vector3D const& lower_left, Vector3D const& upper_right, double degeneracy_break)
 {
 	assert(upper_right.x > lower_left.x);
 	assert(upper_right.y > lower_left.y);
 	assert(upper_right.z > lower_left.z);
+	if(!(degeneracy_break >= 0.0 && degeneracy_break < 0.5))
+		throw UniversalError("CartesianMesh: degeneracy_break must be in [0, 0.5) of a cell");
 
 	vector<Vector3D> res;
 	const double dx = (upper_right.x - lower_left.x) /
@@ -187,6 +206,12 @@ std::vector<Vector3D> fibonacci_sphere_directions(size_t n)
 			{
 
 				Vector3D new_point = Vector3D(lower_left.x+0.5*dx+i*dx, lower_left.y+0.5*dy+j*dy, lower_left.z+0.5*dz+k*dz);
+				if(degeneracy_break > 0.0)
+				{
+					new_point.x += degeneracy_break * dx * lattice_hash(i, j, k, 0);
+					new_point.y += degeneracy_break * dy * lattice_hash(i, j, k, 1);
+					new_point.z += degeneracy_break * dz * lattice_hash(i, j, k, 2);
+				}
 				res.push_back(new_point);
 			}
 	return res;
