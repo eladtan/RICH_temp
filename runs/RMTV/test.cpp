@@ -13,11 +13,14 @@
 #include <memory>
 #include "misc/mesh_generator3D.hpp"
 #include "3D/tessellation/Voronoi3D.hpp"
+#include "3D/tessellation/voronoi/exception/MadVoroException.hpp"
 #include "newtonian/common/ideal_gas.hpp"
 #include "newtonian/three_dimensional/simulation/Simulation.hpp"
 #include "newtonian/three_dimensional/ManualTimeStep.hpp"
 #include "newtonian/three_dimensional/hdsim_3d.hpp"
 #include "newtonian/three_dimensional/eulerian_3d.hpp"
+#include "newtonian/three_dimensional/Lagrangian3D.hpp"
+#include "newtonian/three_dimensional/RoundCells3D.hpp"
 #include "newtonian/three_dimensional/Hllc3D.hpp"
 #include "newtonian/three_dimensional/LinearGauss3D.hpp"
 #include "newtonian/three_dimensional/ConditionActionFlux1.hpp"
@@ -28,10 +31,10 @@
 #include "3D/radiation/RadiationIMC.hpp"
 #include "monte/boundary/RigidBoundary.hpp"
 #include "monte/population/CombPopulationControl.hpp"
+#include "utils/arguments/ArgumentParser.hpp"
 #include "RMTVReference.hpp"
 #include "RMTVOpacity.hpp"
 #ifdef RICH_MPI
-#include "RMTVCostCalculator.hpp"
 #endif
 
 static_assert(ENERGY_GROUPS_NUM == 1, "Build RMTV with --energy_groups_num=1");
@@ -48,11 +51,13 @@ struct Options
            // misses the ~9x spread in steps per packet and left the real work
            // 35x imbalanced however often the balancer ran.
            costStepScale = 1.0, costParticleScale = 5.0;
-    std::string costModel = "counters";
     size_t lbInterval = 1;
     std::string mcManager = "rdma";
     double lbTolerance = 3.0;
+    std::string motion = "eulerian";
+    double roundChi = 1.25, roundEta = 0.02;
     unsigned seed = 12345;
+    double jitter = 0; // initial lattice displacement, fraction of dx per axis
     bool ddmc = true, initOnly = false, hydroOnly = false, radiationOnly = false, adaptiveRadiationDt = false,
          octant = false, help = false;
     std::string reference = "reference/shape.dat", output = "output";
@@ -61,217 +66,116 @@ struct Options
 Options parse(int argc, char **argv, int rank)
 {
     Options o;
-    for(int i = 1; i < argc; ++i)
+    ArgumentParser arguments("RMTV radiative shock benchmark (Reinicke & Meyer-ter-Vehn 1991)");
+    arguments.addOption<int>("n", o.n, "cells per Cartesian axis");
+    arguments.addOption<int>("quadrature", o.q, "quadrature order of the cell-averaged reference");
+    arguments.addOption<int>("photons", o.photons, "packets emitted per cell per step");
+    arguments.addOption<int>("initial-photons", o.initial, "packets per cell at t_start");
+    arguments.addOption<int>("max-photons", o.maxPhotons, "population control target per cell");
+    arguments.addOption<int>("max-steps", o.maxSteps, "cycle limit");
+    arguments.addOption<int>("dump", o.dump, "snapshot interval, in cycles");
+    arguments.addOption<unsigned>("seed", o.seed, "Monte Carlo seed");
+    arguments.addOption<double>("box", o.box, "box half width, in units of the length scale");
+    arguments.addOption<double>("rf-start", o.rf0, "heat front radius at t_start");
+    arguments.addOption<double>("rf-end", o.rf1, "heat front radius at t_end");
+    arguments.addOption<double>("cfl", o.cfl, "acoustic Courant factor");
+    arguments.addOption<double>("dt-fraction", o.dtFraction, "step bound as a fraction of the age");
+    arguments.addOption<double>("floor", o.floor, "temperature floor [K]");
+    arguments.addOption<double>("opacity-cap", o.cap, "macroscopic opacity bound [1/cm]");
+    arguments.addOption<double>("time-unit", o.scales.time, "time scale [s]");
+    arguments.addOption<double>("temperature-unit", o.scales.temperature, "temperature scale [K]");
+    arguments.addOption<double>("ddmc-min-tau", o.ddmcMinTau,
+                                "cells at or above this sigma*chord are transported by DDMC");
+    arguments.addOption<std::string>("motion", o.motion, "eulerian or lagrangian");
+    arguments.addOption<double>("jitter", o.jitter,
+                                "lattice degeneracy break, as a fraction of a cell; "
+                                "lagrangian defaults to 1e-6");
+    arguments.addOption<double>("round-chi", o.roundChi, "RoundCells3D correction strength");
+    arguments.addOption<double>("round-eta", o.roundEta, "RoundCells3D activation threshold");
+    arguments.addOption<std::string>("mc-manager", o.mcManager,
+                                     "MC transport backend: rdma, rdma-ibv, mpi-rma or p2p");
+    arguments.addOption<size_t>("lb-interval", o.lbInterval,
+                                "MC steps between load balance checks, 0 to never check");
+    arguments.addOption<double>("lb-tolerance", o.lbTolerance,
+                                "rebalance once the busiest rank exceeds this times the mean");
+    arguments.addOption<double>("cost-step-scale", o.costStepScale,
+                                "load balance weight per transport step");
+    arguments.addOption<double>("cost-particle-scale", o.costParticleScale,
+                                "load balance weight per packet");
+    arguments.addOption<std::string>("output", o.output, "output directory");
+    arguments.addOption<std::string>("reference", o.reference, "reference shape table");
+    arguments.addFlag("octant", "evolve one octant behind reflecting symmetry planes");
+    arguments.addFlag("imc", "transport every packet with IMC instead of DDMC");
+    arguments.addFlag("init-only", "write the initial state and stop");
+    arguments.addFlag("hydro-only", "no radiation transport");
+    arguments.addFlag("radiation-only", "no hydrodynamics");
+    arguments.addFlag("adaptive-radiation-dt", "also honour STORM's suggested step");
+
+    if(!arguments.parse(argc, argv))
     {
-        std::string key = argv[i];
-        if(key == "--octant")
+        if(rank == 0)
         {
-            o.octant = true;
-            continue;
+            std::cout << arguments.help() << std::endl;
         }
-        if(key == "--init-only")
-        {
-            o.initOnly = true;
-            continue;
-        }
-        if(key == "--hydro-only")
-        {
-            o.hydroOnly = true;
-            continue;
-        }
-        if(key == "--radiation-only")
-        {
-            o.radiationOnly = true;
-            continue;
-        }
-        if(key == "--imc")
-        {
-            o.ddmc = false;
-            continue;
-        }
-        if(key == "--adaptive-radiation-dt")
-        {
-            o.adaptiveRadiationDt = true;
-            continue;
-        }
-        if(key == "--help")
-        {
-            if(rank == 0)
-            {
-                std::cout
-                    << "RMTV: --n 32 --quadrature 8 --photons 32 --initial-photons 16 "
-                       "--max-photons 64\n"
-                    << "--box 1.2 --rf-start .45 --rf-end .9 --cfl .2 --dt-fraction .005\n"
-                    << "--time-unit 0.0256 --temperature-unit 937.5 --floor 1 --opacity-cap 1e8\n"
-                    << "--seed 12345 --max-steps 100000 --dump 20 --output output\n"
-                    << "--ddmc-min-tau 3 --cost-model counters --cost-step-scale 1 "
-                       "--cost-particle-scale 5\n"
-                    << "--reference reference/shape.dat --imc --init-only --hydro-only "
-                       "--radiation-only --adaptive-radiation-dt --octant\n"
-                    << "--mc-manager rdma --lb-interval 1 --lb-tolerance 3\n";
-            }
-            o.help = true;
-            return o;
-        }
-        if(i + 1 == argc)
-        {
-            throw std::runtime_error("Missing value for " + key);
-        }
-        const std::string v = argv[++i];
-        auto integer = [&]
-        {
-            size_t p = 0;
-            int r = std::stoi(v, &p);
-            if(p != v.size())
-            {
-                throw std::runtime_error("Invalid integer");
-            }
-            return r;
-        };
-        auto real = [&]
-        {
-            size_t p = 0;
-            double r = std::stod(v, &p);
-            if(p != v.size() || !std::isfinite(r))
-            {
-                throw std::runtime_error("Invalid number");
-            }
-            return r;
-        };
-        if(key == "--n")
-        {
-            o.n = integer();
-        }
-        else if(key == "--quadrature")
-        {
-            o.q = integer();
-        }
-        else if(key == "--photons")
-        {
-            o.photons = integer();
-        }
-        else if(key == "--initial-photons")
-        {
-            o.initial = integer();
-        }
-        else if(key == "--max-photons")
-        {
-            o.maxPhotons = integer();
-        }
-        else if(key == "--max-steps")
-        {
-            o.maxSteps = integer();
-        }
-        else if(key == "--dump")
-        {
-            o.dump = integer();
-        }
-        else if(key == "--seed")
-        {
-            int s = integer();
-            if(s < 0)
-            {
-                throw std::runtime_error("Negative seed");
-            }
-            o.seed = s;
-        }
-        else if(key == "--box")
-        {
-            o.box = real();
-        }
-        else if(key == "--rf-start")
-        {
-            o.rf0 = real();
-        }
-        else if(key == "--rf-end")
-        {
-            o.rf1 = real();
-        }
-        else if(key == "--cfl")
-        {
-            o.cfl = real();
-        }
-        else if(key == "--dt-fraction")
-        {
-            o.dtFraction = real();
-        }
-        else if(key == "--ddmc-min-tau")
-        {
-            o.ddmcMinTau = real();
-        }
-        else if(key == "--lb-tolerance")
-        {
-            o.lbTolerance = real();
-            if(!(o.lbTolerance >= 1))
-            {
-                throw std::runtime_error("--lb-tolerance must be at least 1");
-            }
-        }
-        else if(key == "--mc-manager")
-        {
-            o.mcManager = v;
-            if(o.mcManager != "rdma" && o.mcManager != "rdma-ibv" && o.mcManager != "mpi-rma" &&
-               o.mcManager != "p2p")
-            {
-                throw std::runtime_error("--mc-manager must be rdma, rdma-ibv, mpi-rma or p2p");
-            }
-        }
-        else if(key == "--lb-interval")
-        {
-            const int interval = integer();
-            if(interval < 0)
-            {
-                throw std::runtime_error("--lb-interval must be non-negative");
-            }
-            o.lbInterval = static_cast<size_t>(interval);
-        }
-        else if(key == "--cost-model")
-        {
-            o.costModel = v;
-            if(o.costModel != "counters" && o.costModel != "physics")
-            {
-                throw std::runtime_error("--cost-model must be counters or physics");
-            }
-        }
-        else if(key == "--cost-step-scale")
-        {
-            o.costStepScale = real();
-        }
-        else if(key == "--cost-particle-scale")
-        {
-            o.costParticleScale = real();
-        }
-        else if(key == "--floor")
-        {
-            o.floor = real();
-        }
-        else if(key == "--opacity-cap")
-        {
-            o.cap = real();
-        }
-        else if(key == "--time-unit")
-        {
-            o.scales.time = real();
-        }
-        else if(key == "--temperature-unit")
-        {
-            o.scales.temperature = real();
-        }
-        else if(key == "--output")
-        {
-            o.output = v;
-        }
-        else if(key == "--reference")
-        {
-            o.reference = v;
-        }
-        else
-        {
-            throw std::runtime_error("Unknown option: " + key);
-        }
+        o.help = true;
+        return o;
     }
-    if((o.hydroOnly && o.radiationOnly) || o.n < 4 || o.n % 2 || o.q < 2 || o.q % 2 || o.q > 32 || o.photons < 1 || o.initial < 1 ||
-        o.maxPhotons < 1 || o.maxSteps < 1 || o.dump < 1 ||
+
+    o.n = arguments.get<int>("n");
+    o.q = arguments.get<int>("quadrature");
+    o.photons = arguments.get<int>("photons");
+    o.initial = arguments.get<int>("initial-photons");
+    o.maxPhotons = arguments.get<int>("max-photons");
+    o.maxSteps = arguments.get<int>("max-steps");
+    o.dump = arguments.get<int>("dump");
+    o.seed = arguments.get<unsigned>("seed");
+    o.box = arguments.get<double>("box");
+    o.rf0 = arguments.get<double>("rf-start");
+    o.rf1 = arguments.get<double>("rf-end");
+    o.cfl = arguments.get<double>("cfl");
+    o.dtFraction = arguments.get<double>("dt-fraction");
+    o.floor = arguments.get<double>("floor");
+    o.cap = arguments.get<double>("opacity-cap");
+    o.scales.time = arguments.get<double>("time-unit");
+    o.scales.temperature = arguments.get<double>("temperature-unit");
+    o.ddmcMinTau = arguments.get<double>("ddmc-min-tau");
+    o.motion = arguments.get<std::string>("motion");
+    o.jitter = arguments.get<double>("jitter");
+    o.roundChi = arguments.get<double>("round-chi");
+    o.roundEta = arguments.get<double>("round-eta");
+    o.mcManager = arguments.get<std::string>("mc-manager");
+    o.lbInterval = arguments.get<size_t>("lb-interval");
+    o.lbTolerance = arguments.get<double>("lb-tolerance");
+    o.costStepScale = arguments.get<double>("cost-step-scale");
+    o.costParticleScale = arguments.get<double>("cost-particle-scale");
+    o.output = arguments.get<std::string>("output");
+    o.reference = arguments.get<std::string>("reference");
+    o.octant = arguments.get<bool>("octant");
+    o.ddmc = !arguments.get<bool>("imc");
+    o.initOnly = arguments.get<bool>("init-only");
+    o.hydroOnly = arguments.get<bool>("hydro-only");
+    o.radiationOnly = arguments.get<bool>("radiation-only");
+    o.adaptiveRadiationDt = arguments.get<bool>("adaptive-radiation-dt");
+
+    if(o.motion != "eulerian" && o.motion != "lagrangian")
+    {
+        throw std::runtime_error("--motion must be eulerian or lagrangian");
+    }
+    if(o.mcManager != "rdma" && o.mcManager != "rdma-ibv" && o.mcManager != "mpi-rma" &&
+       o.mcManager != "p2p")
+    {
+        throw std::runtime_error("--mc-manager must be rdma, rdma-ibv, mpi-rma or p2p");
+    }
+    if(!(o.jitter >= 0 && o.jitter < 0.5))
+    {
+        throw std::runtime_error("--jitter must be in [0, 0.5) of a cell");
+    }
+    if(!(o.lbTolerance >= 1))
+    {
+        throw std::runtime_error("--lb-tolerance must be at least 1");
+    }
+    if((o.hydroOnly && o.radiationOnly) || o.n < 4 || o.n % 2 || o.q < 2 || o.q % 2 || o.q > 32 ||
+        o.photons < 1 || o.initial < 1 || o.maxPhotons < 1 || o.maxSteps < 1 || o.dump < 1 ||
         !(o.rf0 > 0 && o.rf1 > o.rf0 && o.box > o.rf1) ||
         !(o.cfl > 0 && o.cfl <= 0.3 && o.dtFraction > 0 && o.dtFraction <= 0.1) ||
         !(o.floor > 0 && o.cap > 0 && o.scales.time > 0 && o.scales.temperature > 0))
@@ -284,6 +188,18 @@ Options parse(int argc, char **argv, int rank)
         if(!(v > 0) || !std::isfinite(v))
         {
             throw std::runtime_error("Unrepresentable physical scales");
+        }
+    }
+    // A moving mesh is re-tessellated every cycle, and the exact lattice is a
+    // degenerate Delaunay input whose ties two ranks can break differently.
+    // 1e-6 of a cell is eight orders above predicate round-off and shifts the
+    // initial cell averages by ~3e-6 relative, far below anything measured.
+    if(o.motion == "lagrangian" && o.jitter == 0)
+    {
+        o.jitter = 1e-6;
+        if(rank == 0)
+        {
+            std::cout << "RMTV: --motion lagrangian without --jitter; using --jitter 1e-6\n";
         }
     }
     return o;
@@ -332,9 +248,10 @@ void manifest(const Options &o, int rank, int size)
       << ",\"max_photons\":" << o.maxPhotons << ",\"ddmc\":" << (o.ddmc ? "true" : "false")
       << ",\"ddmc_min_cell_tau\":" << o.ddmcMinTau
       << ",\"mc_manager\":\"" << o.mcManager << '"'
-      << ",\"lb_tolerance\":" << o.lbTolerance
+      << ",\"lb_tolerance\":" << o.lbTolerance << ",\"jitter\":" << o.jitter
+      << ",\"motion\":\"" << o.motion << '"'
+      << ",\"round_chi\":" << o.roundChi << ",\"round_eta\":" << o.roundEta
       << ",\"lb_interval\":" << o.lbInterval
-      << ",\"cost_model\":\"" << o.costModel << '"'
       << ",\"cost_step_scale\":" << o.costStepScale
       << ",\"cost_particle_scale\":" << o.costParticleScale
       << ",\"hydro_only\":" << (o.hydroOnly ? "true" : "false")
@@ -355,12 +272,16 @@ void snapshot(const Options &o, const std::string &label, int rank, const Tessel
     }
     f << std::setprecision(17) << "# physical_age_s=" << age << "\n"
       << "x,y,z,volume,rho,vx,vy,vz,T,p,e,Er,rho_ref,vx_ref,vy_ref,vz_ref,T_ref,p_ref,e_ref\n";
-    const double dx = (o.octant ? 1 : 2) * o.box * o.scales.length / o.n;
     for(size_t i = 0; i < tess.GetPointNo(); ++i)
     {
         Vector3D x = tess.GetCellCM(i);
         const ComputationalCell3D &c = cells[i];
-        std::array<double, 6> a = ref.average(x.x, x.y, x.z, dx, age, o.scales, o.q, o.floor);
+        // Average the exact solution over a cube of the cell's own volume. On a
+        // uniform Cartesian mesh this is the cell exactly; on a moving mesh the
+        // cells compress, and a cube of the fixed initial size would compare
+        // against the wrong amount of material.
+        const double cellSize = std::cbrt(tess.GetVolume(i));
+        std::array<double, 6> a = ref.average(x.x, x.y, x.z, cellSize, age, o.scales, o.q, o.floor);
         const double vx = a[1] / a[0], vy = a[2] / a[0], vz = a[3] / a[0];
         const double e = a[4] / a[0] - 0.5 * (vx * vx + vy * vy + vz * vz);
         f << x.x << ',' << x.y << ',' << x.z << ',' << tess.GetVolume(i) << ',' << c.density << ','
@@ -370,6 +291,63 @@ void snapshot(const Options &o, const std::string &label, int rank, const Tessel
           << (rmtv::gamma - 1) * a[0] * e << ',' << e << '\n';
     }
 }
+
+// Keeps the generating points inside the box. For a point within half a cell of
+// a wall the wall-normal velocity component is dropped. On the octant's three
+// symmetry planes the exact velocity is already tangential, so this only
+// suppresses numerical drift across them; on the outer walls the gas is
+// quiescent at these ages. Without it a Lagrangian point can be pushed out of
+// the domain, which the rigid-wall ghost generator cannot represent.
+class BoxConfinedMotion3D : public PointMotion3D
+{
+    const PointMotion3D &base_;
+    double lower_, upper_;
+
+    void confine(const Tessellation3D &tess, std::vector<Vector3D> &velocities) const
+    {
+        const size_t n = std::min(velocities.size(), tess.GetPointNo());
+        for(size_t i = 0; i < n; ++i)
+        {
+            const Vector3D point = tess.GetMeshPoint(i);
+            const double guard = 0.5 * std::cbrt(tess.GetVolume(i));
+            double *component[3] = {&velocities[i].x, &velocities[i].y, &velocities[i].z};
+            const double position[3] = {point.x, point.y, point.z};
+            for(int d = 0; d < 3; ++d)
+            {
+                if(position[d] - lower_ < guard && *component[d] < 0)
+                {
+                    *component[d] = 0;
+                }
+                if(upper_ - position[d] < guard && *component[d] > 0)
+                {
+                    *component[d] = 0;
+                }
+            }
+        }
+    }
+
+  public:
+    BoxConfinedMotion3D(const PointMotion3D &base, double lower, double upper)
+        : base_(base), lower_(lower), upper_(upper)
+    {
+    }
+
+    void operator()(const Tessellation3D &tess, const vector<ComputationalCell3D> &cells,
+                    double time, vector<Vector3D> &res) const override
+    {
+        base_(tess, cells, time, res);
+        confine(tess, res);
+    }
+
+    // RoundCells3D does its centring correction here, so it has to be forwarded
+    // and the confinement reapplied afterwards.
+    void ApplyFix(const Tessellation3D &tess, const vector<ComputationalCell3D> &cells,
+                  double time, double dt, vector<Vector3D> &velocities) const override
+    {
+        base_.ApplyFix(tess, cells, time, dt, velocities);
+        confine(tess, velocities);
+    }
+};
 
 #ifdef RICH_MPI
 // RDMA by default: the transport moves few, small messages, and the previous
@@ -420,7 +398,10 @@ void run(const Options &o, int rank, int size)
     std::vector<Vector3D> points;
     if(rank == 0)
     {
-        points = CartesianMesh(o.n, o.n, o.n, Vector3D(lower, lower, lower), Vector3D(L, L, L));
+        // The generator breaks the lattice's Delaunay ties itself (see
+        // CartesianMesh); --jitter is the displacement as a fraction of a cell.
+        points = CartesianMesh(o.n, o.n, o.n, Vector3D(lower, lower, lower), Vector3D(L, L, L),
+                               o.jitter);
     }
 #ifdef RICH_MPI
     points = MPI_Spread(points, 0, MPI_COMM_WORLD);
@@ -439,12 +420,16 @@ void run(const Options &o, int rank, int size)
     for(size_t i = 0; i < initial.size(); ++i)
     {
         Vector3D x = tess.GetCellCM(i);
-        if(std::abs(tess.GetVolume(i) / (dx * dx * dx) - 1) > 1e-8)
+        // The reference is averaged over a cube of each cell's own volume, so
+        // a jittered lattice is fine; the uniformity check only guards the
+        // unjittered case against a mis-built mesh.
+        if(o.jitter == 0 && std::abs(tess.GetVolume(i) / (dx * dx * dx) - 1) > 1e-8)
         {
             throw std::runtime_error(
                 "Cell-average initialization requires uniform Cartesian Voronoi cells");
         }
-        std::array<double, 6> a = ref.average(x.x, x.y, x.z, dx, t0, o.scales, o.q, o.floor);
+        std::array<double, 6> a =
+            ref.average(x.x, x.y, x.z, std::cbrt(tess.GetVolume(i)), t0, o.scales, o.q, o.floor);
         ComputationalCell3D &c = initial[i];
         c.density = a[0];
         c.velocity = Vector3D(a[1], a[2], a[3]) / a[0];
@@ -483,7 +468,13 @@ void run(const Options &o, int rank, int size)
         actions;
     ConditionExtensiveUpdater3D eu(actions);
     ZeroForce3D force;
-    Eulerian3D motion;
+    Eulerian3D eulerianMotion;
+    Lagrangian3D lagrangianMotion;
+    RoundCells3D roundCells(lagrangianMotion, eos, o.roundChi, o.roundEta);
+    BoxConfinedMotion3D confinedMotion(roundCells, lower, L);
+    PointMotion3D &motion = (o.motion == "lagrangian")
+                                ? static_cast<PointMotion3D &>(confinedMotion)
+                                : static_cast<PointMotion3D &>(eulerianMotion);
     HDSim3D hydro(tess, cells, ext, eos, sim.getTracker(), motion, *tsc, flux, cu, eu, force,
         std::make_pair(ComputationalCell3D::tracerNames, ComputationalCell3D::stickerNames));
     std::shared_ptr<HydroStep> hydroStep = std::make_shared<HydroStep>(hydro, HydroStep::TIMEADVANCE_2);
@@ -531,16 +522,8 @@ void run(const Options &o, int rank, int size)
     // The hotspot here drifts back to a ~35x imbalance within a couple of steps,
     // so the core default of 10 leaves it stale most of the time.
     mc->setRebalanceInterval(o.lbInterval);
-    if(o.costModel == "physics")
-    {
-        mc->setCost(std::make_shared<RMTVCostCalculator>(opacity, o.costStepScale,
-                                                         o.costParticleScale));
-    }
-    else
-    {
-        mc->setCost(std::make_shared<IMCCostCalculator>(mc->getManager(), o.costStepScale,
-                                                        o.costParticleScale));
-    }
+    mc->setCost(std::make_shared<IMCCostCalculator>(mc->getManager(), o.costStepScale,
+                                                    o.costParticleScale));
     sim.addMigrationBuffer(mc->getManager()->GetCellsStepsCounters());
     sim.addMigrationBuffer(mc->getManager()->GetBeginningParticleCount());
 #endif
@@ -662,42 +645,6 @@ void run(const Options &o, int rank, int size)
         Tboundary = maximum(Tboundary);
         double ddmcSteps = sum(physics->getDDMCStepCount()),
                ddmcLeaks = sum(physics->getDDMCLeakCount());
-#ifdef RICH_MPI
-        // Load-balance diagnostic. The balancer splits cells by the weights the
-        // cost model predicts, but the work actually done is the per-cell step
-        // count. Comparing the two imbalances says which of the three failure
-        // modes we are in: model blind to the hotspot (model flat, actual peaked),
-        // balancer failing to act on a correct model (both peaked), or a single
-        // cell holding more than a rank's share (hottest cell above 1/ranks).
-        {
-            const std::vector<size_t> &cellSteps = mc->getManager()->GetCellsStepsCounters();
-            const std::vector<size_t> &cellParticles = mc->getManager()->GetBeginningParticleCount();
-            double rankSteps = 0, rankModel = 0, hottestCellSteps = 0, hottestCellModel = 0;
-            const size_t counted = std::min({tess.GetPointNo(), cellSteps.size(), cellParticles.size()});
-            for(size_t i = 0; i < counted; ++i)
-            {
-                const double steps = static_cast<double>(cellSteps[i]);
-                const double weight = 1 + steps * o.costStepScale +
-                                      static_cast<double>(cellParticles[i]) * o.costParticleScale;
-                rankSteps += steps;
-                rankModel += weight;
-                hottestCellSteps = std::max(hottestCellSteps, steps);
-                hottestCellModel = std::max(hottestCellModel, weight);
-            }
-            const double maxRankSteps = maximum(rankSteps), totalSteps = sum(rankSteps);
-            const double maxRankModel = maximum(rankModel), totalModel = sum(rankModel);
-            const double peakCellSteps = maximum(hottestCellSteps);
-            const double peakCellModel = maximum(hottestCellModel);
-            if(rank == 0 && totalSteps > 0 && totalModel > 0)
-            {
-                std::cout << "LB check: actual max/avg=" << maxRankSteps * size / totalSteps
-                          << " model max/avg=" << maxRankModel * size / totalModel
-                          << " hottest_cell_share=" << peakCellSteps / totalSteps
-                          << " model_hottest_cell_share=" << peakCellModel / totalModel
-                          << " ideal_share=" << 1.0 / size << std::endl;
-            }
-        }
-#endif
         if(sim.GetCycle() == 0)
         {
             E0 = E + Er;
@@ -731,7 +678,7 @@ void run(const Options &o, int rank, int size)
         {
             const auto &c = cells[i];
             double cs = std::sqrt(rmtv::gamma * c.pressure / c.density);
-            dt = std::min(dt, o.cfl * dx /
+            dt = std::min(dt, o.cfl * std::cbrt(tess.GetVolume(i)) /
                                   (std::abs(c.velocity.x) + std::abs(c.velocity.y) +
                                    std::abs(c.velocity.z) + 3 * cs));
         }
@@ -852,6 +799,14 @@ int main(int argc, char **argv)
     catch(const UniversalError &e)
     {
         reportError(e);
+        code = 1;
+    }
+    // MadVoroException does not derive from std::exception, so without this the
+    // tessellation's own diagnostics are lost to terminate().
+    catch(const MadVoro::Exception::MadVoroException &e)
+    {
+        std::cerr << "RMTV rank " << rank << " MadVoro: " << e.getErrorMessage() << '\n';
+        MadVoro::Exception::reportError(e, std::cerr);
         code = 1;
     }
     catch(const std::exception &e)

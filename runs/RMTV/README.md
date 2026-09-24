@@ -119,14 +119,32 @@ material heat-capacity ratio by four and multiplies optical depth by four. Do no
   in IMC costs `~tau^2` effective scatters per crossing on a few cells that no
   load balancer can split; with the 15 threshold those cells took >90% of the
   MC wall time at n=48. `config.json` records `ddmc_min_cell_tau`.
-- The mesh and MPI decomposition remain fixed. Remote material ghost states
-  are refreshed after radiation before the next hydro reconstruction. The MC
-  transport uses the RDMA (`--mc-manager`, default `rdma`, auto-selecting the
-  one-sided backend) rather than the P2P
-  backend, and the submit scripts no longer pin `OMPI_MCA_pml=ob1` or
-  `OMPI_MCA_btl=self,vader,tcp`, which had confined traffic to TCP. Moving
-  meshes, AMR, and restart are outside
-  this first implementation.
+- `--motion eulerian` (default) keeps the mesh fixed. `--motion lagrangian`
+  moves the points with the gas (`Lagrangian3D` regularised by `RoundCells3D`,
+  `--round-chi`/`--round-eta`), with the wall-normal velocity dropped for points
+  within half a cell of the octant planes or the outer walls. At n=48 the moving
+  mesh puts the shock peak on the reference shell (Eulerian is one cell short),
+  cuts L1 density from 0.078 to 0.050 and L1 temperature from 0.048 to 0.019 —
+  better than Eulerian n=96 at a ninth of the cost. The reference is averaged
+  over a cube of each cell's own volume and the CFL uses each cell's own size,
+  so both stay valid as cells compress.
+- A perfect Cartesian lattice is a degenerate Delaunay input (the eight corners
+  of every cube are co-spherical). A mesh built once keeps its tie-breaks, but a
+  moving mesh is re-tessellated every cycle, and where the lattice survives
+  intact (the cold exterior) two ranks can break the same tie differently; the
+  mismatched ghost pattern then fails `MockMesh` on the next load-balance switch
+  with "received from an unexpected rank" (any rank count above two). The
+  Cartesian generator therefore takes a `degeneracy_break` displacement, exposed
+  here as `--jitter` (fraction of a cell, hashed from the lattice index so it is
+  identical on every rank). `--motion lagrangian` defaults it to `1e-6`; Eulerian
+  keeps the exact lattice. `config.json` records `motion`, `jitter`, `round_chi`,
+  `round_eta`.
+- Remote material ghost states are refreshed after radiation before the next
+  hydro reconstruction. The MC transport uses the RDMA (`--mc-manager`, default
+  `rdma`, auto-selecting the one-sided backend) rather than the P2P backend, and
+  the submit scripts no longer pin `OMPI_MCA_pml=ob1` or
+  `OMPI_MCA_btl=self,vader,tcp`, which had confined traffic to TCP. AMR and
+  restart are outside this implementation.
 
 ## Build and run
 
