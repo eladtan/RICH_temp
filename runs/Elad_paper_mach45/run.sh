@@ -29,7 +29,7 @@ Np="${NP:-4000}"
 parameter_file="$RICH_OUTPUT_DIR/mach45_parameters.txt"
 mesh_dx_cm="$(awk -v n="$Np" "BEGIN {printf \"%.17g\", 500.0 / n}")"
 total_initial_particles="$((Np * 50))"
-total_new_photons_per_step="$((Np * 25))"
+total_new_photons_per_step="$((Np * 12))"
 nominal_population_control_slots="$((Np * 100))"
 {
     printf "%s\n" "# Mach45 launch parameters"
@@ -66,7 +66,7 @@ nominal_population_control_slots="$((Np * 100))"
     printf "%s\n" "timestep_ramp_factor=1.01"
     printf "%s\n" "dump_interval_cycles=50"
     printf "%s\n" "vtk_interval_cycles=200"
-    printf "%s\n" "new_photons_per_cell=25"
+    printf "%s\n" "new_photons_per_cell=12"
     printf "%s\n" "max_photons_per_cell=100"
     printf "%s\n" "initial_particles_per_cell=50"
     printf "%s\n" "boundary_photons_per_cell=50"
@@ -80,13 +80,14 @@ nominal_population_control_slots="$((Np * 100))"
     printf "%s\n" "random_walk=false"
     printf "%s\n" "energy_boundary_min=0.0"
     printf "%s\n" "energy_boundary_max=1.0e30"
-    printf "%s\n" "population_control_comb_parameter=10"
+    printf "%s\n" "population_control_comb_parameter=5"
     printf "%s\n" "manager=new-rdma-auto"
     printf "%s\n" "profile_file=mach45_analytic.dat"
 } > "$parameter_file"
 echo "Simulation parameters: $parameter_file"
 
 exec mpirun -np "${SLURM_NTASKS:-64}" ./rich \
-    "$Np" "$run_prefix" 25 100 \
+    "$Np" "$run_prefix" 12 100 \
+    --ncells "$Np" \
     --profile mach45_analytic.dat \
     --manager new-rdma-auto
