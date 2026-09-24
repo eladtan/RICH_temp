@@ -1263,7 +1263,7 @@ Energy conservation (rel.) & 0.000000e+00 & $ < 10^{-8}$ & {\color{green!60!blac
 \label{sec:densmore}
 
 \subsection{Densmore 2012 Heterogeneous Step-Opacity (Monte Carlo IMC)}
-\label{sec:desmore2012_mc}
+\label{sec:densmore2012_mc}
 
 \subsubsection*{Description}
 The first heterogeneous test problem from Densmore et al.\ \cite{densmore2012} exercises the Monte Carlo Implicit Monte Carlo (IMC) radiation transport solver with frequency-dependent opacities in a two-material slab geometry. The domain contains an optically thin region ($x < 2$~cm, $\sigma_0 = 10$~keV$^{7/2}$/cm) and an optically thick region ($x \ge 2$~cm, $\sigma_0 = 1000$~keV$^{7/2}$/cm), with a Planck source at 1~keV driving radiation from the left boundary.
@@ -1316,18 +1316,18 @@ $T_{\mathrm{gas}}$ $L_1$ [keV] & 1.59830242e-02 & 0.05 & {\color{green!60!black}
 \subsubsection*{Plots}
 \begin{figure}[htbp]
   \centering
-  \includegraphics[width=0.95\textwidth]{plots/desmore2012_mc.pdf}
+  \includegraphics[width=0.95\textwidth]{plots/densmore2012_mc.pdf}
   \caption{Densmore 2012 heterogeneous step-opacity at $t = 1$~ns: RICH MPI MC without random walk (black circles), RICH serial MC with random walk (red crosses), and digitized reference from Figure~4 of Densmore et al.\ (2012) (blue line).}
-  \label{fig:desmore2012_mc}
+  \label{fig:densmore2012_mc}
 \end{figure}
 
 \newpage
 
 \subsection{Densmore 2012 Heterogeneous Step-Opacity (Serial MC, Random Walk)}
-\label{sec:desmore2012_mc_serial}
+\label{sec:densmore2012_mc_serial}
 
 \subsubsection*{Description}
-The same heterogeneous problem as \texttt{desmore2012\_mc} but run serially with the random walk acceleration enabled. This exercises the serial (non-MPI) execution path and RW acceleration of the Monte Carlo IMC solver.
+The same heterogeneous problem as \texttt{densmore2012\_mc} but run serially with the random walk acceleration enabled. This exercises the serial (non-MPI) execution path and RW acceleration of the Monte Carlo IMC solver.
 
 \textbf{Code and physics aspects verified:}
 \begin{itemize}
@@ -1336,7 +1336,7 @@ The same heterogeneous problem as \texttt{desmore2012\_mc} but run serially with
 \end{itemize}
 
 \subsubsection*{Initial Conditions}
-Identical to \texttt{desmore2012\_mc}: 256 cells, $x \in [0,\,3]$~cm, $\sigma_0 = 10 / 1000$~keV$^{7/2}$/cm, $T_0 = 1$~eV, $t_{\mathrm{end}} = 1$~ns, $\Delta t = 5 \times 10^{-12}$~s.
+Identical to \texttt{densmore2012\_mc}: 256 cells, $x \in [0,\,3]$~cm, $\sigma_0 = 10 / 1000$~keV$^{7/2}$/cm, $T_0 = 1$~eV, $t_{\mathrm{end}} = 1$~ns, $\Delta t = 5 \times 10^{-12}$~s.
 
 \subsubsection*{Boundary Conditions}
 Left boundary: isotropic Planck source at $T = 1$~keV. Right boundary: reflective.
@@ -1348,7 +1348,7 @@ Eulerian (fixed mesh), no hydrodynamics.
 Serial (single core).
 
 \subsubsection*{Pass Criteria}
-Same as \texttt{desmore2012\_mc}: $L_1 = \mathrm{mean}(|T_{\mathrm{sim}} - T_{\mathrm{ref}}|) \le 0.05$~keV.
+Same as \texttt{densmore2012\_mc}: $L_1 = \mathrm{mean}(|T_{\mathrm{sim}} - T_{\mathrm{ref}}|) \le 0.05$~keV.
 
 \subsubsection*{Achieved Results}
 \begin{table}[htbp]
