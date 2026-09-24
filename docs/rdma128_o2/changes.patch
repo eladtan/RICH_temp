@@ -1,0 +1,33 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -294,8 +294,7 @@
+   # contraction setting fails mesh construction on Crooked Pipe.
+   target_compile_options(storm INTERFACE
+     $<$<COMPILE_LANGUAGE:CXX>:-march=x86-64-v3>
+-    $<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off>
+-    $<$<AND:$<COMPILE_LANGUAGE:CXX>,$<CONFIG:Release>>:-O3>)
++    $<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off>)
+   target_compile_definitions(storm INTERFACE STORM_CPU_VECTOR_INTERSECTION)
+ endif()
+ if(OpenMP_CXX_FOUND)
+--- a/examples/crooked_pipe/README.md
++++ b/examples/crooked_pipe/README.md
+@@ -156,8 +156,9 @@
+ ## Optional CPU transport optimization
+ 
+ For CPU nodes supporting x86-64-v3 (including AVX2), configure STORM with
+-`-DSTORM_OPTIMIZE_CPU_TRANSPORT=ON`. This enables release `-O3`, x86-64-v3
+-instructions, and a four-face vector intersection loop. Floating-point
++`-DSTORM_OPTIMIZE_CPU_TRANSPORT=ON`. This enables x86-64-v3 instructions
++and a four-face vector intersection loop while retaining the configured
++optimization level (standalone release builds use `-O2`). Floating-point
+ contraction is explicitly disabled: the architecture-tuned build with the
+ compiler's default contraction setting failed Voronoi mesh construction.
+ Fast math and approximate reciprocals are not enabled. The option is off by
+@@ -175,4 +176,5 @@
+ then build and run `storm_cpu_intersection_test`. The test compares 800,000
+ scalar/vector intersections, including grazing, parallel, slab, and corner-hit
+ cases. The follow-up benchmark and review are recorded in the RICH workspace at
+-`docs/rdma128_followup/`.
++`docs/rdma128_followup/`; the subsequent `-O2` comparison is in
++`docs/rdma128_o2/`.

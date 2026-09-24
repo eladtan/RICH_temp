@@ -1,0 +1,38 @@
+{
+  "baseline1": {
+    "total_seconds": 80.307,
+    "cycles": 120,
+    "cycle_seconds": 76.1702,
+    "reduction_percent_vs_baseline_median": 0.5017841213202479
+  },
+  "tuned1": {
+    "total_seconds": 77.285,
+    "cycles": 120,
+    "cycle_seconds": 73.1441,
+    "reduction_percent_vs_baseline_median": 4.245960947566663
+  },
+  "protocol1": {
+    "total_seconds": 79.456,
+    "cycles": 120,
+    "cycle_seconds": 75.1027,
+    "reduction_percent_vs_baseline_median": 1.5561502626623036
+  },
+  "scheduling1": {
+    "total_seconds": 80.757,
+    "cycles": 120,
+    "cycle_seconds": 76.6554,
+    "reduction_percent_vs_baseline_median": -0.05575379125781765
+  },
+  "tuned2": {
+    "total_seconds": 79.832,
+    "cycles": 120,
+    "cycle_seconds": 75.7115,
+    "reduction_percent_vs_baseline_median": 1.0902963623748763
+  },
+  "baseline2": {
+    "total_seconds": 81.117,
+    "cycles": 120,
+    "cycle_seconds": 76.9909,
+    "reduction_percent_vs_baseline_median": -0.5017841213202479
+  }
+}

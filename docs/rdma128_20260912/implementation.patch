@@ -1,0 +1,967 @@
+--- before/CMakeLists.txt
++++ after/CMakeLists.txt
+@@ -390,6 +390,12 @@
+   add_subdirectory(examples)
+ endif()
+ 
++option(STORM_BUILD_RDMA_TESTS "Build fixed-step RDMA protocol tests" OFF)
++if(STORM_BUILD_RDMA_TESTS AND STORM_WITH_MPI)
++  add_executable(storm_rdma_fixed_queue_test tests/rdma_fixed_queue_test.cpp)
++  target_link_libraries(storm_rdma_fixed_queue_test PRIVATE storm)
++endif()
++
+ if(BUILD_TESTING)
+   add_executable(storm_comb_rng_test tests/comb_rng_test.cpp)
+   target_link_libraries(storm_comb_rng_test PRIVATE storm)
+--- before/manager/MonteCarloConfig.hpp
++++ after/manager/MonteCarloConfig.hpp
+@@ -41,6 +41,14 @@
+     // Bound one local compute slice so the host returns regularly to MPI/RMA
+     // progress.  This is also the initial host-to-device packet batch size.
+     size_t localTransportBatchSize    = 4096;
++    // Fixed allocations during transport; growth and shrinking happen only
++    // after the previous step has completed on every rank.
++    bool rdmaFixedStepQueues          = false;
++    size_t rdmaFixedQueueMaxSize      = 65536;
++    bool fairReceiveScheduling       = false;
++    size_t localTransportEventBudget  = 65536;
++    // Maximum residence time of a partial outgoing batch (0 disables).
++    size_t sendBufferMaxAgeMicroseconds = 0;
+ #ifdef STORM_WITH_GPU
+     // Events per particle per device wave. A wavefront retires only when its
+     // slowest lane stops, so a long cap makes thin lanes idle behind thick
+--- before/manager/MonteCarloLifecycle.hpp
++++ after/manager/MonteCarloLifecycle.hpp
+@@ -256,6 +256,7 @@
+         particle.steps = 0;
+     };
+ 
++    this->engine->BeginTransport();
+     this->engine->VisitLocal(initializeParticle);
+     for(std::vector<MCParticle> &particles : this->detachedRankParticles)
+     {
+@@ -493,6 +494,7 @@
+         }
+     }
+ 
++    this->engine->EndTransport();
+     this->engine->FinishCounters();
+ #ifdef STORM_WITH_GPU
+     if(this->gpuTransportExecutor)
+--- before/manager/MonteCarloManager.hpp
++++ after/manager/MonteCarloManager.hpp
+@@ -284,6 +284,8 @@
+     bool completionDone = false;
+     std::vector<std::vector<MCParticle>> detachedRankParticles;
+     std::vector<rank_t> activeRanks, nextActiveRanks;
++    std::vector<unsigned char> activeRankListed;
++    size_t hostTransportVisit = 0;
+     size_t activeRankScanCursor = 0, activeRankScanRemaining = 0;
+ #ifdef STORM_WITH_GPU
+     std::unique_ptr<gpu::KokkosLocalTransportExecutor> gpuTransportExecutor;
+--- before/manager/MonteCarloTransport.hpp
++++ after/manager/MonteCarloTransport.hpp
+@@ -685,6 +685,9 @@
+     std::vector<rank_t> &nextActiveRankList = this->nextActiveRanks;
+ 
+     nextActiveRankList.clear();
++#if defined(STORM_DEBUG) && defined(STORM_WITH_MPI)
++    ++this->hostTransportVisit;
++#endif
+     bool completedNeighborSweep = true;
+     auto hasDetachedParticles = [this](rank_t rank)
+     {
+@@ -703,8 +706,18 @@
+     }
+ #endif
+ 
+-    if(currentActiveRanks.empty() and scanForHostTransport)
+-    {
++    if((currentActiveRanks.empty() or this->config.fairReceiveScheduling) and scanForHostTransport)
++    {
++        this->activeRankListed.assign(this->sizeWorld, 0);
++        for(rank_t rank : currentActiveRanks) this->activeRankListed[rank] = 1;
++        auto activate = [&](rank_t rank)
++        {
++            if(not this->activeRankListed[rank])
++            {
++                this->activeRankListed[rank] = 1;
++                currentActiveRanks.push_back(rank);
++            }
++        };
+         size_t neighborsNum = this->neighbors.size();
+         if(neighborsNum > 0 and (fullNeighborSweep or this->activeRankScanRemaining == 0))
+         {
+@@ -720,13 +733,13 @@
+             rank_t rank = this->neighbors[i];
+             if(hasDetachedParticles(rank))
+             {
+-                currentActiveRanks.push_back(rank);
++                activate(rank);
+                 continue;
+             }
+             size_t len = this->engine->LocalSize(rank);
+             if(len)
+             {
+-                currentActiveRanks.push_back(rank);
++                activate(rank);
+             }
+         }
+         if(neighborsNum > 0)
+@@ -739,11 +752,13 @@
+         {
+             if(hasDetachedParticles(this->rankWorld) or this->engine->LocalSize(this->rankWorld) != 0)
+             {
+-                currentActiveRanks.push_back(this->rankWorld);
+-            }
+-        }
+-    }
+-
++                activate(this->rankWorld);
++            }
++        }
++    }
++
++    if(this->config.fairReceiveScheduling and currentActiveRanks.size() > 1)
++        std::rotate(currentActiveRanks.begin(), currentActiveRanks.begin() + 1, currentActiveRanks.end());
+     bool isEmpty = true;
+     size_t activeRanksNum = currentActiveRanks.size();
+ 
+@@ -798,6 +813,8 @@
+             }
+ #endif // STORM_WITH_GPU
+ 
++            size_t eventsRemaining = this->config.fairReceiveScheduling ?
++                std::max<size_t>(1, this->config.localTransportEventBudget) : std::numeric_limits<size_t>::max();
+             auto processParticle = [&](MCParticle &particle, size_t particleIndex)
+             {
+                 bool removeCurrent = false;
+@@ -806,9 +823,9 @@
+                 try
+                 {
+ #if defined(STORM_DEBUG) && defined(STORM_WITH_MPI)
+-                    if(particle.lastSeen == this->iteration and particle.lastSeenRank == this->rankWorld)
++                    if(particle.lastSeen == this->hostTransportVisit and particle.lastSeenRank == this->rankWorld)
+                     {
+-                        STORMError eo("Particle was already handled in this iteration");
++                        STORMError eo("Particle was already handled in this transport pass");
+                         eo.addEntry("My Rank", this->rankWorld);
+                         eo.addEntry("Particle", particle);
+                         eo.addEntry("Iteration", this->iteration);
+@@ -818,7 +835,7 @@
+                         eo.addEntry("In List Index (2)", particleIndex);
+                         throw eo;
+                     }
+-                    particle.lastSeen = this->iteration;
++                    particle.lastSeen = this->hostTransportVisit;
+                     particle.lastSeenRankBuf = rank;
+                     particle.lastSeenRank = this->rankWorld;
+                     particle.lastSeenIndex = particleIndex;
+@@ -829,6 +846,10 @@
+                     constexpr size_t stuckParticleWarnInterval = 256 * 1024;
+                     while(true)
+                     {
++                        // Suspend only between complete physics/events. Keep
++                        // the particle, RNG state and remaining time in place.
++                        if(eventsRemaining == 0) return false;
++                        --eventsRemaining;
+                         ++progressStepCounter;
+                         if((progressStepCounter % communicationProgressInterval) == 0)
+                         {
+@@ -1059,13 +1080,15 @@
+                 }
+ 
+                 assert(removeCurrent);
++                return removeCurrent;
+             };
+             const size_t particleCount = std::min(std::max<size_t>(1, this->config.localTransportBatchSize), localParticles.size());
+             for(size_t processed = 0; processed < particleCount; ++processed)
+             {
+                 const size_t particleIndex = localParticles.size() - 1;
+-                processParticle(localParticles.back(), particleIndex);
++                if(not processParticle(localParticles.back(), particleIndex)) break;
+                 localParticles.pop_back();
++                if(eventsRemaining == 0) break;
+             }
+ 
+             if(not localParticles.empty())
+--- before/manager/communication/CommunicationEngine.hpp
++++ after/manager/communication/CommunicationEngine.hpp
+@@ -26,6 +26,8 @@
+     using MCParticle = Particle<T>;
+     virtual ~CommunicationEngine() = default;
+     virtual void Prepare() = 0;
++    virtual void BeginTransport() {}
++    virtual void EndTransport() {}
+     virtual void Progress() = 0;
+     // Cheap network polling between compute slices; full maintenance stays in Progress.
+     virtual void Poll()
+--- before/manager/communication/RDMACommunicationEngine.hpp
++++ after/manager/communication/RDMACommunicationEngine.hpp
+@@ -4,6 +4,7 @@
+ #include <algorithm>
+ #include <cassert>
+ #include <cmath>
++#include <chrono>
+ #include <exception>
+ #include <sstream>
+ #include <boost/container/flat_set.hpp>
+@@ -68,6 +69,8 @@
+     size_t readySendBufferCursor = 0, sendBufferPendingRanks = 0;
+     size_t sendBufferPendingParticles = 0;
+     size_t progressCycle = 0;
++    bool fixedTransportActive = false;
++    std::vector<std::chrono::steady_clock::time_point> sendBufferBirth;
+ 
+ public:
+     RDMACommunicationEngine(const Grid &grid, const MonteCarloConfig &config,
+@@ -76,6 +79,10 @@
+     {
+         MPI_Comm_rank(this->commWorld, &this->rankWorld);
+         MPI_Comm_size(this->commWorld, &this->sizeWorld);
++        if(this->config.rdmaFixedStepQueues and
++           (this->config.initialBufferSize == 0 or
++            this->config.rdmaFixedQueueMaxSize < this->config.minimalBuffSize))
++            throw std::runtime_error("RDMA fixed queues require positive capacity and a growth limit at least the minimum capacity");
+ 
+         // OFIContext construction exchanges endpoint addresses over commWorld and
+         // must therefore happen collectively before neighbor-specific handlers are built.
+@@ -89,6 +96,7 @@
+         this->sendBufferActive.assign(this->sizeWorld, 0);
+         this->sendBufferListed.assign(this->sizeWorld, 0);
+         this->sendBufferReadyQueued.assign(this->sizeWorld, 0);
++        this->sendBufferBirth.resize(this->sizeWorld);
+ 
+         auto reallocationFunction = [this](rank_t rank)
+         {
+@@ -158,11 +166,41 @@
+ 
+     void Prepare() override
+     {
++        if(this->fixedTransportActive)
++            throw std::runtime_error("RDMA engine prepared during fixed transport");
+         ranksGhostMap = GetGhostMap(grid);
+         PrepareHandlers();
+         ResetSendBuffers();
+         transfersCounter = 0;
+         progressCycle = 0;
++    }
++
++    void BeginTransport() override
++    {
++        if(not this->config.rdmaFixedStepQueues) return;
++        if(this->fixedTransportActive or not AllSendBuffersEmpty() or
++           this->reallocationAgent->HasPendingAsyncReallocations())
++            throw std::runtime_error("RDMA engine: pending operations at fixed-step entry");
++        // First barrier closes all reset/resize work. Second barrier keeps
++        // early producers from posting while another rank snapshots counters.
++        MPI_Barrier(this->commWorld);
++        for(RankHandler_t *handler : this->rankHandlers)
++            if(handler) handler->BeginFixedStep();
++        MPI_Barrier(this->commWorld);
++        this->fixedTransportActive = true;
++    }
++
++    void EndTransport() override
++    {
++        if(not this->config.rdmaFixedStepQueues) return;
++        if(not this->fixedTransportActive or this->Pending())
++            throw std::runtime_error("RDMA engine: pending operations at fixed-step exit");
++        // Every transfer has completed remotely; all ranks must leave the
++        // transport loop before anyone may unlock allocations for resizing.
++        MPI_Barrier(this->commWorld);
++        for(RankHandler_t *handler : this->rankHandlers)
++            if(handler) handler->EndFixedStep();
++        this->fixedTransportActive = false;
+     }
+ 
+     void Progress() override
+@@ -298,6 +336,7 @@
+     void ProgressReallocations();
+     void MakeRDMAProgress();
+     void PrepareHandlers();
++    void AdaptFixedQueueCapacities();
+     void RetireStaleHandlers();
+     void ResetAllBuffers()
+     {
+--- before/manager/parallel/RankHandler2.hpp
++++ after/manager/parallel/RankHandler2.hpp
+@@ -47,6 +47,11 @@
+ 
+     bool TransferParticles(const MCParticle *particles, size_t particlesNum, uint32_t source_lkey = 0);
+ 
++    void BeginFixedStep();
++    void EndFixedStep();
++    size_t TransferParticlePrefix(const MCParticle *particles, size_t count, uint32_t source_lkey = 0);
++    size_t NextPeerCapacity() const { return nextPeerCapacity; }
++
+     size_t LocalSize(void) const;
+ 
+     bool LocalEmpty(void) const;
+@@ -87,6 +92,9 @@
+     static constexpr size_t QUEUE_STORAGE_SIZE = 6;
+     uint64_t queue_storage[QUEUE_STORAGE_SIZE];
+     uint64_t buffer_generation;
++    bool fixedStepActive = false;
++    uint64_t producerTail = 0, cachedHead = 0;
++    size_t nextPeerCapacity = 0;
+ 
+     void SynchronizeLocalQueueForRead(void) const;
+     void SynchronizeLocalParticlesForRead(void) const;
+@@ -222,6 +230,8 @@
+ template<typename T, typename Grid>
+ void RankHandler2<T, Grid>::Reset(void)
+ {
++    if(this->fixedStepActive)
++        throw std::runtime_error("RankHandler2::Reset during fixed transport step");
+     this->head = 0;
+     this->tail = 0;
+     this->PublishLocalQueueCounter();
+@@ -230,6 +240,8 @@
+ template<typename T, typename Grid>
+ void RankHandler2<T, Grid>::Destroy(void)
+ {
++    if(this->fixedStepActive)
++        throw std::runtime_error("RankHandler2::Destroy during fixed transport step");
+     if(this->destroyed)
+     {
+         return;
+@@ -483,6 +495,8 @@
+ template<typename Writer>
+ void RankHandler2<T, Grid>::AppendLocalParticles(size_t particlesNum, const Writer &writer)
+ {
++    if(this->fixedStepActive)
++        throw std::runtime_error("RankHandler2: local append would violate the fixed queue's single producer");
+     if(particlesNum == 0)
+     {
+         return;
+@@ -535,6 +549,8 @@
+ template<typename T, typename Grid>
+ void RankHandler2<T, Grid>::Reallocate(double factor, size_t requiredBuffSize)
+ {
++    if(this->fixedStepActive)
++        throw std::runtime_error("RankHandler2::Reallocate during fixed transport step");
+ #ifdef MEMORY_DEBUG
+     memory_debug::check_system_memory("RankHandler2::Reallocate");
+ #endif
+@@ -653,6 +669,8 @@
+ template<typename T, typename Grid>
+ ReallocationMetadata RankHandler2<T, Grid>::LocalReallocate(double factor)
+ {
++    if(this->fixedStepActive)
++        throw std::runtime_error("RankHandler2::LocalReallocate during fixed transport step");
+     if(not this->UsesAsyncReallocation())
+     {
+         throw std::runtime_error("RankHandler2::LocalReallocate is only supported for native RDMA backends");
+@@ -709,6 +727,8 @@
+ template<typename T, typename Grid>
+ void RankHandler2<T, Grid>::UpdatePeerRemoteInfo(const ReallocationMetadata &metadata)
+ {
++    if(this->fixedStepActive)
++        throw std::runtime_error("RankHandler2: late resize metadata during fixed transport step");
+     if(this->size_internal <= 1)
+     {
+         return;
+@@ -748,6 +768,85 @@
+     this->particles_agent->DeregisterExternalSource(handle);
+ }
+ 
++// The engine brackets these methods with communicator-wide barriers: all
++// reset/resize operations finish before BeginFixedStep, and no producer may
++// post until every peer has captured its descriptor. EndFixedStep follows
++// global termination and a barrier. No old-epoch RMA may survive that boundary.
++template<typename T, typename Grid>
++void RankHandler2<T, Grid>::BeginFixedStep()
++{
++    if(this->fixedStepActive or this->size_internal != 2 or
++       this->reallocationAgent->IsPendingReallocation(this->peer_rank_world) or
++       not this->LocalEmpty())
++        throw std::runtime_error("RankHandler2: invalid fixed-step entry");
++    this->RefreshPeerBufferInfo();
++    uint64_t counters[2] = {};
++    this->lengths_agent->Get(counters, 2, this->other_rank, HEAD_INDEX);
++    // No rank can send yet, so the entire snapshot is stable.
++    if(counters[0] != 0 or counters[1] != 0 or this->peer_buffsize == 0)
++        throw std::runtime_error("RankHandler2: fixed step requires a reset peer queue");
++    this->producerTail = this->cachedHead = 0;
++    this->nextPeerCapacity = this->peer_buffsize;
++    this->fixedStepActive = true;
++}
++
++template<typename T, typename Grid>
++void RankHandler2<T, Grid>::EndFixedStep()
++{
++    if(not this->fixedStepActive or not this->LocalEmpty())
++        throw std::runtime_error("RankHandler2: fixed step ended with pending receives");
++    // Every prefix transfer completes payload and tail remotely before return.
++    this->fixedStepActive = false;
++}
++
++template<typename T, typename Grid>
++size_t RankHandler2<T, Grid>::TransferParticlePrefix(const MCParticle *particles, size_t count,
++                                                    uint32_t source_lkey)
++{
++    if(not this->fixedStepActive)
++        throw std::runtime_error("RankHandler2: prefix transfer outside fixed step");
++    if(count == 0) return 0;
++    if(particles == nullptr) throw std::runtime_error("RankHandler2: null prefix source");
++    size_t available = this->peer_buffsize - static_cast<size_t>(this->producerTail - this->cachedHead);
++    if(count > available)
++    {
++        this->lengths_agent->Get(&this->cachedHead, 1, this->other_rank, HEAD_INDEX);
++        if(this->cachedHead > this->producerTail or
++           this->producerTail - this->cachedHead > this->peer_buffsize)
++            throw std::runtime_error("RankHandler2: invalid fixed queue credits");
++        available = this->peer_buffsize - static_cast<size_t>(this->producerTail - this->cachedHead);
++        if(count > available)
++        {
++            // Bound the demand sample to twice the current capacity; the
++            // engine applies a configurable allocation ceiling next step.
++            const size_t extra = std::min(count - available, this->peer_buffsize);
++            if(extra <= std::numeric_limits<size_t>::max() - this->peer_buffsize)
++                this->nextPeerCapacity = std::max(this->nextPeerCapacity, this->peer_buffsize + extra);
++        }
++    }
++    const size_t sent = std::min(count, available);
++    if(sent == 0) return 0;
++#ifdef STORM_DEBUG
++    for(size_t i = 0; i < sent; ++i)
++        if(particles[i].nextRank != this->peer_rank_world)
++            throw std::runtime_error("RankHandler2: fixed prefix has the wrong destination");
++#endif
++    if(sent > std::numeric_limits<uint64_t>::max() - this->producerTail)
++        throw std::runtime_error("RankHandler2: fixed queue tail overflow");
++    const size_t start = static_cast<size_t>(this->producerTail % this->peer_buffsize);
++    const size_t first = std::min(sent, this->peer_buffsize - start);
++    this->particles_agent->Put(particles, first, this->other_rank, start, false, source_lkey);
++    if(first < sent)
++        this->particles_agent->Put(particles + first, sent - first, this->other_rank, 0, false, source_lkey);
++    // Retain the conservative publication protocol on all providers. The
++    // source registration and allocation remain owned until this returns.
++    this->particles_agent->QuiesceTarget(this->other_rank);
++    const uint64_t newTail = this->producerTail + sent;
++    this->lengths_agent->Put(&newTail, 1, this->other_rank, TAIL_INDEX, true);
++    this->producerTail = newTail;
++    return sent;
++}
++
+ template<typename T, typename Grid>
+ bool RankHandler2<T, Grid>::TransferParticles(const std::vector<MCParticle> &particles)
+ {
+@@ -757,6 +856,8 @@
+ template<typename T, typename Grid>
+ bool RankHandler2<T, Grid>::TransferParticles(const MCParticle *particles, size_t particlesNum, uint32_t source_lkey)
+ {
++    if(this->fixedStepActive)
++        throw std::runtime_error("RankHandler2: legacy transfer during fixed transport step");
+     size_t Np = particlesNum;
+     if(particles == nullptr or particlesNum == 0)
+     {
+--- before/manager/parallel/RegisteredSendBuffer.hpp
++++ after/manager/parallel/RegisteredSendBuffer.hpp
+@@ -22,10 +22,12 @@
+ 
+     RegisteredSendBuffer(RegisteredSendBuffer &&other) noexcept:
+         storage(std::move(other.storage)),
++        consumed(other.consumed),
+         registrationHandler(other.registrationHandler),
+         sourceRegistration(other.sourceRegistration)
+     {
+         other.registrationHandler = nullptr;
++        other.consumed = 0;
+         other.sourceRegistration = {};
+     }
+ 
+@@ -35,6 +37,8 @@
+         {
+             this->ReleaseRegistration();
+             this->storage = std::move(other.storage);
++            this->consumed = other.consumed;
++            other.consumed = 0;
+             this->registrationHandler = other.registrationHandler;
+             this->sourceRegistration = other.sourceRegistration;
+             other.registrationHandler = nullptr;
+@@ -50,7 +54,7 @@
+ 
+     size_t size(void) const
+     {
+-        return this->storage.size();
++        return this->storage.size() - this->consumed;
+     }
+ 
+     size_t capacity(void) const
+@@ -60,22 +64,31 @@
+ 
+     bool empty(void) const
+     {
+-        return this->storage.empty();
++        return this->size() == 0;
+     }
+ 
+     ParticleT *data(void)
+     {
+-        return this->storage.data();
++        return this->consumed ? this->storage.data() + this->consumed : this->storage.data();
+     }
+ 
+     const ParticleT *data(void) const
+     {
+-        return this->storage.data();
++        return this->consumed ? this->storage.data() + this->consumed : this->storage.data();
+     }
+ 
+     void clear(void)
+     {
+         this->storage.clear();
++        this->consumed = 0;
++    }
++
++    // Transfers are synchronous: the NIC no longer accesses this prefix.
++    void Consume(size_t count)
++    {
++        assert(count <= this->size());
++        this->consumed += count;
++        if(this->consumed == this->storage.size()) this->clear();
+     }
+ 
+     void ReleaseStorage(void)
+@@ -139,12 +152,21 @@
+         {
+             return;
+         }
++        if(this->consumed != 0)
++        {
++            desiredCapacity -= this->consumed;
++            std::move(this->storage.begin() + this->consumed, this->storage.end(), this->storage.begin());
++            this->storage.resize(this->size());
++            this->consumed = 0;
++            if(desiredCapacity <= this->storage.capacity()) return;
++        }
+         this->ReleaseRegistration();
+         size_t newCapacity = std::max<size_t>(desiredCapacity, std::max<size_t>(1, this->storage.capacity() * 2));
+         this->storage.reserve(newCapacity);
+     }
+ 
+     std::vector<ParticleT> storage;
++    size_t consumed = 0;
+     RankHandlerT *registrationHandler = nullptr;
+     typename RemoteMemoryAgent<ParticleT>::SourceRegistration sourceRegistration{};
+ };
+--- before/manager/parallel/RDMASendBufferProtocol.hpp
++++ after/manager/parallel/RDMASendBufferProtocol.hpp
+@@ -80,6 +80,8 @@
+         size_t rankIndex = static_cast<size_t>(rank);
+         if(not this->sendBufferActive[rankIndex])
+         {
++            if(this->config.sendBufferMaxAgeMicroseconds != 0)
++                this->sendBufferBirth[rankIndex] = std::chrono::steady_clock::now();
+             this->sendBufferActive[rankIndex] = 1;
+             this->sendBufferPendingRanks++;
+         }
+@@ -100,7 +102,9 @@
+ {
+     assert(this->sendBufferPendingParticles >= flushedParticles);
+     this->sendBufferPendingParticles -= flushedParticles;
+-    this->MarkSendBufferEmpty(rank);
++    this->sendBuffers[rank].Consume(flushedParticles);
++    if(this->sendBuffers[rank].empty()) this->MarkSendBufferEmpty(rank);
++    else this->QueueReadySendBuffer(rank);
+ }
+ 
+ template<typename T, typename Grid>
+@@ -137,24 +141,21 @@
+         }
+         if(usesAsyncReallocation and this->reallocationAgent->IsPendingReallocation(toRank))
+         {
+-            if(thresholdFlush)
+-            {
+-                this->QueueReadySendBuffer(toRank);
+-            }
++            this->QueueReadySendBuffer(toRank);
+             return;
+         }
+         RankHandler_t *remoteHandler = this->rankHandlers[toRank];
+-        size_t flushedParticles = particles.size();
++        size_t flushedParticles = 0;
+         uint32_t sourceLkey = particles.SourceLkey(
+             remoteHandler, remoteHandler->SupportsPersistentSendSourceRegistration());
+-        bool transferred = remoteHandler->TransferParticles(particles.data(), particles.size(), sourceLkey);
+-        if(not transferred)
++        if(this->fixedTransportActive)
++            flushedParticles = remoteHandler->TransferParticlePrefix(particles.data(), particles.size(), sourceLkey);
++        else if(remoteHandler->TransferParticles(particles.data(), particles.size(), sourceLkey))
++            flushedParticles = particles.size();
++        if(flushedParticles == 0)
+         {
+             this->ProgressReallocations();
+-            if(thresholdFlush)
+-            {
+-                this->QueueReadySendBuffer(toRank);
+-            }
++            this->QueueReadySendBuffer(toRank);
+             return;
+         }
+         this->transfersCounter++;
+@@ -169,7 +170,7 @@
+         {
+             this->sendBufferReadyQueued[static_cast<size_t>(toRank)] = 0;
+         }
+-        flushRankIfReady(toRank, false);
++        flushRankIfReady(toRank, true);
+     }
+     if(this->readySendBufferCursor >= this->readySendBufferRanks.size())
+     {
+@@ -183,8 +184,9 @@
+         this->readySendBufferCursor = 0;
+     }
+ 
+-    if(flushSmallBuffers)
+-    {
++    if(flushSmallBuffers or this->config.sendBufferMaxAgeMicroseconds != 0)
++    {
++        const auto now = std::chrono::steady_clock::now();
+         for(size_t index = 0; index < this->sendBufferActiveRanks.size();)
+         {
+             rank_t toRank = this->sendBufferActiveRanks[index];
+@@ -202,7 +204,10 @@
+                 this->sendBufferActiveRanks.pop_back();
+                 continue;
+             }
+-            flushRankIfReady(toRank, true);
++            const bool expired = this->config.sendBufferMaxAgeMicroseconds != 0 and
++                now - this->sendBufferBirth[rankIndex] >=
++                    std::chrono::microseconds(this->config.sendBufferMaxAgeMicroseconds);
++            if(flushSmallBuffers or expired) flushRankIfReady(toRank, true);
+             if(not this->sendBufferActive[rankIndex])
+             {
+                 this->sendBufferListed[rankIndex] = 0;
+@@ -218,55 +223,7 @@
+ template<typename T, typename Grid>
+ void RDMACommunicationEngine<T, Grid>::FlushAllSendBuffers(void)
+ {
+-    const bool usesAsyncReallocation = this->UsesAsyncReallocation();
+-    for(size_t index = 0; index < this->sendBufferActiveRanks.size();)
+-    {
+-        rank_t toRank = this->sendBufferActiveRanks[index];
+-        if(toRank < 0 or toRank >= static_cast<rank_t>(this->sendBuffers.size()))
+-        {
+-            this->sendBufferActiveRanks[index] = this->sendBufferActiveRanks.back();
+-            this->sendBufferActiveRanks.pop_back();
+-            continue;
+-        }
+-        size_t rankIndex = static_cast<size_t>(toRank);
+-        if(not this->sendBufferActive[rankIndex])
+-        {
+-            this->sendBufferListed[rankIndex] = 0;
+-            this->sendBufferActiveRanks[index] = this->sendBufferActiveRanks.back();
+-            this->sendBufferActiveRanks.pop_back();
+-            continue;
+-        }
+-        RegisteredSendBuffer_t &particles = this->sendBuffers[rankIndex];
+-        if(particles.empty())
+-        {
+-            this->MarkSendBufferEmpty(toRank);
+-            this->sendBufferListed[rankIndex] = 0;
+-            this->sendBufferActiveRanks[index] = this->sendBufferActiveRanks.back();
+-            this->sendBufferActiveRanks.pop_back();
+-            continue;
+-        }
+-        size_t flushedParticles = particles.size();
+-        if(usesAsyncReallocation and this->reallocationAgent->IsPendingReallocation(toRank))
+-        {
+-            index++;
+-            continue;
+-        }
+-        RankHandler_t *remoteHandler = this->rankHandlers[toRank];
+-        uint32_t sourceLkey = particles.SourceLkey(
+-            remoteHandler, remoteHandler->SupportsPersistentSendSourceRegistration());
+-        bool transferred = remoteHandler->TransferParticles(particles.data(), particles.size(), sourceLkey);
+-        if(not transferred)
+-        {
+-            this->ProgressReallocations();
+-            index++;
+-            continue;
+-        }
+-        this->transfersCounter++;
+-        this->NoteSendBufferFlush(toRank, flushedParticles);
+-        this->sendBufferListed[rankIndex] = 0;
+-        this->sendBufferActiveRanks[index] = this->sendBufferActiveRanks.back();
+-        this->sendBufferActiveRanks.pop_back();
+-    }
++    this->FlushSendBuffers(true);
+ }
+ 
+ template<typename T, typename Grid>
+--- before/manager/parallel/RDMARankHandlerLifecycle.hpp
++++ after/manager/parallel/RDMARankHandlerLifecycle.hpp
+@@ -7,6 +7,8 @@
+ template<typename T, typename Grid>
+ void RDMACommunicationEngine<T, Grid>::ShrinkBuffers(void)
+ {
++    if(this->fixedTransportActive)
++        throw std::runtime_error("RDMA engine: shrinking during fixed transport");
+     if(this->rankWorld == 0)
+     {
+         std::cout << "Shrinking buffers." << std::endl;
+@@ -305,7 +307,32 @@
+         ForEachRankSyncByList(this->commWorld, newNeighbors, createHandler);
+     }
+ 
++    if(this->config.rdmaFixedStepQueues) this->AdaptFixedQueueCapacities();
+     this->ResetAllBuffers();
+ }
+ 
++template<typename T, typename Grid>
++void RDMACommunicationEngine<T, Grid>::AdaptFixedQueueCapacities()
++{
++    // Demand is recorded by the producer, but allocation belongs to the
++    // consumer. Exchange it collectively while all rings are quiescent.
++    std::vector<unsigned long long> outgoing(this->sizeWorld, 0), incoming(this->sizeWorld, 0);
++    for(size_t rank = 0; rank < this->rankHandlers.size(); ++rank)
++        if(this->rankHandlers[rank])
++            outgoing[rank] = std::min(this->rankHandlers[rank]->NextPeerCapacity(),
++                                      this->config.rdmaFixedQueueMaxSize);
++    MPI_Alltoall(outgoing.data(), 1, MPI_UNSIGNED_LONG_LONG,
++                 incoming.data(), 1, MPI_UNSIGNED_LONG_LONG, this->commWorld);
++    // Both endpoints compute the same required capacity. Sorted peer order
++    // gives the pair collectives an acyclic order (also used by shrinking).
++    for(size_t rank = 0; rank < this->rankHandlers.size(); ++rank)
++    {
++        RankHandler_t *handler = this->rankHandlers[rank];
++        if(not handler) continue;
++        const size_t required = std::max<size_t>(outgoing[rank], incoming[rank]);
++        if(required > std::min(handler->buffsize, handler->peer_buffsize))
++            handler->Reallocate(1.0, required);
++    }
++}
++
+ #endif // STORM_RDMA_RANK_HANDLER_LIFECYCLE_HPP
+--- before/examples/crooked_pipe/main.cpp
++++ after/examples/crooked_pipe/main.cpp
+@@ -93,10 +93,14 @@
+     std::size_t snapshotInterval = 50;
+     STORM::ManagerType managerType = STORM::ManagerType::Auto;
+     STORM::RDMAEngine rdmaEngine = STORM::RDMAEngine::OFI;
++    STORM::MonteCarloConfig transportConfig;
+ };
+ 
+ void PrintUsage(const char *program)
+ {
++    std::cerr << "Transport experiments: --optimized-rdma (fixed queues, fair 65536-event slices, 5 ms flush age),\n"
++              << "  --rdma-fixed-queues-off, --receive-scheduling-off,\n"
++              << "  --rdma-ring-size N, --rdma-ring-limit N, --transport-event-budget N, --send-max-age-us N\n";
+     std::cerr << "Usage: mpirun -np <N> " << program << " [points] [new_photons] [min_photons] [options]\n"
+               << "  --points <N>                 Background mesh points (default: 20000)\n"
+               << "  --wall-layers <N>            Graded refinement layers on the thick side of each interface (default: 4)\n"
+@@ -369,6 +373,35 @@
+         {
+             options.maximumDt = std::stod(RequireValue(argc, argv, i));
+         }
++        else if(argument == "--optimized-rdma")
++        {
++            options.transportConfig.rdmaFixedStepQueues = true;
++            options.transportConfig.fairReceiveScheduling = true;
++            options.transportConfig.localTransportEventBudget = 65536;
++            options.transportConfig.sendBufferMaxAgeMicroseconds = 5000;
++        }
++        else if(argument == "--rdma-fixed-queues-off")
++        {
++            options.transportConfig.rdmaFixedStepQueues = false;
++        }
++        else if(argument == "--receive-scheduling-off")
++        {
++            options.transportConfig.fairReceiveScheduling = false;
++        }
++        else if(argument == "--rdma-ring-size" || argument == "--rdma-ring-limit" ||
++                argument == "--transport-event-budget" || argument == "--send-max-age-us")
++        {
++            const auto value = RequireValue(argc, argv, i);
++            if(value.empty() || value[0] == '-') throw std::runtime_error(argument + " must be nonnegative");
++            size_t consumed = 0;
++            const auto number = std::stoull(value, &consumed);
++            if(consumed != value.size() || (number == 0 && argument != "--send-max-age-us"))
++                throw std::runtime_error("Invalid value for " + argument);
++            if(argument == "--rdma-ring-size") options.transportConfig.initialBufferSize = number;
++            else if(argument == "--rdma-ring-limit") options.transportConfig.rdmaFixedQueueMaxSize = number;
++            else if(argument == "--transport-event-budget") options.transportConfig.localTransportEventBudget = number;
++            else options.transportConfig.sendBufferMaxAgeMicroseconds = number;
++        }
+         else if(argument == "--transport-work-scale")
+         {
+             options.transportWorkScale = std::stod(RequireValue(argc, argv, i));
+@@ -1317,7 +1350,7 @@
+             std::shared_ptr<STORM::CombPopulationControl<Vector3D, Grid>> populationControl =
+                 std::make_shared<STORM::CombPopulationControl<Vector3D, Grid>>(
+                     grid, options.minPhotonsPerCell, 4.0, options.censusFloorPerCell, options.censusCapPerCell);
+-            STORM::MonteCarloConfig transportConfig;
++            STORM::MonteCarloConfig transportConfig = options.transportConfig;
+ #ifdef STORM_WITH_GPU
+             if(options.transportInnerSteps != 0)
+                 transportConfig.gpuMaxInnerSteps = options.transportInnerSteps;
+--- before/tests/rdma_fixed_queue_test.cpp
++++ after/tests/rdma_fixed_queue_test.cpp
+@@ -0,0 +1,128 @@
++#include "examples/Vector3D.hpp"
++#include "manager/parallel/RankHandler2.hpp"
++#include "manager/parallel/RegisteredSendBuffer.hpp"
++#include <cstdlib>
++#include <string>
++
++using Handler = STORM::RankHandler2<Vector3D, int>;
++using Packet = Handler::MCParticle;
++static void require(bool ok, const char *message) {
++    if(!ok) throw std::runtime_error(message);
++}
++template<class F> static void rejects(F operation) {
++    bool caught = false;
++    try { operation(); } catch(const std::runtime_error &) { caught = true; }
++    require(caught, "forbidden operation was accepted");
++}
++int main(int argc, char **argv) {
++    MPI_Init(&argc, &argv);
++    int rank, size;
++    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
++    MPI_Comm_size(MPI_COMM_WORLD, &size);
++    try {
++        require(size == 2, "test requires two ranks");
++        RDMA_Type backend = argc > 1 && std::string(argv[1]) == "ofi" ? RDMA_Type::OFI_RDMA : RDMA_Type::MPI_RMA;
++        RMAFactory::Initialize(backend, MPI_COMM_WORLD);
++        {
++            auto realloc = std::make_shared<STORM::ReallocationAgent>(MPI_COMM_WORLD, [](rank_t) {
++                throw std::runtime_error("unexpected reallocation request during transport");
++            });
++            Handler handler(7, MPI_COMM_WORLD, MPI_COMM_WORLD, realloc, backend, 1);
++            for(size_t epoch = 0; epoch < 12; ++epoch) {
++                if(epoch != 0) {
++                    // Alternate replacement with growth and shrinking. Both
++                    // peers participate only after the previous global drain.
++                    const size_t capacity = epoch % 2 ? 19 : 5;
++                    handler.requestedFactor = static_cast<double>(capacity) / handler.buffsize;
++                    handler.Reallocate(handler.requestedFactor);
++                }
++                handler.Reset();
++                MPI_Barrier(MPI_COMM_WORLD);
++                handler.BeginFixedStep();
++                MPI_Barrier(MPI_COMM_WORLD);
++                rejects([&] { handler.Reset(); });
++                rejects([&] { handler.Destroy(); });
++                rejects([&] { handler.Reallocate(2); });
++                rejects([&] { handler.LocalReallocate(2); });
++                rejects([&] { handler.UpdatePeerRemoteInfo({}); });
++                Packet one;
++                rejects([&] { handler.AppendLocalParticles(&one, 1); });
++                rejects([&] { handler.TransferParticles(&one, 1); });
++
++                constexpr size_t count = 511;
++                STORM::RegisteredSendBuffer<Packet, Handler> outgoing;
++                for(size_t i = 0; i < count; ++i) {
++                    Packet packet;
++                    packet.id = 100000 * epoch + 1000 * rank + i;
++                    packet.weight = 0.25 + i;
++                    packet.timeLeft = 0.5 + epoch;
++                    outgoing.push_back(packet);
++                }
++                auto key = outgoing.SourceLkey(&handler, handler.SupportsPersistentSendSourceRegistration());
++                const size_t first = handler.TransferParticlePrefix(outgoing.data(), outgoing.size(), key);
++                require(first == handler.peer_buffsize, "initial prefix did not fill ring");
++                outgoing.Consume(first);
++                MPI_Barrier(MPI_COMM_WORLD);
++                require(handler.TransferParticlePrefix(outgoing.data(), outgoing.size(), key) == 0,
++                        "full ring must apply backpressure");
++                MPI_Barrier(MPI_COMM_WORLD);
++                size_t received = 0, polls = 0;
++                const double deadline = MPI_Wtime() + 30;
++                while(not outgoing.empty() || received < count) {
++                    if(not outgoing.empty()) {
++                        key = outgoing.SourceLkey(&handler, handler.SupportsPersistentSendSourceRegistration());
++                        outgoing.Consume(handler.TransferParticlePrefix(outgoing.data(), outgoing.size(), key));
++                    }
++                    // Deliberately delay one consumer; other ranks must keep
++                    // progressing with a full ring and retained source buffer.
++                    if((rank == 0 || polls > 100) && polls % 3 == 0) {
++                        std::vector<Packet> arrivals;
++                        handler.DetachLocalParticles(arrivals);
++                        for(const auto &packet : arrivals) {
++                            require(packet.id == 100000 * epoch + 1000 * (1-rank) + received,
++                                    "lost, duplicated, reordered or stale packet");
++                            require(packet.weight == 0.25 + received && packet.timeLeft == 0.5 + epoch,
++                                    "payload publication corrupted fields");
++                            ++received;
++                        }
++                    }
++                    ++polls;
++                    RMAFactory::MakeProgress(backend);
++                    int flag;
++                    MPI_Iprobe(MPI_ANY_SOURCE, MPI_ANY_TAG, MPI_COMM_WORLD, &flag, MPI_STATUS_IGNORE);
++                    require(MPI_Wtime() < deadline, "queue progress timed out");
++                }
++                outgoing.ReleaseRegistration();
++                MPI_Barrier(MPI_COMM_WORLD);
++                handler.EndFixedStep();
++                require(handler.NextPeerCapacity() > 0, "missing demand sample");
++            }
++            // Exercise compaction while retaining the allocation and MR.
++            STORM::RegisteredSendBuffer<Packet, Handler> buffer;
++            Packet packet;
++            for(size_t i=0; i<16; ++i) { packet.id=i; buffer.push_back(packet); }
++            buffer.SourceLkey(&handler, handler.SupportsPersistentSendSourceRegistration());
++            buffer.Consume(11);
++            for(size_t i=16; i<40; ++i) { packet.id=i; buffer.push_back(packet); }
++            require(buffer.size()==29, "compaction lost size");
++            for(size_t i=0; i<buffer.size(); ++i) require(buffer.data()[i].id==i+11, "compaction lost order");
++            buffer.Consume(buffer.size());
++            buffer.ReleaseStorage();
++            handler.Reset();
++            MPI_Barrier(MPI_COMM_WORLD);
++            packet.id=rank;
++            require(handler.TransferParticles(&packet, 1), "legacy path failed after fixed step");
++            MPI_Barrier(MPI_COMM_WORLD);
++            std::vector<Packet> received;
++            handler.DetachLocalParticles(received);
++            require(received.size()==1 && received[0].id==static_cast<size_t>(1-rank), "legacy packet mismatch");
++            MPI_Barrier(MPI_COMM_WORLD);
++        }
++        RMAFactory::Finalize(backend);
++        if(rank == 0) std::cout << "PASS: fixed queues, saturation, wrap, 12 resize epochs, guards, registration, legacy reuse\n";
++    } catch(const std::exception &e) {
++        std::cerr << "rank " << rank << ": " << e.what() << '\n';
++        MPI_Abort(MPI_COMM_WORLD, 1);
++    }
++    MPI_Finalize();
++}
+--- before/examples/crooked_pipe/README.md
++++ after/examples/crooked_pipe/README.md
+@@ -122,3 +122,33 @@
+ overridden with `CROOKED_PIPE_MAX_RMSE_KEV`,
+ `CROOKED_PIPE_MAX_ERROR_KEV`, and
+ `CROOKED_PIPE_MAX_ARRIVAL_LOG10_ERROR`.
++
++## Experimental fixed-step RDMA queues
++
++`--manager rdma --rdma-engine ofi --optimized-rdma` enables fixed receive-ring
++allocations within each transport step, partial sends with cached credits, and
++fair CPU receive scheduling. The experiment uses 65,536 physics events per source
++slice and a 5 ms maximum outgoing-batch age checked at cooperative progress calls.
++It is **off by default**: the 128-rank measurements did not reach the intended
++15–20% reduction in total runtime. See the RICH workspace report at
++`docs/rdma128_20260912/` for timings and protocol review.
++
++`--rdma-ring-size N` sets initial receive capacity and `--rdma-ring-limit N` caps
++future growth requests. The limit must be at least the allocator's minimum
++capacity (50 by default); existing larger allocations are not reduced by this
++limit. Rings may grow or shrink only between globally completed steps. A full
++ring retains unsent packets and retries later; it does not trigger a mid-step
++resize. This bounds ring capacity, not all outgoing host storage.
++
++For controlled experiments, put overrides after `--optimized-rdma`:
++`--transport-event-budget N`, `--send-max-age-us N` (zero disables age flushing),
++`--rdma-fixed-queues-off`, and `--receive-scheduling-off`. `--rdma-fixed-queues-off` keeps the scheduling experiment;
++`--receive-scheduling-off --send-max-age-us 0` keeps only the queue experiment. Scheduling changes particle and
++floating-point accumulation order; bitwise-identical probe histories are not
++promised.
++
++The targeted queue test can be built with `-DSTORM_BUILD_RDMA_TESTS=ON` and
++`cmake --build <build-dir> --target storm_rdma_fixed_queue_test`. Run it on two
++ranks with argument `ofi` for native OFI or `mpi` for MPI RMA. It exercises delayed
++consumption, wrap, partial sends, repeated grow/shrink epochs, source registration,
++and rejection of allocation changes during transport.

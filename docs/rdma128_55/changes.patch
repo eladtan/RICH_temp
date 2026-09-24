@@ -1,0 +1,89 @@
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -297,6 +297,14 @@
+     $<$<COMPILE_LANGUAGE:CXX>:-ffp-contract=off>)
+   target_compile_definitions(storm INTERFACE STORM_CPU_VECTOR_INTERSECTION)
+ endif()
++option(STORM_CPU_DIRECT_LOG
++  "Use direct log for CPU IMC exponential sampling (may change last-bit rounding)" OFF)
++if(STORM_CPU_DIRECT_LOG)
++  if(STORM_WITH_GPU)
++    message(FATAL_ERROR "STORM_CPU_DIRECT_LOG is currently validated for CPU-only builds")
++  endif()
++  target_compile_definitions(storm INTERFACE STORM_CPU_DIRECT_LOG)
++endif()
+ if(OpenMP_CXX_FOUND)
+   target_link_libraries(storm INTERFACE OpenMP::OpenMP_CXX)
+ endif()
+--- a/examples/crooked_pipe/README.md
++++ b/examples/crooked_pipe/README.md
+@@ -178,3 +178,20 @@
+ cases. The follow-up benchmark and review are recorded in the RICH workspace at
+ `docs/rdma128_followup/`; the subsequent `-O2` comparison is in
+ `docs/rdma128_o2/`.
++
++### Optional direct-log sampling
++
++`-DSTORM_CPU_DIRECT_LOG=ON` replaces `-log1p(u-1)` with `-log(u)` in the
++shared CPU IMC kernel. STORM's 52-bit half-bin uniform format makes `u-1`
++exactly representable, so the formulas specify the same exponential variate.
++The math-library results can differ in their last rounding bit; this option
++is **off by default** and does not promise bitwise-identical histories. It
++retains the configured optimization level and introduces no fast-math flags.
++GPU builds reject this option because they have not been validated for it.
++
++The current 128-rank investigation, numerical checks, full-invocation timings,
++and fixed-queue reallocation review are in the RICH workspace at
++`docs/rdma128_55/`. During a fixed transport epoch, RDMA now skips resize
++bookkeeping while continuing provider progress; resizing resumes only after
++all ranks close the epoch. Payload completion, tail publication, and source
++registration lifetimes retain their existing ordering.
+--- a/manager/communication/RDMACommunicationEngine.hpp
++++ b/manager/communication/RDMACommunicationEngine.hpp
+@@ -205,6 +205,13 @@
+ 
+     void Progress() override
+     {
++        if(this->fixedTransportActive)
++        {
++            // BeginTransport collectively closes resizing for this epoch.
++            // Completion progress is still required by the RMA provider.
++            MakeRDMAProgress();
++            return;
++        }
+         PumpRMAProgress();
+         if(!UsesAsyncReallocation() || progressCycle++ % std::max<size_t>(1, this->config.asyncReallocationProgressMinCycles) == 0 ||
+            reallocationAgent->HasPendingAsyncReallocations())
+@@ -408,6 +415,7 @@
+ template<typename T, typename Grid>
+ bool RDMACommunicationEngine<T, Grid>::UsesAsyncReallocation(void) const
+ {
++    if(this->fixedTransportActive) return false;
+     for(const RankHandler_t *handler : this->rankHandlers)
+     {
+         if(handler and handler->UsesAsyncReallocation())
+@@ -430,6 +438,7 @@
+ template<typename T, typename Grid>
+ void RDMACommunicationEngine<T, Grid>::ProgressReallocations(void)
+ {
++    if(this->fixedTransportActive) return;
+     this->PumpRMAProgress();
+     if(this->UsesAsyncReallocation())
+     {
+--- a/radiation/transport/AdvanceIMC.hpp
++++ b/radiation/transport/AdvanceIMC.hpp
+@@ -287,7 +287,14 @@
+     const double effectiveAbsorptionOpacity = (1.0 - fleck) * absorptionOpacity;
+     const double eventOpacity = scatteringOpacity + effectiveAbsorptionOpacity;
+     const double distanceRandom = CounterRNG::unitOpen(particle.rngKey, particle.rngCounter++);
++#if defined(STORM_CPU_DIRECT_LOG) && !defined(STORM_WITH_GPU)
++    // unitOpen produces (2*m+1)*2^-53. Subtracting one is exact on this
++    // lattice, so both expressions are mathematically identical. The two
++    // libm entry points may differ in the last bit of the rounded result.
++    const double randomDistance = -Log(distanceRandom);
++#else
+     const double randomDistance = -Log1p(distanceRandom - 1.0);
++#endif
+     const double scatteringDistance = (eventOpacity > 0.0)? randomDistance / (eventOpacity * dopplerShift) : DBL_MAX;
+     const double scatteringTime = (speed > 0.0)? scatteringDistance / speed : DBL_MAX;
+ 

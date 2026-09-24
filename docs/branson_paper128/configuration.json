@@ -1,0 +1,31 @@
+{
+  "mesh": [
+    224,
+    100,
+    100
+  ],
+  "cells": 2240000,
+  "ranks": 128,
+  "end_time_ns": 40,
+  "dt_start_ns": 0.01,
+  "dt_max_ns": 10,
+  "dt_growth": 1.1,
+  "expected_cycles": 63,
+  "nominal_photons_per_cycle": 13195491,
+  "budget_basis": "rounded mean prestep_generated from optimized STORM paper replay job 10176491",
+  "storm_births": 831315935,
+  "initial_T_e_keV": 0.05,
+  "initial_T_r_keV": 0,
+  "source_T_keV": 0.5,
+  "synthetic_scatter_fraction": 0,
+  "DDMC": false,
+  "limitations": [
+    "Cartesian mesh cannot reproduce STORM cylindrical interface slabs",
+    "Native source allocation floors and census differ from STORM",
+    "Constant nominal budget matches mean births, not exact per-cycle counts",
+    "No DDMC or random-walk acceleration in this Branson checkout"
+  ],
+  "binary": "/home/maorm/RICH/build/branson_cp128/diagnosis/branson_o2/BRANSON",
+  "binary_sha256": "8b9e94686f23406fe1c64aa0c3a14789d5218b9071bfb4f33f7a9a8042b78b07",
+  "xml_sha256": "17a32efa11647c1f28337ffd604393a4153ffe073323252cc8e1b143c251e95f"
+}

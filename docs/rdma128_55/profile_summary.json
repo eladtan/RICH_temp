@@ -1,0 +1,9 @@
+{
+  "cycles": 120,
+  "loop_max_sum_s": 53.911318304,
+  "busy_excluding_engine_max_sum_s": 51.218987361,
+  "busy_excluding_engine_rank_mean_sum_s": 39.34356576894531,
+  "engine_inside_busy_on_max_cpu_rank_sum_s": 2.062725988,
+  "prefix_transfer_on_max_cpu_rank_sum_s": 1.856154917,
+  "profile_total_s": 69.687
+}

@@ -1,0 +1,10 @@
+{
+  "canonical": {
+    "binary_sha256": "2ce9fcb458acf9cdbb2cd8994649f37e49ada1c6ceb5e516dba9fe7c1bb34b3c",
+    "text_sha256": "2220c7e1bd6ec3349ad320a2ef17da53208f076ac8e5efab14f5a252a6ce43f3"
+  },
+  "benchmarked": {
+    "binary_sha256": "2ce9fcb458acf9cdbb2cd8994649f37e49ada1c6ceb5e516dba9fe7c1bb34b3c",
+    "text_sha256": "2220c7e1bd6ec3349ad320a2ef17da53208f076ac8e5efab14f5a252a6ce43f3"
+  }
+}

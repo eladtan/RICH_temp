@@ -1,0 +1,228 @@
+{
+  "runs": [
+    {
+      "elapsed_s": 239.85,
+      "transport_s": 237.555,
+      "steps": 120,
+      "transported_histories": 215474211,
+      "generated_histories": 213334915,
+      "final_census": 10141,
+      "radiation_residual_max_jerk": 2.77556e-16,
+      "material_residual_max_jerk": 1.03029e-13,
+      "final_probe_line": [
+        "CP_PROBE 120 81.5719 0.448825 0.22371 0.0553968 0.0501791 0.0432131"
+      ],
+      "completed": true,
+      "label": "branson1",
+      "job": "run_10176483",
+      "log": "/home/maorm/RICH/build/branson_cp128/run_10176483/branson1.out"
+    },
+    {
+      "elapsed_s": 65.69,
+      "steps": 120,
+      "transport_s": 50.5037624,
+      "transported_histories": 383002812,
+      "generated_histories": 223024401,
+      "completed": true,
+      "label": "storm1",
+      "job": "run_10176483",
+      "log": "/home/maorm/RICH/build/branson_cp128/run_10176483/storm1.out"
+    },
+    {
+      "elapsed_s": 240.292,
+      "transport_s": 237.322,
+      "steps": 120,
+      "transported_histories": 215478325,
+      "generated_histories": 213339196,
+      "final_census": 10200,
+      "radiation_residual_max_jerk": 2.22045e-16,
+      "material_residual_max_jerk": 1.03029e-13,
+      "final_probe_line": [
+        "CP_PROBE 120 81.5719 0.450873 0.224523 0.055252 0.0475262 0.0490125"
+      ],
+      "completed": true,
+      "label": "branson1",
+      "job": "run_10176484",
+      "log": "/home/maorm/RICH/build/branson_cp128/run_10176484/branson1.out"
+    },
+    {
+      "elapsed_s": 240.023,
+      "transport_s": 237.666,
+      "steps": 120,
+      "transported_histories": 215486864,
+      "generated_histories": 213346987,
+      "final_census": 10165,
+      "radiation_residual_max_jerk": 2.22045e-16,
+      "material_residual_max_jerk": 1.03029e-13,
+      "final_probe_line": [
+        "CP_PROBE 120 81.5719 0.449919 0.224087 0.0553665 0.0488632 0.050834"
+      ],
+      "completed": true,
+      "label": "branson2",
+      "job": "run_10176484",
+      "log": "/home/maorm/RICH/build/branson_cp128/run_10176484/branson2.out"
+    },
+    {
+      "elapsed_s": 65.939,
+      "steps": 120,
+      "transport_s": 50.19013353,
+      "transported_histories": 383008333,
+      "generated_histories": 223034414,
+      "completed": true,
+      "label": "storm1",
+      "job": "run_10176484",
+      "log": "/home/maorm/RICH/build/branson_cp128/run_10176484/storm1.out"
+    },
+    {
+      "elapsed_s": 65.225,
+      "steps": 120,
+      "transport_s": 50.14587535,
+      "transported_histories": 382836739,
+      "generated_histories": 222972512,
+      "completed": true,
+      "label": "storm2",
+      "job": "run_10176484",
+      "log": "/home/maorm/RICH/build/branson_cp128/run_10176484/storm2.out"
+    }
+  ],
+  "branson": {
+    "elapsed_s": [
+      239.85,
+      240.292,
+      240.023
+    ],
+    "transport_s": [
+      237.555,
+      237.322,
+      237.666
+    ],
+    "generated_histories": [
+      213334915,
+      213339196,
+      213346987
+    ],
+    "transported_histories": [
+      215474211,
+      215478325,
+      215486864
+    ],
+    "median_elapsed_s": 240.023,
+    "median_transport_s": 237.555,
+    "median_generated_histories": 213339196,
+    "median_transported_histories": 215478325
+  },
+  "storm": {
+    "elapsed_s": [
+      65.69,
+      65.939,
+      65.225
+    ],
+    "transport_s": [
+      50.5037624,
+      50.19013353,
+      50.14587535
+    ],
+    "generated_histories": [
+      223024401,
+      223034414,
+      222972512
+    ],
+    "transported_histories": [
+      383002812,
+      383008333,
+      382836739
+    ],
+    "median_elapsed_s": 65.69,
+    "median_transport_s": 50.19013353,
+    "median_generated_histories": 223024401,
+    "median_transported_histories": 383002812
+  },
+  "runtime_ratio": 3.6538742578779115,
+  "storm_runtime_reduction_percent": 72.63178945351069,
+  "branson_fewer_generated_percent": 4.342666074462409,
+  "timing_definition": "Full mpirun invocation, node-local binaries and output; staging/archival excluded",
+  "configuration": {
+    "mesh": [
+      112,
+      50,
+      50
+    ],
+    "cells": 280000,
+    "thin_cells": 37568,
+    "thin_volume_cm3": 15.027199999999407,
+    "analytic_thin_volume_cm3": 14.922565104551516,
+    "inlet_area_cm2": 0.7679999999999989,
+    "analytic_inlet_area_cm2": 0.7853981633974483,
+    "end_time_s": 8.157189571633594e-08,
+    "cycles": 120,
+    "nominal_photons_per_step": 1858414,
+    "budget_basis": "rounded mean STORM prestep_generated count over 120 steps of accepted log1; native allocation and carried census differ",
+    "initial_radiation_note": "Branson initializes radiation packets at 0.05 keV; existing STORM log starts with zero census packets despite initializing cell Erad to 0.05 keV equilibrium"
+  },
+  "final_probes_keV": {
+    "branson": {
+      "runs": [
+        [
+          0.448825,
+          0.22371,
+          0.0553968,
+          0.0501791,
+          0.0432131
+        ],
+        [
+          0.450873,
+          0.224523,
+          0.055252,
+          0.0475262,
+          0.0490125
+        ],
+        [
+          0.449919,
+          0.224087,
+          0.0553665,
+          0.0488632,
+          0.050834
+        ]
+      ],
+      "mean": [
+        0.4498723333333333,
+        0.22410666666666668,
+        0.05533843333333333,
+        0.048856166666666666,
+        0.04768653333333333
+      ]
+    },
+    "storm": {
+      "runs": [
+        [
+          0.456214,
+          0.285527,
+          0.124706,
+          0.0556266,
+          0.0466348
+        ],
+        [
+          0.453884,
+          0.28397,
+          0.124471,
+          0.0579983,
+          0.0464415
+        ],
+        [
+          0.45772,
+          0.281739,
+          0.124897,
+          0.0554096,
+          0.046325
+        ]
+      ],
+      "mean": [
+        0.45593933333333336,
+        0.28374533333333335,
+        0.12469133333333333,
+        0.05634483333333334,
+        0.0464671
+      ]
+    }
+  }
+}

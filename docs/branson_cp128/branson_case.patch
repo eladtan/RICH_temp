@@ -1,0 +1,68 @@
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -142,7 +142,7 @@
+   set( CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -ffp-contract=off")
+   set( CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} -Wall -O0")
+   #set( CMAKE_CXX_FLAGS_RELEASE "-march=native  -O3 -funroll-loops -fno-var-tracking-assignments")
+-  set( CMAKE_CXX_FLAGS_RELEASE "-g -O3 -funroll-loops -fno-var-tracking-assignments")
++  set( CMAKE_CXX_FLAGS_RELEASE "-O2 -DNDEBUG -march=x86-64-v3")
+   # optionally add sanitize flags
+   #set( CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} ${GCC_SANITIZE_COMPILE_FLAGS}")
+   #set( CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${GCC_SANITIZE_LINK_FLAGS}")
+--- a/src/mesh.h
++++ b/src/mesh.h
+@@ -442,7 +442,8 @@
+       cells[i].set_T_r(region.get_T_r());
+       cells[i].set_rho(region.get_rho());
+       if (cells[i].get_source_face() != -1)
+-        cells[i].set_T_s(input.get_source_T());
++        // Crooked Pipe: drive only the thin inlet material (region 1).
++        cells[i].set_T_s(region_ID == 1 ? input.get_source_T() : 0.0);
+     }
+   }
+ 
+--- a/src/constants.h
++++ b/src/constants.h
+@@ -24,7 +24,7 @@
+ constexpr double k(1.60219e-31); //!< energy conversion constant GJ/keV
+ constexpr double a(0.01372);     //!< Boltzmann constant in GJ/cm^3/keV^4
+ constexpr double a_SO(1.0);      //!< Boltzmann constant for SO problems
+-constexpr double cutoff_fraction = 0.01; // note: get this from IMC_state in the future
++constexpr double cutoff_fraction = 0.001; // note: get this from IMC_state in the future
+ //constexpr double cutoff_fraction = 1.0e-6; // note: get this from IMC_state in the future
+ 
+ // parameters used in intensive scattering
+--- a/src/particle_pass_driver.h
++++ b/src/particle_pass_driver.h
+@@ -98,6 +98,31 @@
+       particle_pass_transport(mesh, gpu_setup, imc_parameters, mpi_info, mpi_types, imc_state, mctr, abs_E, track_E, all_photons, dummy_comm_photons);
+     }
+     mesh.update_temperature(abs_E, track_E, imc_state);
++    {
++      const double px[5] = {0.25, 2.75, 3.5, 4.25, 6.75};
++      const double pr[5] = {0.0, 0.0, 1.25, 0.0, 0.0};
++      double values[10] = {};
++      for (const auto &cell : mesh) {
++        if (cell.get_region_ID() != 1) continue;
++        float xyz[3]; cell.get_center(xyz);
++        const double r = std::sqrt(double(xyz[1])*xyz[1] + double(xyz[2])*xyz[2]);
++        for (int k=0; k<5; ++k) {
++          const double dx=xyz[0]-px[k], dr=r-pr[k];
++          if (dx*dx + dr*dr <= 0.01) {
++            values[k] += cell.get_T_e()*cell.get_volume();
++            values[k+5] += cell.get_volume();
++          }
++        }
++      }
++      MPI_Allreduce(MPI_IN_PLACE, values, 10, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
++      if (rank == 0) {
++        std::cout << "CP_PROBE " << imc_state.get_step() << " "
++                  << (imc_state.get_time()+imc_state.get_dt())*10.0;
++        for (int k=0; k<5; ++k) std::cout << " " << (values[k+5]>0 ? values[k]/values[k+5] : -1.0);
++        std::cout << std::endl;
++      }
++    }
++
+ 
+     // update time for next step
+     imc_state.print_conservation(imc_parameters.get_dd_mode());
