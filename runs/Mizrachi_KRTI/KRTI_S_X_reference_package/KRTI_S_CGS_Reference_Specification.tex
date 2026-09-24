@@ -1,0 +1,682 @@
+\documentclass[11pt]{article}
+\usepackage[margin=0.9in]{geometry}
+\usepackage{amsmath,amssymb,mathtools,bm}
+\usepackage{booktabs,longtable,tabularx,array}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{fancyhdr}
+\usepackage{microtype}
+\usepackage{caption}
+\usepackage{float}
+\usepackage{tcolorbox}
+\usepackage{siunitx}
+\usepackage{listings}
+\usepackage{titlesec}
+\usepackage{setspace}
+\usepackage{lastpage}
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta,positioning}
+
+\definecolor{navy}{HTML}{17365D}
+\definecolor{blue}{HTML}{2F5597}
+\definecolor{lightblue}{HTML}{EAF1F8}
+\definecolor{green}{HTML}{2F6B4F}
+\definecolor{lightgreen}{HTML}{EAF5EF}
+\definecolor{orange}{HTML}{B45F06}
+\definecolor{lightorange}{HTML}{FFF2CC}
+\definecolor{red}{HTML}{9C2F2F}
+\definecolor{lightred}{HTML}{FCE8E6}
+\definecolor{graybox}{HTML}{F3F4F6}
+\definecolor{darkgray}{HTML}{4B5563}
+
+\hypersetup{colorlinks=true,linkcolor=navy,urlcolor=blue,citecolor=navy}
+\pagestyle{fancy}
+\fancyhf{}
+\lhead{KRTI-S-X CGS specification}
+\rhead{Initialization and semi-analytic reference solver}
+\cfoot{\thepage\ / \pageref{LastPage}}
+\setlength{\headheight}{14pt}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{0.5em}
+\setstretch{1.05}
+\titleformat{\section}{\Large\bfseries\color{navy}}{\thesection}{0.6em}{}
+\titleformat{\subsection}{\large\bfseries\color{blue}}{\thesubsection}{0.6em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries\color{darkgray}}{\thesubsubsection}{0.6em}{}
+
+\newtcolorbox{keybox}[1][]{colback=lightblue,colframe=blue,boxrule=0.8pt,arc=2mm,left=2mm,right=2mm,top=1.5mm,bottom=1.5mm,#1}
+\newtcolorbox{warningbox}[1][]{colback=lightorange,colframe=orange,boxrule=0.8pt,arc=2mm,left=2mm,right=2mm,top=1.5mm,bottom=1.5mm,#1}
+\newtcolorbox{riskbox}[1][]{colback=lightred,colframe=red,boxrule=0.8pt,arc=2mm,left=2mm,right=2mm,top=1.5mm,bottom=1.5mm,#1}
+\newtcolorbox{successbox}[1][]{colback=lightgreen,colframe=green,boxrule=0.8pt,arc=2mm,left=2mm,right=2mm,top=1.5mm,bottom=1.5mm,#1}
+
+\newcommand{\vect}[1]{\bm{#1}}
+\newcommand{\Oh}{\hat{\Omega}}
+\newcommand{\dd}{\mathrm{d}}
+\newcommand{\Ihat}{\widehat I}
+\newcommand{\Jhat}{\widehat J}
+\newcommand{\Fhat}{\widehat{\vect F}}
+\newcommand{\whatv}{\widehat w}
+\newcommand{\uhat}{\widehat u}
+\newcommand{\phat}{\widehat p}
+
+\lstset{basicstyle=\ttfamily\small,frame=single,breaklines=true,columns=fullflexible,showstringspaces=false}
+
+\begin{document}
+\begin{titlepage}
+\thispagestyle{empty}
+\vspace*{0.7cm}
+{\color{navy}\rule{\textwidth}{1.6pt}}\\[0.6cm]
+{\Huge\bfseries\color{navy} KRTI-S-X}\\[0.2cm]
+{\LARGE\bfseries Frozen CGS Initial/Boundary Conditions}\\[0.2cm]
+{\Large and Semi-Analytic Eigenmode Reference Solver}\\[0.7cm]
+
+\begin{tcolorbox}[colback=graybox,colframe=darkgray,boxrule=0.8pt,arc=2mm]
+\textbf{Purpose.} This document turns the earlier KRTI-S concept into one concrete, dimensional test. Every physical input needed by the canonical transition-regime case is stated in CGS units. The companion Python program solves the reduced one-dimensional transport/eigenvalue problem and exports the background field and eigenfunctions needed to initialize the growing mode directly.
+\end{tcolorbox}
+
+\vfill
+\begin{tabularx}{\textwidth}{@{}lX@{}}
+\textbf{Frozen case} & KRTI-S-X (transition regime, $\Theta=1$) \\
+\textbf{Hydrodynamic reference model} & Inviscid, incompressible, two-fluid Euler equations \\
+\textbf{Radiation} & Gray, coherent, isotropic scattering; $\kappa_a=0$ \\
+\textbf{Primary result} & Unstable growth rate $s$ and complete linear eigenfunction \\
+\textbf{Reference method} & Fourier/Laplace separation + characteristic transport + 1-D linear solve + scalar root \\
+\textbf{Companion code} & \texttt{krti\_s\_reference.py} \\
+\textbf{Important status} & Research reference prototype; convergence is demonstrated, but the benchmark has not yet been independently peer-reviewed or cross-validated. \\
+\end{tabularx}
+\vfill
+{\small Prepared 30 August 2026.}
+\end{titlepage}
+
+\tableofcontents
+\newpage
+
+\section{What is frozen in this document}
+The previous KRTI-S note intentionally left the dimensional scale open. That is useful for theory but not sufficient for a coding agent. This document freezes a single canonical case, \textbf{KRTI-S-X}, in CGS units.
+
+\begin{keybox}
+\textbf{Canonical interpretation.} If two independent codes use the values and boundary conditions in this document, use the supplied eigenfunction normalization, and solve the same incompressible/static-scatterer equations, they are solving the same mathematical problem. No hidden temperature, EOS, source normalization, or boundary choice is required.
+\end{keybox}
+
+The thin (KRTI-S-T) and thick (KRTI-S-D) cases remain parameter variants. The transition case is frozen first because it is the scientifically interesting one and is much cheaper to converge than the very optically thick case.
+
+\section{The entire KRTI-S-X input deck in CGS units}
+
+\subsection{Domain and coordinates}
+Use the two-dimensional physical domain
+\begin{equation}
+0\le x<L_x,\qquad -H\le z\le H,
+\end{equation}
+with
+\begin{align}
+H &= 1.0000000000000000\ \mathrm{cm},\\
+k &= 4.0000000000000000\ \mathrm{cm^{-1}},\\
+L_x &= \frac{2\pi}{k}=1.5707963267948966\ \mathrm{cm}.
+\end{align}
+The unperturbed material interface is at $z=0$. The lower fluid occupies $z<0$ and the upper fluid occupies $z>0$.
+
+There is no physical $y$ dependence in the canonical case. A 3-D code may use a one-cell or finite $y$ extent with periodic $y$ boundaries, but it must preserve $\partial/\partial y=0$.
+
+\subsection{Material and force parameters}
+\begin{table}[H]
+\centering
+\caption{Frozen physical parameters for KRTI-S-X.}
+\begin{tabularx}{\textwidth}{@{}lclX@{}}
+\toprule
+Quantity & Symbol & CGS value & Meaning \\
+\midrule
+Lower density & $\rho_-$ & $1.0000000000\ \mathrm{g\,cm^{-3}}$ & Light fluid, $z<0$ \\
+Upper density & $\rho_+$ & $3.0000000000\ \mathrm{g\,cm^{-3}}$ & Heavy fluid, $z>0$ \\
+Atwood number & $A$ & $0.5$ & $(\rho_+-\rho_-)/(\rho_++\rho_-)$ \\
+Gravity magnitude & $g$ & $1.0000000000\times10^8\ \mathrm{cm\,s^{-2}}$ & Direction $-\hat z$ \\
+Speed of light & $c$ & $2.9979245800\times10^{10}\ \mathrm{cm\,s^{-1}}$ & Physical $c$, no reduced-$c$ in the frozen case \\
+Scattering opacity & $\kappa_s$ & $2.0000000000\ \mathrm{cm^2\,g^{-1}}$ & Same specific opacity in both fluids \\
+Absorption opacity & $\kappa_a$ & $0$ & No thermal coupling \\
+Lower extinction & $\chi_-$ & $2.0000000000\ \mathrm{cm^{-1}}$ & $\kappa_s\rho_-$ \\
+Upper extinction & $\chi_+$ & $6.0000000000\ \mathrm{cm^{-1}}$ & $\kappa_s\rho_+$ \\
+Lower mean free path & $\lambda_-$ & $0.5\ \mathrm{cm}$ & $1/\chi_-$ \\
+Upper mean free path & $\lambda_+$ & $1/6\ \mathrm{cm}$ & $1/\chi_+$ \\
+Target radiation support & $\alpha$ & $0.5$ & $\kappa_s F_0/(cg)$ \\
+Target net upward flux & $F_0$ & $7.4948114500\times10^{17}\ \mathrm{erg\,cm^{-2}\,s^{-1}}$ & Defines $\alpha=0.5$ \\
+Effective downward acceleration & $g_{\rm eff}$ & $5.0000000000\times10^7\ \mathrm{cm\,s^{-2}}$ & $g(1-\alpha)$ \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+The transition parameter is
+\begin{equation}
+\Theta=\frac{\kappa_s\rho_{\rm ref}}{k}=1,
+\qquad \rho_{\rm ref}=2\ \mathrm{g\,cm^{-3}},
+\end{equation}
+so the two layers have $\Theta_-=0.5$ and $\Theta_+=1.5$.
+
+\subsection{Frozen bottom radiation intensity}
+The exact transport boundary condition is a constant incoming half-space intensity at the bottom. We freeze
+\begin{equation}
+\boxed{I_b=1.6856350\times10^{18}\ \mathrm{erg\,cm^{-2}\,s^{-1}\,sr^{-1}}.}
+\end{equation}
+This number is the converged calibration that produces the target net flux $F_0$ for the flat two-layer scattering slab. The corresponding \emph{injected} upward energy flux is
+\begin{equation}
+F_{\rm in}=\pi I_b=5.29557853\times10^{18}\ \mathrm{erg\,cm^{-2}\,s^{-1}}.
+\end{equation}
+Most of this injected flux is scattered back out of the lower boundary; the net transmitted vertical flux through the stationary slab is the smaller $F_0$ above.
+
+\begin{warningbox}
+The boundary condition is $I_b$, not $F_0$ alone. A transport boundary condition requires the incoming angular intensity. $F_0$ is listed because it determines the hydrostatic support and is an essential equilibrium check.
+\end{warningbox}
+
+\subsection{Background gas pressure}
+The incompressible equations determine pressure only up to an additive constant. Freeze the interface pressure to
+\begin{equation}
+\boxed{p_*=p_0(0)=1.0000000000\times10^{12}\ \mathrm{dyn\,cm^{-2}}.}
+\end{equation}
+The background pressure is
+\begin{equation}
+p_0(z)=
+\begin{cases}
+p_*-\rho_-g_{\rm eff}z,&z<0,\\
+p_*-\rho_+g_{\rm eff}z,&z>0.
+\end{cases}
+\end{equation}
+Therefore
+\begin{align}
+p_0(-H)&=1.0000500000\times10^{12}\ \mathrm{dyn\,cm^{-2}},\\
+p_0(+H)&=9.9985000000\times10^{11}\ \mathrm{dyn\,cm^{-2}}.
+\end{align}
+The pressure is continuous at $z=0$ and its gradient changes with density.
+
+\subsection{Initial perturbation amplitude}
+Use one horizontal Fourier mode:
+\begin{equation}
+\eta(x,0)=\eta_0\cos(kx),
+\end{equation}
+with
+\begin{equation}
+\boxed{k\eta_0=10^{-3},\qquad \eta_0=2.5000000000\times10^{-4}\ \mathrm{cm}.}
+\end{equation}
+This is small enough for linear theory and large enough to be measurable in a deterministic calculation. A Monte Carlo calculation may need more histories rather than a larger amplitude if the eigenmode signal is noisy.
+
+\section{Governing equations of the frozen benchmark}
+
+\subsection{Hydrodynamics}
+In each fluid,
+\begin{align}
+\nabla\cdot\vect v&=0,\\
+\rho_j\left(\frac{\partial\vect v}{\partial t}+\vect v\cdot\nabla\vect v\right)
+&=-\nabla p-\rho_jg\hat{\vect z}+\vect f_r,
+\end{align}
+where $j\in\{-,+\}$. There is no viscosity, no surface tension, no material energy equation, and no heat conduction.
+
+\subsection{Radiation}
+For gray coherent isotropic scattering,
+\begin{equation}
+\frac{1}{c}\frac{\partial I}{\partial t}+\Oh\cdot\nabla I=\chi(J-I),
+\qquad
+J=\frac{1}{4\pi}\int I\,\dd\Omega,
+\end{equation}
+with $\chi=\kappa_s\rho$. The radiation flux and force density are
+\begin{equation}
+\vect F=\int I\Oh\,\dd\Omega,
+\qquad
+\boxed{\vect f_r=\frac{\chi}{c}\vect F.}
+\end{equation}
+The model neglects $O(v/c)$ Doppler and aberration terms. This is part of the frozen mathematical problem, not an accidental numerical approximation.
+
+\section{Every boundary and interface condition}
+
+\subsection{Horizontal hydro boundary}
+At $x=0$ and $x=L_x$, all material fields are periodic:
+\begin{equation}
+q(0,z,t)=q(L_x,z,t)
+\end{equation}
+for density/material identity, velocity, and pressure.
+
+\subsection{Top and bottom hydro boundaries}
+At $z=-1\ \mathrm{cm}$ and $z=+1\ \mathrm{cm}$ use impermeable free-slip walls:
+\begin{equation}
+\boxed{v_z(x,-H,t)=v_z(x,+H,t)=0.}
+\end{equation}
+For inviscid flow no tangential-velocity Dirichlet condition is imposed. Numerically, a slip-wall ghost cell should copy the tangential velocity and reverse the normal velocity.
+
+Pressure is \textbf{not} held to a fixed Dirichlet value at these walls. The values $p_0(\pm H)$ above describe the stationary background. A well-balanced ghost construction should extend the hydrostatic profile outside the domain while reflecting $v_z$.
+
+For a ghost-cell center at $z_g<-H$ use
+\begin{equation}
+\rho_g=\rho_-,\quad p_g=p_*-\rho_-g_{\rm eff}z_g,
+\end{equation}
+and for $z_g>H$ use
+\begin{equation}
+\rho_g=\rho_+,\quad p_g=p_*-\rho_+g_{\rm eff}z_g.
+\end{equation}
+The perturbation pressure is extrapolated consistently with the slip wall; do not clamp it to zero.
+
+\subsection{Horizontal radiation boundary}
+Radiation is periodic in $x$. A packet leaving at $x=L_x$ re-enters at $x=0$ with unchanged direction, energy, and time, and vice versa.
+
+\subsection{Bottom radiation boundary, $z=-1\ \mathrm{cm}$}
+Let $\mu=\Omega_z$. For incoming directions,
+\begin{equation}
+\boxed{I(x,-H,\Oh,t)=I_b=1.6856350\times10^{18}\ \mathrm{erg\,cm^{-2}\,s^{-1}\,sr^{-1}},\quad \mu>0.}
+\end{equation}
+The imposed source is independent of $x$ and $t$. Outgoing directions ($\mu<0$) are not constrained: they leave the domain.
+
+For Monte Carlo injection, the angular probability of packets crossing the boundary is flux weighted:
+\begin{equation}
+p(\mu)=2\mu,\quad 0<\mu<1,\qquad \phi\sim U(0,2\pi).
+\end{equation}
+Thus $\mu=\sqrt U$. The packet energy created during a timestep over physical source area $A_b$ must sum to
+\begin{equation}
+E_{\rm inject}=\pi I_b A_b\Delta t.
+\end{equation}
+
+\subsection{Top radiation boundary, $z=+1\ \mathrm{cm}$}
+The top is vacuum for incoming directions:
+\begin{equation}
+\boxed{I(x,+H,\Oh,t)=0,\quad \mu<0.}
+\end{equation}
+Outgoing directions ($\mu>0$) leave freely.
+
+\subsection{Material interface conditions}
+The interface is a material contact with no surface tension and no mass transfer. At the physical interface $z=\eta(x,t)$:
+\begin{enumerate}[leftmargin=2em]
+\item normal material velocity equals interface velocity;
+\item gas pressure is continuous;
+\item radiation intensity is continuous for every propagation direction;
+\item there is no artificial reflection/refraction law at the material interface;
+\item only $\rho$ and therefore $\chi=\kappa_s\rho$ jump.
+\end{enumerate}
+Tangential velocity may differ between the two inviscid fluids.
+
+\section{The exact initial state}
+
+\subsection{Background fields}
+The material background is
+\begin{equation}
+\rho_0(z)=\begin{cases}1,&z<0,\\3,&z>0,\end{cases}\qquad \vect v_0=0,
+\end{equation}
+with density in $\mathrm{g\,cm^{-3}}$. The pressure is the $p_0(z)$ profile already given.
+
+The radiation background is \textbf{not isotropic and not spatially constant}. It is the unique stationary solution $I_0(z,\mu)$ of
+\begin{equation}
+\mu\frac{\partial I_0}{\partial z}+\chi I_0=\chi J_0
+\end{equation}
+with the exact half-range boundary conditions above. The companion solver exports $I_0(z,\mu)$, $J_0(z)$, and $F_{0z}(z)$.
+
+\begin{warningbox}
+Do not initialize the radiation field as $I=I_b$ everywhere, and do not initialize it as an isotropic field chosen from $F_0$. Both are wrong. Use the exported stationary $I_0(z,\mu)$.
+\end{warningbox}
+
+\subsection{Eigenmode initialization: preferred method}
+The reference solver normalizes the interface eigenfunction to $\widehat\eta=1\ \mathrm{cm}$ and returns complex amplitudes $\widehat q(z)$ under the convention
+\begin{equation}
+q'(x,z,t)=\Re\left[\eta_0\widehat q(z)e^{st+ikx}\right].
+\end{equation}
+At $t=0$ initialize:
+\begin{align}
+\eta(x,0)&=\eta_0\cos(kx),\\
+\vect v(x,z,0)&=\eta_0\Re\left[(\uhat(z),\whatv(z))e^{ikx}\right],\\
+p(x,z,0)&=p_0(z)+\eta_0\Re\left[\phat(z)e^{ikx}\right],\\
+I(x,z,\Oh,0)&=I_0(z,\mu)+\eta_0\Re\left[\Ihat(z,\Oh)e^{ikx}\right].
+\end{align}
+The density/material identity is assigned from the displaced interface:
+\begin{equation}
+\rho(x,z,0)=\begin{cases}
+\rho_-,&z<\eta_0\cos(kx),\\
+\rho_+,&z>\eta_0\cos(kx).
+\end{cases}
+\end{equation}
+
+\begin{riskbox}
+\textbf{Do not shift the background profiles and also add the eigenfunction.} Use $p_0(z)$ and $I_0(z,\mu)$ at the fixed base coordinate $z$, plus the exported perturbations. Replacing $p_0(z)$ by $p_0(z-\eta)$ would double count the first-order interface-displacement term already contained in the eigenmode matching conditions.
+\end{riskbox}
+
+\subsection{Linear space-time solution}
+Once the unstable root $s$ is known, the entire linear solution is
+\begin{equation}
+q(x,z,t)=q_0(z)+\eta_0e^{st}\Re\left[\widehat q(z)e^{ikx}\right].
+\end{equation}
+The interface is
+\begin{equation}
+\boxed{\eta(x,t)=\eta_0e^{st}\cos(kx).}
+\end{equation}
+This is what the Python solver means by ``solution as a function of space and time.'' The semi-analytic solver computes $s$ and the one-dimensional eigenfunctions; $x$ and $t$ dependence then follows analytically.
+
+\section{How the semi-analytic solution is actually found}
+
+\subsection{Step 1: stationary one-dimensional radiation field}
+For the flat interface the problem is independent of $x$ and $t$:
+\begin{equation}
+\mu I_0'(z,\mu)+\chi_j I_0=\chi_jJ_0,
+\qquad
+J_0=\frac12\int_{-1}^{1}I_0\,\dd\mu.
+\end{equation}
+For constant $J_0$ over a small interval, the transport equation is integrated exactly along a characteristic. The code uses cell-averaged step characteristics. Angular averaging gives a linear system equivalent to a discretized Fredholm equation
+\begin{equation}
+(\mathcal I-\mathcal K_0)J_0=b_0.
+\end{equation}
+The solution is reconstructed to give the direction-resolved $I_0$ and net flux.
+
+\subsection{Step 2: Fourier/Laplace ansatz}
+Assume the perturbation form
+\begin{equation}
+e^{st+ikx}.
+\end{equation}
+Write
+\begin{align}
+I&=I_0+\Ihat(z,\Oh)e^{st+ikx},\\
+\vect v&=(\uhat(z),\whatv(z))e^{st+ikx},\\
+p&=p_0+\phat(z)e^{st+ikx},\\
+\eta&=\widehat\eta e^{st+ikx}.
+\end{align}
+The reference normalization is $\widehat\eta=1\ \mathrm{cm}$.
+
+\subsection{Step 3: perturbed angular transport}
+Inside either homogeneous layer,
+\begin{equation}
+\boxed{
+\mu\frac{\dd\Ihat_j}{\dd z}+
+\left(\chi_j+\frac{s}{c}+ik\xi\right)\Ihat_j
+=\chi_j\Jhat_j,
+}
+\end{equation}
+where $\xi=\Omega_x$ and
+\begin{equation}
+\Jhat=\frac{1}{4\pi}\int\Ihat\,\dd\Omega.
+\end{equation}
+The imposed incoming boundary source is not perturbed:
+\begin{align}
+\Ihat(-H,\Oh)&=0,&\mu>0,\\
+\Ihat(+H,\Oh)&=0,&\mu<0.
+\end{align}
+
+\subsection{Step 4: exact linearized interface source}
+Intensity is continuous on the \emph{moving} interface. Expanding at $z=0$ gives
+\begin{equation}
+\boxed{
+\Ihat_+(0,\Oh)-\Ihat_-(0,\Oh)
+=-\widehat\eta\left[\partial_z I_0(0,\Oh)\right]_-^+.
+}
+\end{equation}
+Using the background transport equation and continuity of $I_0$ and $J_0$ at the interface,
+\begin{equation}
+\boxed{
+\Ihat_+-\Ihat_-=
+-\widehat\eta\,\frac{(\chi_+-\chi_-)}{\mu}\left[J_0(0)-I_0(0,\mu)\right].
+}
+\end{equation}
+This direction-dependent jump is the source that couples the interface corrugation to the radiation field.
+
+\subsection{Step 5: characteristic reduction to a one-dimensional linear system}
+For a trial complex $s$, define
+\begin{equation}
+a_j=\chi_j+s/c+ik\xi.
+\end{equation}
+Along a characteristic,
+\begin{equation}
+\Ihat(z)=\Ihat(z_a)e^{-a_j(z-z_a)/\mu}
++\int_{z_a}^{z}\frac{\chi_j}{\mu}\Jhat(z')e^{-a_j(z-z')/\mu}\,\dd z'.
+\end{equation}
+After angular averaging,
+\begin{equation}
+\boxed{(\mathcal I-\mathcal K_s)\Jhat=b_s\widehat\eta.}
+\end{equation}
+This is a one-dimensional complex linear system after quadrature; there is no 2-D radiation grid in the reference calculation. Reconstruct
+\begin{equation}
+\Fhat(z)=\int\Oh\Ihat\,\dd\Omega
+\end{equation}
+and then
+\begin{equation}
+\widehat{\vect f}_{r,j}=\frac{\chi_j}{c}\Fhat_j.
+\end{equation}
+
+\subsection{Step 6: forced incompressible hydrodynamics}
+Linear incompressibility and momentum give
+\begin{align}
+ik\uhat+\whatv'&=0,\\
+\rho_js\uhat&=-ik\phat+\widehat f_x,\\
+\rho_js\whatv&=-\phat'+\widehat f_z.
+\end{align}
+Eliminating $\uhat$ and $\phat$ gives
+\begin{equation}
+\boxed{
+(\dd_z^2-k^2)\whatv_j
+=-\frac{k^2\widehat f_{z,j}+ik\,\partial_z\widehat f_{x,j}}{\rho_js}.
+}
+\end{equation}
+For $\widehat\eta=1\ \mathrm{cm}$,
+\begin{align}
+\whatv_-(0)&=\whatv_+(0)=s,\\
+\whatv_-(-H)&=0,\\
+\whatv_+(+H)&=0.
+\end{align}
+Recover pressure from
+\begin{equation}
+\boxed{\phat=-\frac{\rho_js}{k^2}\whatv'-\frac{i}{k}\widehat f_x.}
+\end{equation}
+
+\subsection{Step 7: scalar dispersion residual}
+Pressure continuity on the displaced interface gives
+\begin{equation}
+\phat_+(0)-\phat_-(0)=(\rho_+-\rho_-)g_{\rm eff}\widehat\eta.
+\end{equation}
+Define
+\begin{equation}
+\boxed{D(s)=\phat_+(0)-\phat_-(0)-(\rho_+-\rho_-)g_{\rm eff}\widehat\eta.}
+\end{equation}
+The unstable reference eigenvalue is
+\begin{equation}
+\boxed{D(s)=0,\qquad \Re(s)>0.}
+\end{equation}
+For KRTI-S-X the branch found by the current implementation is real and positive.
+
+\section{What the companion Python program does}
+The supplied file \texttt{krti\_s\_reference.py} implements exactly the reduction above using:
+\begin{itemize}[leftmargin=2em]
+\item Gauss--Legendre quadrature in $\mu=\Omega_z$;
+\item uniform azimuthal quadrature in $\phi$;
+\item exact cell-averaged step-characteristic transport for a piecewise-constant $J$;
+\item dense one-dimensional linear solves for the background and perturbed mean intensity;
+\item a one-dimensional finite-difference hydrodynamic BVP after the transport reduction;
+\item a safeguarded scalar root solve for $D(s)$.
+\end{itemize}
+
+Typical usage is
+\begin{lstlisting}
+python krti_s_reference.py --case X --nz 128 --nmu 24 --nphi 16 \
+    --outdir krti_reference
+\end{lstlisting}
+Here \texttt{--nz} is the number of radiation cells \emph{per layer}. The program creates a subdirectory \texttt{KRTI-S-X/}.
+
+\subsection{Files intended for initialization}
+The most important output is
+\begin{lstlisting}
+KRTI-S-X_eigenfunctions.npz
+\end{lstlisting}
+which contains:
+\begin{itemize}[leftmargin=2em]
+\item $s$, $k$, and $\eta_0$;
+\item radiation grid $z$;
+\item background $J_0$, $F_{0z}$, $I_0(\mu,z)$;
+\item $\Jhat$, $\widehat F_x$, $\widehat F_z$;
+\item full direction-resolved $\Ihat(z,\mu,\phi)$;
+\item hydrodynamic grid and $\uhat$, $\whatv$, $\phat$;
+\item angular quadrature directions and weights.
+\end{itemize}
+The complex eigenfunctions use the physical-field convention
+\begin{equation}
+q'(x,z,t)=\Re[\eta_0\widehat q(z)e^{st+ikx}].
+\end{equation}
+
+CSV versions are also written for inspection. The compressed NPZ should be preferred for direct code initialization because it preserves complex values and direction-resolved intensity compactly.
+
+\section{Current numerical reference values and convergence status}
+
+\subsection{Background source calibration}
+High-resolution one-dimensional background solves give
+\begin{equation}
+I_b\approx1.685635\times10^{18}\ \mathrm{erg\,cm^{-2}\,s^{-1}\,sr^{-1}}.
+\end{equation}
+The frozen value above was chosen from this convergence sequence. The physical target net flux is exactly the specified $F_0$; a finite reference discretization should approach it as its $z$ and angular resolution are increased.
+
+\subsection{Unstable-root convergence}
+For the frozen $I_b$ and the current reference implementation, representative results are:
+\begin{table}[H]
+\centering
+\caption{Prototype KRTI-S-X root convergence. These values demonstrate that the script is solving a stable branch; they are not yet a peer-reviewed final benchmark table.}
+\begin{tabular}{rrrr}
+\toprule
+Cells/layer & $N_\mu$ & $N_\phi$ & $s\ [\mathrm{s^{-1}}]$ \\
+\midrule
+64 & 16 & 16 & $1.287158\times10^4$ \\
+96 & 20 & 16 & $1.288599\times10^4$ \\
+128 & 24 & 16 & $1.289326\times10^4$ \\
+160 & 28 & 16 & $1.289754\times10^4$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+A simple first-order-in-$\Delta z$ extrapolation places the continuum root near $1.291\times10^4\ \mathrm{s^{-1}}$. A publication-quality reference should add higher-order spatial transport or a more systematic Richardson study before freezing more digits.
+
+For comparison, the classical finite-height RTI result using only the residual effective gravity is
+\begin{equation}
+s_{\rm cl,eff}=\sqrt{A g_{\rm eff} k\tanh(kH)}=9.99664594\times10^3\ \mathrm{s^{-1}}.
+\end{equation}
+The current full-transport root is therefore substantially different from the naive effective-gravity value, which is precisely the signal KRTI-S is intended to test.
+
+\subsection{Mandatory analytic self-test}
+When $\alpha=0$ the background radiation vanishes and the code must recover
+\begin{equation}
+s^2=A g k\tanh(kH).
+\end{equation}
+A coarse internal test ($24$ cells/layer, $N_\mu=N_\phi=8$) recovered the analytic value to approximately $8\times10^{-5}$ relative error. This test should remain in the reference solver as a regression check.
+
+\section{How to initialize a Monte Carlo radiation field}
+The exact eigenmode is angularly anisotropic. If a Monte Carlo code can initialize packets from an arbitrary intensity, use
+\begin{equation}
+I_{\rm init}(x,z,\Oh)=I_0(z,\mu)+\eta_0\Re[\Ihat(z,\Oh)e^{ikx}].
+\end{equation}
+For the chosen $\eta_0$, the computed intensity perturbation is much smaller than the background (well below one percent in the present reference discretization), so positive-weight packet sampling is not problematic.
+
+A practical procedure is:
+\begin{enumerate}[leftmargin=2em]
+\item construct a sampling table for $I_{\rm init}$ over cell, $\mu$, and $\phi$ from the NPZ file;
+\item sample cell/location proportional to radiation energy density;
+\item sample direction from the local discrete/continuous angular distribution;
+\item assign packet energies so the ensemble reproduces the integrated $I_{\rm init}$;
+\item use many independent transport seeds to separate initialization noise from growth-rate error.
+\end{enumerate}
+
+If arbitrary anisotropic packet initialization is unavailable, interface-only initialization is still possible, but early-time transient modes must be discarded before fitting the growth rate.
+
+\section{RICH-compatible low-Mach realization: not exactly the same PDE}
+RICH evolves compressible hydrodynamics. The mathematical KRTI-S reference is incompressible. Therefore an ideal-gas RICH calculation can only approximate this benchmark unless an incompressible/barotropic mode is added.
+
+A useful low-Mach proxy is to use $\gamma=5/3$ with the same pressure profile. The specific internal energy is
+\begin{equation}
+e=\frac{p}{(\gamma-1)\rho}.
+\end{equation}
+At the unperturbed interface this gives
+\begin{align}
+e_-(0)&=1.5000000\times10^{12}\ \mathrm{erg\,g^{-1}},\\
+e_+(0)&=5.0000000\times10^{11}\ \mathrm{erg\,g^{-1}}.
+\end{align}
+At the physical bottom and top boundaries,
+\begin{align}
+e_-(-H)&=1.5000750\times10^{12}\ \mathrm{erg\,g^{-1}},\\
+e_+(+H)&=4.9992500\times10^{11}\ \mathrm{erg\,g^{-1}}.
+\end{align}
+The interface sound speeds are approximately $1.29\times10^6$ and $7.45\times10^5\ \mathrm{cm\,s^{-1}}$, much larger than the RTI velocity scale $\sqrt{g/k}=5.0\times10^3\ \mathrm{cm\,s^{-1}}$.
+
+\begin{warningbox}
+A RICH result should be called ``KRTI-S incompressible-limit'' unless convergence with increasing sound speed/background pressure has been demonstrated. The reference Python eigenfunction does not include compressible acoustic corrections.
+\end{warningbox}
+
+For a compressible code, run at several $p_*$ values (or sound speeds) and extrapolate the measured growth rate toward the incompressible limit. This is preferable to silently calling one high-pressure ideal-gas calculation exact.
+
+\section{Explicit simulation protocol}
+\begin{enumerate}[leftmargin=2em]
+\item Build the flat two-layer material state with the exact densities above.
+\item Load the stationary $I_0(z,\mu)$ from the deterministic reference package.
+\item Load the hydrostatic $p_0(z)$ and set zero background velocity.
+\item With no perturbation, verify that the interface does not drift and that the mean radiation force plus gas-pressure gradient balances gravity.
+\item Load the eigenfunctions and apply the $\eta_0e^{ikx}$ perturbation to interface, velocity, pressure, and radiation intensity.
+\item Evolve with the bottom source, top vacuum, horizontal periodicity, gravity, and scattering momentum exchange all enabled.
+\item Measure the fundamental interface Fourier amplitude $A_\eta(t)$.
+\item In the linear window fit
+\begin{equation}
+\ln A_\eta(t)=\ln A_0+s_{\rm num}t.
+\end{equation}
+\item Compare both $s_{\rm num}$ and selected eigenfunction shapes ($F_x,F_z,w,p$) with the reference package.
+\end{enumerate}
+
+A reasonable linear-amplitude upper limit remains
+\begin{equation}
+A_\eta\lesssim\frac{0.05}{k}=1.25\times10^{-2}\ \mathrm{cm}.
+\end{equation}
+With $s\simeq1.29\times10^4\ \mathrm{s^{-1}}$, one e-fold is about $7.7\times10^{-5}\ \mathrm{s}$.
+
+\section{What the code must not do}
+\begin{itemize}[leftmargin=2em]
+\item Do not use absorption/emission or a Fleck factor in KRTI-S-X.
+\item Do not replace scattering momentum deposition by a diffusion-pressure-gradient force in the transition case.
+\item Do not make $z$ periodic.
+\item Do not reflect radiation from the top or bottom; only hydro has slip walls there.
+\item Do not initialize radiation as isotropic.
+\item Do not perturb only density while calling the state an eigenmode initialization.
+\item Do not shift $p_0$ or $I_0$ by the interface displacement and then also add the eigenfunctions.
+\item Do not compare a compressible ideal-gas run to the incompressible root without a low-Mach convergence study.
+\end{itemize}
+
+\section{Parameter variants after KRTI-S-X}
+Keeping all dimensional scales fixed, the earlier thin and thick variants change only $\kappa_s$ (and the bottom source must be recalibrated if the same $\alpha=0.5$ is desired):
+\begin{table}[H]
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+Case & $\Theta$ & $\kappa_s$ [cm$^2$/g] & $\chi_-$ [cm$^{-1}$] & $\chi_+$ [cm$^{-1}$] \\
+\midrule
+KRTI-S-T & 0.1 & 0.2 & 0.2 & 0.6 \\
+KRTI-S-X & 1 & 2 & 2 & 6 \\
+KRTI-S-D & 30 & 60 & 60 & 180 \\
+\bottomrule
+\end{tabular}
+\end{table}
+The thick case requires much greater $z$ resolution in the deterministic solver because a uniform physical grid otherwise contains optically thick cells. It should not be treated as numerically converged merely because the linear system solves.
+
+\section{Definition of ``solved'' for the semi-analytic reference}
+Before publishing KRTI-S-X reference digits, require:
+\begin{enumerate}[leftmargin=2em]
+\item background $F_{0z}(z)$ converged and constant;
+\item $s$ converged in $N_z,N_\mu,N_\phi$;
+\item $\alpha=0$ classical RTI recovered to much better accuracy than the target code tolerance;
+\item boundary and interface jump residuals verified explicitly;
+\item an independent implementation of the deterministic reference or a second transport method reproduces the same root;
+\item eigenfunction normalization and phase conventions frozen in machine-readable files.
+\end{enumerate}
+
+\begin{successbox}
+\textbf{Bottom line.} The CGS numbers in this document make the physical problem unambiguous. The Python program provides a reproducible \emph{prototype} semi-analytic eigenvalue/eigenfunction solution. The remaining scientific task is not to invent missing initial conditions; it is to converge and independently verify the reference root to publication quality.
+\end{successbox}
+
+\newpage
+\section*{References}
+\addcontentsline{toc}{section}{References}
+\begin{thebibliography}{9}
+\bibitem{JacquetKrumholz2011}
+E. Jacquet and M. R. Krumholz,
+``Radiative Rayleigh--Taylor Instabilities,''
+\emph{The Astrophysical Journal}, 730:116 (2011).
+\href{https://doi.org/10.1088/0004-637X/730/2/116}{doi:10.1088/0004-637X/730/2/116}.
+
+\bibitem{Jiang2013}
+Y.-F. Jiang, S. W. Davis, and J. M. Stone,
+``Non-linear Evolution of Rayleigh--Taylor Instability in a Radiation Supported Atmosphere,''
+\emph{The Astrophysical Journal}, 763:102 (2013).
+\href{https://doi.org/10.1088/0004-637X/763/2/102}{doi:10.1088/0004-637X/763/2/102}.
+
+\bibitem{Zhang2026}
+C. Zhang et al.,
+``Linear stability analysis of radiative effects on compressible Rayleigh--Taylor instability,''
+\emph{Physical Review E} 113, 045203 (2026).
+\end{thebibliography}
+
+\end{document}
