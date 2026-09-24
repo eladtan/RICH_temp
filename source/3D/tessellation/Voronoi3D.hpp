@@ -366,6 +366,8 @@ public:
     double GetMinRadius(const size_t& index) const { return engine_.GetMinRadius(index); }
 
     void BuildInitialize(size_t num_points) { engine_.BuildInitialize(num_points); }
+    //! \brief Drops spare container capacity after a rebuild on fewer points.
+    void ShrinkToFit() { engine_.ShrinkToFit(); }
 
     MadVoro::Voronoi3D<Vector3D>& engine() { return engine_; }
 

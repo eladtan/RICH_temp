@@ -18,10 +18,15 @@ void InitializeFluxSourceSurface(
     Config const& cfg,
     PostprocessRuntime& runtime);
 
+// Installs the face sources of the current decomposition on `physics`, and,
+// when volume emission is enabled, the mask of outside cells whose thermal
+// emission (Planck-mean of `emissionOpacity`) passes the cutoff.
 void ConfigureFluxSourceForCurrentDecomposition(
     Config const& cfg,
     PostprocessRuntime& runtime,
-    RadiationIMC& physics);
+    RadiationIMC& physics,
+    OpacityCalculator const& emissionOpacity,
+    bool multigroupPass);
 
 FluxSourcePolarizationSummary ComputeFluxSourcePolarizationSummary(
     SphericalObserver::ObserverQualitySnapshot const& snapshot);

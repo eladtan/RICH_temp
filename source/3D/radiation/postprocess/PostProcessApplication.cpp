@@ -22,6 +22,7 @@
 #include "source/3D/monte/MonteCarloManager3D.hpp"
 #ifdef RICH_MPI
 #include "source/monte/manager/communication/RDMACommunicationEngine.hpp"
+#include "PostProcessCommunication.hpp"
 #endif // RICH_MPI
 #include "source/3D/radiation/RadiationIMC.hpp"
 #include "source/3D/radiation/SphericalObserver.hpp"
@@ -152,13 +153,33 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.nGenerations = publicConfig.transport.generations;
     cfg.ddmc = publicConfig.transport.ddmc;
     cfg.randomWalk = publicConfig.transport.randomWalk;
+    cfg.ddmcMinCellOpticalDepth = publicConfig.transport.ddmcMinCellOpticalDepth;
     cfg.useCellVelocities = publicConfig.transport.useCellVelocities;
+    switch (publicConfig.transport.communication) {
+    case PostProcessIMC::MonteCarloCommunication::Rdma:
+        cfg.communication = CommunicationMode::Rdma; break;
+    case PostProcessIMC::MonteCarloCommunication::TwoSided:
+        cfg.communication = CommunicationMode::TwoSided; break;
+    default:
+        cfg.communication = CommunicationMode::Auto; break;
+    }
     cfg.polarization = publicConfig.polarization.enabled;
     cfg.photosphere = publicConfig.photosphere.enabled;
     cfg.fluxSourceCompare = publicConfig.fluxSource.enabled;
     cfg.fluxSourceThermalizationTau = publicConfig.fluxSource.thermalizationTau;
     cfg.fluxSourceRays = publicConfig.fluxSource.constructionRays;
     cfg.fluxSourceDDMCFaceOpticalDepth = publicConfig.fluxSource.ddmcFaceOpticalDepth;
+    cfg.fluxSourceSurfaceMode = publicConfig.fluxSource.surfaceMode;
+    cfg.volumeEmissionEnabled = publicConfig.volumeEmission.enabled;
+    cfg.volumeEmissionCutoffFraction = publicConfig.volumeEmission.cutoffFraction;
+    cfg.volumeEmissionBurninPacketsTarget = publicConfig.volumeEmission.burninPacketsTarget;
+    cfg.volumeEmissionGateGroups = publicConfig.volumeEmission.gateGroups;
+    cfg.volumeEmissionBurninExact = publicConfig.volumeEmission.burninExact;
+    cfg.volumeEmissionExplorationWeightFraction = publicConfig.volumeEmission.explorationWeightFraction;
+    cfg.volumeEmissionLearnedPhotonsPerCellBudget = publicConfig.volumeEmission.learnedPhotonsPerCellBudget;
+    cfg.volumeEmissionLearnedPhotonsPerCellBudgetGrey = publicConfig.volumeEmission.learnedPhotonsPerCellBudgetGrey;
+    cfg.volumeEmissionLearnedMinPhotons = publicConfig.volumeEmission.learnedMinPhotons;
+    cfg.volumeEmissionLearnedMaxPhotons = publicConfig.volumeEmission.learnedMaxPhotons;
     cfg.polarizationManualScatterings =
         publicConfig.polarization.manualScatteringsAfterAcceleration;
     cfg.polarizationDepolarizationScatterings =
@@ -176,6 +197,11 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
         cfg.opacityScaleMode = OpacityScaleMode::Planck;
         break;
     }
+    cfg.opacityScaleAlphaMin = publicConfig.opacityScaling.alphaMin;
+    cfg.opacityScaleAlphaMax = publicConfig.opacityScaling.alphaMax;
+    if (cfg.opacityScaleAlphaMin < 0.0 || cfg.opacityScaleAlphaMax < 0.0 ||
+        (cfg.opacityScaleAlphaMax > 0.0 && cfg.opacityScaleAlphaMin > cfg.opacityScaleAlphaMax))
+        throw UniversalError("opacity-scaling.alpha-min/alpha-max must be >= 0 with min <= max");
     cfg.adaptiveSourceCells = publicConfig.adaptive.source.enabled;
     cfg.adaptiveSourceBurnin = publicConfig.adaptive.source.burninGenerations;
     cfg.adaptiveSourceStrength = publicConfig.adaptive.source.strength;
@@ -189,6 +215,8 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.adaptiveSourceLearnedMinFactor = publicConfig.adaptive.source.learnedMinFactor;
     cfg.adaptiveSourceLearnedMinPhotons = publicConfig.adaptive.source.learnedMinPhotons;
     cfg.adaptiveSourceLearnedMaxPhotons = publicConfig.adaptive.source.learnedMaxPhotons;
+    cfg.adaptiveSourceLearnedPhotonsPerCellBudget =
+        publicConfig.adaptive.source.learnedPhotonsPerCellBudget;
     cfg.adaptiveSourceScorePower = publicConfig.adaptive.source.scorePower;
     cfg.adaptiveSourceWeightScoreFrac = publicConfig.adaptive.source.weightScoreFraction;
     cfg.adaptiveObserverEquity = publicConfig.adaptive.observer.equity;
@@ -198,6 +226,10 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
         publicConfig.adaptive.observer.targetEffectivePackets;
     cfg.adaptiveObserverTargetPolSnr =
         publicConfig.adaptive.observer.targetPolarizationSnr;
+    cfg.adaptiveObserverTargetPolSigma =
+        publicConfig.adaptive.observer.targetPolarizationSigma;
+    cfg.adaptiveObserverNormalizeDeficits =
+        publicConfig.adaptive.observer.normalizeDeficits;
     cfg.adaptiveObserverDeficitMax = publicConfig.adaptive.observer.maxDeficit;
     cfg.adaptiveObserverDeficitEma = publicConfig.adaptive.observer.deficitEma;
     cfg.measuredLBWeightCompression = publicConfig.loadBalance.weightCompression;
@@ -527,15 +559,27 @@ int PostProcessIMC::RunPostProcessMain(
                       << "Photons/cell:    " << cfg.photonsPerCell << "\n"
                       << "Center:          (" << cfg.center.x << ", " << cfg.center.y << ", " << cfg.center.z << ")\n"
                       << "Compton:         " << (cfg.compton ? "yes" : "no") << "\n"
+                      << "DDMC min cell tau: " << cfg.ddmcMinCellOpticalDepth << "\n"
                       << "DDMC:            "
                       << (cfg.ddmc ? "yes" : "no")
                       << (cfg.fluxSourceCompare && cfg.ddmc
                           ? " (native thermalizing CER boundary)" : "") << "\n"
+                      << "Communication:   "
+                      << CommunicationModeName(cfg.communication) << "\n"
                       << "Cell velocities: " << (cfg.useCellVelocities ? "yes" : "no") << "\n"
                       << "Polarization:    " << (cfg.polarization ? "yes" : "no") << "\n"
                       << "Photosphere:     " << (cfg.photosphere ? "yes" : "no") << "\n"
                       << "Flux source test:" << (cfg.fluxSourceCompare ? " yes" : " no") << "\n"
                       << "Flux source tau: " << cfg.fluxSourceThermalizationTau << "\n"
+                      << "Volume emission:  " << (cfg.volumeEmissionEnabled
+                          ? "yes (fixed-T, Fleck 1, cutoff " + std::to_string(cfg.volumeEmissionCutoffFraction) +
+                            " of total, burn-in target " + std::to_string(cfg.volumeEmissionBurninPacketsTarget) +
+                            " packets, learned budget " + std::to_string(cfg.volumeEmissionLearnedPhotonsPerCellBudget) + "/cell)"
+                          : std::string("no")) << "\n"
+                      << "Flux source surface: "
+                      << (cfg.fluxSourceSurfaceMode == FluxSourceSurfaceMode::MultigroupInnermost
+                          ? "innermost per-group thermalization radius (mg-innermost)"
+                          : "grey thermalization radius") << "\n"
                       << "Flux source DDMC face tau: "
                       << cfg.fluxSourceDDMCFaceOpticalDepth << "\n"
                       << "Flux source transport: "
@@ -549,10 +593,12 @@ int PostProcessIMC::RunPostProcessMain(
                       << "  max cell imbalance: " << MEASURED_LB_MAX_CELL_IMBALANCE << "\n"
                       << "  adaptive cadence: learned-only probe LB, then every 10 learned-final steps before the last\n"
                       << "Opacity scale:   " << (cfg.opacityScaleMode == imc_postprocess_tde::OpacityScaleMode::Planck ? "planck" :
-                                                  cfg.opacityScaleMode == imc_postprocess_tde::OpacityScaleMode::Rosseland ? "rosseland" : "disabled") << "\n"
+                                                  cfg.opacityScaleMode == imc_postprocess_tde::OpacityScaleMode::Rosseland ? "rosseland" : "disabled")
+                      << " alpha bounds [" << cfg.opacityScaleAlphaMin << ", "
+                      << (cfg.opacityScaleAlphaMax > 0.0 ? std::to_string(cfg.opacityScaleAlphaMax) : std::string("inf")) << "]\n"
                       << "Adaptive source: " << (cfg.adaptiveSourceCells ? "enabled" : "disabled") << "\n"
                       << "  MG schedule:   1 exact-1 burn-in, 19 exact-3 burn-in, learned-only exact-75 probe, LB, "
-                      << cfg.nGenerations << " learned-only final steps (min=500 max=2000)\n"
+                      << cfg.nGenerations << " Neyman-allocated final steps\n"
                       << "  final LB cadence: every 10 learned-final steps before the last\n"
                       << "  min esc frac:  " << cfg.adaptiveSourceMinEscapedFrac << "\n"
                       << "  strength:      " << cfg.adaptiveSourceStrength << "\n"
@@ -562,11 +608,17 @@ int PostProcessIMC::RunPostProcessMain(
                       << "  learned min factor:        " << cfg.adaptiveSourceLearnedMinFactor << "\n"
                       << "  learned photons/cell min:  " << cfg.adaptiveSourceLearnedMinPhotons << "\n"
                       << "  learned photons/cell max:  " << cfg.adaptiveSourceLearnedMaxPhotons << "\n"
-                      << "  learned score power:       " << cfg.adaptiveSourceScorePower << "\n"
+                      << "  learned photons/cell budget: " << cfg.adaptiveSourceLearnedPhotonsPerCellBudget << "\n"
+                      << "  learned score power:       " << cfg.adaptiveSourceScorePower
+                      << (cfg.adaptiveSourceScorePower == 0.5 ? " (Neyman)" : "") << "\n"
                       << "  weight score fraction:     " << cfg.adaptiveSourceWeightScoreFrac << "\n"
                       << "  observer equity:           " << ((cfg.adaptiveSourceCells && cfg.adaptiveObserverEquity) ? "enabled" : "disabled") << "\n"
                       << "  observer target neff:      " << cfg.adaptiveObserverTargetNeff << "\n"
-                      << "  observer target pol SNR:   " << cfg.adaptiveObserverTargetPolSnr << "\n"
+                      << "  observer target pol SNR:   " << cfg.adaptiveObserverTargetPolSnr
+                      << (cfg.adaptiveObserverTargetPolSigma > 0.0 ? " (overridden by sigma target)" : "") << "\n"
+                      << "  observer target pol sigma: " << cfg.adaptiveObserverTargetPolSigma
+                      << (cfg.adaptiveObserverTargetPolSigma > 0.0 ? "" : " (disabled)") << "\n"
+                      << "  observer deficit normalize: " << (cfg.adaptiveObserverNormalizeDeficits ? "median" : "off") << "\n"
                       << "  polarization SNR scoring:  "
                       << ((cfg.adaptiveSourceCells && cfg.adaptiveObserverEquity && cfg.polarization)
                               ? "enabled" : "disabled") << "\n"
@@ -643,7 +695,17 @@ int PostProcessIMC::RunPostProcessMain(
         Snapshot3D snapshot =
             scenario.factories.loadSnapshot(effectiveInput, parallel);
 
-        if (snapshot.mesh_points.empty()) {
+        // Ranks beyond the count that wrote the snapshot legitimately hold no
+        // points, so only a globally empty snapshot is an error. Deciding this
+        // per rank would make those ranks return while the rest went on to the
+        // collectives in the tessellation build.
+        unsigned long long localMeshPoints = snapshot.mesh_points.size();
+        unsigned long long globalMeshPoints = localMeshPoints;
+#ifdef RICH_MPI
+        MPI_Allreduce(&localMeshPoints, &globalMeshPoints, 1,
+                      MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+#endif
+        if (globalMeshPoints == 0) {
             if (rank == 0) std::cerr << "Empty snapshot\n";
 #ifdef RICH_MPI
             if (ownsMpi) MPI_Finalize();
@@ -685,7 +747,10 @@ int PostProcessIMC::RunPostProcessMain(
             MPI_exchange_data(tempTess, tauScatVec, true);
             size_t Ntot = tauScatVec.size();
 
-            lbWeights.resize(N);
+            // Floor every weight at 1: the branch below only assigns cells above
+            // the scattering threshold, and a default of 0 tells the rebalancer a
+            // thin cell is free, letting one rank absorb unbounded points.
+            lbWeights.assign(N, 1.0);
             localPoints.resize(N);
             for (size_t i = 0; i < N; ++i)
             {
@@ -721,6 +786,9 @@ int PostProcessIMC::RunPostProcessMain(
 
         Voronoi3D tess(snapshot.ll, snapshot.ur);
         tess.BuildParallel(localPoints, lbWeights);
+        // Containers keep the capacity of the largest mesh ever built on this
+        // rank (the weighted build above can put 3x the average here); shrink.
+        tess.ShrinkToFit();
 
         localPoints.clear();
         localPoints.shrink_to_fit();
@@ -728,6 +796,7 @@ int PostProcessIMC::RunPostProcessMain(
         lbWeights.shrink_to_fit();
 
         MPI_exchange_data(tess, snapshot.cells, false, 1, &dummyCell);
+        snapshot.cells.shrink_to_fit();
 #else
         Voronoi3D tess(snapshot.ll, snapshot.ur);
         tess.Build(snapshot.mesh_points);
@@ -775,6 +844,7 @@ int PostProcessIMC::RunPostProcessMain(
             RecomputeOpacityScaleFactors(
                 *opacity, *greyOpacity, cells, Ncells, rank,
                 cfg.opacityScaleMode,
+                cfg.opacityScaleAlphaMin, cfg.opacityScaleAlphaMax,
                 [&](std::unordered_map<size_t, double> factors) {
                     scenario.factories.applyOpacityScaleFactors(
                         *opacity, std::move(factors));
@@ -903,7 +973,7 @@ int PostProcessIMC::RunPostProcessMain(
         params.withRandomWalk = cfg.randomWalk && !cfg.fluxSourceCompare;
         params.rwMinCellOpticalDepth = 15;
         params.withDDMC = cfg.ddmc;
-        params.ddmcMinCellOpticalDepth = 15;
+        params.ddmcMinCellOpticalDepth = cfg.ddmcMinCellOpticalDepth;
         params.ddmcExternalSourceMinFaceOpticalDepth =
             cfg.fluxSourceDDMCFaceOpticalDepth;
         params.withMultigroupDDMC = true;
@@ -944,8 +1014,8 @@ int PostProcessIMC::RunPostProcessMain(
 #ifdef RICH_MPI
         MonteCarloConfig monteCarloConfig;
         std::unique_ptr<STORM::CommunicationEngine<Vector3D>> engine =
-            std::make_unique<STORM::RDMACommunicationEngine<Vector3D, Tessellation3D>>(
-                tess, monteCarloConfig, MPI_COMM_WORLD, RDMA_Type::AUTO_RDMA);
+            MakeCommunicationEngine(
+                tess, monteCarloConfig, cfg.communication, MPI_COMM_WORLD);
         manager = std::make_shared<MonteCarloManager3D>(
             tess, physics, popControl, boundary, monteCarloConfig, std::move(engine));
 #else
@@ -982,9 +1052,15 @@ int PostProcessIMC::RunPostProcessMain(
             std::cerr << std::flush;
         }
 
+        // The session owns the manager. Passing a copy would leave this
+        // local shared_ptr keeping the original manager alive after the
+        // measured-LB repartition replaces runtime.manager; the stale
+        // manager's P2P engine then still has particle receives posted on
+        // the old neighbour list and silently swallows the first message
+        // from every old neighbour in the next generation.
         PostProcessSession runtime{
             rank, mpiSize, tess, cells, extensives, eos, opacity, greyOpacity,
-            observer, boundary, popControl, physics, manager, params, Ncells,
+            observer, boundary, popControl, physics, std::move(manager), params, Ncells,
             snapshot.time, snapshot.cycle, dummyCell, fldLuminosity,
             totalFldLum,
             [&](std::unordered_map<size_t, double> factors) {
@@ -1005,7 +1081,7 @@ int PostProcessIMC::RunPostProcessMain(
 
         if (cfg.fluxSourceCompare) {
             InitializeFluxSourceSurface(cfg, runtime);
-            ConfigureFluxSourceForCurrentDecomposition(cfg, runtime, *physics);
+            ConfigureFluxSourceForCurrentDecomposition(cfg, runtime, *physics, *opacity, true);
         }
 
         Config const passConfig = MakePassOutputConfig(cfg);

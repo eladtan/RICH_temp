@@ -8,8 +8,10 @@
 #include <limits>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
+#include "IMCPostProcessControl.hpp"
 #include "PostProcessConfig.hpp"
 #include "PostProcessRuntime.hpp"
 
@@ -51,10 +53,50 @@ struct ObserverQualityDiagnostics
     double snrP05 = 0.0;
     double snrMedian = 0.0;
     double snrP95 = 0.0;
+    // Absolute polarization-degree uncertainty per observer (0 when unknown).
+    double sigmaP05 = 0.0;
+    double sigmaPMedian = 0.0;
+    double sigmaP95 = 0.0;
+    // Median of the raw deficits before normalization; 1 when not normalizing.
+    double deficitNormalization = 1.0;
+    // Observers whose uncertainty could not be estimated yet (deficit = cap).
+    size_t sentinelObservers = 0;
     std::vector<double> deficitByObserver;
     std::vector<double> neffByObserver;
     std::vector<double> snrByObserver;
+    std::vector<double> sigmaPByObserver;
     std::vector<unsigned long long> crossingsByObserver;
+};
+
+// Packets emitted by one local source cell in the generation just finished.
+// The adaptive score needs this to remove the 1/n dependence of the measured
+// weight-squared contributions, so the learned quantity does not change when
+// the allocation changes.
+struct SourceCellEmission
+{
+    size_t cellID = 0;
+    size_t photons = 0;
+};
+
+// Explicit per-cell packet counts for one final generation.
+struct SourceAllocationPlan
+{
+    std::unordered_map<size_t, double> photonsByCell;
+    unsigned long long totalPhotons = 0;
+    size_t cells = 0;
+    size_t flooredCells = 0;
+    size_t cappedCells = 0;
+    double budgetPhotons = 0.0;
+    double minPhotons = 0.0;
+    double medianPhotons = 0.0;
+    double maxPhotons = 0.0;
+    // (sum n_i)^2 / (N sum n_i^2): 1 for a flat allocation, smaller the more
+    // the budget is concentrated.
+    double concentration = 1.0;
+    size_t faceCells = 0;
+    size_t volumeCells = 0;
+    unsigned long long facePhotons = 0;
+    unsigned long long volumePhotons = 0;
 };
 
 constexpr double MEASURED_LB_MAX_CELL_IMBALANCE = 2.5;
@@ -211,8 +253,40 @@ RadiationIMC::GroupSamplingDiagnostics ReduceGroupSamplingDiagnostics(
 void AccumulateGroupSamplingDiagnostics(
     RadiationIMC::GroupSamplingDiagnostics& total,
     RadiationIMC::GroupSamplingDiagnostics const& gen);
+std::vector<SourceCellEmission> BuildLocalSourceCellEmission(
+    std::vector<ComputationalCell3D> const& cells,
+    std::vector<size_t> const& photonsPerCell);
+// faceCellIDs: cells owning emitting faces; every other learned cell is a
+// volume emitter and uses the volume-emission budget and bounds. nullptr or
+// empty treats all cells as face cells.
+SourceAllocationPlan BuildNeymanSourceAllocation(
+    std::unordered_map<size_t, double> const& scores,
+    Config const& cfg,
+    std::unordered_set<size_t> const* faceCellIDs = nullptr);
+void ApplyNeymanAllocationToControl(
+    IMCPostProcessControl& control,
+    SourceAllocationPlan const& plan,
+    Config const& cfg);
+void PrintSourceAllocationPlan(
+    std::string const& label,
+    SourceAllocationPlan const& plan,
+    size_t gen,
+    int rank);
+// Convergence of the observer map toward the polarization target: one
+// key=value ADAPTIVE_REPORT line every final generation and, when
+// printBlock is set, a human-readable block with percentiles, a histogram of
+// sigma_P relative to the target and the projected generations still needed.
+void PrintAdaptiveConvergenceReport(
+    std::string const& label,
+    Config const& cfg,
+    ObserverQualityDiagnostics const& observerQuality,
+    size_t finalGenerationIndex,
+    size_t finalGenerations,
+    bool printBlock,
+    int rank);
 AdaptiveSourceUpdateSummary UpdateAdaptiveSourceScoresDistributed(
     std::vector<SphericalObserver::SourceCellEscapeStat> const& localStats,
+    std::vector<SourceCellEmission> const& localEmission,
     Config const& cfg,
     AdaptiveSourceState& state,
     ObserverQualityDiagnostics const& observerQuality,
@@ -294,10 +368,27 @@ void RecomputeOpacityScaleFactors(
     size_t const nCells,
     int const rank,
     OpacityScaleMode const mode,
+    double const alphaMin,  // 0 = unbounded
+    double const alphaMax,  // 0 = unbounded
     std::function<void(std::unordered_map<size_t, double>)> const&
         applyScaleFactors,
     std::string const& phaseLabel);
 void PrintVmRSS(std::string const& label, int rank);
+// Resident set size of this process in kB (0 when unavailable).
+size_t CurrentVmRSSkB();
+// Memory breakdown of this process, all in kB (0 when unavailable): RSS split
+// into anonymous, file-backed and shared-memory pages, plus glibc heap in use
+// and heap free-but-retained (the latter is what malloc_trim can return).
+struct ProcessMemoryKB
+{
+    size_t rss = 0, anon = 0, file = 0, shmem = 0, heapInUse = 0, heapFree = 0, heapMmap = 0;
+};
+ProcessMemoryKB CurrentProcessMemoryKB();
+// Prints MEMORY_GEN (rank 0: means, worst node sums via a shared-memory
+// communicator) and MEMORY_GEN_MAXRANK (heaviest rank: what it holds) to
+// stderr. Collective on MPI_COMM_WORLD.
+void ReportGenerationMemory(char const* pass, size_t generation, int rank, int mpiSize,
+                            Tessellation3D const& tess, size_t censusParticles);
 
 } // namespace imc_postprocess_tde
 

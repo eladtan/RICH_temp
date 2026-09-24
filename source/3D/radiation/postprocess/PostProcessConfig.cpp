@@ -62,15 +62,18 @@ void printLegacyUsage(int rank)
               << "  --adaptive-source-burnin-photon-multiplier N Legacy flag accepted; fixed cadence ignores it\n"
               << "  --adaptive-source-learned-reserve-frac F (default: 0.25)\n"
               << "  --adaptive-source-learned-min-factor F (default: 20)\n"
-              << "  --adaptive-source-learned-min-photons N  Min photons/cell for learned cells (default: 200)\n"
+              << "  --adaptive-source-learned-min-photons N  Min photons/cell for learned cells (default: 10)\n"
               << "  --adaptive-source-learned-max-photons N  Max photons/cell for top-scoring learned cells (default: 5000)\n"
-              << "  --adaptive-source-score-power F          Score shaping power for photon allocation (default: 2)\n"
+              << "  --adaptive-source-learned-photons-per-cell-budget N  Average photons per learned cell per final generation (default: 100)\n"
+              << "  --adaptive-source-score-power F          Allocation exponent on the learned score; 0.5 is the Neyman optimum (default: 0.5)\n"
               << "  --adaptive-source-weight-score-frac F    Weight-squared fraction in learned score (default: 1)\n"
               << "  --adaptive-observer-equity       Boost cells feeding low-stat observers (default)\n"
               << "  --no-adaptive-observer-equity\n"
               << "  --adaptive-observer-extra-budget-frac F (default: 0.25)\n"
               << "  --adaptive-observer-target-neff F (default: 100000)\n"
-              << "  --adaptive-observer-target-pol-snr F (default: 5)\n"
+              << "  --adaptive-observer-target-pol-snr F (default: 10)\n"
+              << "  --adaptive-observer-target-pol-sigma F   Absolute sigma_P target; > 0 replaces the SNR target (default: 0)\n"
+              << "  --adaptive-observer-normalize-deficits / --no-adaptive-observer-normalize-deficits (default: on)\n"
               << "  --adaptive-observer-deficit-max F (default: 10)\n"
               << "  --adaptive-observer-deficit-ema F (default: 0.5)\n"
               << "  --measured-lb-weight-compression F (default: adaptive=1, non-adaptive=0.5)\n"
@@ -225,6 +228,7 @@ bool ValidateConfig(Config &cfg, int rank)
         else if (arg == "--adaptive-source-learned-min-factor" && i + 1 < argc) { cfg.adaptiveSourceLearnedMinFactor = std::atof(argv[++i]); }
         else if (arg == "--adaptive-source-learned-min-photons" && i + 1 < argc) { cfg.adaptiveSourceLearnedMinPhotons = static_cast<size_t>(std::atoll(argv[++i])); }
         else if (arg == "--adaptive-source-learned-max-photons" && i + 1 < argc) { cfg.adaptiveSourceLearnedMaxPhotons = static_cast<size_t>(std::atoll(argv[++i])); }
+        else if (arg == "--adaptive-source-learned-photons-per-cell-budget" && i + 1 < argc) { cfg.adaptiveSourceLearnedPhotonsPerCellBudget = static_cast<size_t>(std::atoll(argv[++i])); }
         else if (arg == "--adaptive-source-score-power" && i + 1 < argc) { cfg.adaptiveSourceScorePower = std::atof(argv[++i]); }
         else if (arg == "--adaptive-source-weight-score-frac" && i + 1 < argc) { cfg.adaptiveSourceWeightScoreFrac = std::atof(argv[++i]); }
         else if (arg == "--adaptive-observer-equity") { cfg.adaptiveObserverEquity = true; }
@@ -232,6 +236,9 @@ bool ValidateConfig(Config &cfg, int rank)
         else if (arg == "--adaptive-observer-extra-budget-frac" && i + 1 < argc) { cfg.adaptiveObserverExtraBudgetFrac = std::atof(argv[++i]); }
         else if (arg == "--adaptive-observer-target-neff" && i + 1 < argc) { cfg.adaptiveObserverTargetNeff = std::atof(argv[++i]); }
         else if (arg == "--adaptive-observer-target-pol-snr" && i + 1 < argc) { cfg.adaptiveObserverTargetPolSnr = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-observer-target-pol-sigma" && i + 1 < argc) { cfg.adaptiveObserverTargetPolSigma = std::atof(argv[++i]); }
+        else if (arg == "--adaptive-observer-normalize-deficits") { cfg.adaptiveObserverNormalizeDeficits = true; }
+        else if (arg == "--no-adaptive-observer-normalize-deficits") { cfg.adaptiveObserverNormalizeDeficits = false; }
         else if (arg == "--adaptive-observer-deficit-max" && i + 1 < argc) { cfg.adaptiveObserverDeficitMax = std::atof(argv[++i]); }
         else if (arg == "--adaptive-observer-deficit-ema" && i + 1 < argc) { cfg.adaptiveObserverDeficitEma = std::atof(argv[++i]); }
         else if (arg == "--measured-lb-weight-compression" && i + 1 < argc) { cfg.measuredLBWeightCompression = std::atof(argv[++i]); }
@@ -327,13 +334,15 @@ bool ValidateConfig(Config &cfg, int rank)
     if (cfg.adaptiveSourceMaxFactor < 1.0 || !std::isfinite(cfg.adaptiveSourceMaxFactor)) { if (rank == 0) std::cerr << "--adaptive-source-max-factor must be finite and >= 1\n"; return false; }
     if (cfg.adaptiveSourceLearnedReserveFrac < 0.0 || cfg.adaptiveSourceLearnedReserveFrac > 1.0 || !std::isfinite(cfg.adaptiveSourceLearnedReserveFrac)) { if (rank == 0) std::cerr << "--adaptive-source-learned-reserve-frac must be finite in [0,1]\n"; return false; }
     if (cfg.adaptiveSourceLearnedMinFactor < 1.0 || !std::isfinite(cfg.adaptiveSourceLearnedMinFactor)) { if (rank == 0) std::cerr << "--adaptive-source-learned-min-factor must be finite and >= 1\n"; return false; }
-    if (cfg.adaptiveSourceLearnedMinPhotons == 0) { if (rank == 0) std::cerr << "--adaptive-source-learned-min-photons must be > 0\n"; return false; }
+    if (cfg.adaptiveSourceLearnedMinPhotons < 2) { if (rank == 0) std::cerr << "--adaptive-source-learned-min-photons must be >= 2\n"; return false; }
     if (cfg.adaptiveSourceLearnedMaxPhotons <= cfg.adaptiveSourceLearnedMinPhotons) { if (rank == 0) std::cerr << "--adaptive-source-learned-max-photons must be > --adaptive-source-learned-min-photons\n"; return false; }
+    if (cfg.adaptiveSourceLearnedPhotonsPerCellBudget < cfg.adaptiveSourceLearnedMinPhotons || cfg.adaptiveSourceLearnedPhotonsPerCellBudget > cfg.adaptiveSourceLearnedMaxPhotons) { if (rank == 0) std::cerr << "--adaptive-source-learned-photons-per-cell-budget must lie within [learned-min-photons, learned-max-photons]\n"; return false; }
     if (cfg.adaptiveSourceScorePower < 0.0 || !std::isfinite(cfg.adaptiveSourceScorePower)) { if (rank == 0) std::cerr << "--adaptive-source-score-power must be finite and >= 0\n"; return false; }
     if (cfg.adaptiveSourceWeightScoreFrac < 0.0 || cfg.adaptiveSourceWeightScoreFrac > 1.0 || !std::isfinite(cfg.adaptiveSourceWeightScoreFrac)) { if (rank == 0) std::cerr << "--adaptive-source-weight-score-frac must be finite in [0,1]\n"; return false; }
     if (cfg.adaptiveObserverExtraBudgetFrac < 0.0 || !std::isfinite(cfg.adaptiveObserverExtraBudgetFrac)) { if (rank == 0) std::cerr << "--adaptive-observer-extra-budget-frac must be finite and nonnegative\n"; return false; }
     if (cfg.adaptiveObserverTargetNeff <= 0.0 || !std::isfinite(cfg.adaptiveObserverTargetNeff)) { if (rank == 0) std::cerr << "--adaptive-observer-target-neff must be finite and positive\n"; return false; }
     if (cfg.adaptiveObserverTargetPolSnr <= 0.0 || !std::isfinite(cfg.adaptiveObserverTargetPolSnr)) { if (rank == 0) std::cerr << "--adaptive-observer-target-pol-snr must be finite and positive\n"; return false; }
+    if (cfg.adaptiveObserverTargetPolSigma < 0.0 || !std::isfinite(cfg.adaptiveObserverTargetPolSigma)) { if (rank == 0) std::cerr << "--adaptive-observer-target-pol-sigma must be finite and >= 0\n"; return false; }
     if (cfg.adaptiveObserverDeficitMax < 1.0 || !std::isfinite(cfg.adaptiveObserverDeficitMax)) { if (rank == 0) std::cerr << "--adaptive-observer-deficit-max must be finite and >= 1\n"; return false; }
     if (cfg.adaptiveObserverDeficitEma <= 0.0 || cfg.adaptiveObserverDeficitEma > 1.0 || !std::isfinite(cfg.adaptiveObserverDeficitEma)) { if (rank == 0) std::cerr << "--adaptive-observer-deficit-ema must be finite in (0,1]\n"; return false; }
     if (cfg.measuredLBWeightCompression != -1.0 && (cfg.measuredLBWeightCompression <= 0.0 || !std::isfinite(cfg.measuredLBWeightCompression))) { if (rank == 0) std::cerr << "--measured-lb-weight-compression must be finite and > 0\n"; return false; }

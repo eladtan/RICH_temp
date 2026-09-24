@@ -691,6 +691,35 @@ public:
         return this->impl_.hasPostProcessExternalSources();
     }
 
+    void setPostProcessVolumeEmissionExactBase(bool exact)
+    {
+        this->impl_.setPostProcessVolumeEmissionExactBase(exact);
+    }
+    void setPostProcessExplorationMaxWeight(double maxWeight)
+    {
+        this->impl_.setPostProcessExplorationMaxWeight(maxWeight);
+    }
+    void setPostProcessVolumeEmission(std::vector<std::uint8_t> mask, std::vector<std::uint16_t> groupOutsideBits,
+                                      double subsampleFraction, std::uint64_t seed)
+    {
+        this->impl_.setPostProcessVolumeEmission(std::move(mask), std::move(groupOutsideBits), subsampleFraction, seed);
+    }
+    void setPostProcessVolumeEmissionSubsample(double subsampleFraction, std::uint64_t seed)
+    {
+        this->impl_.setPostProcessVolumeEmissionSubsample(subsampleFraction, seed);
+    }
+    void clearPostProcessVolumeEmission()
+    {
+        this->impl_.clearPostProcessVolumeEmission();
+    }
+    bool hasPostProcessVolumeEmission() const
+    {
+        return this->impl_.hasPostProcessVolumeEmission();
+    }
+    double getLastVolumeEmissionEnergy() const { return this->impl_.getLastVolumeEmissionEnergy(); }
+    std::size_t getLastVolumeEmissionCells() const { return this->impl_.getLastVolumeEmissionCells(); }
+    std::size_t getLastVolumeEmissionSelectedCells() const { return this->impl_.getLastVolumeEmissionSelectedCells(); }
+
     void configurePostProcessControl(IMCPostProcessControl control)
     {
         if(control.adaptiveCells.enabled)
