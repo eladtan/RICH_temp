@@ -267,7 +267,6 @@ namespace
 int main(int argc, char *argv[])
 {
     vtune_stop();
-    DISABLE_TIMERS();
 
     MPI_Init(&argc, &argv);
     MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_ARE_FATAL);
@@ -287,6 +286,7 @@ int main(int argc, char *argv[])
     arguments.addPositional<size_t>("max_photons_per_cell", 100, "population-control photon cap per cell");
     arguments.addFlag("resume", "resume from the checkpoint if it exists");
     arguments.addOption<std::string>("profile", "mach2_analytic_ic2.dat", "analytic profile file for initialization");
+    arguments.addOption<double>("cfl-scale", 1.0, "multiplier of the baseline hydro CFL (0.3)");
     arguments.addOption<std::string>("manager", "new-rdma-auto", "Monte Carlo communication manager")
         .choices({"new-rdma-auto", "new-rdma-ibv", "p2p"})
         .flagAlias("new-rdma", "new-rdma-auto")
@@ -331,6 +331,9 @@ int main(int argc, char *argv[])
     bool doResume = arguments.get<bool>("resume");
     std::string profileFile = arguments.get<std::string>("profile");
     std::string managerName = arguments.get<std::string>("manager");
+    const double cflScale = arguments.get<double>("cfl-scale");
+    if(!std::isfinite(cflScale) || cflScale <= 0)
+        throw std::runtime_error("cfl-scale must be finite and positive");
 
     #ifdef RICH_MPI
         RadiationMCStep::ManagerType managerType =
@@ -360,7 +363,7 @@ int main(int argc, char *argv[])
     const double cs_up = std::sqrt(gamma_gas * (gamma_gas - 1) * Cv * T_up);
     const double cs_dn = std::sqrt(gamma_gas * (gamma_gas - 1) * Cv * T_dn);
     const double max_speed = std::max(std::abs(v_up) + cs_up, std::abs(v_dn) + cs_dn);
-    const double dt = 0.3 * dx / max_speed;
+    const double dt = cflScale * 0.3 * dx / max_speed;
 
     constexpr size_t boundaryPhotonsPerCell = 50;
     constexpr bool withHydro = true;
@@ -398,14 +401,11 @@ int main(int argc, char *argv[])
     // --- Equation of State: e = Cv * T ---
     IdealGas eos(gamma_gas, Cv, 1, 0);
 
-    std::vector<AnalyticProfilePoint> analyticProfile;
-    if(!doResume)
-    {
-        analyticProfile = LoadAnalyticProfile(profileFile);
-        if(rank == 0)
-            std::cout << "Loaded analytic profile from " << profileFile
-                      << " (" << analyticProfile.size() << " points)" << std::endl;
-    }
+    // Boundary states must also come from the profile when resuming.
+    const auto analyticProfile = LoadAnalyticProfile(profileFile);
+    if(rank == 0)
+        std::cout << "Loaded analytic profile from " << profileFile
+                  << " (" << analyticProfile.size() << " points)" << std::endl;
 
     // --- Ghost cell templates (needed for hydro BCs and fresh init) ---
     ComputationalCell3D left_cell, right_cell;
@@ -424,16 +424,16 @@ int main(int argc, char *argv[])
         return cell;
     };
 
-    // x increases from the upstream (left) state to the downstream (right) state,
-    // matching the stationary shock-frame benchmark in Fig. 9(a).
+    // Match both hydro and radiation boundaries to the table's spatial
+    // orientation and velocity frame, rather than assuming upstream is left.
     left_cell = makeCell(rho_up, T_up, T_up, v_up);
     right_cell = makeCell(rho_dn, T_dn, T_dn, v_dn);
     if(!analyticProfile.empty())
     {
-        const auto &upstream = analyticProfile.front();
-        const auto &downstream = analyticProfile.back();
-        left_cell = makeCell(upstream.rho, upstream.T_gas_K, upstream.T_rad_K, upstream.vx);
-        right_cell = makeCell(downstream.rho, downstream.T_gas_K, downstream.T_rad_K, downstream.vx);
+        const auto &left = analyticProfile.front();
+        const auto &right = analyticProfile.back();
+        left_cell = makeCell(left.rho, left.T_gas_K, left.T_rad_K, left.vx);
+        right_cell = makeCell(right.rho, right.T_gas_K, right.T_rad_K, right.vx);
     }
 
     // --- Generate mesh & initial conditions (skipped on resume) ---
@@ -542,11 +542,13 @@ int main(int argc, char *argv[])
 
     std::shared_ptr<BoundaryCondition<Vector3D, Tessellation3D>> boundaryCond =
         std::make_shared<STORM::TwoSidesTemperature<Vector3D, Tessellation3D>>(
-            tess, T_up, T_dn, boundaryPhotonsPerCell);
+            tess, analyticProfile.front().T_rad_K, analyticProfile.back().T_rad_K,
+            boundaryPhotonsPerCell);
 
     STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> radiationIMCParameters = {
         .newPhotonsPerCell = newPhotonsPerCell,
         .withHydro = withHydro,
+        .planarMomentumX = true,
         .diffusionPressureGradient = diffusionPressureGradient,
         .MMC = false,
         .withMultigroupOpacity = false,
@@ -613,9 +615,17 @@ int main(int argc, char *argv[])
                   << ", v_downstream=" << v_dn << " cm/s"
                   << "\n  domain=[" << xmin << ", " << xmax << "] cm"
                   << ", dt=" << dt << " s"
+                  << ", CFL=" << 0.3 * cflScale
                   << ", t_final=" << t_final * 1e9 << " ns"
                   << ", prefix=" << prefix
                   << ", manager=" << managerName
+                  << "\n  radiation boundary temperatures (left, right)="
+                  << analyticProfile.front().T_rad_K / units::kev_kelvin << ", "
+                  << analyticProfile.back().T_rad_K / units::kev_kelvin << " keV"
+                  << "\n  boundary velocities (left, right)="
+                  << left_cell.velocity.x << ", " << right_cell.velocity.x << " cm/s"
+                  << "\n  planar_momentum_x=" << radiationIMCParameters.planarMomentumX
+                  << ", diffusion_pressure_gradient=" << radiationIMCParameters.diffusionPressureGradient
                   << (doResume ? ", RESUMED" : "")
                   << std::endl;
     }
