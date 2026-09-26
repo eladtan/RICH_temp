@@ -30,7 +30,7 @@ private:
     Vector const energy_groups_boundaries;
     std::size_t const num_energy_groups;
 
-    static constexpr int EXPECTED_TABLE_VERSION = 4;
+    static constexpr int EXPECTED_TABLE_VERSION = 5;
 
     Vector temperature_grid;
 
