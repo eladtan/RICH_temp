@@ -1,0 +1,40 @@
+{
+  "job": 10176492,
+  "cycles": 63,
+  "end_time_ns": 40,
+  "total_s": 163.105,
+  "total_s_per_cycle": 2.588968253968254,
+  "transport_s": 157.915,
+  "generated_histories": 775788827,
+  "transported_histories": 788228907,
+  "branson_final_temperatures_keV": [
+    0.453061,
+    0.244176,
+    0.0600317,
+    0.0486093,
+    0.045833
+  ],
+  "storm_final_temperatures_keV": [
+    0.465341,
+    0.295113,
+    0.168312,
+    0.106217,
+    0.0471466
+  ],
+  "branson_arrivals_ns": [
+    0.037332353334464545,
+    2.0766589229339405,
+    null,
+    null,
+    null
+  ],
+  "storm_arrivals_ns": [
+    0.03414588323689501,
+    0.8770439722274703,
+    12.923619840891442,
+    30.640001480136856,
+    null
+  ],
+  "radiation_conservation_max_abs_jerk": 5.55112e-16,
+  "material_conservation_max_abs_jerk": 1.15463e-13
+}

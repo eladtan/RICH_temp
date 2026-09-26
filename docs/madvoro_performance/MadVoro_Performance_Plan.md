@@ -1,0 +1,686 @@
+# RICH / MadVoro performance engineering plan
+
+Implementation specification, expected runtime contribution, and adversarial review guide
+
+Audit date: 7 September 2026. Repository: `/home/maorm/RICH`. Primary goal: reduce elapsed runtime, especially distributed Voronoi construction and repeated mesh work inside RICH.
+
+## 1. Decision and evidence boundary
+
+Start by reducing unnecessary distributed coordination and repeated preparation work. The first implementation sequence should be instrumentation and correctness prerequisites, removal of diagnostic collectives, globally safe skipping of empty query batches, removal of the linear boundary-validation scan from ownership lookup, and removal of repeated predicate-input copies. Then measure again before changing the communication engine or triangulation algorithm.
+
+The strongest structural finding is that a distributed ghost-search round invokes at least **19 collectives per rank along the inspected call path**, including both query types even when one is globally empty. Several serve diagnostics or temporary communication-object lifetime. Sparse payload traffic does not remove these costs. Another clear scaling defect is an O(P) sortedness check on every owner lookup, before the intended O(log P) search. These are more actionable starting points than a general request to parallelize Delaunay insertion.
+
+There is also a large first-build versus repeated-build difference. A freshly compiled, unchanged-source smoke harness constructed 4,096 fixed random points on this host. At four MPI ranks the first build took 0.1656 seconds and 46 ghost rounds; subsequent builds took 0.0597-0.0624 seconds and four rounds. These are local diagnostic observations, not production-cluster scaling results or optimization speedups. They make cold-start radius policy and recurring protocol overhead worth measuring separately.
+
+This document is a plan; no performance optimization was applied to production source. All percentage improvements below are **unmeasured planning estimates**, conditional on the stated workload and removable cost. No reliable full-RICH speedup can be inferred without knowing its mesh-time fraction. A less capable implementer must preserve that distinction in its implementation report.
+
+### 1.1 Source snapshot and provenance
+
+The inspected RICH revision is `2c71b28f49cd40ec46e031e4e896849e40e363c8`. The checked-out MadVoro revision is `ea2f32a2f1cef7816a1db80d118eb30fbae9f0da`. Relevant dependency revisions are MeshDecomposer3D `d65b8b3886bb0d129dc8a88862d42f18eaacd1ba`, mpi_utils `84212d05d2de5c44f5cd4254c8afa67bb65f4c04`, and spatial_ds `29bb801065a01907f041be7450e3d6d4efebc16f`.
+
+The workspace was already dirty. MadVoro's tracked changes at the start of this audit were regression executable binaries, plus untracked periodic logs. RICH has unrelated source, documentation, test, and submodule changes, including `source/CMakeLists.txt`. The audit reads the current files; a commit hash alone does not recreate all of that state. Preserve existing work. The accompanying evidence directory contains source SHA-256 hashes, revision records, the RICH build-configuration diff, the smoke harness, its compile log, and raw measurement logs.
+
+Use the path and symbol citations as anchors. Line numbers refer to this snapshot and will move during implementation. All abbreviated source paths below are defined in section 12. Historical documents that refer to `voronoi/Voronoi3D.cpp` describe an older organization; the active engine is a template in `voronoi/Voronoi3D.hpp`.
+
+### 1.2 What was actually checked
+
+The audit covered the RICH adapter and timestep integration, MadVoro's build and geometry paths, MPI query transport and buffer lifetime, Hilbert decomposition, point migration, spatial finders, predicate setup, compilation configuration, and the available regression cases. Three independent code audits were reconciled against the current files. A fresh executable was compiled from current headers and required source files using C++17, GCC 15.1.0, Open MPI 4.1.6, `-O2 -DNDEBUG -g1`, OpenMP linkage, and MPI feature definitions. VCL and optional exact-integer fallback were not enabled in that executable.
+
+The host reports a virtualized Intel Xeon Gold 6326 environment with 16 visible CPUs; this is not a multi-node fabric benchmark. The reported baseline runs were launched sequentially with `OMP_NUM_THREADS=1`, `--bind-to none`, and 1, 2, or 4 ranks. Earlier exploratory `smoke_*` logs are excluded from the baseline because some launches overlapped. No large Slurm job or full RICH production simulation was run for this report.
+
+| Workload | MPI ranks | First build, seconds | Median next 3, seconds | First / warm ghost rounds |
+| --- | --- | --- | --- | --- |
+| 4,096 uniform random, fixed points | 1 | 0.4418 | 0.1886 | 46 / 2 |
+| Same global point set | 2 | 0.2146 | 0.0985 | 46 / 4 |
+| Same global point set | 4 | 0.1656 | 0.0603 | 46 / 4 |
+| 512 periodic random points | 4 | 0.0803 | 0.0226, one repeat | See raw log |
+
+Elapsed build time is the maximum local duration reduced after each build. Point generation, synchronization before the timed interval, reductions for reporting, and validation are outside that interval. `BuildParallel`'s own diagnostics and collectives remain inside. All 14 baseline builds preserved the requested global owned-point count and unit-box volume with absolute error below 1e-10. This is a smoke validation, not a topology, robustness, conservation, or MPI-deadlock qualification suite.
+
+For the four-rank first build, rank 0 reported 0.1343 seconds in ghost construction, approximately 81% of the maximum build duration. Its warm ghost reports were 0.0371-0.0397 seconds, roughly 62-64% of maximum build duration. These ratios mix rank-0 phase timing with maximum total timing; they suggest a target and must not be presented as rigorously measured critical-path fractions.
+
+Historical evidence agrees qualitatively: `runs/Elad_paper_mach45/mach45_9792817.out` reports 0.354965 seconds bringing ghosts against 0.018479 seconds preparation in its first build, and many query rounds. Its executable revision and allocation are not established; do not use it to calculate an expected production speedup.
+
+## 2. How to interpret every runtime estimate
+
+Let T be baseline full-RICH elapsed runtime, M the portion attributable to mesh construction and mesh-management work being optimized, and f=M/T. Let r be the fractional reduction of that mesh time, with the rest of the run unchanged. The full-run time reduction is f*r, and the full-run speedup is 1/(1-f*r). A 30% mesh reduction is a 7.5% full-run reduction when f=25%, or a speedup of about 1.081. A 30% time reduction is not a 1.30x speedup; it is about 1.43x for the affected interval.
+
+For one idea, measure the affected critical-path fraction s and the fraction q removed from it. Its initial estimate is r=s*q, adjusted downward for new overhead and for a different rank becoming the bottleneck. For example, if buffer lifecycle consumes 20% of build wall time and a change removes 75% of that cost, the ceiling before interactions is 15% of build time. Do not multiply reductions by aggregate CPU time across all ranks.
+
+The table gives plausible useful-case ranges, not confidence intervals. **Zero gain is possible for every optimization** when its target is absent; several experiments can regress performance. The explanatory text specifies zero-benefit cases. The full-run column illustrates full-run contribution at f=25%; substitute the measured f. A 1% full-run reduction saves 36 seconds of a one-hour run. No estimate in this report is a measured before/after result.
+
+### 2.1 Ranked opportunity ledger
+
+L means many MPI ranks with small local domains, where latency/coordination is visible. C means substantial local geometric work. W means repeated builds with modest motion and stable ownership. R means calls that actually rebalance. Ranges apply to affected builds or mesh-management intervals, not automatically every timestep.
+
+| ID | Proposed change | Conditional mesh-time reduction | Full run at f=25% | Priority |
+| --- | --- | --- | --- | --- |
+| P00 | Measurements and correctness prerequisites | 0%; target profiling overhead below 2% | 0%, slight overhead when enabled | Required |
+| P01 | Gate hot-loop diagnostics and their reductions | L: 2-12%; C: 0-2% | 0.5-3% in L | First |
+| P02 | Skip globally empty query types and final round | L: 3-20%; C: 0-4% | 0.75-5% in L | First |
+| P03 | Validate Hilbert boundaries once per version | Large P: 1-15%; small P: 0-2% | 0.25-3.75% at large P | First |
+| P04 | Reuse query transport; remove repeated lifecycle work | L: 5-25%; C: 0-5% | 1.25-6.25% in L | After P02 |
+| P05 | Tune radius initialization, growth, and result cap | Cold L: 10-35%; W: 0-10% | 2.5-8.75% on cold-dominated mesh time | Measured experiment |
+| P06 | Restore valid prior-ghost seeding | W: 5-25%; cold: 0% | 1.25-6.25% in W | After cache contract |
+| P07 | Count-only query answers and fewer payload copies | 1-8%; near 0 if tiny payloads | 0.25-2% | Early |
+| P08 | Avoid rebuilding predicate input on every insertion batch | Many batches: 2-12%; C: 1-6% | 0.5-3% with many batches | Early |
+| P09 | Reuse valid tetrahedron circumcenters | C: 1-8%; L: 0-2% | 0.25-2% in C | Early |
+| P10 | Borrow finder points; correct and streamline tree inputs | C: 1-6%; L: 0-2% | 0.25-1.5% in C | Early, correctness first |
+| P11 | Cache Hilbert tables and remove temporary arrays | C: 1-8%; L: 0-3% | 0.25-2% in C | Early |
+| P12 | Decide rebalancing before migrating full payload twice | R: 5-25%; averaged: 0-8% | 0-2% averaged | Medium |
+| P13 | Replace root gather/sort fallback for weighted balance | Fallback-heavy R: 10-40%; averaged: 0-8% | 0-2% averaged | Only if observed |
+| P14 | Balance measured work with migration break-even | Imbalanced: 5-25%; balanced: 0% | 1.25-6.25% on affected mesh time | Medium |
+| P15 | Bypass transport when exchange is globally suppressed | Suppressed calls: 1-10%; averaged: 0-3% | 0-0.75% averaged | Early |
+| P16 | Fuse final ghost fields / reuse validated peer graph | L: 1-6%; C: 0-2% | 0.25-1.5% in L | Medium |
+| P17 | Avoid redundant load-balance switches or mesh work | Eligible mesh intervals: 0-15% | 0-3.75% | Integration dependent |
+| P18 | Thread safe local geometry/query work | Fixed resources: 0-20% | 0-5% | Later |
+| P19 | Tune local insertion, scratch, and memory layout | C: 2-12%; L: 0-3% | 0.5-3% in C | Profile gated |
+| P20 | Compiler, affinity, and build-configuration experiments | Well configured: 0-8% | 0-2% | Controlled experiment |
+| P21 | Research incremental moving-point triangulation | Eligible W: 10-50%; elsewhere 0% | 2.5-12.5% for fully eligible mesh time | Last, research |
+| P22 | Bound routing caches / candidate-only distance queries | Large P and big-query heavy: 0-15% | 0-3.75% | Profile gated |
+| P23 | Bundle RICH physical-field migration | Outside core build: 20-60% of field migration | 1-12% if fields cost 5-20% of run | Integration |
+
+Do not add table entries. P01/P02/P04/P05/P06 remove overlapping parts of ghost work; P08/P11/P19 overlap preparation; P12/P13/P14/P17 overlap decomposition and migration. If two sequential changes each independently deliver 10% of the then-current time, their combined reduction is 19%, not 20%. Even that multiplication is invalid when their isolated gains were measured against the same original cost.
+
+Planning envelope: a measured 10-25% reduction of representative MPI build time is a reasonable first engineering target for the low-risk group, not a promise. A latency-heavy workload may eventually see 20-40% from coordination and ghost-round work together. These envelopes could be missed entirely if geometry, radiation, or a different rank's work dominates. At f=25%, they correspond to 2.5-6.25% and 5-10% full-run time reductions. Rebaseline after every accepted group.
+
+## 3. Execution map and complexity model
+
+### 3.1 Current build pipeline
+
+The RICH `Voronoi3D` adapter delegates mesh construction to the templated MadVoro engine. `BuildPartiallyParallel` performs preparation and redistribution; Hilbert ordering; local Delaunay construction; point-to-tetra bookkeeping; spatial-tree construction; radius initialization; range-finder setup; iterative self/remote ghost acquisition and insertion; final face/volume/center construction; and ghost-field exchange. Main anchors are V:1997, V:2176, V:2233, V:2263, V:2288, V:2302, V:2310, and V:2315.
+
+A useful latency-aware model for one build is the sum along its dependency chain: prepare + local triangulation + trees + ghost rounds + final geometry + field exchange. For each ghost round distinguish query construction, rank selection, transport startup/teardown, payload transfer, local search, received-point insertion, and completion waiting. The duration is governed by slow ranks and message dependencies, not the average local work. Summing maximum phase times is a diagnostic upper estimate; maxima may belong to different ranks, so measure total elapsed separately.
+
+For compact three-dimensional partitions and roughly uniform points, boundary work often grows like local cell count to the power 2/3, so the ghost-to-owned ratio tends to rise as points per rank shrink. This is a geometric expectation, not a guarantee for Hilbert partitions. Thin domains, clustered points, periodic images, and disconnected ownership regions can be substantially worse. Record actual ghost ratio and queried-rank degree instead of assuming nearest-neighbor communication.
+
+### 3.2 The 19-collective ghost-round accounting
+
+At V:3705-3725 there are three reductions for printed point and ghost statistics. V:3835 adds an allreduce for printed new-point counts. V:3768 initiates the termination allreduce. `BringRemoteGhostPoints` calls both big and small query agents; each `runBatch` constructs and closes its own transport objects.
+
+| Per distributed round | Collective invocations |
+| --- | --- |
+| Three diagnostic Reduce calls and one diagnostic Allreduce | 4 |
+| Existing termination Iallreduce | 1 |
+| Each query type: AmountManager constructor Barrier and initialization Reduce | 2 |
+| Each query type: two buffer Destroy calls, each Reduce_scatter and Barrier | 4 |
+| Each query type: explicit trailing Barrier | 1 |
+| Total with two query types | 4 + 1 + 2*(2+4+1) = 19 |
+
+Anchors: Q:210-235 and Q:324-328; A:69 and A:74; B:160 and B:210. This counts invocations, not 19 identical full barriers or a measured 19*latency runtime. The reduction algorithms, overlap, and data size differ. There is additional completion-tree traffic and other build-level communication outside this count. The serial construction path with no points manager bypasses this accounting; MPI BuildParallel at P=1 still follows the distributed path.
+
+In the fresh cold four-rank smoke log all reported big-query counts were zero, so many rounds paid for an empty big-query protocol. The first round has no big queries by construction at V:3274-3295. The final empty round still goes through the batches before checking `finished` at V:3857. This makes P02 a concrete first target with a directly testable collective-count reduction.
+
+### 3.3 Work that is already optimized
+
+`SetPointTetras` is already incremental over changed/new/empty tetrahedron records (V:1251-1340). Delaunay `BuildExtra` already returns on empty input (D:703). `conditional_shrink` is already disabled unless `RICH_AGGRESSIVE_SHRINK` is enabled (U:15). Delaunay cleanup retains storage. The OctTree already has a node pool (O:53-161). Several payload exchanges are already sparse or indexed. Predicate filters and lattice handling already exist. A proposal to add these mechanisms from scratch would be stale.
+
+RICH's active `timeAdvance2` path already avoids the moving-mesh rebuild when `pm_.MovedPoints()` is false. Moving-box, AMR, and physics-specific ownership transitions still require separate analysis. This is why P17 is narrowly defined rather than a generic static-mesh shortcut.
+
+## 4. Required measurement and correctness foundation
+
+### P00. Add a reproducible performance contract before changing behavior
+
+**Contribution estimate:** 0% direct speedup. Target below 2% overhead with profiling enabled and statistically negligible overhead when disabled. This is required to select, reject, and explain the other ideas. It is not credited as an optimization in the opportunity ledger.
+
+Add a small `BuildMetrics` record owned by a build invocation. Use local counters/timers in hot paths; no MPI collectives for each timer or query. For MPI use `MPI_Wtime`; use a monotonic clock for non-MPI builds. Record inclusive build time and exclusive or explicitly nested phase times. Do not sum nested timers as if disjoint. Collect rank summaries once after the measured region, or emit per-rank files for later offline aggregation. Make metrics optional through one configuration agreed by all ranks.
+
+Minimum phase fields: prepare, owner lookup, prebalance decision, balance solve, payload migration, initial Hilbert ordering, initial Delaunay, tree construction, predicate setup, self search, remote query service, query lifecycle, useful payload transfer, exposed wait, extra insertion, tetra bookkeeping, final geometry, centroid exchange, volume exchange. Nested attribution must label parent/child relationships. Instrument MPI callsites in the scoped dependency paths or use a profiling wrapper; do not globally patch MPI in a way that changes unrelated physics runs.
+
+Minimum counters: owned/active/ghost/periodic-image points; live/allocated/changed tetrahedra; faces; builds and reasons; allrebalances; migrations and bytes; query rounds; globally empty query types; queries by type; candidate ranks and active peers; returned points and duplicate suppression; buffer allocation/high-water bytes; calls to each collective; bytes per point payload; point-location walk steps; flips by type; radius growth and geometric fallback counts; lattice-scope scans; exact/adaptive predicate fallback counts; maximum RSS. Counter types must not silently overflow at production sizes.
+
+For every phase report rank min/median/p95/max and maximum-rank identity offline. Report imbalance as max/mean and, where useful, p95/median. Store time series for cold build, subsequent unchanged builds, small motion, AMR, and decomposition changes. A rank's long MPI wait can be caused by another rank's computation; do not label all wait time as network cost.
+
+**Mandatory prerequisite defects:** V:2137-2141 loops over `allMyPoints.size()` but reads `activePoints[pointIdx]`; the serial partial path repeats the mismatch at V:4176-4180. Fix the all-point tree to read `allMyPoints`, and build the active tree from the active array with the correct index space. Validate full-tree leaf indices/coordinates against the complete local point array and `rangeFinder->getPoint(i)` against its declared index space; validate active-to-all mapping separately. Do this before claiming any partial-build acceleration. Also correct the serial active-to-all map direction at V:4106, as specified in P10; equal-size nonidentity masks must not alias the two index spaces. The direct speed credit is 0%; these changes remove correctness risks.
+
+Implement a dedicated replay benchmark, separate from brute-force ownership checking and output writers. Accept seed, global N, boundary axes, scenario, motion amplitude, active fraction, rebalance policy, repeat count, and an input snapshot. Preserve global IDs through redistribution. Begin with existing examples and regression helpers, but replace rank-0-only time reporting and fixed inputs with this explicit contract. Do not use `regression_tests` CMake output paths blindly: they put generated executables beside sources, which can overwrite already modified tracked binaries. Use an isolated checkout or a dedicated benchmark target/output directory.
+
+**Completion gate:** the baseline manifest, same-input replay, rank-max metrics, repeated-run distributions, and correctness suite in section 9 must exist. Counters should confirm the 19-call baseline when both query types execute. A production change is not accepted because one printed timer decreased.
+
+## 5. Communication and ghost-search specifications
+
+### P01. Remove diagnostic collectives from normal production builds
+
+**Estimate:** 2-12% of latency-sensitive build time; 0-2% when local computation dominates. At f=25%, the useful L range is 0.5-3% of full runtime. The ceiling is the measured critical-path cost of diagnostics; four of 19 collective invocations does not imply a 21% runtime reduction. Effort: small, about 1-2 focused implementation days plus normal validation.
+
+**Evidence and edit:** V:3705-3725 computes globally summed counters exclusively for printing, and V:3828-3843 computes printed added-point counts. V:2205-2212 performs two point-distribution allreduces for a status message. Add a uniform diagnostics level and make the entire counter-reduction and print block conditional. Keep numerical validity checks and exception paths enabled. Accumulate local totals cheaply if desired and reduce a packed set of final counters once at the end when requested. Do not guard an MPI collective with `rank == 0`.
+
+Search every use of `smallPointsNum`, `largePointsNum`, `averageGP`, `new_points`, and cumulative counters before changing scope. The algorithm uses query sets and result counts, not the globally printed totals, but the edited compiler must verify this. If summary totals are retained, redefine them as local accumulation followed by final reduction, not a mixture of root totals and local totals. Use a matching MPI type for the actual integer type; avoid assuming every `size_t` equals `unsigned long long`.
+
+**Validation:** run normal, verbose, and instrumented modes at 1/2/4 ranks and on two nodes; compare geometry and ownership; count removal of the four per-round diagnostic reductions and build-level distribution diagnostics. Check output volume and disabled-mode overhead. Reject a patch that merely hides `cout` while leaving the reductions, or changes the termination reduction along with logging. This optimization should be behavior preserving and can be landed independently.
+
+### P02. Skip globally absent query types and the all-empty final round
+
+**Estimate:** 3-20% in latency-heavy builds, 0-4% in compute-heavy builds. At f=25% that is 0.75-5% full-run improvement in L. Cold workloads with many empty big batches are the best candidates; a short warm build dominated by local geometry may gain little. This overlaps strongly with P04/P05. Effort: roughly 2-4 days plus multi-rank protocol tests.
+
+**Evidence:** both query agents run unconditionally at V:3455 onward; completion is checked after the final empty round at V:3857. Replace the current finish-count decision with a global two-bit presence mask after `CreateBatches` and periodic expansion. Small-query presence is bit 0 and big-query presence bit 1. All ranks call the same bitwise-OR reduction. Use `MPI_UNSIGNED` for an `unsigned` mask and `MPI_BOR`.
+
+```cpp
+unsigned local = (!smallQueries.empty() ? 1u : 0u)
+               | (!bigQueries.empty()   ? 2u : 0u);
+unsigned global = 0;
+MPI_Allreduce(&local, &global, 1, MPI_UNSIGNED, MPI_BOR, comm);
+if (global == 0) break; // previous round fully drained
+// Self work remains local. Empty ranks must still serve remote requests.
+if (global & 2u) run_big_batch_on_every_rank(bigQueries);
+if (global & 1u) run_small_batch_on_every_rank(smallQueries);
+// Insert returned/mirrored points; retain the existing next-set rules.
+```
+
+This is schematic; preserve the existing big-before-small ordering and self-work semantics. Initialize empty `BatchResult` structures consistently when a type is skipped. Remove the replaced finish request and wait; do not leave an unmatched collective. Verify that zero global queries implies no unprocessed mirrors, no pending batch transport, and no deferred topology work. Mirrors are produced from the query lists, so the present structure supports that implication once the previous round has drained.
+
+Start with the blocking mask for a simple correctness proof. It replaces one reduction rather than adding another per round, but moves its completion earlier and can lose overlap. Benchmark that tradeoff. Only after this works, try `Iallreduce` plus independent self work; keep the mask buffers unchanged until completion and wait before choosing remote protocol branches. No rank may branch on its local mask. Zero newly received points is not a termination condition: the radius may need to grow to discover required ghosts.
+
+**Validation:** globally no big queries; globally no small queries; all-empty completion; a rank with no active points serving another; mismatched local masks; periodic images; 2/3/4/8 ranks; delayed responders. Trace collective ordering. Count the expected seven avoided batch collectives per omitted type in the original engine, plus all final-round work saved. Accept only if total elapsed improves under the representative regime.
+
+### P03. Move owner-boundary validation out of each point lookup
+
+**Estimate:** 1-15% of build time at large rank counts if owner routing is material, 0-2% at small P. At f=25%, 0.25-3.75% in the useful large-P regime. If profiling shows 30% of build time in the validation scan, a larger upside is possible, but not budgeted here. Effort: about 2-4 days because public mutation must be controlled.
+
+**Evidence:** CL:25-38 calls `std::is_sorted(boundaries)` for every `getOwner(point)`, then computes a key and uses `upper_bound`. This makes repeated routing O(N_local*P) validation plus key/search cost. Correct behavior requires sorted boundaries, but that invariant changes only when boundaries are installed or mutated.
+
+Make boundaries private and expose a const view plus a validated `setBoundaries` or construction/install operation. Search the whole repository and dependencies for direct `.boundaries` and `->boundaries` writes, copy operations, serialization, and deserialization. Validate sortedness, expected count, empty-rank repeated cuts, domain coverage conventions, and communicator size at installation. Increment a decomposition version. Preserve the existing `upper_bound` tie rule and last-rank clamping exactly. A debug-only assertion may revalidate at an outer entrypoint, not O(P) for every point in a diagnostic benchmark.
+
+Do not cache validity by vector address or size; an in-place mutation can keep both unchanged. Do not simply delete the check while leaving unrestricted public writes. If API migration is too large for one patch, add an immutable validated boundary object and adapt all internal callers before removing the old slow public path.
+
+**Validation:** random keys, exact cut values, repeated equal boundaries, minimum/maximum keys, P>N, empty ranks, boundary replacement, and deliberately unsorted input. Compare owner outputs to the old implementation on valid inputs. Measure lookup nanoseconds across P=1,8,64,512,2048 using synthetic cuts, then verify real build contribution. The microbenchmark demonstrates complexity; only replay demonstrates saved runtime.
+
+### P04. Give query transport a longer lifetime and explicit completion contract
+
+**Estimate:** 5-25% build reduction in L, 0-5% in C, after accounting for P02. At f=25%, 1.25-6.25% in the useful latency regime. Risk of slowdown exists if memory retention or progress degrades. Effort: approximately 2-4 engineering weeks; this touches a shared dependency and should be split into small changes.
+
+**Evidence:** Q:210-235 creates two `BuffersManager` instances and an `AmountManager` per batch. A:69/74, B:160/210, and Q:324-328 contribute repeated collective startup/shutdown. Merely retaining the outer BigRangeAgent/SmallRangeAgent objects does not retain these inner transport objects.
+
+Phase A: introduce an explicit transport session for one communicator and query type, initially lasting one Voronoi build. Keep payload buffers and immutable peer bookkeeping, but reset per-epoch query/result/accounting state. Preserve existing communication ordering. Separate `finishEpoch()` from `destroySession()`. Implement the old `runBatch` API through a short session adapter so other users keep their semantics. The session must not be destructed after `MPI_Finalize`.
+
+Phase B: eliminate unnecessary per-epoch destruction collectives only after proving their responsibilities are fulfilled elsewhere. Required invariants are: all emitted queries are accounted for; every query's results are processed exactly once; no request references a reusable or freed buffer; no unconsumed control or data messages can match the next epoch; all ranks reach compatible epoch transitions; and empty ranks continue progress. Use explicit epoch/query identifiers and isolated tags/communicators. Test epoch wrap policy and MPI tag limits. A completed barrier alone does not prove arbitrary payload messages are drained.
+
+Phase C: benchmark a second backend with packed per-peer query/result blocks and reusable receive storage. Preserve the current backend behind a feature option. Discover unknown peers with a correct sparse-exchange protocol; for a stable graph, validate/invalidate that graph before neighborhood collectives. Do not assume a rank has only six geometric neighbors. Keep memory bounded by outstanding credits or chunk counts and exercise messages above eager limits. Check MPI count/displacement limits and chunk or use available large-count interfaces deliberately.
+
+For asynchronous overlap, place bounded local work between MPI progress calls and measure exposed wait. The MPI standard requires correctness under weak progress; `Isend` or `Iallreduce` alone does not establish useful overlap. Do not introduce a progress thread or `MPI_THREAD_MULTIPLE` before demonstrating a need and its overhead.
+
+**Validation:** delayed ranks, empty ranks, asymmetric peer sets, large rendezvous messages, 1,000 repeated epochs, multiple instances/communicators, source/query IDs, exact result counts, randomized arrival order, and memory high-water behavior. Run every shared mpi_utils consumer affected by the public API. The reviewer must reject a patch whose proof is simply "all ranks called a barrier". Accept on lower build time and fewer lifecycle collectives, not lower function-call count alone.
+
+### P05. Reduce excessive ghost rounds through measured radius policy
+
+**Estimate:** 10-35% of cold latency-heavy build time, 0-10% of warm builds; f=25% gives 2.5-8.75% only if cold-dominated work fills that mesh fraction. A long simulation with one cold build can have near-zero full-run gain. Bad settings can increase ghost memory and make runtime worse. Effort: about 1-2 weeks for instrumentation, sweeps, and a bounded policy.
+
+**Evidence:** V:99-101 uses a result threshold of 15 and a radius growth factor of 1.1; `CreateBatches` requests 16 points to detect threshold crossing. `DetermineNextIterationPoints` at V:3510 onward grows radii and changes query mode. The current fresh 4,096-point cold builds took 46 rounds; subsequent calls used cached radii and took two or four rounds. This difference is not a measured estimate for changing one parameter.
+
+Expose a `GhostSearchPolicy` per build with the current values as defaults. Sweep growth factors 1.1,1.25,1.5,2.0 and thresholds 15,31,63 one variable at a time initially. Record rounds, time, unique ghosts, payload bytes, duplicate counts, tetrahedra, peak RSS, and geometry checks. For comparable radius ratios, the idealized expansion count scales as log(required/initial)/log(growth); real costs also depend on routing and topology. A larger radius may retrieve many unnecessary points.
+
+The current cold path already initializes from a local nearest-neighbor distance (V:3214-3218). Evaluate a better calibrated density/spacing multiplier or a more informative local spacing estimate, while retaining the existing completeness search; do not describe nearest-neighbor initialization as new. For warm builds keep per-point radii with persistent identity, owner migration, and domain changes handled correctly. Consider an adaptive factor that increases only after consecutive expansion rounds with insufficient progress and returns to a conservative value after results arrive. Any maximum is a memory/effort guard that triggers a correct fallback or diagnostic failure, never a license to return incomplete cells.
+
+Keep the cap-plus-one overflow test: changing threshold K requires a query cap of K+1 and consistent comparison logic. Preserve `askOnlyClose`, full intersecting-rank escalation, and tetra `checkBig` invalidation. Retain the existing small-point certificate currentRadius >= 2*GetMaxRadius and the unrestricted big-query zero-result completion rule. Never initialize or jump a radius directly to 2*GetMaxRadius while incident tetrahedra contain artificial bounding vertices: enormous circumspheres can flood all ranks. Do not terminate on zero new ghosts or stop after an arbitrary round limit.
+
+**Validation:** homogeneous, clustered, void, thin-slab, periodic, mixed boundaries, cold/warm, and rapid-motion inputs. Accept a policy only if its intended suite improves without unacceptable memory amplification; suggested guardrail is under 10% memory growth for the default, or a separately documented memory-budget option. Report both per-cold-build gain and amortized per-run gain. Re-measure P02/P04 benefit after reducing rounds.
+
+### P06. Re-enable prior-ghost seeding through a versioned identity cache
+
+**Estimate:** 5-25% of repeated-build time for modest motion and stable ownership, 0% for first builds, possibly negative with frequent repartitioning or excessive stale seeds. At f=25%, 1.25-6.25% on fully eligible mesh time. Effort: about 1-3 weeks; periodic support is a separate extension.
+
+**Evidence:** the nonperiodic path invokes `InitialGhostPointsExchange` at V:3629, but the end-of-build `FilterRealGhostPoints()` call at V:2334 is commented out. The intended prior-ghost lists therefore are not ordinarily refreshed by that path. Investigate why it was disabled before restoring it. Cached radii already explain some warm-build improvement and must not be credited again as ghost-cache work.
+
+Start with full, nonperiodic builds and unchanged decomposition. Define the cache key as persistent point ID plus ownership/decomposition version; retain sender/receiver associations, not naked stale local indices. Refresh current positions from current owners before insertion. Add an explicit valid/invalid state and reason. Invalidate on deletion, AMR, order/identity changes not remapped, ownership change, kernel/box change, boundary change, or incompatible partial-build mask. Use the existing discovery algorithm after seeding so missed/new neighbors are still found.
+
+A low-risk first version only uses the cache when ownership and local ordering are provably unchanged; otherwise it falls back. A subsequent version remaps through the migration result and tests the maps independently. Verify old cached entries correspond to real remote generators and exclude bounding/mirror points. Measure seed hit rate, unnecessary seed count, rounds saved, and bytes spent refreshing seeds.
+
+For periodic extension the identity is `(owner, stable ID, image shift)` and multiple images of one physical point are distinct required geometry. Do not deduplicate by coordinates alone, and do not uncomment the old nonperiodic filter as periodic support. Keep coordinate refresh and shift semantics tied to the current box lengths.
+
+**Validation:** unchanged points, small motion across rank boundaries, a rebalance between builds, AMR insert/delete, reordered input, mixed periodic axes, and cache invalidation. Compare with a fresh no-cache build by persistent IDs and geometric invariants. Accept only on amortized time including cache construction/refresh; keep it disabled for regimes with negative value.
+
+### P07. Return query counts where MadVoro only needs counts; flatten payload ownership
+
+**Estimate:** 1-8% of builds with material query/result packing, usually 0-2% for tiny messages. At f=25%, 0.25-2% in useful cases. This overlaps P04's transport rewrite; implement as a separate result-policy change first. Effort: about 3-6 days.
+
+**Evidence:** Q:120-121 and Q:174-188 retain point answers in both per-query results and per-rank result storage. V:3467-3489 consumes per-query answer size while receiving actual ghost coordinates through another result path, then constructs insertion vectors. This produces redundant point copies and allocations.
+
+Introduce an opt-in result sink/policy for MadVoro: per-query result count, per-peer packed actual ghost records, and offsets. Do not remove payload results from the generic query-agent API used by other consumers. Increment counts with exactly the old semantics, including deduplication and periodic-image distinctions. Preserve the distinction between a query returning a point and a physical point newly inserted into the mesh; they are not interchangeable counts.
+
+Reserve output from known sizes; move buffers when their ownership transfers; reuse capacity between rounds within a build. Do not retain a view into a buffer that will reallocate during receive progress. Keep query IDs stable when periodic expansion makes several queries correspond to the same owned generator, and accumulate counts into the intended logical key.
+
+**Validation:** compare every per-query count and ordered per-peer ghost list to the old result policy on deterministic queries. Include empty, overlapping, duplicate, capped, big/small, and periodic queries. Measure allocated bytes, point-copy volume, and wall time; preserve insertion order in the first version so geometry differences are easier to attribute.
+
+## 6. Local geometry and data preparation specifications
+
+### P08. Remove repeated predicate-input copying, then consider an exact summary
+
+**Estimate:** 2-12% of build time with many small nonempty insertion batches, 1-6% in a suitable compute-heavy case; f=25% gives 0.5-3% for the many-batch case. The first copy-only patch is more modest: 0-3% of compute-heavy build time. The larger range requires repeated scope scanning to matter. Effort: 2-4 days for the view change; another 1-2 weeks for an incremental summary and mutation audit.
+
+**Evidence:** D:706-713 copies original points, all previous extras, and incoming points into `predicatePoints` before every nonempty `BuildExtra`; D:715 then separately appends the incoming points. One ghost round can call it for prior seeds, self ghosts, big results, small results, and mirrors. With N initial points and batches of sizes b_i, copying work is proportional to sum_i(N + cumulative extras_i), potentially quadratic in the number of equal small batches. This is a complexity of preparation, not a claim about total triangulation complexity.
+
+Phase A preserves the current predicate decision exactly. Add a C++17 visitor/range-based factory over three ranges: original `points_[0:Norg_)`, old extras `points_[Norg_+4:end)`, and incoming points. Exclude the four artificial bounding points. Consume the ranges before appending to `points_`; retain no iterators after potential reallocation. Preserve first-point anchor, visit order, count, integer representability, gcd, min/max, and active-scope rules in P:60-125. Keep scope destruction restoring the prior thread-local state. Incoming-only predicate classification is incorrect.
+
+Phase B maintains an append-only `LatticeSummary`: count of all included non-bounding inputs, including ghosts, mirrors and periodic images; first anchor; per-axis integer min/max; common unsigned gcd of coordinate differences; floating bounds; and whether every coordinate is representable on the exact dyadic grid. Initialize from original points and append new points once. Derive active state using the existing at-least-eight, power-of-two-gcd, and span/divisor bounds. Do not cache a single sticky `active` boolean: adding points can activate an initially unsuitable gcd or deactivate an active set. A failed coordinate representation remains failed under append, but not every reason for inactivity is permanent.
+
+The summary must include extras which are appended but later rejected by `InsideBigTetra`, because the old scope includes them. Empty builds acquire an anchor from their first real extra; counts below eight still accumulate. Public `points_` mutation, Clean/Build, copies, assignment, and coordinate changes require explicit invalidation. If those mutation paths cannot be controlled, stop at Phase A. Preserve lattice-dependent insertion shuffling exactly.
+
+**Validation:** compare old/new scope active flag, spacing and bounds at each batch boundary; empty and 1/7/8 points; off-grid append; gcd transition; span 255/256; large representable coordinates; original empty rank; periodic images; copied/rebuilt objects. Require identical insertion permutation in Phase A and unchanged predicate fallback results. Record eliminated copied bytes and scan points; do not weaken robust predicates for speed.
+
+### P09. Reuse cached tetrahedron geometry during final face construction
+
+**Estimate:** 1-8% in C, 0-2% in L; f=25% yields 0.25-2% in C. A high-precision-fallback-heavy case could benefit more, but this is not assumed. Effort: about 3-5 days after cache-invalidation instrumentation.
+
+**Evidence:** `GetRadius` at V:4419-4421 computes radius and center only if the radius is invalid. Queries and point-radius calculation already call it. `BuildVoronoi` at V:4263-4265 instead directly recomputes every relevant tetrahedron's radius/center. High-precision center fallback at V:4687-4762 uses decimal multiprecision.
+
+Instrument the fraction of final relevant tetrahedra with a valid cached radius-center pair. Introduce `EnsureTetraGeometry(index)` owning both results and a clear validity state. A first patch may replace the direct calculation with `GetRadius` only after proving its sentinel covers both values. Do not infer validity solely from positive radius without auditing negative/zero and fallback behavior. Prefer a generation/valid flag if the existing sentinel is ambiguous.
+
+Audit every tetra or coordinate mutation, including a freed slot reused under the same index; invalidate center and radius together. `SetPointTetras` already invalidates changed/new entries at V:1327. Do not remove its invalidation or build a second inconsistent cache. Deleted/unoccupied tetrahedra must remain excluded from final loops.
+
+**Validation:** a debug mode forcibly recomputes sampled cache hits and compares results; after each insertion batch compare all live cached entries with direct computation on small tests. Include slot reuse, near-coplanarity, translated coordinates, mixed refinement, periodic images, and repeated builds. Compare face area, center, volume and orientation. Accept only if valid-hit rate is substantial and the avoided computation appears in total timing.
+
+### P10. Correct tree index spaces and remove the finder point copy
+
+**Estimate:** 1-6% in C, 0-2% in L; f=25% gives 0.25-1.5% in C. The indexing fixes themselves receive 0% speed credit. Effort: 3-6 days for fixes and a borrowed wrapper, longer if result APIs are changed.
+
+**Evidence:** `OctTreeFinder` stores a private point vector copied even when a prebuilt tree is supplied (F:20, F:57-63); V:3226 recreates it each build. The range function materializes `vector<IVec>` then converts to `vector<size_t>` (F:45-56); closest query returns a vector for zero or one result (F:29-44). The shared tree already has a node pool; replacing allocations with a new pool is not the first target.
+
+Define owning and borrowed finder modes explicitly. For the current supplied-tree path borrow a const point vector whose lifetime spans all queries. Tie it to the build/session lifetime or a shared immutable storage object. Recreate/invalidate the wrapper when `allMyPoints` is replaced or reallocated; do not borrow a temporary or leave a raw reference active across `PrepareToBuildParallel`. Preserve the owning constructor for independent callers.
+
+Before optimizing, enforce the mapping: `activePoints[j]` is the build-local coordinate; `indicesInAllMyPoints[j]=k` maps it to `allMyPoints[k]`. The serial map at V:4106 currently uses the reverse direction relative to parallel V:2057 and consumers at V:3207-3212; fix it alongside the out-of-bounds tree loop. Equal active/all counts do not justify sharing a tree if the active mask is a permutation. Alias trees only when index mapping is identity and coordinates match.
+
+A second result API can emit indices directly into caller-owned scratch or a sink, avoiding intermediate `IVec` vectors. A zero/one result can use an optional index internally while adapting the existing public vector interface. Preserve filter, ordering, cap, and distance-tie semantics.
+
+**Validation:** identity/full-permutation/sparse subset/empty subset masks, migration and reorder, borrowed storage replacement, out-of-range guards, and randomized range queries compared with brute force. Use ASan/UBSan on small cases. Measure memory copied and allocation counts independently from tree traversal time. Shared mutable traversal scratch still blocks naïve parallel use; see P18.
+
+### P11. Reuse Hilbert tables and remove normalization/collision helper copies
+
+**Estimate:** 1-8% in C, 0-3% in L; f=25% gives 0.25-2% in C. Many tiny ghost insertion batches can make constant setup more visible. Effort: about 3-6 days for behavior-preserving changes.
+
+**Evidence:** H:373 constructs `HilbertCurve3D`, whose constructor at H:89-108 builds invariant tables, on helper calls including recursive ordering work. HU:57-124 builds three full coordinate arrays plus normalized output. HU:159-217 copies sorted keys in equality-run processing. These are concrete overheads around the ordering algorithm.
+
+First share immutable transition tables initialized once in a thread-safe manner; do not share mutable curve state. Then compute axis minima/maxima in one pass and normalized output in one pass, preserving the existing degenerate-axis and rounding behavior. Replace copied equality scans with iterator/index run scans over the existing sorted keys. Preserve legacy equal-key behavior, collision recursion behavior, and the exact point permutation in this first patch. The current helper uses std::sort, not a stable sort; do not introduce a new stability rule as a cleanup.
+
+Do not reuse load-balancer keys as local insertion-order keys without proving normalization, Hilbert order/depth, bounds, and tie rules are identical. They serve different purposes. Do not change sort implementation and remove setup copies in the same patch; exact-order preservation makes review tractable.
+
+**Validation:** byte-identical keys and permutations for fixed inputs; equal/coincident keys; all coordinates equal in one or two axes; shuffled lattice points; tiny batches; very large translated coordinates; empty input. Instrument Hilbert setup, normalization, sorting and collision handling separately. Reject a claim that table caching improves runtime if the compiler already eliminates the setup in the measured configuration.
+
+### P19. Profile-gated local insertion, dirty lists, and storage work
+
+This item is intentionally later in execution order although listed here with local-compute work. **Combined estimate:** 2-12% of compute-heavy build time, 0-3% of L; f=25% gives 0.5-3% in C. The following subideas overlap and must be measured separately. Allocate 1-3 weeks per selected backend change, not one large rewrite.
+
+**P19a, unique dirty tetra IDs:** 1-6% C, 0-2% L. Delaunay flip routines can enqueue a slot repeatedly before `SetPointTetras`; V:1309-1311 has sort/unique commented out. Measure enqueues/unique IDs first. Use a per-slot enqueue generation and one queue entry per adjacency-sync interval, while retaining the old-tetra snapshot needed to remove old adjacency. New slots require initialization, generations need wrap handling, and free/reuse in one interval needs explicit tests. Compare post-sync point-to-tetra adjacency with a reference rebuild over live tetrahedra. Do not claim to make an already incremental algorithm incremental.
+
+**P19b, free slots:** 1-8% C, 0-2% L. D:168 uses a `flat_set` for free tetra indices; front erase and interior insert shift elements. If profiling shows large free sets and shift cost, introduce an occupancy mask plus allocation helper. A min-heap preserves smallest-index reuse; a LIFO vector is cheaper but changes reuse order and potentially degenerate outcomes. Keep the first experiment behind a backend option, audit membership/iteration users, and do not compact live tetrahedra without remapping every index. For tiny free sets, keep the current container.
+
+**P19c, inner-vector capacity and face scratch:** 1-5% C, 0-2% L. Measure heap allocations and small-vector spills before changing capacity. Clearing an outer vector can destroy useful inner capacity even though outer capacity remains. Reuse per-build scratch and high-water storage with a bounded retention policy; explicitly zero the active CM_/volume_ range before CalcAllCM accumulates with +=, because prior clear/resize supplied that initialization. Reserve does not establish logical size or permit indexed writes. Preserve public sizes and reset semantics; do not multiply reserve by a worst-case valence for every cell. Avoid overconstructing face slots if a counted/two-pass build costs less. Existing conditional shrinking is not an unconditional problem.
+
+**P19d, point-location seeds or insertion order:** 0-10% C, 0-3% L, with regressions possible. Measure walk-length distribution and flip count. Try better spatially nearby seed tetrahedra with validity checks and fallback to the existing walk. Treat changed insertion ordering as a separate algorithm experiment because cospherical degeneracy and lattice shuffling can change topology. Never reuse a tetra index after mutation without proving it remains live and suitable.
+
+**P19e, repeated degenerate face work:** 0-3% normally; 2-10% only with measured repeated rejected fans/high valence. Consider memoizing an attempted fan only after proving rotation-independent rejection; even within unchanged topology, a different starting tetra rotates the face ring and floating cleanup can reject one rotation but accept another. Compare all baseline retries or canonicalize and validate cleanup before suppressing attempts. Reuse scratch with correct reset semantics. Preserve orientation and fallback cleanup. This is not a license to skip a face because it was rejected before a later insertion.
+
+**Acceptance:** each subpatch needs its own cost counters, geometry comparisons, and end-to-end replay. The combined P19 range is a budget envelope, not the sum of subranges. Avoid a wholesale array-of-structures to structure-of-arrays conversion until hardware counters show memory layout dominates and all index dependencies are mapped.
+
+## 7. Decomposition, migration, and RICH integration specifications
+
+### P12. Choose the final decomposition before migrating full payload twice
+
+**Estimate:** 5-25% of builds that actually rebalance, 0-8% averaged across mesh calls; f=25% gives 0-2% averaged full-run benefit. If rebalance is rare this is nearly zero. Effort: 1-2 weeks for a safe staging improvement, another 2-4 weeks for one-migration design.
+
+**Evidence:** PM:244-270 exchanges inputs under the current cuts, checks resulting imbalance, then can rebalance and exchange the original input again. HPM:153-169 supplies routing. The original arrays are important: callers' migration mappings still refer to their original ownership/index space. A simplistic "exchange the result again" can break RICH field migration.
+
+First improve the balancing input without changing caller mappings. For full builds, retain the initial exchange result and use its already owner-ordered point/weight distribution to compute new boundaries. Keep the existing final exchange from original input, preserving the original-to-final mapping. Restrict this staging to enabled ownership exchange under the same Hilbert conversion/kernel; suppressed exchange and arbitrary custom load balancers do not establish ordered Hilbert ranges. This can avoid unnecessary unordered-input root fallback (P13) while still doing two payload migrations. Partial builds require the complete population relevant to weighting; do not balance only a selected active subset by accident.
+
+Next split update into a planning and commit phase. Compute projected per-destination weight/count summaries for the candidate current cuts without moving full payload. Reduce/exchange only required metadata, make one collective rebalance decision, solve final cuts if justified, and then migrate original points/weights/payload exactly once. Destination count/weight summaries alone cannot locate cut keys. This one-payload-migration design requires P13 for unordered keys, or a separate lightweight key/weight redistribution into current-owner order before solving cuts. Account for zero weights, inactive/active masks, and boundary crossing. No rank decides independently whether to enter the rebalance collective.
+
+Define the output contract explicitly: original-to-new index mappings; retained-self indices in correct order; sent ranks and original indices; received order; participating flags; new active set; final owner; all point-associated payloads. Preserve callbacks, `lastPoints`, environment-agent refresh, and ExchangeChain composition. Test the complete mapping with distinct sentinel fields per original global ID.
+
+**Validation:** no rebalance, forced rebalance, natural threshold crossing, moving points across cuts, genuine subsets, all-empty/one-populated rank, and AMR. Compare final cuts where arithmetic order is unchanged, and validate physical field/ID ownership otherwise. Report migration bytes saved, balance time, root fallback rate, and total time. P12 and P13 savings cannot be added when the former eliminates the latter's trigger.
+
+### P13. Bound weighted balancing without gathering every key to rank 0
+
+**Estimate:** 10-40% of fallback-heavy rebalance event time, 0-8% averaged over mesh management; f=25% gives 0-2% averaged full-runtime reduction. The memory scalability benefit may matter before runtime does. Effort: about 3-6 weeks for a distributed exact-key selection implementation and robust tests. Do P12's input-staging fix first.
+
+**Evidence:** WB:323-330 selects a root fallback when local Hilbert key ranges overlap. WB:126-158 gathers global `(key,weight)` records and sorts them on rank 0. This introduces O(N_global) root memory and O(N_global log N_global) sorting. Byte counts/displacements converted to MPI `int` also require size validation. Overlapping original ranges after point motion can trigger this even after an initial exchange has already created owner-ordered output.
+
+Keep the existing distributed ordered-input fast path. For genuinely unordered input, a first exact route is weighted selection in integer key space: sort local key/weight pairs once, form local prefix weights, batch candidate cut keys, obtain global cumulative weight at each cut by reduction, and refine key intervals until the required cuts are determined. Share histogram/refinement work across cuts rather than independently scanning all keys P times. Bound iterations by actual `curve_index_t` bit width. Use a coarse histogram followed by target-bin refinement to reduce rounds if measurements justify it.
+
+Specify `<` versus `<=` cumulative semantics to match current owner cut rules. Preserve repeated boundaries for indivisible equal-key groups and very heavy points. Handle all-zero weights, empty inputs, maximum key without overflowing key+1, negative/nonfinite weight rejection, and floating target ties. Exact integer-key selection does not imply bitwise-identical floating sums across rank counts. On small cases compare cuts to the old root reference away from floating ties; at ties compare achieved balance and ownership invariants using a documented rule.
+
+A sample-sort alternative is acceptable only with explicit tie handling, achieved-imbalance measurement and fallback bounds. Do not silently turn an exact partition target into an uncontrolled approximate sampler. Keep a root-reference path only under a bounded global-count limit for tests. Use 64-bit sizes and explicit MPI chunking or verified large-count support, rather than unchecked casts.
+
+**Validation:** global N increases at fixed N/P; root RSS remains bounded relative to local data and cut metadata; all-equal keys; P>N; one huge weight; zero-weight plateaus; shuffled distribution; duplicate cut values; invalid weights; manufactured near-count-limit messages. Accept on total rebalance time including extra selection reductions.
+
+### P14. Balance measured work and charge migration against the saving
+
+**Estimate:** 5-25% of affected mesh time with significant compute imbalance; 0% if already balanced or network-limited. At f=25%, 1.25-6.25% for eligible mesh work. The ideal upper bound for reducing max/mean work ratio L to 1 at unchanged total work is 1-1/L for that phase: 23.1% at L=1.3, 50% at L=2, before migration costs. Effort: 2-4 weeks for a simple model and evaluation.
+
+**Evidence:** RICH's default `CostCalculator3D.cpp:5-7` returns 1.0 per cell; custom calculators may override it. Face count, tetra incidences, difficult predicates, boundary queries and radiation work need not be uniform. The current settings must be recorded per run; do not assume every production problem uses the default.
+
+Begin with previous-build counters assigned to stable point IDs: positive base cost plus nonnegative coefficients for face/tetra/query work and, only if attribution is available, slow predicate work. Fit a small model to rank compute time excluding exposed MPI waits; smooth observations and cap outliers. Use a floor for empty/cheap cells. Avoid a complex learned predictor when simple counters suffice.
+
+Before rebalancing, estimate H*(current predicted maximum phase work - candidate predicted maximum) and compare against full balancing, migration, ghost amplification, and downstream cache-rebuild costs over H expected reuse steps. Use a cooldown and hysteresis to avoid repeated oscillation. Track prediction error and disable an ineffective policy. Mesh work, hydro, and radiation can require different weighting; score full timestep cost when choosing among their partitions.
+
+Record ghost/owned ratio, number of peers, memory high-water and domain shape alongside scalar weight imbalance. A count-balanced Hilbert partition can still be communication-heavy. Do not pay to reduce an imbalance ratio if total elapsed increases.
+
+**Validation:** balanced uniform mesh should not repeatedly rebalance; clustered/refined meshes should reduce critical-rank work enough to repay migration; rapidly changing work should not oscillate. Compare actual full timesteps over multiple rebalances, not just the instant after repartition. Report net savings after all associated work and any physics slowdown.
+
+### P15. Make suppressed exchange a truly local operation
+
+**Estimate:** 1-10% of eligible suppressed-exchange build calls, typically 0-3% averaged mesh time; f=25% gives 0-0.75% averaged full runtime. Zero if the workload never requests suppression. Effort: about 2-4 days with mapping tests.
+
+**Evidence:** HPM:153-160 and HPM:295-302 map points to self when `noExchange` is true but still call `pointsExchange`. PM:300 calls `dataExchange`, E:60 calls all-to-all transport, and X:449/464 execute Alltoall/Alltoallv even without external payload. V:2016/2020 collectively reconcile suppression flags. RICH AMR at `AMR3D.cpp:3107` explicitly requests this path.
+
+After the globally agreed suppression decision, build the equivalent result locally in `indicesToWorkWith` order. Fill new points/weights/payloads from selected original entries; retain new/original index semantics and participating flags; set retained-self indices to the selected original indices; clear external sent/received peer lists. Preserve `onExchange`, environment initialization, `lastPoints`, and total-weight updates. Construct the same logical outputs without serializing a local MPI packet.
+
+Do not turn this into a shortcut for "my outgoing list is empty": that rank may still receive from others in normal mode. Do not copy all points blindly when a selected mask is legal. If initialization still requires agreed metadata, retain those collectives separately; suppressing payload exchange does not mean bypassing all global state.
+
+**Validation:** full identity mask, full permutation, sparse subset, empty subset, empty rank, first initialization and subsequent AMR calls. Compare result maps and every payload field against the original path. Trace disappearance of the transport collectives only in the globally suppressed case. Validate downstream AMR conservation and geometry.
+
+### P16. Fuse final ghost fields and reuse a validated directed peer graph
+
+**Estimate:** 1-6% of L build time, 0-2% of C; f=25% gives 0.25-1.5% in L. Effort: approximately 1-2 weeks, with graph reuse evaluated separately from field bundling.
+
+**Evidence:** V:2310 calls center synchronization and V:2315 exchanges volumes over established duplicated-point/ghost mappings. At this stage the ghost set is already known. This communication has simpler completion requirements than discovering arbitrary ghost-query destinations.
+
+Trace the exact fields and dependency order inside `UpdateCMs`. If the values are all ready before any dependent use, pack a `{center,volume}` record per exported index, exchange once, and scatter using the existing per-peer index order. Do not fuse across a dependency that computes a field from the previous receive. Preserve special rigid/mirror/periodic center handling. UpdateCMs exports from all_CM after SyncPartialBuildData, whereas the volume path exports from volume_; these are not automatically the same index space for partial builds. Restrict first fusion to full-build identity indexing, or explicitly map both fields. Pack unshifted physical centers, scatter them, and then apply local periodic-image fallback and translation exactly once; do not pack already shifted CM_ or retain the old center exchange accidentally. Keep serialization explicit for templated PointT rather than assuming struct memory layout.
+
+Cache counts/displacements and a directed neighbor topology keyed to build/ownership/ghost-list version only where reused. Both send and receive orders must match their maps; a changed ghost order invalidates a plan even if peer ranks are unchanged. Query discovery itself needs an escape path to newly found ranks, so this known-graph optimization must not be applied indiscriminately to the search stage.
+
+**Validation:** each exchanged ghost center and volume matches its physical/image identity, including asymmetric peers, empty ranks and periodic duplicate images. Compare against two separate exchanges. Measure message count, total bytes, startup cost, and packing time; bundling saves latency but generally does not eliminate the payload bytes.
+
+### P17. Make saved-decomposition switches and exact no-ops explicit
+
+**Estimate:** 0-15% of eligible mesh-management time in the ledger, or 0-3.75% full runtime at f=25%. If switching itself is an unusually large full-RICH fraction, use its own measured denominator: removing 30-80% of unjustified switch cost that occupies 10-40% of a run could save 3-32% of the run, minus any added physics cost. This broad conditional case is not a normal-build speedup forecast. Effort: about 2-4 weeks for versioning and policy.
+
+**Evidence:** `Simulation.cpp:181-188` restores saved physics decompositions. Its `setCurrentLoadBalance` at 360-392 calls MadVoro `SetLoadBalancer` and state transfer; V:2865-2893 exchanges point/payload data then calls `MockMesh`. Alternating hydro/radiation may pay this transition more often than recomputing a load balance. Meanwhile HDSim `timeAdvance2` at 603-622 already skips rebuilding for unchanged points. Moving-box and AMR builds have separate geometry reasons.
+
+Add transition metrics: current/target decomposition versions, moved point count/bytes, MockMesh time, field/cache rebuild time and subsequent physical-phase time. Skip installation only for proven semantic equality of decomposition type, kernel parameters, Hilbert conversion bounds/depth, cuts, communicator, custom state, and relevant mesh/ownership versions. Pointer equality is insufficient; getters can clone load balancers. Equal cuts alone do not establish equality if conversion state differs.
+
+An exact geometry no-op additionally requires identical point IDs/order/coordinates, active subset, box faces, periodic settings, and ownership. Never skip the first construction. AMR changes cell connectivity even with stationary retained points; a moving box changes geometry. Preserve build-generation/invalidation semantics expected by downstream consumers. Publish a fresh identity ownership mapping (self indices 0..N-1, no sent peers/indices, appropriate DidRebalance state) or return an explicit no-migration result that makes RICH skip state transfer/ExchangeChain updates. Returning early with the previous mapping can replay an old migration. Changed weights or a rebalance request must be processed correctly or disqualify the no-op, even if coordinates match. Prefer a producer-supplied no-change generation over hashing every coordinate on every call if the API can enforce it.
+
+Evaluate shared/composite decompositions or reduced switch frequency only through break-even accounting from P14. Preserve before/after-load-balance hooks and all registered migration buffers; a cheaper mesh step that slows radiation more is a failed optimization.
+
+**Validation:** same saved decomposition in a clone, altered box with same cuts, same coordinates but reordered IDs, periodic toggles, active-mask change, AMR, and alternating physical phases. Test a nontrivial migration followed by an exact no-op and sentinel-field transfer, plus changed weights on identical geometry. Compare complete timestep conservation, geometry and elapsed time. Credit 0% for the ordinary static hydro branch already skipped today.
+
+### P23. Bundle RICH physical fields that share one migration mapping
+
+This is an integration opportunity outside ordinary MadVoro build time. **Estimate:** reduce the relevant field-migration interval by 20-60% when startup/repeated packing dominates; if it is 5-20% of full RICH time, that is a conditional 1-12% full-run reduction. Zero when the interval is negligible or raw payload bandwidth dominates. Do not also count it inside the f-scaled core-build estimates. Effort: about 1-3 weeks.
+
+**Evidence:** HDSim `hdsim_3d.cpp:616-620` migrates `mid_extensives`, `extensive_`, `cells_`, and `point_vel` sequentially over the same mapping. `Simulation.cpp:121-124` transfers extensives and cells separately, then refreshes ghosts. `source/mpi/mpi_commands_3d.hpp:49-85` prepares and compacts each field independently.
+
+Introduce a RICH-level field-bundle transaction. Compute peer order/counts once, serialize all required fields for each original index into one peer buffer, exchange, and scatter into new field arrays in exactly the original mapping order. Keep hydro state outside MadVoro's geometry template. Preserve custom migration callbacks and ExchangeChain composition; support empty ranks without accessing element zero to discover a schema.
+
+Ownership migration and subsequent ghost refresh are separate dependencies. Never combine transfers separated by primitive reconstruction, flux/source operations, or velocity correction simply because they use the same field name. Bundle only fields simultaneously ready and needed at the same stage. Keep explicit serialization and count-overflow checks; peak buffer memory may rise.
+
+**Validation:** global IDs plus distinct heterogeneous sentinels in every field, empty ranks, partial participation, two-stage mapping composition, AMR and changing custom fields. Compare field arrays and physics outputs after each migration stage. Measure full timestep time and peak memory. This can share transport infrastructure with P16 while retaining separate application semantics.
+
+## 8. Advanced work, configuration, and explicit alternatives
+
+### P18. Add hybrid parallelism only to proven independent local work
+
+**Estimate:** 0-20% of complete build time at a fixed total physical-core allocation; f=25% gives 0-5% full-run reduction. Simple independent center/face-center passes alone are more likely to yield 0-8% in a suitable compute-heavy build. Some rank/thread configurations will be slower. Effort: at least 3-6 weeks for a safe useful subset; parallel insertion is not included.
+
+MadVoro links OpenMP, but the insertion/flip engine mutates shared tetrahedra, free slots, queues and caches. Do not put an OpenMP pragma around `InsertPoint`, `BuildExtra`, face generation, or range queries without changing their data ownership.
+
+**Thread-safety audit:** OctTree query traversal uses mutable `nodes_stack` (O:261 and O:813); its static node pool is not synchronized (O:125). MPI buffer code uses static scratch vectors (B:216-218 and B:349-350). Predicate state is thread-local, so worker threads do not automatically inherit a main-thread lattice scope. Hilbert ordering also has function-static recursiveCalls at H:340; replace it with explicit recursion depth before concurrent calls, preserving exceptional-exit behavior. Voronoi cell-moment/face code writes shared arrays and may accumulate into multiple cells. An apparently const method can still mutate scratch.
+
+Begin with independent per-tetra geometry after triangulation has stopped changing. Give each worker explicit scratch and output slots. Preserve the predicate context of the baseline operation: never propagate a Delaunay lattice scope to predicates on derived circumcenters or cell-moment coordinates. The shortcut only bounds-checks queried points and assumes certified input membership; derived geometry is not certified just because it lies within those bounds. Final geometry must retain its baseline inactive scope and robust fallback. Any worker operating on certified original inputs needs a separately proven equivalent context. Next evaluate per-face calculations with preallocated disjoint output, followed by a deterministic assembly/prefix phase. Cell contributions should accumulate into worker-local or ownership-partitioned storage, then reduce in a defined order. Document allowable floating-order differences and conservation tolerances.
+
+For range queries, pass a traversal stack owned by the caller/thread and keep the tree immutable during the parallel region. Resolve node-pool thread safety before concurrently constructing trees. MPI should remain on a designated thread under an appropriate negotiated thread-support level; do not assume `MPI_Init` permits arbitrary worker MPI calls. A progress thread is a separate P04 experiment with its own overhead.
+
+Benchmark at the same cores and memory allocation, for example 64x1,32x2,16x4 ranks x threads, with explicit binding and NUMA placement. Lower rank count may reduce ghost surface/coordination but increase local serial Delaunay cost. Record total build time, CPU utilization, memory and physics performance. Treat spare-core runs as a separate resource experiment, not free speedup.
+
+**Validation:** thread sanitizer where compatible on isolated local components, deterministic repeated runs, debug cache/adjacency checks, all degeneracy families, and fixed-core comparisons. Keep threading disabled by default until the target production cases pass and benefit.
+
+### P20. Measure compiler and placement changes without relaxing geometry arithmetic
+
+**Estimate:** 0-8% of build time on a reasonably configured baseline; f=25% gives 0-2% full-runtime reduction. A badly oversubscribed or accidentally debug build can improve much more when corrected, but that is not assumed here. Effort: roughly 3-7 days of controlled build/placement experiments.
+
+**Evidence:** `config/compiler_flags.cmake:26-31` adds symbols, frame pointers, disabled sibling-call optimization and stack protection; release and Intel flags appear later. MadVoro standalone defaults apply only when it is the top-level project (MC:12-33). The current RICH CMake integrates a MadVoro target (RC:253-294), and mixed debug translation units are possible (RC:301-303). Much geometry is template code compiled in consumer translation units; flags only on exception `.cpp` files do not optimize the engine.
+
+Archive final compile commands, actual compiler and MPI versions, CPU target, definitions including exact-integer fallback/VCL, LTO state, and mixed-mode sources. Use an isolated build. Compare O2 versus O3 under the same arithmetic rules; then evaluate supported architecture tuning, LTO, and PGO as separate experiments. Record compile size and instruction-cache effects. Symbols alone are expected to have approximately 0% runtime gain when removed; do not equate `-g` with unoptimized code.
+
+Do not enable global fast-math, Ofast, reassociation, or unchecked floating contraction. Adaptive predicates depend on numerical error bounds; changed arithmetic can create silent topology failures. Any optimization profile that changes stack-protection or profiling flags must be explicit and separate from repository defaults, with its measured contribution reported. Retain a useful profiling build.
+
+For placement, compare cores/socket and rank counts using the cluster's supported launcher; record rank mapping, binding, threads, NUMA policy and fabric. Avoid oversubscription. A comparison that changes MPI library, network, arithmetic mode and optimization flags simultaneously does not isolate a compiler gain.
+
+**Validation:** the complete geometric degeneracy suite and representative RICH regressions under the exact winning flags. PGO training and evaluation must use distinct replay snapshots. Recheck on both cold and warm mesh work and include build size/RSS. Keep only configurations with a reproducible benefit on the intended hardware.
+
+### P21. Research incremental updates to a moving triangulation
+
+**Estimate:** a speculative 10-50% of eligible repeated moving-mesh build time, 0% where motion/AMR/repartition invalidates most topology; f=25% gives 2.5-12.5% only if all of that mesh fraction is eligible. Research can fail or regress. Effort: at least 2-4 months, potentially much longer; do not assign this as the first task to an unsupervised implementation model.
+
+The current code incrementally inserts extra ghost points inside a build, but this is not a supported general deletion/movement algorithm between full builds. Reusing last step's tetrahedra after changing point coordinates requires proving Delaunay validity, updating all affected adjacency and geometry, and maintaining distributed ghost completeness. A displacement threshold alone is not a certificate near degeneracies or thin cells.
+
+Gate 1 is exact unchanged-geometry reuse through P17. Gate 2 is a research prototype for small, full, nonperiodic, fixed-ownership meshes with stable IDs and no AMR. Detect invalid local predicates after motion, identify the affected region, repair via a well-specified topology operation, invalidate every dependent radius/face/center and update point-location seeds. Keep the old full build available and fall back when the affected region grows beyond a cost threshold or a validity proof fails.
+
+Gate 3 introduces updated ghost discovery and boundary interactions; Gate 4 permits migration, periodic images, deletion and refinement. Each gate needs a complete mapping and stale-cache invalidation contract. Do not reinterpret `BuildPartiallyParallel` as a general temporal incremental update: its current meaning is construction for an active subset with supporting local/remote points.
+
+**Validation:** compare with a fresh full reconstruction after every small-motion step, using canonical geometric invariants rather than raw tetra indices when degeneracies allow multiple triangulations. Require no drift over long motion cycles; test adversarial motion near coplanarity, point swaps, boundary crossings, AMR and empty ranks at their respective gates. Include validation/certification and fallback costs in timing. Discontinue this work if cheaper P01-P20 changes already make mesh time insignificant in the full run.
+
+### P22. Bound per-query routing metadata and evaluate candidate-only distance queries
+
+**Estimate:** 0-15% of build time only when many big points and large P make routing/cache material; normally 0-2% at small rank counts. At f=25%, up to 3.75% in the eligible case. Effort: about 1-3 weeks for sparse metadata and 3-6 weeks for an alternate hierarchy. This overlaps P03/P05/P06 and must be remeasured after them.
+
+**Evidence:** BR:192-198 and BR:250 cache a vector of distance-bound pairs for every large point using near-rank routing. The current rectangular Hilbert tree creates P entries and traverses leaves for bounds at HR:429 and HR:437-475. With double pairs, the payload is approximately 16*B*P bytes for B cached large points. B=100,000 and P=1,024 would be about 1.64 GB per rank before container overhead; this is a conditional size example, not an observed production allocation.
+
+Measure active big points, cache hit rate/bytes, rank candidates, and routing time first. Replace full per-point distance vectors with candidate-only bounds when the environment API can return all conservatively intersecting ranks. Alternatively retain O(P) rank bounding boxes once and evaluate a compact hierarchy over them, rather than O(B*P) cached distances. Aggregate AABBs can be loose; lower bounds must never overestimate the true minimum distance, and upper bounds must bound the entire rank domain. Centroid distance is not a safe replacement. Extra candidates cost time; missing a required rank corrupts the mesh.
+
+Keep the existing fallback that queries all required intersecting domains when near-only selection is insufficient. Invalidate routing metadata on decomposition/kernel/box changes. Periodic translated big queries intentionally disable `askOnlyClose` in the current expansion; do not reuse unshifted routing keys without the full translated geometry.
+
+**P22a, sparse rank-to-slot metadata:** an additional subexperiment, 0-5% build time only with large correspondent lookup cost and near-zero at small P. Replace repeated linear rank-list searches with a versioned rank-to-slot index; choose dense O(P) storage once per session or sparse hash storage according to measured degree. Preserve deterministic exported peer order and do not persist stale slot maps after rearrangement. This is included in P22's envelope, not added.
+
+**P22b, packed immutable range-tree backend:** 0-10% in a tree-dominated build, 0-3% in L. The current tree already pools nodes but remains pointer linked. Prototype a separate bulk-built backend with exact ignore filters and original indices; sweep leaf sizes 8/16/32/64. Include build and destruction cost, not just query throughput. Existing KDTreeFinder insertion alone does not guarantee a balanced tree. Compare every query against brute force and keep the original backend. This is a research alternative after P10, not a prerequisite for simpler wins.
+
+**Validation:** candidate-rank superset versus exact existing routing on small decompositions; thin/disconnected domains; many equal cuts; periodic face/edge/corner images; changing decompositions; stable result and ghost order. Measure peak memory as well as runtime. Reject any pruning heuristic without a conservative-bound argument.
+
+### 8.1 Concrete alternate transport experiment for P04
+
+Before committing to persistent streaming, build a simple two-phase batch backend as a reference implementation. Its extra experiment contribution is included in P04's 5-25% L envelope; it can be slower due to lost streaming or memory growth. Keep the current answer logic and deduplication unchanged.
+
+```text
+For a globally present query type, on every rank:
+  1. Route and serialize records by destination, retaining parent query IDs.
+  2. Exchange byte counts once; post receives for every nonzero inbound peer.
+  3. Post bounded sends; complete all request payloads.
+  4. For each received subquery, run the existing answer function.
+  5. Emit exactly one response record per subquery, even with zero points.
+  6. Exchange response byte counts; post receives, then sends; complete them.
+  7. Verify every issued subquery has exactly one response.
+  8. Assemble per-query counts and ordered ghost segments; release epoch buffers.
+```
+
+Use explicit serialized byte counts and overflow checks; no `sizeof(std::vector)` wire format. Post receives before waiting for sends, and bound outstanding requests/bytes. The initial version may use a dense Alltoall for counts, so it reduces protocol complexity without claiming O(peer-degree) metadata. It needs two count collectives per type rather than the current seven setup/teardown collectives and completion tree, but local answering may become less overlapped.
+
+Do not blindly use the existing sparse helper and assume it posts all peers concurrently. X:204/240-289 and X:321/348-400 exchange counts then use P-1 ring steps with waits inside each step. A new helper should post all known receives and bounded sends, or a carefully matched peer window. Preserve per-sender result ordering and the current big-before-small phase separation: both share `SentPointsContainer`, so fusing query kinds changes which query gets credit for a newly sent point.
+
+If this backend wins, optimize its sparse discovery later. If streaming wins, use its result-equivalence tests as an oracle for a session backend. Buffer tuning remains a subsidiary experiment within P04: byte targets 4/16/64 KiB, receive slots 1/2/4/8, bounded inflight bytes and explicit tail flush. Plausible standalone gain is 0-10% of L build time only if buffering/polling is material; do not add it to the P04 total. Current loop-count flush heuristics depend on CPU speed; measure elapsed tail delay and ensure progress cannot starve.
+
+## 9. Correctness and performance acceptance suite
+
+### 9.1 Shared invariants that every implementation must preserve
+
+Point identity is distinct from local array index. For each peer and exported slot, the sender's original point/image and receiver's ghost index must match. A periodic ghost is identified by physical point and image translation; several images of the same point can be required. Bounding tetra vertices, physical mirrors and remote generators have different roles. Test them separately. After migration, all physical fields, weights, radii and IDs must follow the same mapping.
+
+Owned physical cells must have finite positive volume for valid nonduplicate inputs, and global owned volume must match box volume within the established tolerance. Preserve face orientation, area, centroid and reciprocal neighbor relations. Check live tetra references, point-to-tetra adjacency, and Delaunay predicate validity on small cases. Volume sum alone can conceal compensating errors or wrong connectivity.
+
+For behavior-preserving copies, diagnostics and lookup changes, require identical IDs/maps/permutations and stable geometry under the same arithmetic. For changed insertion order or reduction order, exact internal tetra indices may differ legitimately in degenerate cases; compare canonical physical faces/volumes, consistent orientation, ownership and conservation with a stated tolerance. Do not increase an existing tolerance merely to accept the patch.
+
+All ranks participate in globally agreed protocol phases even if locally empty. Every MPI send buffer remains stable until completion; every receive buffer is processed before reuse; all pending work, including unsent packed buffers and incoming answer queues, enters the completion proof. A local no-query state is not global quiescence. A barrier is not a general message flush. Use actual serialized lengths with checked conversion/chunking. Communicator and tag lifetime must exclude cross-talk between query kinds/builds.
+
+### 9.2 Request-compaction portability prerequisite
+
+B:365-383 calls `MPI_Testsome`, iterates returned completion indices in reverse returned order, and swap-pops the request vector. The MPI completion contract does not require ascending index order. For three requests and returned indices `[2,0]`, reverse iteration removes index 0 first, shrinks the vector to size 2, then accesses index 2. This is a code/API-contract portability risk; no production crash was reproduced during the audit.
+
+Before transport changes, sort the completed indices in descending numeric order before compaction, or use stable request slots. If statuses are consumed, preserve each index/status association when reordering. Preserve request-to-buffer mapping for moved slots and handle `outcount=0`, `MPI_UNDEFINED`, and error policy explicitly. Unit-test every completion subset/permutation for small request arrays, then exercise the real MPI backend. Direct expected runtime gain is 0%; it is a correctness prerequisite. The inference is based on the [MPI multiple-completion contract](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node76.htm).
+
+### 9.3 Test matrix and oracles
+
+| Family | Required cases | Main oracle |
+| --- | --- | --- |
+| Geometry baseline | uniform random; exact dyadic and perturbed lattices; duplicates handled per API | Volume, face orientation, Delaunay/adjacency validity |
+| Hard geometry | clustered/void, thin slab, large coordinate offset, coarse/fine seam, high valence | Robust predicate and forced-geometry comparison |
+| Boundaries | nonperiodic; each periodic axis; pairs; all axes; face/edge/corner crossings | Image-aware IDs, translated centers, domain volume |
+| Distribution | 1/2/3/4/8 ranks; P>N; empty rank; one populated rank; asymmetric peers | Ownership/ghost maps, no deadlock |
+| Partial builds | identity, full permutation, noncontiguous subset, empty subset | Active-to-all mapping, ASan/UBSan, full-build oracle |
+| Time evolution | unchanged 100+ builds; small/large motion; AMR; rebalance; moving box | Fresh full reconstruction and RICH conservation |
+| Transport | zero answers; eager/rendezvous sizes; delayed rank; repeated epochs; two instances | Exactly-once answers, request/buffer accounting |
+| Balance | equal keys, repeated cuts, zero weights, huge weight, shuffled ownership | Cut rules, achieved imbalance, ID completeness |
+| Configuration | production flags; debug sanitizers; supported compiler/MPI combinations | Same contracts under each arithmetic/backend mode |
+
+Start with the existing MadVoro cases: `voronoi_volume`, `voronoi_volume_periodic`, `voronoi_parallel_check`, and `voronoi_mock_mesh_periodic`, plus the periodic boundary example. These are useful seeds, not the complete acceptance suite. Their CMake currently creates executables and does not register these native cases with `add_test`; THUNDER metadata/config drives execution and currently forces Slurm. A successful build or empty `ctest` result is not proof that the tests ran.
+
+Use small independent brute-force or fresh-build oracles where affordable. For communication changes retain the old backend in differential mode. For caches compare selected cache hits with recomputation. For mapping changes migrate synthetic unique fields in addition to physical data. Include RICH moving-mesh hydro, AMR, periodic MockMesh, and a coupled radiation/hydro case selected from real production usage. Record exact cases and pass metrics; do not claim that the audit's 14 volume smoke checks cover these future requirements.
+
+### 9.4 Benchmark campaign
+
+Build three levels: a local component benchmark, a standalone whole-MadVoro replay, and a full RICH timestep sequence. Component wins authorize continued investigation; they do not authorize a full-run speedup claim. Exclude compilation, point generation, output writing and validation from the mesh interval, but include every setup/copy/communication operation the production call needs.
+
+Strong scaling uses exactly the same global IDs/coordinates/weights and N at each P. Sweep one node then 2/4/8 nodes and available production scales with physical-core binding; use at least two N values so points/rank and latency floor are visible. Weak scaling keeps N/P and the data family comparable. Suggested local-count targets are 1k,10k,100k points per rank subject to memory and allocation limits. These are planned experiments, not jobs run by this audit. Include production snapshots at low/mid/high density contrast and at least one periodic case.
+
+Separate first build, unchanged warm builds, small motion, large motion, true partial masks and rebalance events. Do not let a benchmark spend all its time in unchanged meshes if production moves every step. Keep the same decomposition policy in isolated comparisons unless that policy is the change under test. For time series replay, apply motion by stable global ID so different ownership layouts receive identical physical input.
+
+Use at least five independently launched repetitions after allocation warmup, and preferably ten when variability is material. Record cold timing per launch and median/p95 warm-build timing within the sequence. Pair baseline/candidate jobs in alternating order on the same allocation; randomize order across pairs if practical. Report confidence/spread for paired elapsed ratios, outliers and failure rate. Never discard a slow run solely because it weakens the claim. Record node placement, resource count, MPI/CPU versions and competing workload conditions.
+
+Provisional acceptance thresholds: correctness suite passes; targeted representative median improves by at least max(3%, measured noise threshold); paired data support positive gain; no unexplained >2% representative regression; and no unacceptable RSS growth. These thresholds are engineering defaults, not statistically established facts. A smaller important improvement can be accepted only with enough repeats to resolve it and a clear justification. Research flags can be workload-specific but must document the conditions.
+
+Full-run acceptance uses total simulated physical interval or a fixed equivalent timestep workload, with equal accuracy and physical configuration. Include all balancing, mapping, cache refresh and field movement. If timesteps differ because geometry changes, normalize only with an explicitly equivalent scientific workload and report that difference. Provide time reduction and speedup with both denominators.
+
+### 9.5 Result schema to require from the implementation model
+
+```text
+change_id, parent_revision, dependency_revisions, source_hashes
+compiler, complete_flags, mpi_version, hardware, ranks, threads, binding
+scenario, seed_or_snapshot_hash, global_N, active_fraction, periodic_axes
+build_reason, build_number, decomposition_version, changed_point_fraction
+max_build_seconds, full_step_seconds, phase_timings, rank_imbalance
+ghost_rounds, query_counts, collective_counts, transferred_bytes, peak_RSS
+correctness_cases, tolerances, failures, before_after_mapping_checks
+repetitions, median_ratio, spread_or_interval, time_reduction, speedup
+observed_target_fraction, predicted_gain, measured_gain, explanation
+```
+
+Keep raw per-rank records and an aggregation script. The scalar `max_build_seconds` must come from a max of local durations, not summing elapsed across ranks. Global clocks do not need to be synchronized for local-duration measurement; do not subtract one rank's raw timestamp from another's without a clock-alignment method.
+
+## 10. Implementation sequence, ownership, and stopping rules
+
+### 10.1 Suggested reviewable patch sequence
+
+| Wave | Work items | Dependency and completion gate |
+| --- | --- | --- |
+| 0 | P00 metrics; partial mappings; request-compaction prerequisite | Trustworthy baseline and targeted correctness oracles |
+| 1 | P01 diagnostics; P03 owner lookup; P15 local suppression | Independent small patches; unchanged geometry/maps |
+| 2 | P02 global mask; P07 result policy; P08 Phase A; P09 cache; P10 borrow; P11 Hilbert | Separate patches; rebaseline after each |
+| 3 | P05 radius sweeps; P06 guarded seed cache; P12 staging | Real replay wins including memory/migration |
+| 4 | P04 transport backend/session; P16 ghost fields | Protocol proof, old-backend oracle, multi-node runs |
+| 5 | P12 one migration; P13 distributed balance; P14/P17 policies; P23 fields | Full RICH timesteps improve after all side effects |
+| 6 | P18/P19/P20/P22 measured experiments | Only for still-dominant phases; fixed resources |
+| 7 | P21 incremental movement research | Specialist review and strict staged certification |
+
+These are dependency groups, not a requirement to implement all ideas. The first useful batch is approximately 1-3 engineering weeks with a prepared test environment; protocol and integration work can extend to several months. Estimates assume a competent developer reviewing the implementation model. A model should work one bounded ticket at a time and stop on failed invariants, rather than composing a broad rewrite.
+
+Changes belong in their owning repositories: MadVoro core/range/predicates in its submodule; query transport in mpi_utils; ownership/Hilbert/balance in MeshDecomposer3D; trees in spatial_ds; scheduling/field migration and build profiles in RICH. After a dependency patch is validated, record the dependency commit and update RICH's gitlink in a separate integration patch. Do not leave an undocumented dirty dependency as the only record of the optimization. Preserve the user's unrelated working changes; use isolated worktrees/checkouts for implementation and builds as needed.
+
+### 10.2 Per-ticket instructions for the implementation model
+
+Read the cited functions and all callers again at the actual implementation revision. State the invariant, affected input/index space, MPI participation rule, and measured target cost before editing. Write the smallest behavior-preserving change first. Add only tests that check a meaningful invariant or counterexample, then run the appropriate subset and full required suite. Archive before/after measurements and recompute expected full-run benefit using the measured mesh or field-migration fraction.
+
+A complete ticket report must include: problem and trigger; changed symbols/repositories; exact semantic contract; reason the optimization should reduce work; raw test/benchmark links; measured median/spread/RSS; whether the estimate was met; regressions and fallback behavior. “Compiles,” “uses nonblocking MPI,” or “reduces complexity” alone is not completion. Never fill an unmeasured result table with the planning estimates from this PDF.
+
+Keep old behavior available behind a switch for algorithm/backend changes until the production suite qualifies the new one. Do not leave multiple interacting experimental defaults enabled without a combined replay. Once a phase no longer dominates, stop optimizing it and revisit full-RICH timing. For example, if mesh work falls to 5% of the run, a further 20% mesh reduction is only 1% total; a weeks-long rewrite may no longer be worthwhile.
+
+### 10.3 Stopping and rollback criteria
+
+Immediately reject a patch that returns incomplete ghosts, mismatched fields, nondeterministic request corruption, invalid geometry, or silent numeric-mode changes. A speedup obtained by dropping geometric completion, skipping legitimate AMR work, under-querying rank domains, or using stale indices is invalid.
+
+Keep a patch off by default if it helps one synthetic test but regresses production replay, consumes unacceptable memory, or has no resolved performance signal. Revert its optimization changes while retaining independent correctness fixes and measurement tools. If a decomposition/cache policy has workload-specific value, expose a documented mode and report its enable criteria. Do not repeatedly tune against the same single snapshot and call that general performance.
+
+## 11. Adversarial review guide
+
+The reviewer should attempt to disprove each claim with the counterexample in this table. A valid criticism identifies the violated invariant, an affected input, and either a source path or reproducible measurement. It should not demand exact face/tetra index equality when a documented algorithm change permits a different valid degenerate triangulation.
+
+| Claim to challenge | Concrete review question / failure case |
+| --- | --- |
+| “Sparse MPI now scales” | Does the path still perform P-sized counts or P-1 ring waits? Measure metadata and startup. |
+| “Empty rank can skip” | Does another rank need that rank to answer? Verify global mask and phase ordering. |
+| “No points arrived, finished” | Can the radius still be insufficient? Run void/low-yield growth sequences. |
+| “Remove all barriers” | What replaces epoch drainage and tag isolation? Test delayed/rendezvous traffic. |
+| “Persistent buffer is safe” | Can a vector reallocate or a next epoch match an old receive? Check request lifetime. |
+| “Results need only unique points” | Are per-query capped counts and per-image identities preserved? |
+| “Use last ghost indices” | What happened after migration, reorder, deletion or changed periodic box? |
+| “Owner check is unnecessary” | Are every boundary mutation and restored snapshot validated before lookup? |
+| “Partial equals smaller full build” | Is active-to-all map direction correct? Test full permutation and sparse subset. |
+| “Cache centers by tetra index” | Was that slot freed/reused or any vertex moved? Check validity generation. |
+| “Classify only new points” | Can old off-grid points invalidate the combined predicate scope? |
+| “Make tetra bookkeeping incremental” | Is it already incremental? Measure duplicate entries rather than inventing a full scan. |
+| “Add an octree pool” | A pool exists; are actual misses/allocations still significant? |
+| “OpenMP is enabled, parallelize loop” | Does it touch static scratch, mutable traversal stacks, TLS predicates or shared faces? |
+| “Release build is sufficient evidence” | Which flags compiled template consumers and mixed debug units? |
+| “Fast-math passed uniform points” | Did error-bound-sensitive lattice/near-degenerate cases pass under the same flags? |
+| “Rebalance improved max/mean” | Did migration, ghosts and physics make the whole timestep slower? |
+| “Saved LB is identical” | Are kernel/box/communicator and custom state identical, not just cuts or pointer? |
+| “Bundle repeated field transfers” | Are fields simultaneously ready, or separated by a physical dependency? |
+| “19 calls means 19 equal latencies” | Are they blocking, overlapped or different algorithms? Use actual elapsed data. |
+| “Gain is 30%” | Of which interval? Measured or estimated? At what N/P, boundary case and repeat count? |
+| “All tests passed” | Were executables run, or did CTest discover zero native tests? Check raw metrics. |
+| “Combined gain is the sum” | Did the proposals remove the same rounds, copies or migration? Rebaseline. |
+
+## 12. Source map, references, and reproducibility artifacts
+
+### 12.1 Source abbreviations and important entry points
+
+All paths in this table are relative to `/home/maorm/RICH`; combine the path with a line reference such as V:3705. Search the named function if the file has changed. This keeps the printed document readable while leaving every target specific.
+
+| Code | Repository-relative file |
+| --- | --- |
+| V | source/3D/tessellation/voronoi/Voronoi3D.hpp |
+| D | source/3D/tessellation/voronoi/delaunay/Delaunay3D.hpp |
+| P | source/3D/tessellation/voronoi/utils/Predicates3D_internal.hpp |
+| U | source/3D/tessellation/voronoi/utils/container_utils.hpp |
+| F | source/3D/tessellation/voronoi/range/finders/OctTreeFinder.hpp |
+| BR | source/3D/tessellation/voronoi/range/BigRangeAgent.hpp |
+| Q | source/utils/mpi_utils/queryAgent/BuffersManagerQueryAgent.hpp |
+| B | source/utils/mpi_utils/BuffersManager.hpp |
+| A | source/utils/mpi_utils/AmountManager.cpp |
+| E | source/utils/mpi_utils/exchange.hpp |
+| X | source/utils/mpi_utils/mpi_alltoall.hpp |
+| O | source/utils/spatial_ds/OctTree/OctTree.hpp |
+| CL | source/3D/tessellation/MeshDecomposer3D/load_balancing/CurveLoadBalancer.hpp |
+| PM | source/3D/tessellation/MeshDecomposer3D/points_manager/PointsManager.hpp |
+| HPM | source/3D/tessellation/MeshDecomposer3D/points_manager/HilbertPointsManager.hpp |
+| WB | source/3D/tessellation/MeshDecomposer3D/balance/weightedBalance3.hpp |
+| H | source/3D/tessellation/MeshDecomposer3D/hilbert/HilbertOrder3D.hpp |
+| HU | source/3D/tessellation/MeshDecomposer3D/hilbert/HilbertOrder3D_Utils.hpp |
+| HR | source/3D/tessellation/MeshDecomposer3D/hilbert/rectangular/HilbertRectangularTree3D.hpp |
+| MC | source/3D/tessellation/voronoi/CMakeLists.txt |
+| RC | source/CMakeLists.txt |
+
+RICH integration paths: `source/3D/tessellation/Voronoi3D.hpp` and its adapter implementation; `source/newtonian/three_dimensional/hdsim_3d.cpp`; `source/newtonian/three_dimensional/AMR3D.cpp`; `source/newtonian/three_dimensional/CostCalculator3D.cpp`; `source/newtonian/three_dimensional/simulation/Simulation.cpp`; `source/newtonian/three_dimensional/simulation/steps/HydroStep.cpp`; `source/newtonian/three_dimensional/simulation/steps/RemeshStep.cpp`; `source/newtonian/three_dimensional/simulation/steps/RadiationMCStep.cpp`; `source/mpi/mpi_commands_3d.hpp`; and `config/compiler_flags.cmake`.
+
+### 12.2 External primary references used to constrain the plan
+
+The local source is the primary evidence for opportunities. External references support the semantic constraints, not the estimated speedups.
+
+- MPI progress: code must remain correct with weak progress; useful overlap needs measurement and progress opportunities. [MPI Forum, MPI 4.1 section 3.9](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node48.htm).
+- Nonblocking collectives: input and output buffer access is restricted until completion; collective order must match across the communicator. [MPI Forum, MPI 4.1 section 7.12](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node145.htm).
+- Completion arrays: request indices/statuses refer to completed operations; the contract does not specify ascending returned index order. The compaction risk in section 9 is an inference from this contract and B:365-383. [MPI Forum, MPI 4.1 section 4.7.5](https://www.mpi-forum.org/docs/mpi-4.1/mpi41-report/node76.htm).
+- Robust predicates: near-zero determinants can have incorrect floating-point signs; adaptive exact arithmetic does extra work where needed. This motivates retaining the established predicate path and validating compiler changes. [Jonathan Shewchuk, robust geometric predicates](https://www.cs.cmu.edu/~quake/robust.html).
+
+### 12.3 Artifact inventory and exact smoke reproduction
+
+The final PDF and editable Markdown are stored in `docs/madvoro_performance/`. `evidence/audit_smoke.cpp` is a minimal diagnostic harness, not the planned production benchmark. The executable was built in `/tmp/madvoro_audit_smoke` so it did not replace source-tree regression binaries. Its code uses the existing current core API returning redistributed points; the RICH adapter has a different return contract, so check which API a caller uses.
+
+```bash
+# Run from /home/maorm/RICH, with the installed compiler/MPI modules active.
+mpicxx -std=c++17 -O2 -DNDEBUG -g1 -fno-omit-frame-pointer -fopenmp \
+  -DMADVORO_WITH_MPI -DSPATIAL_DS_WITH_MPI -DRICH_MPI -D__WITH_MPI \
+  -Isource/3D/tessellation/voronoi -Isource/3D/tessellation \
+  -Isource/utils -I/software/x86_64/5.14.0/boost/1.78.0/include \
+  docs/madvoro_performance/evidence/audit_smoke.cpp \
+  source/3D/tessellation/voronoi/exception/MadVoroException.cpp \
+  source/3D/tessellation/voronoi/exception/InvalidArgumentException.cpp \
+  source/3D/tessellation/voronoi/exception/SizeException.cpp \
+  source/utils/mpi_utils/AmountManager.cpp \
+  -o /tmp/madvoro_audit_smoke
+
+# Execute sequentially; each AUDIT record is reduced maximum build duration.
+OMP_NUM_THREADS=1 mpiexec --bind-to none -np 1 /tmp/madvoro_audit_smoke 4096 4 0
+OMP_NUM_THREADS=1 mpiexec --bind-to none -np 2 /tmp/madvoro_audit_smoke 4096 4 0
+OMP_NUM_THREADS=1 mpiexec --bind-to none -np 4 /tmp/madvoro_audit_smoke 4096 4 0
+OMP_NUM_THREADS=1 mpiexec --bind-to none -np 4 /tmp/madvoro_audit_smoke 512 2 1
+```
+
+The Boost path and MPI launcher reflect this host and may need an equivalent module path elsewhere. Baseline log files are `baseline_p1.log`, `baseline_p2.log`, `baseline_p4.log`, and `baseline_periodic_p4.log`; `baseline_summary.json` contains parsed build records and diagnostic phase/round counts. `source_sha256.txt`, `rich_head.txt`, `submodule_versions.txt`, `compiler.txt`, and `rich_build_config.patch` anchor the inspected/build context. The earlier `smoke_*` logs are exploratory and excluded from reported timings.
+
+The three detailed audit notes in audit_notes/ (madvoro_mpi_audit_notes.md, madvoro_geometry_audit_notes.md, and madvoro_integration_audit_notes.md) retain additional source context and clearly label their own unmeasured estimates. The consolidated P00-P23 estimates and priorities in this document are the implementation budget; wider brainstorm ranges in the notes do not override it. The PDF was generated from the accompanying Markdown with the included local renderer. Its source, tables, code blocks, text extraction, and page rendering were checked for readability.

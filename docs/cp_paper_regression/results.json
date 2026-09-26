@@ -1,0 +1,184 @@
+{
+  "Timed original 1": {
+    "path": "/home/maorm/RICH/build/rdma128_20260912/final_10176467/baseline1_probes.txt",
+    "sha256": "14bf107b8c832037428c39893e9c77ac73638b794358719ad4a36782a25c3142",
+    "end_ns": 81.5719,
+    "arrivals_ns": [
+      0.03848612745124826,
+      1.2830604598257365,
+      38.45767498693214,
+      null,
+      null
+    ],
+    "temperatures_at_81_5719_ns_keV": [
+      0.44851,
+      0.280744,
+      0.124274,
+      0.0557243,
+      0.0461394
+    ]
+  },
+  "Timed original 2": {
+    "path": "/home/maorm/RICH/build/rdma128_20260912/final_10176467/baseline2_probes.txt",
+    "sha256": "2168c54263205a98b61f218a6c08367b3e90953bf56f7d6120ef6eb72bf63a57",
+    "end_ns": 81.5719,
+    "arrivals_ns": [
+      0.03848612745124826,
+      1.3667879845415065,
+      38.745160257763544,
+      null,
+      null
+    ],
+    "temperatures_at_81_5719_ns_keV": [
+      0.451861,
+      0.279218,
+      0.123876,
+      0.0565128,
+      0.0472045
+    ]
+  },
+  "Timed optimized 1": {
+    "path": "/home/maorm/RICH/build/branson_cp128/run_10176483/storm1_probes.csv",
+    "sha256": "8a40470f59203d063c619206d0b11aa73623ebcc15bd6b9b346e8ebc7b3c3ea9",
+    "end_ns": 81.5719,
+    "arrivals_ns": [
+      0.03848612745124826,
+      1.3153688380888484,
+      38.90375152036941,
+      null,
+      null
+    ],
+    "temperatures_at_81_5719_ns_keV": [
+      0.456214,
+      0.285527,
+      0.124706,
+      0.0556266,
+      0.0466348
+    ]
+  },
+  "Timed optimized 2": {
+    "path": "/home/maorm/RICH/build/branson_cp128/run_10176484/storm1_probes.csv",
+    "sha256": "83031c678251f53faa926d08bb8e0de117ce72da5a47e79573b965e29edc94ce",
+    "end_ns": 81.5719,
+    "arrivals_ns": [
+      0.03848612745124826,
+      1.2252920563560645,
+      38.901703785295325,
+      null,
+      null
+    ],
+    "temperatures_at_81_5719_ns_keV": [
+      0.453884,
+      0.28397,
+      0.124471,
+      0.0579983,
+      0.0464415
+    ]
+  },
+  "Timed optimized 3": {
+    "path": "/home/maorm/RICH/build/branson_cp128/run_10176484/storm2_probes.csv",
+    "sha256": "55532b2bbe61c2e700331d11289d5936a3d29fc07d70557c7c2e27a221b32f56",
+    "end_ns": 81.5719,
+    "arrivals_ns": [
+      0.03848612745124826,
+      1.2754570632929347,
+      39.15208333325887,
+      null,
+      null
+    ],
+    "temperatures_at_81_5719_ns_keV": [
+      0.45772,
+      0.281739,
+      0.124897,
+      0.0554096,
+      0.046325
+    ]
+  },
+  "Paper DDMC": {
+    "path": "/data/shared/maorm/CrookedPipe_fixed/10176427/crookedpipe_probes.csv",
+    "sha256": "7b3c72103d9f7d4a0ca121ed5526493cfbeb9d2377cb71c4aa68ae0112d08a2e",
+    "end_ns": 1000.0,
+    "arrivals_ns": [
+      0.03446937404575886,
+      0.9101377689909389,
+      12.880411141905606,
+      30.764950119300384,
+      96.67203439585397
+    ],
+    "temperatures_at_81_5719_ns_keV": [
+      0.4697432280653767,
+      0.31682795662619456,
+      0.21200684954352034,
+      0.16489432654271374,
+      0.06714575876292471
+    ]
+  },
+  "Paper mesh without DDMC": {
+    "path": "/data/shared/maorm/CrookedPipe_fixed/10176424/crookedpipe_probes.csv",
+    "sha256": "ae2a161800c161aa3f474f0bfc4382da6d7870779d56fa7f9a35a508aaad6616",
+    "end_ns": 1000.0,
+    "arrivals_ns": [
+      0.03459089677250911,
+      0.9027536964243088,
+      13.469871599196502,
+      33.895709784997415,
+      116.47839639425928
+    ],
+    "temperatures_at_81_5719_ns_keV": [
+      0.46711715571209517,
+      0.30945794615403904,
+      0.19766267951296673,
+      0.15109977406812994,
+      0.057621896150473556
+    ]
+  },
+  "Paper replay baseline": {
+    "path": "/home/maorm/RICH/build/cp_paper_regression/run_10176491/baseline_probes.csv",
+    "sha256": "9451e1c53f5f4cbc876a6861e8be2c51016f09618a6c7a2df5417bec67eecdc2",
+    "end_ns": 40.0,
+    "arrivals_ns": [
+      0.03414588323689501,
+      0.8971038311550845,
+      12.917167514282946,
+      31.28681970588098,
+      null
+    ],
+    "temperatures_at_81_5719_ns_keV": null
+  },
+  "Paper replay optimized": {
+    "path": "/home/maorm/RICH/build/cp_paper_regression/run_10176491/optimized_probes.csv",
+    "sha256": "3b103cbbf5393b1ccd570e200b0d1e97c1848a486e4727c91428e7adba45e2a2",
+    "end_ns": 40.0,
+    "arrivals_ns": [
+      0.03414588323689501,
+      0.8770439722274703,
+      12.923619840891442,
+      30.640001480136856,
+      null
+    ],
+    "temperatures_at_81_5719_ns_keV": null
+  },
+  "reference_arrivals_ns": [
+    0.03611707701171315,
+    0.9576624586970979,
+    11.08515619957663,
+    27.879732264054212,
+    81.02646898007991
+  ],
+  "paired_paper_replay": {
+    "max_abs_difference_keV": [
+      0.0042979999999999685,
+      0.005247000000000002,
+      0.0010099999999999831,
+      0.002905000000000005,
+      0.00011229999999999574
+    ],
+    "rms_difference_keV": [
+      0.0012493232855730365,
+      0.0020135269294511596,
+      0.00024253461286484517,
+      0.00047292746949849563,
+      3.240774164840886e-05
+    ]
+  }
+}

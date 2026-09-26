@@ -1,0 +1,109 @@
+[
+  {
+    "kind": "build",
+    "program": "centroid",
+    "command": [
+      "c++",
+      "-std=c++17",
+      "-O1",
+      "-g1",
+      "-fno-omit-frame-pointer",
+      "-fopenmp",
+      "-I.",
+      "-Isource",
+      "-Isource/3D/tessellation/voronoi",
+      "-Isource/3D/tessellation",
+      "-Isource/utils",
+      "-I/software/x86_64/5.14.0/boost/1.78.0/include",
+      "/home/maorm/RICH/docs/madvoro_bugs/evidence/geometry_face_centroid.cpp",
+      "-o",
+      "/home/maorm/RICH/docs/madvoro_bugs/evidence/rerun_20260907T213820_910767Z/build/centroid"
+    ],
+    "exit": 0
+  },
+  {
+    "kind": "build",
+    "program": "extracted",
+    "command": [
+      "c++",
+      "-std=c++17",
+      "-O1",
+      "-g1",
+      "-fno-omit-frame-pointer",
+      "-fopenmp",
+      "-I.",
+      "-Isource",
+      "-Isource/3D/tessellation/voronoi",
+      "-Isource/3D/tessellation",
+      "-Isource/utils",
+      "-I/software/x86_64/5.14.0/boost/1.78.0/include",
+      "/home/maorm/RICH/docs/madvoro_bugs/evidence/mpi_extracted_helpers.cpp",
+      "-o",
+      "/home/maorm/RICH/docs/madvoro_bugs/evidence/rerun_20260907T213820_910767Z/build/extracted"
+    ],
+    "exit": 0
+  },
+  {
+    "kind": "build",
+    "program": "chain",
+    "command": [
+      "mpicxx",
+      "-std=c++17",
+      "-O1",
+      "-g1",
+      "-fno-omit-frame-pointer",
+      "-fopenmp",
+      "-DMADVORO_WITH_MPI",
+      "-DSPATIAL_DS_WITH_MPI",
+      "-DRICH_MPI",
+      "-D__WITH_MPI",
+      "-I.",
+      "-Isource",
+      "-Isource/3D/tessellation/voronoi",
+      "-Isource/3D/tessellation",
+      "-Isource/utils",
+      "-I/software/x86_64/5.14.0/boost/1.78.0/include",
+      "/home/maorm/RICH/docs/madvoro_bugs/evidence/integration_exchange_chain.cpp",
+      "source/mpi/ExchangeChain.cpp",
+      "-o",
+      "/home/maorm/RICH/docs/madvoro_bugs/evidence/rerun_20260907T213820_910767Z/build/chain"
+    ],
+    "exit": 0
+  },
+  {
+    "kind": "witness",
+    "case": "centroid",
+    "command": [
+      "/home/maorm/RICH/docs/madvoro_bugs/evidence/rerun_20260907T213820_910767Z/build/centroid"
+    ],
+    "exit": 0,
+    "baseline_interpretation": "exit 0 but centroid is twice expected",
+    "timeout_seconds": 10
+  },
+  {
+    "kind": "witness",
+    "case": "extracted_helpers",
+    "command": [
+      "/home/maorm/RICH/docs/madvoro_bugs/evidence/rerun_20260907T213820_910767Z/build/extracted"
+    ],
+    "exit": 0,
+    "baseline_interpretation": "exit 0; duplicated shifts and one-way peer removed",
+    "timeout_seconds": 10
+  },
+  {
+    "kind": "witness",
+    "case": "chain_permutation",
+    "command": [
+      "mpiexec",
+      "--bind-to",
+      "none",
+      "-np",
+      "1",
+      "/home/maorm/RICH/docs/madvoro_bugs/evidence/rerun_20260907T213820_910767Z/build/chain",
+      "permutation"
+    ],
+    "exit": 3,
+    "baseline_interpretation": "exit 3; actual100,101 expected101,100",
+    "timeout_seconds": 20
+  }
+]

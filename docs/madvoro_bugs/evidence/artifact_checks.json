@@ -1,0 +1,35 @@
+{
+  "source_files_verified": 156,
+  "source_hash_mismatches": [],
+  "finding_count": 24,
+  "priority_counts": {
+    "P1": 10,
+    "P2": 13,
+    "P3": 1
+  },
+  "unique_finding_ids": 24,
+  "explicit_source_references_checked": 57,
+  "invalid_source_references": [],
+  "pdf_pages": 30,
+  "words_outside_safe_page_bounds": [],
+  "minimum_words_per_page": 105,
+  "latex_overfull_boxes": 0,
+  "latex_warnings": 0,
+  "markdown_words": 12984,
+  "pdf_sha256": "676e43730ca7e7b2fe47b19ca0e7052e338cfd9a7a0901b7257bb7d6e089ad32",
+  "driver_smoke_cases": [
+    "centroid",
+    "extracted_helpers",
+    "chain_permutation"
+  ],
+  "driver_smoke_result": "Built and ran successfully as diagnostic witnesses; expected baseline defects observed, not passing repairs.",
+  "visual_pages_inspected": [
+    1,
+    5,
+    7,
+    20,
+    30
+  ],
+  "visual_review_note": "Cover and overview table plus final-flow partial, MPI and final pages reviewed; final typographic spacing edits checked by bounding boxes.",
+  "minimum_body_words_per_page": 387
+}

@@ -774,8 +774,7 @@ public:
         }
         else
         {
-            this->setPostProcessExternalSources(
-                std::move(control.externalSources));
+            this->setPostProcessExternalSources(std::move(control.externalSources));
         }
     }
 

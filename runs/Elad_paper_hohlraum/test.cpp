@@ -536,7 +536,7 @@ int main(int argc, char *argv[]) {
         const double T_boundary = T_boundary_keV * units::kev_kelvin; // Kelvin
         const double T_init = 300.0;                                  // Kelvin
         const double init_dt = 1e-11; // 1e-11 / (std::pow(ws / (static_cast<double>(5 * 112)), 0.333333333)); // seconds
-        const double t_final = 3e-9; // dt * 150;                    // 1e-9;
+        const double t_final = 1e-8; // 10 ns, Steinberg & Heizler Fig. 5
         const double max_dt = 5e-11; 
         constexpr size_t boundaryPhotonsPerCell = 1000;
         constexpr size_t dumpInterval = 25;

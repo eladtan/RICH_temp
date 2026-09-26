@@ -1,0 +1,9 @@
+{
+  "eta0_cm": 0.00025,
+  "phase_convention": "physical perturbation = Re[ eta0 * qhat(z,Omega) * exp(i*k*x) ]",
+  "interface": "z_interface(x,0)=eta0*cos(k*x)",
+  "velocity": "v'(x,z,0)=Re[eta0*(uhat(z),what(z))*exp(i*k*x)]",
+  "pressure": "p'(x,z,0)=Re[eta0*phat(z)*exp(i*k*x)]",
+  "radiation": "I'(x,z,Omega,0)=Re[eta0*Ihat(z,Omega)*exp(i*k*x)]",
+  "time_evolution_linear": "multiply every perturbation by exp(s*t)"
+}

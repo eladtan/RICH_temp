@@ -65,6 +65,8 @@
  * Runtime:     8e-7 s
  *
  * Usage: mpirun -np N ./test [options] [Np] [prefix] [new/cell] [max/cell]
+ *   --ncells N     override number of cells along x (default: 4000)
+ *   --output DIR   write results under DIR (default: McResultsDirectory/RICH_OUTPUT_DIR)
  */
 
 namespace fs = std::filesystem;
@@ -258,7 +260,6 @@ namespace
 int main(int argc, char *argv[])
 {
     vtune_stop();
-    DISABLE_TIMERS();
 
     #ifdef RICH_MPI
         MPI_Init(&argc, &argv);
@@ -276,8 +277,10 @@ int main(int argc, char *argv[])
     ArgumentParser arguments("Mach 45 radiative shock benchmark");
     arguments.addPositional<size_t>("Np", 4000, "number of cells along x");
     arguments.addPositional<std::string>("prefix", "mach45_mc", "output prefix");
-    arguments.addPositional<size_t>("new_photons_per_cell", 25, "new photons per cell per step");
+    arguments.addPositional<size_t>("new_photons_per_cell", 12, "new photons per cell per step");
     arguments.addPositional<size_t>("max_photons_per_cell", 100, "population-control photon cap per cell");
+    arguments.addOption<size_t>("ncells", 4000, "number of cells along x (overrides positional Np if given)");
+    arguments.addOption<std::string>("output", "", "output directory (overrides default results directory)");
     arguments.addFlag("resume", "resume from the checkpoint if it exists");
     arguments.addOption<std::string>("profile", "", "analytic profile file for initialization");
     arguments.addOption<std::string>("manager", "new-rdma-auto", "Monte Carlo communication manager")
@@ -316,8 +319,22 @@ int main(int argc, char *argv[])
     }
 
     size_t Np = arguments.get<size_t>("Np");
+    if(arguments.wasSet("ncells"))
+    {
+        Np = arguments.get<size_t>("ncells");
+    }
     std::string prefix = arguments.get<std::string>("prefix");
-    if(prefix.find('/') == std::string::npos)
+    if(arguments.wasSet("output"))
+    {
+        std::string outputDir = arguments.get<std::string>("output");
+        std::string stem = fs::path(prefix).filename().string();
+        if(stem.empty())
+        {
+            stem = "mach45_mc";
+        }
+        prefix = (fs::path(outputDir) / stem).string();
+    }
+    else if(prefix.find('/') == std::string::npos)
     {
         prefix = McResultsDirectory("Mach45") + "/" + prefix;
     }
@@ -351,7 +368,7 @@ int main(int argc, char *argv[])
     constexpr double v_up = V_shock;        // 5.71e8 cm/s (upstream, flowing right)
     constexpr double v_dn = V_shock - 4.82e8;  // 0.89e8 cm/s (downstream, flowing right)
 
-    constexpr double t_final = 3e-6;   // 3 us
+    constexpr double t_final = 8e-7;   // 0.8 us, Steinberg & Heizler Fig. 9(b)
     constexpr double xmin = 1950.0, xmax = 2450.0;
     constexpr double shock_x = 2300.0;
 
@@ -362,6 +379,7 @@ int main(int argc, char *argv[])
     double max_dt = 0.3 * dx / max_speed;
 
     constexpr size_t boundaryPhotonsPerCell = 50;
+    constexpr double combParameter = 5;
     constexpr bool withHydro = true;
     constexpr bool diffusionPressureGradient = false;
     const bool MMC = false;
@@ -609,6 +627,7 @@ int main(int argc, char *argv[])
     STORM::RadiationIMCParameters<ENERGY_GROUPS_NUM> radiationIMCParameters = {
         .newPhotonsPerCell = newPhotonsPerCell,
         .withHydro = withHydro,
+        .planarMomentumX = true,
         .diffusionPressureGradient = diffusionPressureGradient,
         .MMC = MMC,
         .withMultigroupOpacity = false,
@@ -620,7 +639,7 @@ int main(int argc, char *argv[])
         tess, boundaryCond, cells, extensives, eosPtr, opacityPtr, radiationIMCParameters);
 
     std::shared_ptr<PopulationControl<Vector3D, Tessellation3D>> popControl =
-        std::make_shared<STORM::CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell, 10);
+        std::make_shared<STORM::CombPopulationControl<Vector3D, Tessellation3D>>(tess, maxPhotonsPerCell, combParameter);
 
     size_t initialParticlesPerCell = 50;
     std::vector<Particle3D> initialParticles;
@@ -735,8 +754,9 @@ int main(int argc, char *argv[])
         parameter_file << "max_photons_per_cell=" << maxPhotonsPerCell << std::endl;
         parameter_file << "initial_particles_per_cell=" << initialParticlesPerCell << std::endl;
         parameter_file << "boundary_photons_per_cell=" << boundaryPhotonsPerCell << std::endl;
-        parameter_file << "population_control_comb_parameter=" << 10 << std::endl;
+        parameter_file << "population_control_comb_parameter=" << combParameter << std::endl;
         parameter_file << "with_hydro=" << withHydro << std::endl;
+        parameter_file << "planar_momentum_x=" << radiationIMCParameters.planarMomentumX << std::endl;
         parameter_file << "diffusion_pressure_gradient=" << diffusionPressureGradient << std::endl;
         parameter_file << "MMC=" << MMC << std::endl;
         parameter_file << "multigroup_opacity=" << false << std::endl;
@@ -834,6 +854,16 @@ int main(int argc, char *argv[])
     WriteVTK(tess, cells, physics, prefix + "_final.vtu");
     WriteSimulation(sim, simFile);
 
+  }
+  catch(const MadVoro::Exception::MadVoroException &e)
+  {
+      std::cerr << "=== MadVoroException on rank " << rank << " ===" << std::endl;
+      MadVoro::Exception::reportError(e, std::cerr);
+      #ifdef RICH_MPI
+          MPI_Abort(MPI_COMM_WORLD, 1);
+      #else // RICH_MPI
+        return 1;
+      #endif // RICH_MPI
   }
   catch(const UniversalError &e)
   {

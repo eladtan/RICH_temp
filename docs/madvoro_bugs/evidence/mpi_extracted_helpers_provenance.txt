@@ -1,0 +1,4 @@
+Source: /home/maorm/RICH/source/3D/tessellation/voronoi/Voronoi3D.hpp
+SHA256: 24657387f42e87723bad05054d37f36fdf69ec9cd74217d6e2cb68effa1980e1
+SphereIntersectsAABB and ExpandPeriodicQueries bodies copied verbatim.
+EnsureSymmetry body copied verbatim; only template/class qualification replaced.

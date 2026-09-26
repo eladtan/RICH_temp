@@ -1,0 +1,83 @@
+{
+  "diagnostics": {
+    "coarse_warm": {
+      "elapsed_s": 180.48,
+      "log": "/home/maorm/RICH/build/branson_cp128/diagnosis/run_10176489/coarse_warm.out",
+      "completed": true,
+      "final_probes_keV": [
+        0.447199,
+        0.22485,
+        0.0555767,
+        0.0484527,
+        0.0440859
+      ],
+      "transport_s": 178.222,
+      "radiation_residual_max_jerk": 2.22045e-16,
+      "material_residual_max_jerk": 1.02141e-13
+    },
+    "coarse_empty": {
+      "elapsed_s": 180.843,
+      "log": "/home/maorm/RICH/build/branson_cp128/diagnosis/run_10176489/coarse_empty.out",
+      "completed": true,
+      "final_probes_keV": [
+        0.446887,
+        0.224865,
+        0.0555291,
+        0.0495224,
+        0.0466498
+      ],
+      "transport_s": 178.317,
+      "radiation_residual_max_jerk": 1.66533e-16,
+      "material_residual_max_jerk": 7.54952e-14
+    },
+    "fine_empty": {
+      "elapsed_s": 134.096,
+      "log": "/home/maorm/RICH/build/branson_cp128/diagnosis/run_10176489/fine_empty.out",
+      "completed": true,
+      "final_probes_keV": [
+        0.454495,
+        0.257048,
+        0.0707924,
+        0.0506522,
+        0.0458289
+      ],
+      "transport_s": 128.277,
+      "radiation_residual_max_jerk": 4.44089e-16,
+      "material_residual_max_jerk": 8.08242e-14
+    },
+    "storm_no_rw": {
+      "elapsed_s": 88.941,
+      "log": "/home/maorm/RICH/build/branson_cp128/diagnosis/run_10176489/storm_no_rw.out",
+      "completed": true,
+      "final_probes_keV": [
+        0.453521,
+        0.278629,
+        0.124851,
+        0.0566412,
+        0.0462836
+      ],
+      "transport_s": 69.7920994
+    }
+  },
+  "probe3_refinement_increase_keV": 0.015263300000000007,
+  "fraction_of_gap_closed": 0.22068836219381782,
+  "source_check": {
+    "job": 10176490,
+    "storm_first_step_injected_erg": 505023000000.0,
+    "branson_first_step_injected_erg": 493578000000.0
+  },
+  "fine_mesh": {
+    "dimensions": [
+      224,
+      100,
+      100
+    ],
+    "cells": 2240000,
+    "thin_cells": 296064,
+    "thin_volume_cm3": 14.803199999998585,
+    "inlet_area_cm2": 0.7744000000000026,
+    "relative_source_area_change": 0.008333333333336856,
+    "synthetic_scatter_fraction": 0,
+    "initial_radiation_temperature_keV": 0
+  }
+}

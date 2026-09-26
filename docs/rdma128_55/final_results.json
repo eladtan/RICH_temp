@@ -1,0 +1,68 @@
+{
+  "runs": {
+    "previous1": {
+      "elapsed_s": 69.006,
+      "loop_s": 53.8752584,
+      "outside": "Outside-cycle time on rank 0: rebalance=4.3692 s, probes=0.0320613 s"
+    },
+    "previous2": {
+      "elapsed_s": 68.568,
+      "loop_s": 53.6032602,
+      "outside": "Outside-cycle time on rank 0: rebalance=4.40549 s, probes=0.0397806 s"
+    },
+    "previous3": {
+      "elapsed_s": 68.901,
+      "loop_s": 53.7213497,
+      "outside": "Outside-cycle time on rank 0: rebalance=4.41536 s, probes=0.0504807 s"
+    },
+    "log1": {
+      "elapsed_s": 65.334,
+      "loop_s": 50.28580518,
+      "outside": "Outside-cycle time on rank 0: rebalance=4.37945 s, probes=0.0324615 s"
+    },
+    "log2": {
+      "elapsed_s": 64.648,
+      "loop_s": 49.91568055,
+      "outside": "Outside-cycle time on rank 0: rebalance=3.77815 s, probes=0.0218958 s"
+    },
+    "log3": {
+      "elapsed_s": 65.153,
+      "loop_s": 50.23714748,
+      "outside": "Outside-cycle time on rank 0: rebalance=4.36822 s, probes=0.0265665 s"
+    },
+    "weight2": {
+      "elapsed_s": 70.787,
+      "loop_s": 52.1561953,
+      "outside": "Outside-cycle time on rank 0: rebalance=5.52297 s, probes=0.189732 s"
+    },
+    "weighthalf": {
+      "elapsed_s": 67.958,
+      "loop_s": 56.2485693,
+      "outside": "Outside-cycle time on rank 0: rebalance=2.94077 s, probes=0.0224195 s"
+    }
+  },
+  "baseline_median_s": 68.901,
+  "candidate_median_s": 65.153,
+  "reduction_pct": 5.439688828899422,
+  "max_mean_probe_difference_keV": [
+    0.00961766666666658,
+    0.006631666666666647,
+    0.001021366666666662,
+    0.0011053333333333262,
+    0.0008673666666666746
+  ],
+  "baseline_max_repeat_range_keV": [
+    0.01643,
+    0.01891899999999999,
+    0.0017409999999999926,
+    0.0032236,
+    0.0016081000000000012
+  ],
+  "candidate_max_repeat_range_keV": [
+    0.016892000000000018,
+    0.0174,
+    0.001795000000000005,
+    0.002694099999999998,
+    0.0016556000000000001
+  ]
+}

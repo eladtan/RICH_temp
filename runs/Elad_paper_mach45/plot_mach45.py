@@ -17,7 +17,7 @@ Usage:
     python plot_mach45.py <file1.txt> [file2.txt ...]      # explicit files
     python plot_mach45.py --dir /path/to/run               # scan directory
     python plot_mach45.py --wide                            # full domain view
-    python plot_mach45.py --match <file.txt>                 # shift analytic to best-fit first file
+    python plot_mach45.py --match                           # shift data g(x)=f(x-A) to best-match analytic
 """
 
 import sys
@@ -404,29 +404,37 @@ def compute_mach45_analytic(x_plot, x_shock_plot):
 
 
 def find_best_shift(profile):
-    """Find the shift K that minimizes the L2 density residual between
-    analytic(x - K) and the first data profile.
+    """Find a single A (cm) that best matches g(x)=f(x-A) to the analytic.
 
-    Returns K (cm) such that analytic evaluated at x_shock = SHOCK_X0 + K
-    best matches the data.
+    The same A is used for T_gas, T_rad, density, and velocity: the cost is
+    the sum of normalized L2 residuals of all four fields.
     """
     import scipy.optimize
 
-    x_data = profile["x"]
-    rho_data = profile["rho"]
+    x = np.asarray(profile["x"], dtype=float)
+    analytic = compute_mach45_analytic(x, SHOCK_X0)
+    fields = ("T_gas", "T_rad", "rho", "vx")
+    sim_scaled = []
+    ana_scaled = []
+    for key in fields:
+        sim = np.asarray(profile[key], dtype=float)
+        ana = np.asarray(analytic[key], dtype=float)
+        scale = float(np.max(ana) - np.min(ana))
+        if scale < 1e-30:
+            scale = 1.0
+        sim_scaled.append(sim / scale)
+        ana_scaled.append(ana / scale)
 
-    x_wide = np.linspace(x_data[0] - 300, x_data[-1] + 300, 10000)
-    analytic = compute_mach45_analytic(x_wide, SHOCK_X0)
-    rho_analytic = analytic["rho"]
+    def cost(A):
+        total = 0.0
+        for sim, ana in zip(sim_scaled, ana_scaled):
+            shifted = np.interp(x - A, x, sim, left=sim[0], right=sim[-1])
+            total += np.sum((shifted - ana) ** 2)
+        return total
 
-    def cost(K):
-        rho_shifted = np.interp(x_data, x_wide + K, rho_analytic,
-                                left=RHO_UP, right=RHO_DN)
-        return np.sum((rho_shifted - rho_data) ** 2)
-
-    result = scipy.optimize.minimize_scalar(cost, bounds=(-300, 300),
-                                            method='bounded')
-    return result.x
+    result = scipy.optimize.minimize_scalar(cost, bounds=(-300.0, 300.0),
+                                            method="bounded")
+    return float(result.x)
 
 
 # =========================================================================
@@ -438,6 +446,9 @@ def plot_mach45(profiles, outfile="mach45_figure9.png", wide=False,
     """
     Plot T_gas, T_rad, density, velocity vs x.
     Style follows Figure 9(b) of arXiv:2108.13453.
+
+    If match_shift is A, every simulation curve is plotted as g(x)=f(x-A)
+    with that same A on all four panels. The analytic stays unshifted.
     """
     fig, axes = plt.subplots(2, 2, figsize=(13, 9))
     ax_Tg = axes[0, 0]
@@ -447,10 +458,8 @@ def plot_mach45(profiles, outfile="mach45_figure9.png", wide=False,
 
     cmap = plt.cm.viridis
     n = len(profiles)
-
     x_shock = SHOCK_X0
-    if match_shift is not None:
-        x_shock = SHOCK_X0 + match_shift
+    data_shift = 0.0 if match_shift is None else match_shift
 
     for i, prof in enumerate(profiles):
         color = cmap(0.15 + 0.7 * i / max(n - 1, 1)) if n > 1 else "C0"
@@ -462,7 +471,8 @@ def plot_mach45(profiles, outfile="mach45_figure9.png", wide=False,
         t_str = ", ".join(parts) if parts else Path(prof["path"]).stem
         lw = 1.6 if n <= 5 else 1.0
 
-        x = prof["x"]
+        # g(x) = f(x - A) is the curve (x_i + A, f(x_i))
+        x = np.asarray(prof["x"], dtype=float) + data_shift
         ax_Tg.plot(x, prof["T_gas"], color=color, lw=lw, label=t_str)
         ax_Tr.plot(x, prof["T_rad"], color=color, lw=lw, label=t_str)
         ax_rho.plot(x, prof["rho"], color=color, lw=lw, label=t_str)
@@ -522,7 +532,7 @@ def plot_mach45(profiles, outfile="mach45_figure9.png", wide=False,
 
     shift_str = ""
     if match_shift is not None:
-        shift_str = f",  analytic shift $K = {match_shift:+.2f}$ cm"
+        shift_str = rf",  match $A = {match_shift:+.2f}$ cm ($g(x)=f(x-A)$)"
 
     fig.suptitle(
         r"Mach 45 Radiative Shock — cf. Steinberg & Heizler (2021) Fig. 9(b)"
@@ -604,7 +614,7 @@ def main():
         if not files:
             print(f"No profile files found in {directory}")
             print("Usage: python plot_mach45.py [file1.txt ...] "
-                  "[--dir path] [--wide] [--export-profile file.dat]")
+                  "[--dir path] [--wide] [--match] [--export-profile file.dat]")
             sys.exit(1)
 
         print(f"Scanning profile directory: {directory}")
@@ -622,8 +632,13 @@ def main():
 
     match_shift = None
     if do_match:
-        match_shift = find_best_shift(profiles[0])
-        print(f"Best-fit analytic shift: K = {match_shift:+.4f} cm")
+        ref = profiles[-1]
+        timed = [p for p in profiles if p["t_us"] is not None]
+        if timed:
+            ref = max(timed, key=lambda p: p["t_us"])
+        match_shift = find_best_shift(ref)
+        print(f"Best-fit match shift: A = {match_shift:+.4f} cm  "
+              f"(g(x)=f(x-A), from {Path(ref['path']).name})")
 
     plot_mach45(profiles, wide=wide, match_shift=match_shift)
 

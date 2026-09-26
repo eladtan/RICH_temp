@@ -1,0 +1,239 @@
+{
+  "cases": [
+    {
+      "id": "openmpi_ofi",
+      "launcher": [
+        "mpirun",
+        "--mca",
+        "op",
+        "^avx",
+        "--prefix",
+        "/software/x86_64/5.14.0/openmpi/4.1.6/gcc/12.3.0",
+        "--mca",
+        "plm",
+        "rsh",
+        "--mca",
+        "pml",
+        "ucx",
+        "--mca",
+        "osc",
+        "ucx",
+        "-x",
+        "LD_LIBRARY_PATH",
+        "-x",
+        "OMP_NUM_THREADS=1",
+        "-x",
+        "OPENBLAS_NUM_THREADS=1",
+        "-x",
+        "UCX_TLS=all",
+        "-x",
+        "FI_PROVIDER=verbs",
+        "-x",
+        "BENCHMARK_CPUS=0,2",
+        "--host",
+        "d25g133:2,d25g135:2",
+        "--map-by",
+        "ppr:2:node",
+        "--bind-to",
+        "none",
+        "-np",
+        "4",
+        "/home/maorm/RICH/regression_tests/mpi_rma/timing/pin_rank.sh"
+      ],
+      "binary": "/home/maorm/RICH/build/mpi_rma_validation/timing_openmpi/crooked_pipe_mpi_rma",
+      "backend_args": [
+        "--manager",
+        "rdma",
+        "--rdma-engine",
+        "ofi"
+      ]
+    },
+    {
+      "id": "mpich_ofi",
+      "launcher": [
+        "srun",
+        "--jobid=10185744",
+        "--mpi=pmi2",
+        "-N2",
+        "-n4",
+        "--ntasks-per-node=2",
+        "--distribution=block:block",
+        "--cpu-bind=none",
+        "/home/maorm/RICH/regression_tests/mpi_rma/timing/pin_rank.sh"
+      ],
+      "binary": "/home/maorm/RICH/build/mpi_rma_validation/timing_mpich/crooked_pipe_mpi_rma",
+      "backend_args": [
+        "--manager",
+        "rdma",
+        "--rdma-engine",
+        "ofi"
+      ]
+    },
+    {
+      "id": "openmpi_p2p",
+      "launcher": [
+        "mpirun",
+        "--mca",
+        "op",
+        "^avx",
+        "--prefix",
+        "/software/x86_64/5.14.0/openmpi/4.1.6/gcc/12.3.0",
+        "--mca",
+        "plm",
+        "rsh",
+        "--mca",
+        "pml",
+        "ucx",
+        "--mca",
+        "osc",
+        "ucx",
+        "-x",
+        "LD_LIBRARY_PATH",
+        "-x",
+        "OMP_NUM_THREADS=1",
+        "-x",
+        "OPENBLAS_NUM_THREADS=1",
+        "-x",
+        "UCX_TLS=all",
+        "-x",
+        "FI_PROVIDER=verbs",
+        "-x",
+        "BENCHMARK_CPUS=0,2",
+        "--host",
+        "d25g133:2,d25g135:2",
+        "--map-by",
+        "ppr:2:node",
+        "--bind-to",
+        "none",
+        "-np",
+        "4",
+        "/home/maorm/RICH/regression_tests/mpi_rma/timing/pin_rank.sh"
+      ],
+      "binary": "/home/maorm/RICH/build/mpi_rma_validation/timing_openmpi/crooked_pipe_mpi_rma",
+      "backend_args": [
+        "--manager",
+        "p2p"
+      ]
+    },
+    {
+      "id": "mpich_p2p",
+      "launcher": [
+        "srun",
+        "--jobid=10185744",
+        "--mpi=pmi2",
+        "-N2",
+        "-n4",
+        "--ntasks-per-node=2",
+        "--distribution=block:block",
+        "--cpu-bind=none",
+        "/home/maorm/RICH/regression_tests/mpi_rma/timing/pin_rank.sh"
+      ],
+      "binary": "/home/maorm/RICH/build/mpi_rma_validation/timing_mpich/crooked_pipe_mpi_rma",
+      "backend_args": [
+        "--manager",
+        "p2p"
+      ]
+    },
+    {
+      "id": "openmpi_mpi_rma",
+      "launcher": [
+        "mpirun",
+        "--mca",
+        "op",
+        "^avx",
+        "--prefix",
+        "/software/x86_64/5.14.0/openmpi/4.1.6/gcc/12.3.0",
+        "--mca",
+        "plm",
+        "rsh",
+        "--mca",
+        "pml",
+        "ucx",
+        "--mca",
+        "osc",
+        "ucx",
+        "-x",
+        "LD_LIBRARY_PATH",
+        "-x",
+        "OMP_NUM_THREADS=1",
+        "-x",
+        "OPENBLAS_NUM_THREADS=1",
+        "-x",
+        "UCX_TLS=all",
+        "-x",
+        "FI_PROVIDER=verbs",
+        "-x",
+        "BENCHMARK_CPUS=0,2",
+        "--host",
+        "d25g133:2,d25g135:2",
+        "--map-by",
+        "ppr:2:node",
+        "--bind-to",
+        "none",
+        "-np",
+        "4",
+        "/home/maorm/RICH/regression_tests/mpi_rma/timing/pin_rank.sh"
+      ],
+      "binary": "/home/maorm/RICH/build/mpi_rma_validation/timing_openmpi/crooked_pipe_mpi_rma",
+      "backend_args": [
+        "--manager",
+        "rdma",
+        "--rdma-engine",
+        "mpi"
+      ]
+    },
+    {
+      "id": "mpich_mpi_rma",
+      "launcher": [
+        "srun",
+        "--jobid=10185744",
+        "--mpi=pmi2",
+        "-N2",
+        "-n4",
+        "--ntasks-per-node=2",
+        "--distribution=block:block",
+        "--cpu-bind=none",
+        "/home/maorm/RICH/regression_tests/mpi_rma/timing/pin_rank.sh"
+      ],
+      "binary": "/home/maorm/RICH/build/mpi_rma_validation/timing_mpich/crooked_pipe_mpi_rma",
+      "backend_args": [
+        "--manager",
+        "rdma",
+        "--rdma-engine",
+        "mpi"
+      ]
+    }
+  ],
+  "environment": {
+    "OMP_NUM_THREADS": "1",
+    "OPENBLAS_NUM_THREADS": "1",
+    "UCX_TLS": "all",
+    "FI_PROVIDER": "verbs",
+    "BENCHMARK_CPUS": "0,2",
+    "OMPI_MCA_pml": "ucx",
+    "OMPI_MCA_osc": "ucx"
+  },
+  "benchmark_args": [
+    "400",
+    "2",
+    "10",
+    "--wall-layers",
+    "1",
+    "--wall-points",
+    "400",
+    "--random-walls",
+    "--boundary-photons",
+    "20",
+    "--final-time",
+    "1e-6",
+    "--energy-ledger"
+  ],
+  "nodes": [
+    "d25g133",
+    "d25g135"
+  ],
+  "ranks": 4,
+  "exclusive_nodes": true,
+  "queue_settings": "default dynamic queues, initial capacity 5000",
+  "openmpi_adjustment": "Disable installed op_avx component to avoid observed SSE/AVX transition assists; no source or compiler changes"
+}

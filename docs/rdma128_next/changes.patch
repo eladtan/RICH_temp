@@ -1,0 +1,314 @@
+--- a/gpu/FlatGridView.hpp
++++ b/gpu/FlatGridView.hpp
+@@ -35,6 +35,11 @@
+     std::uint8_t slabTransport = 0;
+     double slabLowerY = 0.0, slabUpperY = 0.0;
+     double slabLowerZ = 0.0, slabUpperZ = 0.0;
++    // Optional host-only structure-of-arrays snapshot. GPU views leave these
++    // null; their ordinary normals remain the source of geometry.
++    const double *normalX = nullptr;
++    const double *normalY = nullptr;
++    const double *normalZ = nullptr;
+ };
+ 
+ // Triangle-wave folding is the exact specular trajectory through any number
+@@ -121,9 +126,12 @@
+         for(; end - directedFace >= 4; directedFace += 4)
+         {
+             const PointT *n = grid.normals + directedFace;
+-            const __m256d nx = _mm256_setr_pd(n[0].x, n[1].x, n[2].x, n[3].x);
+-            const __m256d ny = _mm256_setr_pd(n[0].y, n[1].y, n[2].y, n[3].y);
+-            const __m256d nz = _mm256_setr_pd(n[0].z, n[1].z, n[2].z, n[3].z);
++            const __m256d nx = grid.normalX ? _mm256_loadu_pd(grid.normalX + directedFace) :
++                _mm256_setr_pd(n[0].x, n[1].x, n[2].x, n[3].x);
++            const __m256d ny = grid.normalY ? _mm256_loadu_pd(grid.normalY + directedFace) :
++                _mm256_setr_pd(n[0].y, n[1].y, n[2].y, n[3].y);
++            const __m256d nz = grid.normalZ ? _mm256_loadu_pd(grid.normalZ + directedFace) :
++                _mm256_setr_pd(n[0].z, n[1].z, n[2].z, n[3].z);
+             // Keep the scalar arithmetic order; build with contraction off.
+             const __m256d velocity = _mm256_add_pd(_mm256_add_pd(_mm256_mul_pd(nx, vx),
+                 _mm256_mul_pd(ny, vy)), _mm256_mul_pd(nz, vz));
+@@ -189,6 +197,55 @@
+     return result;
+ }
+ 
++// Distance to the closest inward-facing cell plane, for random-walk radius
++// selection. This includes all faces, even transverse faces in slab mode.
++template<typename ParticleT, typename PointT>
++STORM_GPU_INLINE_FUNCTION
++double MinimumFaceDistance(const ParticleT &particle, const FlatGridView<PointT> &grid)
++{
++    const std::size_t cell = static_cast<std::size_t>(particle.cellIndex);
++    const std::size_t end = grid.cellFaceOffsets[cell + 1];
++    std::size_t face = grid.cellFaceOffsets[cell];
++    double radius = DBL_MAX;
++#if defined(STORM_CPU_VECTOR_INTERSECTION) && defined(__AVX2__) && !defined(STORM_WITH_GPU)
++    if constexpr(std::is_same<decltype(particle.location.x), double>::value &&
++                 std::is_same<decltype(PointT::x), double>::value)
++    {
++        const __m256d px = _mm256_set1_pd(particle.location.x);
++        const __m256d py = _mm256_set1_pd(particle.location.y);
++        const __m256d pz = _mm256_set1_pd(particle.location.z);
++        __m256d nearest = _mm256_set1_pd(DBL_MAX);
++        for(; end - face >= 4; face += 4)
++        {
++            const PointT *n = grid.normals + face;
++            const __m256d nx = grid.normalX ? _mm256_loadu_pd(grid.normalX + face) :
++                _mm256_setr_pd(n[0].x, n[1].x, n[2].x, n[3].x);
++            const __m256d ny = grid.normalY ? _mm256_loadu_pd(grid.normalY + face) :
++                _mm256_setr_pd(n[0].y, n[1].y, n[2].y, n[3].y);
++            const __m256d nz = grid.normalZ ? _mm256_loadu_pd(grid.normalZ + face) :
++                _mm256_setr_pd(n[0].z, n[1].z, n[2].z, n[3].z);
++            const __m256d plane = _mm256_add_pd(_mm256_add_pd(_mm256_mul_pd(px, nx),
++                _mm256_mul_pd(py, ny)), _mm256_mul_pd(pz, nz));
++            const __m256d distance = _mm256_sub_pd(plane, _mm256_loadu_pd(grid.facePlaneOffsets + face));
++            // Match the scalar comparison's treatment of NaN distances.
++            nearest = _mm256_blendv_pd(nearest, distance, _mm256_cmp_pd(distance, nearest, _CMP_LT_OQ));
++        }
++        alignas(32) double distances[4];
++        _mm256_store_pd(distances, nearest);
++        for(double distance : distances)
++            if(distance < radius) radius = distance;
++    }
++#endif
++    for(; face < end; ++face)
++    {
++        const PointT &normal = grid.normals[face];
++        const double distance = particle.location.x * normal.x + particle.location.y * normal.y +
++                                particle.location.z * normal.z - grid.facePlaneOffsets[face];
++        if(distance < radius) radius = distance;
++    }
++    return radius;
++}
++
+ } // namespace gpu
+ } // namespace STORM
+ 
+--- a/physics/MonteCarloPhysics.hpp
++++ b/physics/MonteCarloPhysics.hpp
+@@ -65,6 +65,9 @@
+         std::vector<T> cellCenters;
+         std::vector<std::size_t> faceIndices;
+         std::vector<T> normals;
++#if defined(STORM_CPU_VECTOR_INTERSECTION) && !defined(STORM_WITH_GPU)
++        std::vector<double> normalX, normalY, normalZ;
++#endif
+         std::vector<T> pointsOnFaces;
+         std::vector<double> facePlaneOffsets;
+         std::vector<cell_index_t> nextCellIndices;
+@@ -106,6 +109,11 @@
+     }
+     this->gridData.faceIndices.resize(directedFaceCount);
+     this->gridData.normals.resize(directedFaceCount);
++#if defined(STORM_CPU_VECTOR_INTERSECTION) && !defined(STORM_WITH_GPU)
++    this->gridData.normalX.resize(directedFaceCount);
++    this->gridData.normalY.resize(directedFaceCount);
++    this->gridData.normalZ.resize(directedFaceCount);
++#endif
+     this->gridData.pointsOnFaces.resize(directedFaceCount);
+     this->gridData.facePlaneOffsets.resize(directedFaceCount);
+     this->gridData.nextCellIndices.resize(directedFaceCount);
+@@ -130,6 +138,11 @@
+             const T normal = normalize(normalTowardsCenterOfCell);
+             const T pointOnFace = this->grid.FaceCM(faceIdx);
+             this->gridData.normals[directedFace] = normal;
++#if defined(STORM_CPU_VECTOR_INTERSECTION) && !defined(STORM_WITH_GPU)
++            this->gridData.normalX[directedFace] = normal.x;
++            this->gridData.normalY[directedFace] = normal.y;
++            this->gridData.normalZ[directedFace] = normal.z;
++#endif
+             this->gridData.pointsOnFaces[directedFace] = pointOnFace;
+             this->gridData.facePlaneOffsets[directedFace] =
+                 ScalarProd(pointOnFace, normal);
+--- a/radiation/RandomWalk.hpp
++++ b/radiation/RandomWalk.hpp
+@@ -23,6 +23,7 @@
+     RandomWalk()
+     {
+         tauTable_.resize(tableSize_);
++        logTauTable_.resize(tableSize_);
+         survivalTable_.resize(tableSize_);
+ 
+         double logMin = std::log(tauMin_);
+@@ -32,6 +33,9 @@
+             double frac = static_cast<double>(i) / static_cast<double>(tableSize_ - 1);
+             double tau = std::exp(logMin + frac * (logMax - logMin));
+             tauTable_[i] = tau;
++            // Cache log of the stored, rounded tau, not the expression that
++            // preceded exp: interpolation must retain the original values.
++            logTauTable_[i] = std::log(tau);
+             survivalTable_[i] = computeSurvival(tau);
+         }
+ 
+@@ -141,6 +145,11 @@
+         return this->tauTable_;
+     }
+ 
++    const std::vector<double> &GetLogTauTable() const
++    {
++        return this->logTauTable_;
++    }
++
+     const std::vector<double> &GetSurvivalTable() const
+     {
+         return this->survivalTable_;
+@@ -267,6 +276,7 @@
+     }
+ 
+     std::vector<double> tauTable_;
++    std::vector<double> logTauTable_;
+     std::vector<double> survivalTable_;
+     std::vector<double> radiusTable_;
+ };
+--- a/tests/cpu_intersection_test.cpp
++++ b/tests/cpu_intersection_test.cpp
+@@ -73,6 +73,8 @@
+     for (size_t offset = 0; offset < 4; ++offset) {
+       std::vector<V> normals(offset + faces);
+       std::vector<double> planes(offset + faces);
++      std::vector<double> nx(offset + faces), ny(offset + faces),
++          nz(offset + faces);
+       std::vector<STORM::cell_index_t> next(offset + faces);
+       std::vector<uint8_t> boundary(offset + faces);
+       size_t offsets[] = {offset, offset + faces};
+@@ -102,6 +104,14 @@
+               planes[i] = -1 - std::abs(u(rng));
+             }
+           }
++        for (size_t i = 0; i < normals.size(); ++i) {
++          nx[i] = normals[i].x;
++          ny[i] = normals[i].y;
++          nz[i] = normals[i].z;
++        }
++        grid.normalX = test % 2 ? nx.data() : nullptr;
++        grid.normalY = test % 2 ? ny.data() : nullptr;
++        grid.normalZ = test % 2 ? nz.data() : nullptr;
+         P p{{u(rng) * .5, u(rng) * .5, u(rng) * .5},
+             {u(rng), u(rng), u(rng)},
+             0};
+@@ -136,10 +146,21 @@
+             a.directedFace != b.directedFace ||
+             a.boundaryCrossing != b.boundaryCrossing || a.valid != b.valid)
+           throw std::runtime_error("intersection mismatch");
++        double expectedRadius = DBL_MAX;
++        for (size_t face = offset; face < offset + faces; ++face) {
++          const V &n = normals[face];
++          const double distance = p.location.x * n.x + p.location.y * n.y +
++                                  p.location.z * n.z - planes[face];
++          if (distance < expectedRadius)
++            expectedRadius = distance;
++        }
++        if (STORM::gpu::MinimumFaceDistance(p, grid) != expectedRadius)
++          throw std::runtime_error("random-walk radius mismatch");
+         ++count;
+       }
+     }
+   std::cout << "PASS: " << count
+-            << " scalar/vector intersections match exactly; ties, tails, slab, "
++            << " scalar/vector intersections and radii match exactly; AoS/SoA, "
++               "ties, tails, slab, "
+                "parallel and grazing directions\n";
+ }
+--- a/radiation/gpu/IMCDeviceExecutor.hpp
++++ b/radiation/gpu/IMCDeviceExecutor.hpp
+@@ -383,6 +383,11 @@
+         result.grid.cellFaceOffsets = gridData.cellFaceOffsets.data();
+         result.grid.cellCenters = gridData.cellCenters.data();
+         result.grid.normals = gridData.normals.data();
++#if defined(STORM_CPU_VECTOR_INTERSECTION) && !defined(STORM_WITH_GPU)
++        result.grid.normalX = gridData.normalX.data();
++        result.grid.normalY = gridData.normalY.data();
++        result.grid.normalZ = gridData.normalZ.data();
++#endif
+         result.grid.facePlaneOffsets = gridData.facePlaneOffsets.data();
+         result.grid.nextCellIndices = gridData.nextCellIndices.data();
+         result.grid.boundaryCrossings = gridData.boundaryCrossings.data();
+@@ -430,6 +435,9 @@
+             result.randomWalk.cellTotalOpacity = owner_.rwCellTotalOpacity_.data();
+             result.randomWalk.pgrwCells = owner_.rwCellData_.data();
+             result.randomWalk.tables.tau = owner_.randomWalk_->GetTauTable().data();
++#ifndef STORM_WITH_GPU
++            result.randomWalk.tables.logTau = owner_.randomWalk_->GetLogTauTable().data();
++#endif
+             result.randomWalk.tables.survival = owner_.randomWalk_->GetSurvivalTable().data();
+             result.randomWalk.tables.radius = owner_.randomWalk_->GetRadiusTable().data();
+             result.randomWalk.tables.tableSize = owner_.randomWalk_->GetTauTable().size();
+--- a/radiation/random_walk/AdvanceRandomWalk.hpp
++++ b/radiation/random_walk/AdvanceRandomWalk.hpp
+@@ -9,6 +9,7 @@
+ #include "../transport/TransportPortability.hpp"
+ #include "../../particle/StepResult.hpp"
+ #include "../../utils/CounterRNG.hpp"
++#include "../../gpu/FlatGridView.hpp"
+ 
+ namespace STORM
+ {
+@@ -24,6 +25,8 @@
+     std::size_t radiusTableSize = 0;
+     double tauMin = 0.0;
+     double tauMax = 0.0;
++    // Optional immutable host cache; device/custom views may omit it.
++    const double *logTau = nullptr;
+ };
+ 
+ struct RandomWalkView
+@@ -79,7 +82,9 @@
+     const double tau0 = tables.tau[index - 1];
+     const double tau1 = tables.tau[index];
+     const double fraction = (survival0 - target) / (survival0 - survival1);
+-    return Exp(Log(tau0) + fraction * (Log(tau1) - Log(tau0)));
++    const double logTau0 = tables.logTau ? tables.logTau[index - 1] : Log(tau0);
++    const double logTau1 = tables.logTau ? tables.logTau[index] : Log(tau1);
++    return Exp(logTau0 + fraction * (logTau1 - logTau0));
+ }
+ 
+ STORM_TRANSPORT_INLINE
+@@ -141,18 +146,9 @@
+         return result;
+     }
+ 
+-    double radius = DBL_MAX;
++    const double radius = gpu::MinimumFaceDistance(particle, views.grid);
+     const std::size_t faceBegin = views.grid.cellFaceOffsets[cellIndex];
+     const std::size_t faceEnd = views.grid.cellFaceOffsets[cellIndex + 1];
+-    for(std::size_t face = faceBegin; face < faceEnd; ++face)
+-    {
+-        const auto &normal = views.grid.normals[face];
+-        const double distance = particle.location.x * normal.x + particle.location.y * normal.y + particle.location.z * normal.z - views.grid.facePlaneOffsets[face];
+-        if(distance < radius)
+-        {
+-            radius = distance;
+-        }
+-    }
+     if(not (radius > 0.0))
+     {
+         return result;
+--- a/examples/crooked_pipe/README.md
++++ b/examples/crooked_pipe/README.md
+@@ -166,7 +166,12 @@
+ 
+ The vector path preserves scalar face order for equal-time hits, handles
+ parallel faces without dividing by zero, and uses the scalar loop for the
+-remaining one to three faces. It adds no geometry allocation or RDMA metadata.
++remaining one to three faces. CPU builds also keep contiguous normal components
++for SIMD loads (24 extra bytes per directed face), rebuilt with the existing
++geometry snapshot after mesh changes. Host transport views are invalidated each
++step before taking pointers into that snapshot. Random-walk radius selection
++uses the same SIMD geometry, and leak-time interpolation caches logarithms of
++the actual stored tau values. No RDMA descriptor or particle wire layout changes.
+ Stationary-frame IMC events also reuse their identical attenuation exponential;
+ moving-frame events retain separate factors when the Doppler shift differs
+ from one.
+@@ -174,7 +179,9 @@
+ Build the differential intersection test with
+ `-DSTORM_BUILD_CPU_TRANSPORT_TESTS=ON` together with the CPU optimization option,
+ then build and run `storm_cpu_intersection_test`. The test compares 800,000
+-scalar/vector intersections, including grazing, parallel, slab, and corner-hit
+-cases. The follow-up benchmark and review are recorded in the RICH workspace at
++scalar/vector intersections and radii with both normal layouts, including
++grazing, parallel, slab, and corner-hit cases. The follow-up benchmark and review
++are recorded in the RICH workspace at
+ `docs/rdma128_followup/`; the subsequent `-O2` comparison is in
+-`docs/rdma128_o2/`.
++`docs/rdma128_o2/`. Further CPU work and the RDMA/P2P comparison are in
++`docs/rdma128_next/`.

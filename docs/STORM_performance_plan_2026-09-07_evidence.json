@@ -1,0 +1,347 @@
+{
+  "date": "2026-09-07",
+  "workspace": "/home/maorm/RICH",
+  "note": "Hashes identify reviewed working files; repository HEADs include local modifications. This is evidence metadata, not a reproduction archive.",
+  "repositories": {
+    ".": {
+      "head": "2c71b28f49cd40ec46e031e4e896849e40e363c8"
+    },
+    "source/monte": {
+      "head": "55ed49fa60d2c26d05eb70d1c41449364cdf78d1"
+    },
+    "source/utils/rma": {
+      "head": "ff42f8709c1f61067b25dbc4a1e02ec850494326"
+    },
+    "source/utils/mpi_utils": {
+      "head": "84212d05d2de5c44f5cd4254c8afa67bb65f4c04"
+    }
+  },
+  "files": {
+    "source/3D/radiation/IMCCostCalculator.hpp": {
+      "sha256": "60d7790f250504406d77dc487c4a87ae8a216a5777fb6797125a1d076b4ea789",
+      "bytes": 1465
+    },
+    "source/monte/CMakeLists.txt": {
+      "sha256": "8627045dbbb2c6c8d2b466def361c39bd38d0df210483b540753ba933e20c7a5",
+      "bytes": 18356
+    },
+    "source/monte/examples/crooked_pipe/main.cpp": {
+      "sha256": "f728af428d425c468abae31684db5ebf5517d433b66636d730f6d58b07615ad4",
+      "bytes": 40339
+    },
+    "source/monte/gpu/CombDeviceActivate.hpp": {
+      "sha256": "e1e3756c5b377f2de244ddaa5a2c906f6a8e682883ac4a06a31a8239b691dd06",
+      "bytes": 12673
+    },
+    "source/monte/gpu/DeviceParticle.hpp": {
+      "sha256": "72a31bd7e1364c08f841af5f6e79b5eca66c76780d2f20b20cc4411080ff59bb",
+      "bytes": 7676
+    },
+    "source/monte/gpu/FlatGridView.hpp": {
+      "sha256": "d1ccad2e9d1a0384519cb0ca0891b48ac0cd677ddc2e4ba0f79ed9b6c1669df1",
+      "bytes": 4207
+    },
+    "source/monte/gpu/GreyIMCKernel.hpp": {
+      "sha256": "261d893a8605f5bd7ad86975b95b76620ad7640e3f977738d83e34328a415d1e",
+      "bytes": 11796
+    },
+    "source/monte/gpu/KokkosLocalTransportExecutor.hpp": {
+      "sha256": "b39c59c885ffad334574d8fab4fa3d54ad8e397542c7fdc45e0ae46e39cac3dd",
+      "bytes": 58081
+    },
+    "source/monte/manager/MonteCarloConfig.hpp": {
+      "sha256": "9a64e39ecf84d1d09104d49905a280cf575f72a8a93be139f78456a6a2668fc5",
+      "bytes": 4678
+    },
+    "source/monte/manager/MonteCarloLifecycle.hpp": {
+      "sha256": "bdb7314bc682be2349c08f85de5d1f77e6ed61533169e7d1bc7bd1c749a5a6da",
+      "bytes": 35248
+    },
+    "source/monte/manager/MonteCarloManager.hpp": {
+      "sha256": "8469dc9dfef5f067562e16e38a4925e364dbf1b5fa90a956c02910c67f7fac99",
+      "bytes": 13245
+    },
+    "source/monte/manager/MonteCarloManagerFactory.hpp": {
+      "sha256": "31041ae6ec5731d5a7dd8ddbe6614d8f22f74e2c01d0d1d1da07fb8af849d724",
+      "bytes": 3846
+    },
+    "source/monte/manager/MonteCarloTracker.hpp": {
+      "sha256": "011bf1495c4cf18f5620f8ddcb0081e097ecac6571ab963f06ec1b4122133255",
+      "bytes": 1986
+    },
+    "source/monte/manager/MonteCarloTransport.hpp": {
+      "sha256": "2173c82a68cc9de7aa898b5f3c4413733435b1f669618c3717c33e11c7f8f643",
+      "bytes": 51238
+    },
+    "source/monte/manager/communication/CommunicationEngine.hpp": {
+      "sha256": "1548dfec0e561f082cbd01c15167bd1a279a546e4b916df403f3bc64c7a1bf57",
+      "bytes": 6440
+    },
+    "source/monte/manager/communication/P2PCommunicationEngine.hpp": {
+      "sha256": "682e203aa2c38a0fb9ce1937b05e520e51b99ffed715ea078de70cc53188dd14",
+      "bytes": 5607
+    },
+    "source/monte/manager/communication/RDMACommunicationEngine.hpp": {
+      "sha256": "e78c06c52125340a1802641e9ea057ba80a36197477aceb51c64d37286ebac6a",
+      "bytes": 12460
+    },
+    "source/monte/manager/communication/SerialCommunicationEngine.hpp": {
+      "sha256": "979349b3eab2cd87a10fb11896264ea0a011b49cbad2fefe95772bc6862583ce",
+      "bytes": 1817
+    },
+    "source/monte/manager/parallel/MonteCarloManagerLegacy.hpp": {
+      "sha256": "e40d4e434c00b5644e15ccef43b65fe8c2839608fe82283c916bf1c8f90f9b9c",
+      "bytes": 1059
+    },
+    "source/monte/manager/parallel/RDMARankHandlerLifecycle.hpp": {
+      "sha256": "92b37105e26959756942d97d1221b610a4f44ebf7adf8917f1a341516e3a6617",
+      "bytes": 10595
+    },
+    "source/monte/manager/parallel/RDMASendBufferProtocol.hpp": {
+      "sha256": "edf9c0a55536a069bb7fbac91e7c01398f6d49c1923beb4551520e516e429530",
+      "bytes": 10752
+    },
+    "source/monte/manager/parallel/RankHandler.hpp": {
+      "sha256": "7f6d1af422a9d02736219680829c2f8f539d294cf1dfe83840aaa133d2e53d70",
+      "bytes": 41181
+    },
+    "source/monte/manager/parallel/RankHandler2.hpp": {
+      "sha256": "628d520d4b9d4b27434d302a7668066284d9cd21c4239f1c62aa76cab13eeca2",
+      "bytes": 31455
+    },
+    "source/monte/manager/parallel/ReallocationAgent.cpp": {
+      "sha256": "99c98c361c89f30bc61a3dfdba43362e7fbc464dc365fe437a38a90c8d63418e",
+      "bytes": 11260
+    },
+    "source/monte/manager/parallel/ReallocationAgent.hpp": {
+      "sha256": "3f17b3c5833a2f1aafb6743b3c4cafadb86ed28bab334e8977f684d9869778e9",
+      "bytes": 3067
+    },
+    "source/monte/manager/parallel/RegisteredSendBuffer.hpp": {
+      "sha256": "3433676ddced47c7773cf0a34ddf46fb3d0df8325abff066857304b99c743379",
+      "bytes": 4249
+    },
+    "source/monte/particle/Particle.hpp": {
+      "sha256": "30de1406c8b24d0ffb94ce8b96e64e2a7aef645243638b46bc78fd74a64585cb",
+      "bytes": 16432
+    },
+    "source/monte/particle/RadiationTransportState.hpp": {
+      "sha256": "ad0d18bb867e83319527aacb0a5ef3128b77b22bfc1332d65f98a97eb48cb14e",
+      "bytes": 2352
+    },
+    "source/monte/population/CombCore.hpp": {
+      "sha256": "362d027b2ebccc2c55c703dcef4e590229fcc29d1480b69597c24161cd88a863",
+      "bytes": 10361
+    },
+    "source/monte/population/CombPopulationControl.hpp": {
+      "sha256": "0ec96c0d08611e815849b996bbb04346a7adbbcd768301ad987f183e93600f26",
+      "bytes": 17347
+    },
+    "source/monte/radiation/ddmc/AdvanceDDMC.hpp": {
+      "sha256": "c61ae3a9d300124e5253fa8ed2ae089cf5b57511a3c9045ba5fc1431a8b3dbf0",
+      "bytes": 70697
+    },
+    "source/monte/radiation/gpu/IMCDeviceExecutor.hpp": {
+      "sha256": "34f40e019fe2aa550b09f01aad9c28d53b9f46846d4157c05550d2d8b71e4bb5",
+      "bytes": 26015
+    },
+    "source/monte/radiation/transport/AdvanceIMC.hpp": {
+      "sha256": "336655414f149128e15fce151b03df660cbdb97eea51863342a60975d6160e6f",
+      "bytes": 18920
+    },
+    "source/monte/radiation/transport/TransportPortability.hpp": {
+      "sha256": "748f575058c81f640333718e3b31c1e8d84923261e831a7cc78f4aff4af8ecaa",
+      "bytes": 2319
+    },
+    "source/monte/tests/completion_scan_test.cpp": {
+      "sha256": "6f53d4f6171ceece352597bdaf6c1f5f78177f324b8ca185bd8bb1d95ccda58f",
+      "bytes": 2889
+    },
+    "source/utils/mpi_utils/AmountManager.cpp": {
+      "sha256": "a37a3fc61a1ca6860ea62b316b6890f7e5c217b6c39cbe74bf2426228f1ac9e5",
+      "bytes": 8436
+    },
+    "source/utils/mpi_utils/AmountManager.hpp": {
+      "sha256": "bc199c577b071ee43e12fbab2d0a8e174abbeb027750fc3864bec24d726c3ba6",
+      "bytes": 1999
+    },
+    "source/utils/mpi_utils/BuffersManager.hpp": {
+      "sha256": "0bbe847f97a65f57db5c562bba45ce0778ae9442f51e34e0d5e172ff55447db6",
+      "bytes": 13963
+    },
+    "source/utils/mpi_utils/MPI_complex_dtype.hpp": {
+      "sha256": "5920ed2a1db2a9d6e1b4fd639b4fd4d7a98ccf54703df419e117c9da084a48c2",
+      "bytes": 237
+    },
+    "source/utils/mpi_utils/MpiUtilsError.hpp": {
+      "sha256": "ad0660c3d756e22f8987ff445eb135b096769dfab86128845aa5857db4deec55",
+      "bytes": 1173
+    },
+    "source/utils/mpi_utils/compiler.h": {
+      "sha256": "95fdafd8a7fd54c7a69c2fc7324f640cbac54281225feb1c993ec03e551c1da1",
+      "bytes": 150
+    },
+    "source/utils/mpi_utils/exchange.hpp": {
+      "sha256": "7c48108db9ca5a56ba495e763e77ce2c0aa9eee9b9e1456814d3b54d5b22b8d6",
+      "bytes": 3001
+    },
+    "source/utils/mpi_utils/mpi_alltoall.hpp": {
+      "sha256": "8df900a1cc94a1135c291b2c22304cc0ba602f09fc663ed6ba5e844e393ad39b",
+      "bytes": 37647
+    },
+    "source/utils/mpi_utils/mpi_collectives.hpp": {
+      "sha256": "8ec2fe4f169741424b981ae019d62c76e21eefbd64550b0a676f839eddcf1031",
+      "bytes": 5499
+    },
+    "source/utils/mpi_utils/mpi_commands.hpp": {
+      "sha256": "e575e8ff5a8ed07996d9ddbdde08d1372ebde91124694379e680283361879d8e",
+      "bytes": 222
+    },
+    "source/utils/mpi_utils/mpi_exchange.hpp": {
+      "sha256": "85df082d208cdb9c118356ffed7ce9b25719b179cc8d3b4641b9ffc8be082310",
+      "bytes": 3770
+    },
+    "source/utils/mpi_utils/mpi_reduce.hpp": {
+      "sha256": "ea252a6b288d314520a269dd809d329477f12499838f54ad56156dec12c259fc",
+      "bytes": 1706
+    },
+    "source/utils/mpi_utils/queryAgent/AnswerAgent.hpp": {
+      "sha256": "e71fa0eff27b93951ed67a1145fcc7d436a05c6fb8abc077fe54d3b30eb9c3f8",
+      "bytes": 307
+    },
+    "source/utils/mpi_utils/queryAgent/BuffersManagerQueryAgent.hpp": {
+      "sha256": "69ea697089626a89443d3f058d0d8c4c45aa3a47a94116c3a95765c0b5b2bad3",
+      "bytes": 13115
+    },
+    "source/utils/mpi_utils/queryAgent/BusyWaitQueryAgent.hpp": {
+      "sha256": "58fdc1c902d057c891f575d61842aa756cf99e904ac7dc6e0de6aebb3d45a5ad",
+      "bytes": 16951
+    },
+    "source/utils/mpi_utils/queryAgent/QueryAgent.hpp": {
+      "sha256": "dc81dd966bb221772a0e8c9d17a76a8a2939c491d0f21dbcb08c29cfe244c026",
+      "bytes": 1393
+    },
+    "source/utils/mpi_utils/queryAgent/QueryData.hpp": {
+      "sha256": "eedb3ce25909cec8e45aec17e27c747598aab78408f9acbbeffcc5bfb56b7518",
+      "bytes": 1718
+    },
+    "source/utils/mpi_utils/queryAgent/TalkAgent.hpp": {
+      "sha256": "25aba3d84b19c5dc7f711eb079d04b6ecd95a7ba455e51ac88780b05f7b44a8b",
+      "bytes": 336
+    },
+    "source/utils/mpi_utils/queryAgent/ThreePhasesQueryAgent.hpp": {
+      "sha256": "acf65a81cbe6a09b14b9b8a97064e166b2fc5e1fa5d46210a094bb16390f1a5e",
+      "bytes": 5835
+    },
+    "source/utils/mpi_utils/queryAgent/WaitUntilAnsweredQueryAgent.hpp": {
+      "sha256": "6a60db9704b9dc06d408272a05a7aef4355f329a6d46d582e1ca8cfd1a5ca6d2",
+      "bytes": 17337
+    },
+    "source/utils/mpi_utils/queryAgent/thread/TQASubQuery.hpp": {
+      "sha256": "7dfdb0529fbc42cb4fb79069c330a6228b848785cd48871ea00d045a70d9f8b2",
+      "bytes": 217
+    },
+    "source/utils/mpi_utils/queryAgent/thread/ThreadsQueryAgent.hpp": {
+      "sha256": "905f4c7902f21cbb8696c360ad7eae2dbb77e9cedf4090f734b1fb35db7672a4",
+      "bytes": 3823
+    },
+    "source/utils/mpi_utils/queryAgent/thread/ThreadsQueryAgentAnswerer.hpp": {
+      "sha256": "da932b962f771ea1eee9235ddea5e8c7bfa6765f90458a5885daa56e3dc4c32a",
+      "bytes": 5961
+    },
+    "source/utils/mpi_utils/queryAgent/thread/ThreadsQueryAgentReceiver.hpp": {
+      "sha256": "7d9ccfaadf54f35a8bc8514bdcb738c29e3b276402096a425220fb5106d4eef0",
+      "bytes": 1323
+    },
+    "source/utils/mpi_utils/queryAgent/thread/ThreadsQueryAgentSender.hpp": {
+      "sha256": "35938b8e0b99424bae5328c2bb7ed479295945975b657eea40a317160d0e3727",
+      "bytes": 2803
+    },
+    "source/utils/mpi_utils/serialize/Serializable.hpp": {
+      "sha256": "e39302052f1f4346792950d3b5e589cf7972967054d91262cc531a19ff1496b4",
+      "bytes": 445
+    },
+    "source/utils/mpi_utils/serialize/Serializer.hpp": {
+      "sha256": "8fcc8d0b3270c20daea4a42e861e46455d61ab21236933baed11c5e1efdcbb1a",
+      "bytes": 9368
+    },
+    "source/utils/mpi_utils/types.h": {
+      "sha256": "c5f44e98acf578280def1409512a4235b40a41dbb423288ec05f019b8d156f8a",
+      "bytes": 374
+    },
+    "source/utils/rma/ConditionVariable.cpp": {
+      "sha256": "e77fb44b71dab724258afbd3e2b424f317f15e6c3817953d29168b270fa90845",
+      "bytes": 2235
+    },
+    "source/utils/rma/ConditionVariable.hpp": {
+      "sha256": "5fdd1605dbaf3d3f760d2235bfcfda4b1ed0ae6ea6707fe8e34b0a35ca5944dc",
+      "bytes": 581
+    },
+    "source/utils/rma/DistributedMutex.cpp": {
+      "sha256": "9fc9f93d91c1e033a89c8f935612139ef12ad71aca77dd76c5626227721b9238",
+      "bytes": 3863
+    },
+    "source/utils/rma/DistributedMutex.hpp": {
+      "sha256": "e5ede7d0d606ae54863714c4e7e5e52cd786f0c45ee2528c965c2eaad79e7b9e",
+      "bytes": 1548
+    },
+    "source/utils/rma/GlobalCounter.cpp": {
+      "sha256": "d4981584828e022187407b6743ca6bcd08c4b6d1a516d56447bfedf1acf9e8d5",
+      "bytes": 2622
+    },
+    "source/utils/rma/GlobalCounter.hpp": {
+      "sha256": "724c69feae43ecefd14f049bc18f79d81b0b8606f5c95fb9c1ed139c3fba6187",
+      "bytes": 625
+    },
+    "source/utils/rma/IBVContext.cpp": {
+      "sha256": "64eb30005cd21f1bece1a7f53d94f3a100378755f5dae2c565701f93a0f35926",
+      "bytes": 20666
+    },
+    "source/utils/rma/IBVContext.hpp": {
+      "sha256": "2b3bcd2646572987e9872d3439da108733f4aad5f34e7e4d13ca331d1169f53f",
+      "bytes": 3135
+    },
+    "source/utils/rma/IBVRemoteMemoryAgent.hpp": {
+      "sha256": "bbd2c8a043d917fd99489a1b49668505dad218fc536859f8517bb7cb884c3104",
+      "bytes": 33100
+    },
+    "source/utils/rma/MPIRemoteMemoryAgent.hpp": {
+      "sha256": "ec8b0ce1ffb98ae28ea40b11d20e0cf9671670c775978878601dc644d2d7a8ac",
+      "bytes": 9799
+    },
+    "source/utils/rma/OFIContext.cpp": {
+      "sha256": "d58af4b23cdebcbcdaad7d2d74c2fc32aa3e7597ca644ed3b1a740869606a22c",
+      "bytes": 60618
+    },
+    "source/utils/rma/OFIContext.hpp": {
+      "sha256": "1c9273a636bfadc13e636b838abc3ad0932e5d0b5bbd7f929fdc6f9abb016505",
+      "bytes": 4044
+    },
+    "source/utils/rma/OFIRemoteMemoryAgent.hpp": {
+      "sha256": "7322e92070a8713880f1a2f1c5082009aa873e26cd711b1cb097e73b51fdb773",
+      "bytes": 35588
+    },
+    "source/utils/rma/ProgressCounter.cpp": {
+      "sha256": "e82bb331147198fd1afbc0a47abcc7763d580484a325beb47041a2c49e90d3c1",
+      "bytes": 2715
+    },
+    "source/utils/rma/ProgressCounter.hpp": {
+      "sha256": "de3dd635ba0b0d5c6d37d3230ff0959cc10be31fd5a2147605818eeff1d3a584",
+      "bytes": 767
+    },
+    "source/utils/rma/RMAFactory.hpp": {
+      "sha256": "f7d90484b95de275d3c57c560287c63a40d6478750d004d3c06d023cc9980cc5",
+      "bytes": 11562
+    },
+    "source/utils/rma/RemoteMemoryAgent.hpp": {
+      "sha256": "ece6a39f29ac04fdddbe3d841c61f5ffca502151d7c4aa96544ac0fc31559439",
+      "bytes": 5266
+    }
+  },
+  "document": {
+    "markdown": "docs/STORM_performance_plan_2026-09-07.md",
+    "sha256": "3b4faa7e220b5de80d516712a4da681c2c72a272de37aad59a36272bcf4ddd0a",
+    "pdf": "docs/STORM_performance_plan_2026-09-07.pdf",
+    "pdf_sha256": "74ad539927ad0428cb322e957569930ac2f534bd642be46569b1eac305b3c4ea"
+  }
+}

@@ -1,0 +1,97 @@
+[
+  {
+    "kind": "serial",
+    "mode": "subset",
+    "command": [
+      "/tmp/madvoro_bugs_root_serial",
+      "subset"
+    ],
+    "status": -6,
+    "log": "root_serial_subset.log"
+  },
+  {
+    "kind": "serial",
+    "mode": "permutation",
+    "command": [
+      "/tmp/madvoro_bugs_root_serial",
+      "permutation"
+    ],
+    "status": 4,
+    "log": "root_serial_permutation.log"
+  },
+  {
+    "kind": "serial",
+    "mode": "identity",
+    "command": [
+      "/tmp/madvoro_bugs_root_serial",
+      "identity"
+    ],
+    "status": 0,
+    "log": "root_serial_identity.log"
+  },
+  {
+    "kind": "serial",
+    "mode": "empty",
+    "command": [
+      "/tmp/madvoro_bugs_root_serial",
+      "empty"
+    ],
+    "status": -6,
+    "log": "root_serial_empty.log"
+  },
+  {
+    "kind": "serial",
+    "mode": "invalid",
+    "command": [
+      "/tmp/madvoro_bugs_root_serial",
+      "invalid"
+    ],
+    "status": -6,
+    "log": "root_serial_invalid.log"
+  },
+  {
+    "kind": "mpi",
+    "mode": "subset",
+    "command": [
+      "mpiexec",
+      "--bind-to",
+      "none",
+      "-np",
+      "1",
+      "/tmp/madvoro_bugs_root_mpi",
+      "subset"
+    ],
+    "status": 139,
+    "log": "root_mpi_subset.log"
+  },
+  {
+    "kind": "mpi",
+    "mode": "identity",
+    "command": [
+      "mpiexec",
+      "--bind-to",
+      "none",
+      "-np",
+      "1",
+      "/tmp/madvoro_bugs_root_mpi",
+      "identity"
+    ],
+    "status": 139,
+    "log": "root_mpi_identity.log"
+  },
+  {
+    "kind": "mpi",
+    "mode": "mpi_serial",
+    "command": [
+      "mpiexec",
+      "--bind-to",
+      "none",
+      "-np",
+      "1",
+      "/tmp/madvoro_bugs_root_mpi",
+      "mpi_serial"
+    ],
+    "status": 134,
+    "log": "root_mpi_mpi_serial.log"
+  }
+]

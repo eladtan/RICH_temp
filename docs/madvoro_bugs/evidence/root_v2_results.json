@@ -1,0 +1,86 @@
+[
+  {
+    "mode": "identity",
+    "command": [
+      "mpiexec",
+      "--bind-to",
+      "none",
+      "-np",
+      "1",
+      "/tmp/madvoro_bugs_root_mpi_v2",
+      "identity"
+    ],
+    "status": 0,
+    "log": "root_v2_identity.log"
+  },
+  {
+    "mode": "subset",
+    "command": [
+      "mpiexec",
+      "--bind-to",
+      "none",
+      "-np",
+      "1",
+      "/tmp/madvoro_bugs_root_mpi_v2",
+      "subset"
+    ],
+    "status": 0,
+    "log": "root_v2_subset.log"
+  },
+  {
+    "mode": "mpi_serial",
+    "command": [
+      "mpiexec",
+      "--bind-to",
+      "none",
+      "-np",
+      "1",
+      "/tmp/madvoro_bugs_root_mpi_v2",
+      "mpi_serial"
+    ],
+    "status": 3,
+    "log": "root_v2_mpi_serial.log"
+  },
+  {
+    "mode": "first_suppressed",
+    "command": [
+      "mpiexec",
+      "--bind-to",
+      "none",
+      "-np",
+      "1",
+      "/tmp/madvoro_bugs_root_mpi_v2",
+      "first_suppressed"
+    ],
+    "status": 139,
+    "log": "root_v2_first_suppressed.log"
+  },
+  {
+    "mode": "empty_continuity",
+    "command": [
+      "mpiexec",
+      "--bind-to",
+      "none",
+      "-np",
+      "1",
+      "/tmp/madvoro_bugs_root_mpi_v2",
+      "empty_continuity"
+    ],
+    "status": 134,
+    "log": "root_v2_empty_continuity.log"
+  },
+  {
+    "mode": "periodic_resolution",
+    "command": [
+      "mpiexec",
+      "--bind-to",
+      "none",
+      "-np",
+      "2",
+      "/tmp/madvoro_bugs_root_mpi_v2",
+      "periodic_resolution"
+    ],
+    "status": 5,
+    "log": "root_v2_periodic_resolution.log"
+  }
+]

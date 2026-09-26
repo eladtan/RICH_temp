@@ -1,0 +1,91 @@
+{
+  "runs": [
+    {
+      "label": "baseline1",
+      "total_seconds": 80.113,
+      "cycle_seconds": 76.025,
+      "cycles": 120,
+      "final_time": 8.15719e-08,
+      "transport_seconds": 63.9914438
+    },
+    {
+      "label": "candidate1",
+      "total_seconds": 88.617,
+      "cycle_seconds": 83.7051,
+      "cycles": 120,
+      "final_time": 8.15719e-08,
+      "transport_seconds": 71.3973612
+    },
+    {
+      "label": "candidate2",
+      "total_seconds": 88.908,
+      "cycle_seconds": 84.5652,
+      "cycles": 120,
+      "final_time": 8.15719e-08,
+      "transport_seconds": 72.6243586
+    },
+    {
+      "label": "baseline2",
+      "total_seconds": 81.02,
+      "cycle_seconds": 76.9138,
+      "cycles": 120,
+      "final_time": 8.15719e-08,
+      "transport_seconds": 63.9085892
+    },
+    {
+      "label": "baseline3",
+      "total_seconds": 80.168,
+      "cycle_seconds": 76.064,
+      "cycles": 120,
+      "final_time": 8.15719e-08,
+      "transport_seconds": 64.0873003
+    },
+    {
+      "label": "candidate3",
+      "total_seconds": 88.607,
+      "cycle_seconds": 84.5088,
+      "cycles": 120,
+      "final_time": 8.15719e-08,
+      "transport_seconds": 72.2135759
+    }
+  ],
+  "total_seconds": {
+    "baseline_median": 80.168,
+    "candidate_median": 88.617,
+    "time_reduction_percent": -10.539117852509715,
+    "baseline_range": [
+      80.113,
+      81.02
+    ],
+    "candidate_range": [
+      88.607,
+      88.908
+    ]
+  },
+  "cycle_seconds": {
+    "baseline_median": 76.064,
+    "candidate_median": 84.5088,
+    "time_reduction_percent": -11.102229701304168,
+    "baseline_range": [
+      76.025,
+      76.9138
+    ],
+    "candidate_range": [
+      83.7051,
+      84.5652
+    ]
+  },
+  "transport_seconds": {
+    "baseline_median": 63.9914438,
+    "candidate_median": 72.2135759,
+    "time_reduction_percent": -12.848799170241554,
+    "baseline_range": [
+      63.9085892,
+      64.0873003
+    ],
+    "candidate_range": [
+      71.3973612,
+      72.6243586
+    ]
+  }
+}

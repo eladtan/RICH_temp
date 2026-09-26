@@ -1,0 +1,51 @@
+{
+  "date": "2026-09-16",
+  "nodes": [
+    "d25g133",
+    "d25g135"
+  ],
+  "cpu": "Intel Xeon Gold 6534",
+  "allocation_id": 10185738,
+  "exclusive_nodes": true,
+  "mpi_ranks": 4,
+  "ranks_per_node": 2,
+  "physical_cpus_per_node": [
+    0,
+    2
+  ],
+  "threads_per_rank": 1,
+  "compiler": "GCC 15.1.0",
+  "compiler_flags": "-O2 -g -DNDEBUG -std=gnu++17 -fopenmp",
+  "openmpi": "4.1.6",
+  "mpich": "4.2.0 ch4:ucx",
+  "libfabric": "2.6.0",
+  "mpi_transports": "Open MPI pml=ucx, osc=ucx; MPICH ch4:ucx; UCX_TLS=all for both",
+  "ofi_provider": "verbs/ibv (provider: verbs, mode: MSG/RC)",
+  "repetitions": 5,
+  "warmups_per_case": 1,
+  "order": "balanced cyclic order with initial shuffle seed 20260916",
+  "configuration": "config.json",
+  "benchmark": "Crooked Pipe, 3600 cells, 1039 cycles to 1000 ns; 2 new and 10 minimum packets/cell, 20 boundary packets/face",
+  "queue_settings": "default dynamic queues; initial buffer 5000; no optimized-rdma flags",
+  "instrumentation": "PMPI operation counting disabled; standard benchmark logs, energy ledger and probe output enabled",
+  "launcher_note": "Open MPI uses mpirun/SSH because it lacks Slurm PMI support; MPICH uses srun --mpi=pmi2 because installed Hydra requires unavailable libslurm.so.39. Simulation timing excludes launcher overhead; total timing includes it.",
+  "binary_sha256": {
+    "openmpi": "871dcaa771b99c9ad818692b129ff7f10d9cdc478f92e8c4c23f2b9957636b52",
+    "mpich": "de5417acd14828f8b542256711eb428f188dc266a51885f21da6628b07833905"
+  },
+  "git_heads": {
+    ".": "65bc7333ba148b8864810d47f625174bed5fd8b7",
+    "source/monte": "39eadb4cb3ae1762847921d2df1e7a96f1b02553",
+    "source/utils/rma": "a23bb82c67305eb213bfb8aa95b43a108ae198ef"
+  },
+  "production_sources_unchanged_during_comparison": true,
+  "production_snapshot_sha256": "94e3ceaa8fff0135f5d49149edeca765ae290a18910c2a6d050ec874920d972c",
+  "max_relative_energy_residual": 6.43324e-09,
+  "max_probe_difference_keV": 0.0,
+  "completed_runs": 30,
+  "harness_sha256": {
+    "regression_tests/mpi_rma/timing/compare.py": "fe863a59117c6e8dc2f67119e247a860cd21a2b7bcb77c5121968a1b3577b542",
+    "regression_tests/mpi_rma/timing/pin_rank.sh": "c30145dcbeb0c913e5cf0e85b7d2feb3bbfa3424262d183db9307e060469f284",
+    "regression_tests/mpi_rma/CMakeLists.txt": "9bbe5936ebf22c64a31861e2defab6f49197e7ba115e21b6adf226123320631f"
+  }
+}

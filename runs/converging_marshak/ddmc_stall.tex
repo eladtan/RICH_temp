@@ -1,0 +1,285 @@
+\documentclass[11pt]{article}
+
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb,bm}
+\usepackage{booktabs}
+\usepackage{hyperref}
+
+\newcommand{\imc}{\textsc{imc}}
+\newcommand{\ddmc}{\textsc{ddmc}}
+\newcommand{\rich}{\textsc{rich}}
+\newcommand{\storm}{\textsc{storm}}
+
+\title{Why discrete-diffusion Monte Carlo stalls\\
+the Giron converging Marshak wave}
+\author{\rich{} / \storm{} implementation note}
+\date{31 August 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Enabling discrete-diffusion Monte Carlo (\ddmc) on Giron Test~2 produces a sphere that remains at the temperature floor.
+The failure is not a lack of packets or a slow front.
+It is the \imc--\ddmc{} interface at $r=R$.
+The bath is optically thin and stays in \imc{}.
+The unheated material is optically thick by eight orders of magnitude and is classified as \ddmc{}.
+The Densmore--Wollaeger admission probability for that interface is $P\sim 4\times 10^{-9}$.
+Rejected packets bounce back into the bath at unchanged weight and deposit nothing.
+Ordinary \imc{} at the same face would absorb a few percent of the incident energy.
+\ddmc{} therefore admits about $10^{-7}$ of the energy that \imc{} would, which is why the interior never heats.
+\end{abstract}
+
+\section{What was run}
+
+Giron Test~2 is a spherical Marshak wave in a nonhomogeneous medium~\cite{giron}.
+The material occupies $r<R$ with $R=0.05\,\mathrm{cm}$.
+A thermostat surrounds $r\ge R$ and is reset every step to the paper's time-dependent bath temperature $T_{\mathrm{bath}}(t)$.
+Hydrodynamics is off.
+The mesh for job~10145269 used 128 radial shells and 8000 angular generators (1\,024\,000 interior cells).
+The time step was $\Delta t=10^{-11}\,\mathrm{s}$.
+Random walk was on; \ddmc{} was on.
+By cycle~1800 ($t=-67.47\,\mathrm{ns}$ paper time) the analytic front sits at $r=0.0442\,\mathrm{cm}$, while 24 of 1\,024\,000 interior cells sit above the temperature floor, all in the single outermost radial shell.
+
+The opacity, density, and material energy of Test~2 are
+\begin{align}
+  \kappa(T,\rho)
+  &= 1.5\times 10^{4}\,
+     \Bigl(\frac{T}{T_0}\Bigr)^{-3}
+     \rho^{1.4}
+     \qquad[\mathrm{cm}^{-1}],
+  \label{eq:opacity}\\
+  \rho(r)
+  &= r^{1/2},
+  \label{eq:density}\\
+  u_m
+  &= 3\times 10^{13}\,
+     \Bigl(\frac{T}{T_0}\Bigr)^{2}
+     \rho^{0.4}
+     \qquad[\mathrm{erg}\,\mathrm{cm}^{-3}],
+  \label{eq:eos}
+\end{align}
+with $T_0=0.1\,\mathrm{keV}$ (one hectoelectronvolt) and $\rho$ in $\mathrm{g}\,\mathrm{cm}^{-3}$.
+There is no physical scattering: $\sigma_s=0$ and $\sigma_T=\sigma_a=\kappa$.
+The temperature floor is $10^{-3}T_0$.
+At $r=R$, $\rho=R^{1/2}=0.2236\,\mathrm{g}\,\mathrm{cm}^{-3}$.
+
+\section{Two cells, two transport regimes}
+
+A cell is treated as \ddmc{} when its mean-chord optical depth exceeds a threshold~\cite{densmore2012},
+\begin{equation}
+  \sigma_T\,\ell \ge \tau_{\mathrm{DDMC}},
+  \qquad
+  \ell = \frac{4V}{A},
+  \qquad
+  \tau_{\mathrm{DDMC}}=15
+  \quad\text{(default)}.
+  \label{eq:gate}
+\end{equation}
+The outermost interior cells have width $h=3.906\times 10^{-4}\,\mathrm{cm}$.
+Taking $\ell\simeq 2h/3$ for a compact cell, Table~\ref{tab:two} follows from~\eqref{eq:opacity}.
+
+\begin{table}[ht]
+\centering
+\caption{Transport quantities at $r=R$ for Giron Test~2 at cycle~1800 of job~10145269.
+The bath temperature is $0.865\,T_0$.
+The material is still at the floor $10^{-3}T_0$.}
+\label{tab:two}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Region & $T/T_0$ & $\sigma_T$ [cm$^{-1}$] & $\lambda=1/\sigma_T$ [cm] & $\sigma_T\ell$ \\
+\midrule
+Bath ($r\ge R$) & $0.865$ & $2.85\times 10^{3}$ & $3.51\times 10^{-4}$ & $\sim 0.7$ \\
+Material ($r<R$) & $10^{-3}$ & $1.84\times 10^{12}$ & $5.43\times 10^{-13}$ & $\sim 5\times 10^{8}$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The bath is below the gate~\eqref{eq:gate} and remains \imc{}.
+Every unheated interior cell is above the gate by eight orders of magnitude and is classified as \ddmc{}.
+The sphere surface $r=R$ is therefore an \imc$\to$\ddmc{} interface, not a \ddmc$\leftrightarrow$\ddmc{} face.
+
+\section{The admission probability}
+
+An \imc{} packet that hits a \ddmc{} face is not streamed into that cell.
+\storm{} applies the static Densmore--Wollaeger asymptotic admission law~\cite{densmore2012,wollaeger2013}, implemented as \texttt{StaticAdmissionProbability} in \texttt{DDMCWollaegerInterface.hpp}:
+\begin{equation}
+  P_{\mathrm{admit}}(\mu)
+  =
+  \mathrm{clamp}\!\left(
+    \frac{2\bigl(1+\tfrac{3}{2}\mu\bigr)}
+         {3\bigl(\sigma_T d + z_0\bigr)}
+  ,\, 0,\, 1\right).
+  \label{eq:admit}
+\end{equation}
+Here $\mu=\bm{\Omega}\cdot\bm{n}$ is the cosine of the angle of incidence, $d$ is the target-cell centre-to-face distance, and $z_0=0.7104$ is the Milne extrapolation length in mean-free-path units.
+If a uniform random number exceeds $P_{\mathrm{admit}}$, the packet undergoes a diffuse-albedo bounce in the \imc{} cell.
+Its weight is unchanged.
+No energy is tallied in the \ddmc{} cell.
+The packet never becomes a \ddmc{} resident, so random walk in the material never runs.
+
+The centre-to-face distance of the outermost interior shell is $d=h/2=1.953\times 10^{-4}\,\mathrm{cm}$.
+In the cold material,
+\begin{equation}
+  \sigma_T d = (1.84\times 10^{12})(1.95\times 10^{-4}) = 3.59\times 10^{8}.
+\end{equation}
+The extrapolation length is then negligible, and~\eqref{eq:admit} collapses to
+\begin{equation}
+  P_{\mathrm{admit}}(\mu)
+  =
+  \frac{2+3\mu}{3\sigma_T d}.
+  \label{eq:admit-thick}
+\end{equation}
+For normal incidence, $P_{\mathrm{admit}}(1)=4.64\times 10^{-9}$.
+For isotropic incident intensity the flux-weighted mean is
+\begin{equation}
+  \langle P_{\mathrm{admit}}\rangle
+  =
+  \int_{0}^{1} P_{\mathrm{admit}}(\mu)\, 2\mu\,\mathrm{d}\mu
+  =
+  \frac{4}{3\sigma_T d}
+  =
+  3.71\times 10^{-9}.
+  \label{eq:admit-mean}
+\end{equation}
+Three to four packets in a billion that strike $r=R$ from the bath are admitted.
+The rest return to the bath.
+
+This scaling is required by the diffusion boundary condition that~\eqref{eq:admit} encodes.
+The same extrapolation length appears in the \ddmc$\to$\imc{} leak rate,
+\begin{equation}
+  \lambda_{\partial}
+  =
+  \frac{cA}{3V(\sigma_T d + z_0)}
+  \propto
+  \frac{1}{\sigma_T d}.
+  \label{eq:leak}
+\end{equation}
+A cell with $\sigma_T d\sim 10^{8}$ both refuses incoming \imc{} packets and, if a packet were already inside, would leak them at a vanishing rate.
+
+\section{What ordinary \imc{} would do at the same face}
+
+In gray \imc{} the Fleck factor is
+\begin{equation}
+  f
+  =
+  \frac{1}{1 + 4aT^{3}\sigma_P c\Delta t / c_V},
+  \label{eq:fleck}
+\end{equation}
+with $c_V=\partial u_m/\partial T$ from~\eqref{eq:eos}.
+At the floor and $\Delta t=10^{-11}\,\mathrm{s}$, $f=1.09\times 10^{-3}$.
+There is no physical scatter, so the only albedo is \imc{} effective scattering with single-scatter albedo $1-f$.
+A diffusion estimate of the absorbed fraction for a semi-infinite medium is then
+\begin{equation}
+  \alpha_{\mathrm{IMC}}
+  \simeq
+  2\sqrt{\frac{f}{3}}
+  =
+  3.8\times 10^{-2}.
+  \label{eq:imc-abs}
+\end{equation}
+About four percent of the energy that hits the cold material stays there.
+The ratio of the two treatments at the same face is
+\begin{equation}
+  \frac{\langle P_{\mathrm{admit}}\rangle}{\alpha_{\mathrm{IMC}}}
+  \simeq
+  \frac{3.71\times 10^{-9}}{3.8\times 10^{-2}}
+  \simeq
+  1\times 10^{-7}.
+  \label{eq:ratio}
+\end{equation}
+\ddmc{} is not a cheaper approximation of the same absorbed flux.
+It suppresses the absorbed flux by seven orders of magnitude.
+
+The origin of the mismatch is physical.
+Equation~\eqref{eq:admit} is an asymptotic diffusion boundary condition derived for a scattering-dominated, nearly isotropic interior~\cite{densmore2012,wollaeger2013}.
+The cold Marshak material is the opposite: $\sigma_s=0$, $\sigma_a$ is huge, and $f\ll 1$.
+A photon that enters is absorbed in $\lambda=5\times 10^{-13}\,\mathrm{cm}$, a distance $10^{9}$ times smaller than the cell.
+The correct transmission is set by the Fleck-effective albedo~\eqref{eq:imc-abs}, not by $1/(\sigma_T d)$.
+
+\section{What the run actually did}
+
+Thirty-seven million packets are generated in the bath each step.
+Over 1800 steps that is enough for a handful of admissions even at $P\sim 4\times 10^{-9}$.
+Each admitted packet carries full bath weight into one cell and can raise that cell from the floor to $\sim 0.87\,T_0$ in a single event.
+That is the observed pattern: 0, 4, 6, 8, 10, 11, 17, 22, then 24 cells above the floor at cycles 200 through 1800, all at $r=0.04980\,\mathrm{cm}$, with a bimodal temperature (floor almost everywhere, bath temperature in those 24 cells).
+
+The process is self-locking.
+Once a cell reaches $0.87\,T_0$ its opacity drops to $\sigma_T\simeq 2.85\times 10^{3}\,\mathrm{cm}^{-1}$, $\sigma_T\ell\sim 1$, and it leaves \ddmc{}.
+Its inward neighbours remain at the floor with $P_{\mathrm{admit}}\sim 10^{-9}$.
+Nothing propagates inward.
+The deepest heated radius is therefore frozen from cycle~400 through cycle~1800.
+
+Raising the floor does not repair the law.
+At $T=0.1\,T_0$, $\sigma_T d\sim 360$ and $\langle P_{\mathrm{admit}}\rangle\sim 4\times 10^{-3}$, still an order of magnitude below $\alpha_{\mathrm{IMC}}$.
+Only when the target cell is already hot enough to leave \ddmc{} does admission become order unity, which is exactly when \ddmc{} is no longer applied.
+
+\section{A second, independent stall inside the sphere}
+
+Suppose a packet is admitted, or that two neighbouring material cells are both \ddmc{}.
+The internal leak rate between \ddmc{} cells $i$ and $j$ is~\cite{densmore2012}
+\begin{equation}
+  R_{ij}
+  =
+  \frac{d_{iF}}{D_i}+\frac{d_{jF}}{D_j},
+  \qquad
+  D=\frac{c}{3\sigma_T},
+  \qquad
+  \lambda_{i\to j}
+  =
+  \frac{A_F}{V_i R_{ij}}.
+  \label{eq:internal}
+\end{equation}
+If cell $i$ is heated and cell $j$ is at the floor, $D_j/D_i=\sigma_i/\sigma_j\sim 10^{-9}$.
+The resistance is then dominated by the cold cell, $R_{ij}\simeq d_{jF}/D_j$, and
+\begin{equation}
+  \lambda_{i\to j}
+  \simeq
+  \frac{A_F D_j}{V_i d_{jF}}
+  \propto
+  \frac{1}{\sigma_j}.
+\end{equation}
+Leakage into the unheated neighbour is diffusion-limited at the cold opacity.
+This is the stall already noted in the driver comment in \texttt{test.cpp}:
+the leak rate into an unheated cell whose optical depth is many orders of magnitude larger than the heated cell behind the front cannot carry the incident bath flux.
+Plain \imc{} with random walk does, because an \imc{} packet that has entered a cold cell is absorbed locally on the Fleck time scale rather than waiting for a diffusion leak.
+
+Either mechanism is fatal.
+The interface law~\eqref{eq:admit} prevents energy from crossing $r=R$.
+The internal law~\eqref{eq:internal} would prevent a front from advancing even if energy did cross.
+
+\section{Why the existing \ddmc{} parameters cannot fix this}
+
+The configurable fields are $\tau_{\mathrm{DDMC}}$, a particle-depth gate, an external-source face gate, and moving-interface corrections.
+None of them appears in~\eqref{eq:admit}.
+The extrapolation length $z_0=0.7104$ is a compile-time constant.
+The product $\sigma_T d$ is set by the opacity law~\eqref{eq:opacity} and the mesh.
+
+Lowering $\tau_{\mathrm{DDMC}}$ makes more cells \ddmc{} and cannot increase $P_{\mathrm{admit}}$.
+Raising $\tau_{\mathrm{DDMC}}$ above $\sigma_T\ell\sim 5\times 10^{8}$ in the cold material turns \ddmc{} off in the region that matters, which is the same as \texttt{--ddmc false}.
+The moving-interface factor $G_U(\mu)$ is irrelevant: the mesh is static.
+
+\section{Conclusion}
+
+On Giron Test~2 the \imc--\ddmc{} interface at $r=R$ has admission probability $3.7\times 10^{-9}$ against an \imc{} absorbed fraction of $3.8\times 10^{-2}$.
+That single number explains the stalled run: the bath is hot and well resolved, packets are plentiful, and the interior remains at the floor because the interface reflects them.
+The asymptotic admission law is the wrong boundary condition for a purely absorbing, Fleck-scattered Marshak toe.
+Until a different interface treatment is derived for absorption-dominated media, this benchmark should be run with \imc{} and random walk only.
+
+\begin{thebibliography}{9}
+\bibitem{giron}
+J.~F. Giron et~al.,
+\textit{Converging Marshak waves in nonhomogeneous media}.
+
+\bibitem{densmore2012}
+J.~D. Densmore, K.~G. Thompson, and T.~J. Urbatsch,
+``A hybrid transport-diffusion Monte Carlo method for frequency-dependent radiative-transfer simulations,''
+\textit{J.\ Comput.\ Phys.} \textbf{231}, 6924--6934 (2012).
+
+\bibitem{wollaeger2013}
+R.~T. Wollaeger, D.~R. van~Rossum, C.~Graziani, S.~M. Couch, G.~C. Jordan~IV, D.~Q. Lamb, and G.~A. Moses,
+``Radiation transport for explosive outflows: a multigroup hybrid Monte Carlo method,''
+\textit{Astrophys.\ J.\ Suppl.\ Ser.} \textbf{209}, 36 (2013).
+\end{thebibliography}
+
+\end{document}
