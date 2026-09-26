@@ -75,10 +75,8 @@ ComptonTableReader::ComptonTableReader(
     : energy_groups_centers(energy_groups_centers_),
       energy_groups_boundaries(energy_groups_boundaries_),
       num_energy_groups(energy_groups_centers_.size()),
-      sigma_out_buf(energy_groups_centers_.size(), Vector(energy_groups_centers_.size(), 0.0)),
-      dsigma_out_buf(energy_groups_centers_.size(), Vector(energy_groups_centers_.size(), 0.0)),
-      sigma_in_buf(energy_groups_centers_.size(), Vector(energy_groups_centers_.size(), 0.0)),
-      dsigma_in_buf(energy_groups_centers_.size(), Vector(energy_groups_centers_.size(), 0.0)),
+      sigma_s_buf(energy_groups_centers_.size(), Vector(energy_groups_centers_.size(), 0.0)),
+      dsigma_s_buf(energy_groups_centers_.size(), Vector(energy_groups_centers_.size(), 0.0)),
       B_eq_buf(energy_groups_centers_.size(), 0.0),
       n_eq_buf(energy_groups_centers_.size(), 0.0),
       dBdT_buf(energy_groups_centers_.size(), 0.0),
@@ -140,43 +138,27 @@ void ComptonTableReader::load_tables(std::string const& directory) {
 
     std::size_t const n_temps = temperature_grid.size();
 
-    sigma_out_tables.resize(n_temps);
-    dsigma_out_dT_tables.resize(n_temps);
-    sigma_in_tables.resize(n_temps);
-    dsigma_in_dT_tables.resize(n_temps);
+    sigma_s_tables.resize(n_temps);
+    dsigma_s_dT_tables.resize(n_temps);
 
     for (std::size_t i = 0; i < n_temps; ++i) {
-        auto const out_path = (fs::path(directory) / (std::to_string(i) + ".txt")).string();
-        if (!fs::exists(out_path)) {
-            std::cerr << "ComptonTableReader: missing table file " << out_path << std::endl;
+        auto const sigma_s_path = (fs::path(directory) / (std::to_string(i) + ".txt")).string();
+        if (!fs::exists(sigma_s_path)) {
+            std::cerr << "ComptonTableReader: missing table file " << sigma_s_path << std::endl;
             std::exit(1);
         }
-        sigma_out_tables[i] = read_matrix_file(out_path, num_energy_groups);
+        sigma_s_tables[i] = read_matrix_file(sigma_s_path, num_energy_groups);
 
-        auto const dout_path = (fs::path(directory) / ("dSdT_" + std::to_string(i) + ".txt")).string();
-        if (!fs::exists(dout_path)) {
-            std::cerr << "ComptonTableReader: missing derivative table file " << dout_path << std::endl;
+        auto const dsigma_s_path = (fs::path(directory) / ("dSdT_" + std::to_string(i) + ".txt")).string();
+        if (!fs::exists(dsigma_s_path)) {
+            std::cerr << "ComptonTableReader: missing derivative table file " << dsigma_s_path << std::endl;
             std::exit(1);
         }
-        dsigma_out_dT_tables[i] = read_matrix_file(dout_path, num_energy_groups);
-
-        auto const in_path = (fs::path(directory) / (std::to_string(i) + "_in.txt")).string();
-        if (!fs::exists(in_path)) {
-            std::cerr << "ComptonTableReader: missing sigma_in table file " << in_path << std::endl;
-            std::exit(1);
-        }
-        sigma_in_tables[i] = read_matrix_file(in_path, num_energy_groups);
-
-        auto const din_path = (fs::path(directory) / ("dSdT_" + std::to_string(i) + "_in.txt")).string();
-        if (!fs::exists(din_path)) {
-            std::cerr << "ComptonTableReader: missing dsigma_in/dT table file " << din_path << std::endl;
-            std::exit(1);
-        }
-        dsigma_in_dT_tables[i] = read_matrix_file(din_path, num_energy_groups);
+        dsigma_s_dT_tables[i] = read_matrix_file(dsigma_s_path, num_energy_groups);
     }
 
     std::cout << "ComptonTableReader: loaded " << n_temps
-              << " sigma_out + sigma_in tables (version " << EXPECTED_TABLE_VERSION
+              << " sigma_s tables (version " << EXPECTED_TABLE_VERSION
               << ") from " << directory << std::endl;
 }
 
@@ -206,7 +188,7 @@ void ComptonTableReader::get_S_and_dSdUm(
     Vector const& E_g, bool const calculate_n,
     Matrix& S, Matrix& dSdUm) const
 {
-    // 1. Interpolate all four matrices at temperature T
+    // 1. Interpolate sigma_s and dsigma_s/dT at temperature T
     auto const tmp_iterator = std::lower_bound(
         temperature_grid.cbegin(), temperature_grid.cend(), T);
     auto const tmp_i = std::distance(temperature_grid.cbegin(), tmp_iterator) - 1;
@@ -225,23 +207,24 @@ void ComptonTableReader::get_S_and_dSdUm(
     double const x = (T - temperature_grid[tmp_i])
                    / (temperature_grid[tmp_i + 1] - temperature_grid[tmp_i]);
 
+    double const omx = 1.0 - x;
     for (std::size_t i = 0; i < num_energy_groups; ++i) {
         for (std::size_t j = 0; j < num_energy_groups; ++j) {
-            sigma_out_buf[i][j]  = sigma_out_tables[tmp_i][i][j]  * (1.0 - x) + sigma_out_tables[tmp_i + 1][i][j]  * x;
-            dsigma_out_buf[i][j] = dsigma_out_dT_tables[tmp_i][i][j] * (1.0 - x) + dsigma_out_dT_tables[tmp_i + 1][i][j] * x;
-            sigma_in_buf[i][j]   = sigma_in_tables[tmp_i][i][j]   * (1.0 - x) + sigma_in_tables[tmp_i + 1][i][j]   * x;
-            dsigma_in_buf[i][j]  = dsigma_in_dT_tables[tmp_i][i][j]  * (1.0 - x) + dsigma_in_dT_tables[tmp_i + 1][i][j]  * x;
+            sigma_s_buf[i][j]  = sigma_s_tables[tmp_i][i][j] * omx + sigma_s_tables[tmp_i + 1][i][j] * x;
+            dsigma_s_buf[i][j] = dsigma_s_dT_tables[tmp_i][i][j] * omx + dsigma_s_dT_tables[tmp_i + 1][i][j] * x;
         }
     }
 
-    // 2. Scale by N_e
+    // 2. Scale by N_e, and clip negative off-diagonal coefficients from quadrature noise
     double const Nelectron = density * units::Navogadro / A * Z;
     for (std::size_t i = 0; i < num_energy_groups; ++i) {
         for (std::size_t j = 0; j < num_energy_groups; ++j) {
-            sigma_out_buf[i][j]  *= Nelectron;
-            dsigma_out_buf[i][j] *= Nelectron;
-            sigma_in_buf[i][j]   *= Nelectron;
-            dsigma_in_buf[i][j]  *= Nelectron;
+            sigma_s_buf[i][j]  *= Nelectron;
+            dsigma_s_buf[i][j] *= Nelectron;
+            if (i != j && sigma_s_buf[i][j] < 0.0) {
+                sigma_s_buf[i][j] = 0.0;
+                dsigma_s_buf[i][j] = 0.0;
+            }
         }
     }
 
@@ -305,40 +288,36 @@ void ComptonTableReader::get_S_and_dSdUm(
         }
     }
 
+    // Photon-number detailed balance on each unordered pair g < gp:
+    //   sigma_s[g][gp] (1+n_gp) B_g/nu_g = sigma_s[gp][g] (1+n_g) B_gp/nu_gp,
+    // i.e. the balanced reverse coefficient is Q * sigma_s[g][gp]. The larger of
+    // the two coefficients is shrunk to its balanced value.
     for (std::size_t g = 0; g < num_energy_groups; ++g) {
-        for (std::size_t gp = 0; gp < num_energy_groups; ++gp) {
+        for (std::size_t gp = g + 1; gp < num_energy_groups; ++gp) {
             if (B_eq_buf[g] < tiny_thresh || B_eq_buf[gp] < tiny_thresh) continue;
-            if (sigma_out_buf[g][gp] < tiny_thresh && sigma_in_buf[gp][g] < tiny_thresh) continue;
+            double const forward = sigma_s_buf[g][gp];
+            double const reverse = sigma_s_buf[gp][g];
+            if (forward < tiny_thresh && reverse < tiny_thresh) continue;
 
-            double const rhs = sigma_out_buf[g][gp] * (1.0 + n_eq_db[gp]) * B_eq_buf[g];
-            if (rhs < tiny_thresh) continue;
-
-            double const lhs = sigma_in_buf[gp][g] * (1.0 + n_eq_db[g]) * B_eq_buf[gp];
-            double const F = lhs / rhs;
-
-            if (std::isnan(F) || std::isinf(F)) continue;
-
-            double const denom_Q = (1.0 + n_eq_db[g]) * B_eq_buf[gp];
-            double const Q = (denom_Q > tiny_thresh)
-                ? (1.0 + n_eq_db[gp]) * B_eq_buf[g] / denom_Q : 0.0;
+            double const Q = ((1.0 + n_eq_db[gp]) * B_eq_buf[g])
+                           / ((1.0 + n_eq_db[g]) * B_eq_buf[gp])
+                           * (energy_groups_centers[gp] / energy_groups_centers[g]);
+            if (!std::isfinite(Q) || Q <= tiny_thresh) continue;
             double const dlnQ = log_db_factor_deriv[g] - log_db_factor_deriv[gp];
 
-            if (F > 1.0) {
-                sigma_in_buf[gp][g] /= F;
-                // dsigma_in from raw dsigma_out (sigma_out unchanged for F>1)
-                dsigma_in_buf[gp][g] = Q * (dsigma_out_buf[g][gp]
-                                            + sigma_out_buf[g][gp] * dlnQ);
-            } else if (F < 1.0) {
-                sigma_out_buf[g][gp] *= F;
-                // dsigma_out from raw dsigma_in (sigma_in unchanged for F<1)
-                double const invQ = (Q > tiny_thresh) ? 1.0 / Q : 0.0;
-                dsigma_out_buf[g][gp] = invQ * (dsigma_in_buf[gp][g]
-                                                - sigma_in_buf[gp][g] * dlnQ);
+            double const balanced_reverse = Q * forward;
+            if (reverse > balanced_reverse) {
+                sigma_s_buf[gp][g] = balanced_reverse;
+                dsigma_s_buf[gp][g] = Q * (dsigma_s_buf[g][gp] + forward * dlnQ);
+            } else if (reverse < balanced_reverse) {
+                sigma_s_buf[g][gp] = reverse / Q;
+                dsigma_s_buf[g][gp] = (dsigma_s_buf[gp][g] - reverse * dlnQ) / Q;
             }
         }
     }
 
-    // 6. Assemble S and dS/dT
+    // 6. Assemble S and dS/dT. A transfer g -> gp removes sigma_s (1+n_gp) E_g
+    //    from g and deposits sigma_s (nu_gp/nu_g) (1+n_gp) E_g into gp.
     for (std::size_t i = 0; i < num_energy_groups; ++i) {
         for (std::size_t j = 0; j < num_energy_groups; ++j) {
             S[i][j] = 0.0;
@@ -350,11 +329,15 @@ void ComptonTableReader::get_S_and_dSdUm(
 
     for (std::size_t g = 0; g < num_energy_groups; ++g) {
         for (std::size_t gp = 0; gp < num_energy_groups; ++gp) {
-            S[g][g]       -= sigma_out_buf[g][gp] * (1.0 + n_buf[gp]);
-            dS_dT[g][g]   -= dsigma_out_buf[g][gp] * (1.0 + n_buf[gp]);
+            if (gp == g) continue;
+            double const n1 = 1.0 + n_buf[gp];
+            double const ratio = energy_groups_centers[gp] / energy_groups_centers[g];
 
-            S[gp][g]      += sigma_in_buf[gp][g] * (1.0 + n_buf[g]);
-            dS_dT[gp][g]  += dsigma_in_buf[gp][g] * (1.0 + n_buf[g]);
+            S[g][g]      -= sigma_s_buf[g][gp] * n1;
+            dS_dT[g][g]  -= dsigma_s_buf[g][gp] * n1;
+
+            S[g][gp]     += sigma_s_buf[g][gp] * ratio * n1;
+            dS_dT[g][gp] += dsigma_s_buf[g][gp] * ratio * n1;
         }
     }
 

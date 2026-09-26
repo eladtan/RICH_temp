@@ -30,19 +30,15 @@ private:
     Vector const energy_groups_boundaries;
     std::size_t const num_energy_groups;
 
-    static constexpr int EXPECTED_TABLE_VERSION = 3;
+    static constexpr int EXPECTED_TABLE_VERSION = 4;
 
     Vector temperature_grid;
 
-    std::vector<Matrix> sigma_out_tables;
-    std::vector<Matrix> dsigma_out_dT_tables;
-    std::vector<Matrix> sigma_in_tables;
-    std::vector<Matrix> dsigma_in_dT_tables;
+    std::vector<Matrix> sigma_s_tables;
+    std::vector<Matrix> dsigma_s_dT_tables;
 
-    mutable Matrix sigma_out_buf;
-    mutable Matrix dsigma_out_buf;
-    mutable Matrix sigma_in_buf;
-    mutable Matrix dsigma_in_buf;
+    mutable Matrix sigma_s_buf;
+    mutable Matrix dsigma_s_buf;
     mutable Vector B_eq_buf;
     mutable Vector n_eq_buf;
     mutable Vector dBdT_buf;
