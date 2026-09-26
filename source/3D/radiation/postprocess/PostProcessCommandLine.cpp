@@ -283,6 +283,7 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddSize(options, "volume-emission.burnin-packets-target", "Volume packets per burn-in generation (cell subsampling).", c.volumeEmission.burninPacketsTarget);
     AddBool(options, "volume-emission.gate-groups", "Emit each group only outside its own thermalization surface (false: full spectrum everywhere outside the deep surface).", c.volumeEmission.gateGroups);
     AddDouble(options, "volume-emission.exploration-weight-fraction", "Split exploration packets so none exceeds this fraction of the last generation's escaping energy (0 = one packet per cell).", c.volumeEmission.explorationWeightFraction);
+    AddDouble(options, "volume-emission.exploration-weight-fraction-grey", "Grey-pass exploration weight fraction (negative = same as MG).", c.volumeEmission.explorationWeightFractionGrey);
     AddBool(options, "volume-emission.burnin-exact", "Burn-in gives every emitting cell exactly the per-cell packet count (false: energy-proportional).", c.volumeEmission.burninExact);
     AddSize(options, "volume-emission.learned-photons-per-cell-budget", "Average packets per learned volume cell per final generation.", c.volumeEmission.learnedPhotonsPerCellBudget);
     AddSize(options, "volume-emission.learned-photons-per-cell-budget-grey", "Grey-pass average packets per learned volume cell per final generation (0 = same as MG).", c.volumeEmission.learnedPhotonsPerCellBudgetGrey);

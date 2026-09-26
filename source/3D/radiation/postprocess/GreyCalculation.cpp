@@ -170,6 +170,7 @@ ForwardPostprocessResult RunGreyPostprocess(
             size_t const greyUniformBurninGenerations = cfg.adaptiveSourceCells ? 19 : 0;
             size_t const greyBurninGenerations = greyInitialBurninGenerations + greyUniformBurninGenerations;
             size_t const greyLearnedProbeGenerations = cfg.adaptiveSourceCells ? 1 : 0;
+            size_t const greyProbePhotons = cfg.volumeEmissionEnabled ? 10 : 75;
             size_t const greyFinalStartGeneration = greyBurninGenerations + greyLearnedProbeGenerations;
             size_t const greyTotalGenerations = cfg.adaptiveSourceCells
                 ? greyFinalStartGeneration + nGreyGens
@@ -198,7 +199,7 @@ ForwardPostprocessResult RunGreyPostprocess(
                     !greyAdaptive.scoreByCellID.empty();
                 size_t const greyPhotonsThisGen = greyFirstBurninThisGen ? 1
                     : (greyUniformBurninThisGen ? 3
-                       : (greyLearnedProbeThisGen ? (cfg.volumeEmissionEnabled ? 10 : 75)
+                       : (greyLearnedProbeThisGen ? greyProbePhotons
                           : (cfg.adaptiveSourceCells ? 1 : greyPhotonsPerCell)));
                 std::string greyPhase = "final";
                 if (greyFirstBurninThisGen)
@@ -291,7 +292,7 @@ ForwardPostprocessResult RunGreyPostprocess(
                     double const escapingReference = runtime.lastEscapingLuminosity > 0.0
                         ? runtime.lastEscapingLuminosity : runtime.fluxSourceInjectedLuminosity;
                     greyPhysics->setPostProcessExplorationMaxWeight(
-                        cfg.volumeEmissionExplorationWeightFraction * escapingReference * cfg.sourceDt);
+                        cfg.volumeEmissionExplorationWeightFractionGrey * escapingReference * cfg.sourceDt);
                 }
 
                 greyPhysics->reseedRNG(static_cast<uint64_t>(rank + 87654321) * greyTotalGenerations + gen);
@@ -421,9 +422,27 @@ ForwardPostprocessResult RunGreyPostprocess(
                     cfg.adaptiveSourceCells &&
                     greyFinalThisGen &&
                     greyFinalGenerationIndex + 1 < nGreyGens &&
-                    (greyFinalGenerationIndex + 1) %
-                        (cfg.fluxSourceCompare ? 10 : 50) == 0;
-                std::string const greyLBLabel = greyDoBurninMeasuredLB
+                    // Rebalance after final step 1 too: the probe LB balances
+                    // the probe's allocation, not the final one.
+                    (greyFinalGenerationIndex == 0 ||
+                     (greyFinalGenerationIndex + 1) %
+                         (cfg.fluxSourceCompare ? 10 : 50) == 0);
+                // With exploration splitting, the probe puts most packets in a
+                // few thick cells (ceil(E/cap) each), which cost almost nothing
+                // in the burn-in (1-3 packets per cell). At a small cap that
+                // crowds one rank past its memory (64M packets on one rank at
+                // fraction 0.005), so before the probe, balance on the packet
+                // counts the probe will create.
+                bool const greyDoPredictedProbeLB =
+                    greyMeasuredLBActive &&
+                    cfg.adaptiveSourceCells &&
+                    cfg.volumeEmissionEnabled &&
+                    cfg.volumeEmissionExplorationWeightFractionGrey > 0.0 &&
+                    greyLearnedProbeGenerations > 0 &&
+                    gen + 1 == greyBurninGenerations;
+                std::string const greyLBLabel = greyDoPredictedProbeLB
+                    ? "MEASURED_LB_GREY_PREDICTED_PROBE"
+                    : greyDoBurninMeasuredLB
                     ? "MEASURED_LB_GREY_BURNIN"
                     : (greyDoPostAdaptiveMeasuredLB
                         ? "MEASURED_LB_GREY_FIRST_NON_BURNIN"
@@ -440,8 +459,11 @@ ForwardPostprocessResult RunGreyPostprocess(
                               << ": rank_step_imbalance="
                               << greyStepImbalance.maxOverMean
                               << std::endl;
+                if (rank == 0 && greyDoPredictedProbeLB)
+                    std::cout << "Grey burn-in complete; running measured LB on predicted probe packets" << std::endl;
                 if (greyDoInitialMeasuredLB || greyDoBurninMeasuredLB ||
-                    greyDoPostAdaptiveMeasuredLB || greyDoAdaptivePeriodicMeasuredLB) {
+                    greyDoPostAdaptiveMeasuredLB || greyDoAdaptivePeriodicMeasuredLB ||
+                    greyDoPredictedProbeLB) {
                     if (!greyParams.noHydroFeedback) {
                         throw UniversalError("Grey measured load balance repartition requires noHydroFeedback=true");
                     }
@@ -463,9 +485,66 @@ ForwardPostprocessResult RunGreyPostprocess(
                         for (size_t i = 0; i < Ncells; ++i)
                             greyCellIDs[i] = cells[i].ID;
 
+                        std::vector<size_t> greyPredictedProbePhotons;
+                        if (greyDoPredictedProbeLB) {
+                            // Mirrors the STORM probe allocation: learned cells get
+                            // greyProbePhotons, other emitting volume cells get
+                            // ceil(E/cap) exploration packets (at most 1e7), other
+                            // source cells keep their burn-in count. It only has
+                            // to be close: the LB after the probe measures it.
+                            if (runtime.volumeEmissionCellLuminosity.size() != Ncells) {
+                                UniversalError eo("Grey predicted probe LB needs the per-cell volume emission of the current decomposition");
+                                eo.addEntry("volumeEmissionCellLuminosity.size()",
+                                            static_cast<double>(runtime.volumeEmissionCellLuminosity.size()));
+                                eo.addEntry("Ncells", static_cast<double>(Ncells));
+                                throw eo;
+                            }
+                            double const escapingReference = runtime.lastEscapingLuminosity > 0.0
+                                ? runtime.lastEscapingLuminosity : runtime.fluxSourceInjectedLuminosity;
+                            double const capLuminosity =
+                                cfg.volumeEmissionExplorationWeightFractionGrey * escapingReference;
+                            if (!(capLuminosity > 0.0) || !std::isfinite(capLuminosity)) {
+                                UniversalError eo("Grey predicted probe LB has no valid exploration cap");
+                                eo.addEntry("escapingReference", escapingReference);
+                                eo.addEntry("explorationWeightFractionGrey",
+                                            cfg.volumeEmissionExplorationWeightFractionGrey);
+                                throw eo;
+                            }
+                            std::vector<size_t> const& burninPhotons =
+                                generationDiagnostics.sourcePhotonsPerCell;
+                            greyPredictedProbePhotons.assign(Ncells, 0);
+                            uint64_t localPredicted = 0;
+                            for (size_t i = 0; i < Ncells; ++i) {
+                                double const luminosity = runtime.volumeEmissionCellLuminosity[i];
+                                size_t photons = i < burninPhotons.size() ? burninPhotons[i] : 0;
+                                if (luminosity > 0.0) {
+                                    auto const it = greyAdaptive.scoreByCellID.find(cells[i].ID);
+                                    bool const learned = it != greyAdaptive.scoreByCellID.end() &&
+                                        std::isfinite(it->second) && it->second > 0.0;
+                                    photons = learned
+                                        ? greyProbePhotons
+                                        : static_cast<size_t>(std::clamp(
+                                              std::ceil(luminosity / capLuminosity), 1.0, 1.0e7));
+                                }
+                                greyPredictedProbePhotons[i] = photons;
+                                localPredicted += photons;
+                            }
+                            uint64_t predictedSum = localPredicted;
+                            uint64_t predictedMax = localPredicted;
+                            MPI_Allreduce(MPI_IN_PLACE, &predictedSum, 1, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+                            MPI_Allreduce(MPI_IN_PLACE, &predictedMax, 1, MPI_UINT64_T, MPI_MAX, MPI_COMM_WORLD);
+                            if (rank == 0)
+                                std::cout << "MEASURED_LB_GREY_PREDICTED_PROBE cap_luminosity=" << capLuminosity
+                                          << " erg/s predicted_packets=" << predictedSum
+                                          << " max_rank_predicted_packets_before_lb=" << predictedMax
+                                          << " mean_rank=" << static_cast<double>(predictedSum) / mpiSize
+                                          << std::endl;
+                        }
+
                         auto greyLocalMeas = imc_measured_lb::BuildLocalMeasurements(
                             greyCellIDs, greyLocalSteps,
-                            generationDiagnostics.sourcePhotonsPerCell);
+                            greyDoPredictedProbeLB ? greyPredictedProbePhotons
+                                                   : generationDiagnostics.sourcePhotonsPerCell);
 
                         uint64_t greyLocalTotalSteps = 0;
                         uint64_t greyLocalTotalSourceParticles = 0;
@@ -501,6 +580,13 @@ ForwardPostprocessResult RunGreyPostprocess(
                                     << greyLBParamsThisPass.particleWeight
                                     << " post_clamp=yes\n";
                             }
+                        }
+                        if (greyDoPredictedProbeLB) {
+                            // Exploration packets of thick cells are absorbed in about
+                            // one step; their cost is creation and memory, so weight
+                            // each predicted packet as one step, after the clamp.
+                            greyLBParamsThisPass.particleWeight = 1.0;
+                            greyLBParamsThisPass.particleCostAfterClamp = true;
                         }
 
                         if (greyGlobalTotalSteps == 0) {
@@ -617,6 +703,8 @@ ForwardPostprocessResult RunGreyPostprocess(
 
                         PrintVmRSS("grey_after_rebuild_physics", rank);
                     }
+                    if (greyDoPredictedProbeLB && rank == 0)
+                        std::cout << "Grey predicted-probe measured load balance complete" << std::endl;
                     if (greyDoBurninMeasuredLB) {
                         greyBurninMeasuredLBDone = true;
                         if (rank == 0)

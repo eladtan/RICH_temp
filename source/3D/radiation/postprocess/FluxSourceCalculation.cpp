@@ -937,6 +937,7 @@ void ConfigureFluxSourceForCurrentDecomposition(
     if(!cfg.fluxSourceCompare)
     {
         physics.clearPostProcessExternalSources();
+        runtime.volumeEmissionCellLuminosity.clear();
         return;
     }
     if(!runtime.fluxSourceEnabled || runtime.fluxSourceRadius.empty())
@@ -1288,6 +1289,10 @@ void ConfigureFluxSourceForCurrentDecomposition(
         runtime.volumeEmissionCells = globalKept;
         runtime.volumeEmissionLuminosity = globalVolumeLuminosity;
         runtime.volumeEmissionKeptLuminosity = globalKeptLuminosity;
+        runtime.volumeEmissionCellLuminosity.assign(nCells, 0.0);
+        for(size_t i = 0; i < nCells; ++i)
+            if(mask[i])
+                runtime.volumeEmissionCellLuminosity[i] = cellLuminosity[i];
         physics.setPostProcessVolumeEmission(std::move(mask), std::move(groupBits), 1.0, 0);
         physics.setPostProcessVolumeEmissionExactBase(cfg.volumeEmissionBurninExact);
         if(runtime.rank == 0 && (changed || !runtime.volumeEmissionReported))
@@ -1314,6 +1319,7 @@ void ConfigureFluxSourceForCurrentDecomposition(
     else
     {
         physics.clearPostProcessVolumeEmission();
+        runtime.volumeEmissionCellLuminosity.clear();
     }
 
     if(runtime.rank == 0)

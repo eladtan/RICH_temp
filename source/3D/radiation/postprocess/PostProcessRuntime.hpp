@@ -307,6 +307,11 @@ public:
     uint64_t volumeEmissionCells = 0;
     double volumeEmissionLuminosity = 0.0;      // all outside cells
     double volumeEmissionKeptLuminosity = 0.0;  // cells above the cutoff
+    // Volume emission luminosity of each local cell of the current
+    // decomposition (erg/s, 0 for cells below the cutoff), from the last
+    // ConfigureFluxSourceForCurrentDecomposition call. Empty when volume
+    // emission is off. Predicts exploration packet counts for load balancing.
+    std::vector<double> volumeEmissionCellLuminosity;
     bool volumeEmissionReported = false;
     // Escaping (observer-crossing) luminosity of the last transported
     // generation, erg/s; 0 before the first one. Reference for the volume

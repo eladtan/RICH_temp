@@ -407,7 +407,10 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     cfg.adaptiveSourceCells &&
                     finalThisGen &&
                     finalGenerationIndex + 1 < mgFinalGenerations &&
-                    (finalGenerationIndex + 1) % 10 == 0;
+                    // The probe LB balances the probe's allocation, not the
+                    // final one (240x rank imbalance until final step 10 with
+                    // exploration splitting), so also rebalance after step 1.
+                    (finalGenerationIndex == 0 || (finalGenerationIndex + 1) % 10 == 0);
                 std::string const mgLBLabel = doPostAdaptiveMeasuredLB
                     ? "MEASURED_LB_ADAPTIVE"
                     : (doAdaptivePeriodicMeasuredLB

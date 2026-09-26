@@ -130,6 +130,10 @@ struct PostProcessConfig
         // split so that none carries more than this fraction of the previous
         // generation's escaping energy. 0 = one packet per cell.
         double explorationWeightFraction = 0.0;
+        // Grey pass fraction; negative means the same as
+        // explorationWeightFraction. The grey escaping luminosity is ~5x lower
+        // than the MG one, so the same fraction gives a ~5x smaller cap.
+        double explorationWeightFractionGrey = -1.0;
         // Neyman budget and bounds for learned volume cells (face cells keep
         // adaptive.source.learned*).
         size_t learnedPhotonsPerCellBudget = 10;

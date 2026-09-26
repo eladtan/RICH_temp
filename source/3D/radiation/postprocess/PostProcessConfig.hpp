@@ -59,6 +59,7 @@ struct Config
     bool volumeEmissionGateGroups = true;
     bool volumeEmissionBurninExact = true;
     double volumeEmissionExplorationWeightFraction = 0.0;
+    double volumeEmissionExplorationWeightFractionGrey = 0.0;  // resolved: never negative
     size_t volumeEmissionLearnedPhotonsPerCellBudget = 10;
     size_t volumeEmissionLearnedPhotonsPerCellBudgetGrey = 0;  // 0 = same as MG
     size_t volumeEmissionLearnedMinPhotons = 1;

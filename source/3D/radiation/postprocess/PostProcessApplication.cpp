@@ -176,6 +176,13 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.volumeEmissionGateGroups = publicConfig.volumeEmission.gateGroups;
     cfg.volumeEmissionBurninExact = publicConfig.volumeEmission.burninExact;
     cfg.volumeEmissionExplorationWeightFraction = publicConfig.volumeEmission.explorationWeightFraction;
+    if (!(cfg.volumeEmissionExplorationWeightFraction >= 0.0))
+        throw UniversalError("volume-emission.exploration-weight-fraction must be >= 0");
+    if (std::isnan(publicConfig.volumeEmission.explorationWeightFractionGrey))
+        throw UniversalError("volume-emission.exploration-weight-fraction-grey must be a number (negative = same as MG)");
+    cfg.volumeEmissionExplorationWeightFractionGrey = publicConfig.volumeEmission.explorationWeightFractionGrey < 0.0
+        ? cfg.volumeEmissionExplorationWeightFraction
+        : publicConfig.volumeEmission.explorationWeightFractionGrey;
     cfg.volumeEmissionLearnedPhotonsPerCellBudget = publicConfig.volumeEmission.learnedPhotonsPerCellBudget;
     cfg.volumeEmissionLearnedPhotonsPerCellBudgetGrey = publicConfig.volumeEmission.learnedPhotonsPerCellBudgetGrey;
     cfg.volumeEmissionLearnedMinPhotons = publicConfig.volumeEmission.learnedMinPhotons;
@@ -574,7 +581,9 @@ int PostProcessIMC::RunPostProcessMain(
                       << "Volume emission:  " << (cfg.volumeEmissionEnabled
                           ? "yes (fixed-T, Fleck 1, cutoff " + std::to_string(cfg.volumeEmissionCutoffFraction) +
                             " of total, burn-in target " + std::to_string(cfg.volumeEmissionBurninPacketsTarget) +
-                            " packets, learned budget " + std::to_string(cfg.volumeEmissionLearnedPhotonsPerCellBudget) + "/cell)"
+                            " packets, learned budget " + std::to_string(cfg.volumeEmissionLearnedPhotonsPerCellBudget) +
+                            "/cell, exploration weight fraction MG " + std::to_string(cfg.volumeEmissionExplorationWeightFraction) +
+                            " grey " + std::to_string(cfg.volumeEmissionExplorationWeightFractionGrey) + ")"
                           : std::string("no")) << "\n"
                       << "Flux source surface: "
                       << (cfg.fluxSourceSurfaceMode == FluxSourceSurfaceMode::MultigroupInnermost
@@ -591,7 +600,7 @@ int PostProcessIMC::RunPostProcessMain(
                       << "Measured LB:     " << (cfg.measuredLoadBalance ? "requested" : "disabled") << "\n"
                       << "  weight compression: " << EffectiveMeasuredLBWeightCompression(cfg) << "\n"
                       << "  max cell imbalance: " << MEASURED_LB_MAX_CELL_IMBALANCE << "\n"
-                      << "  adaptive cadence: learned-only probe LB, then every 10 learned-final steps before the last\n"
+                      << "  adaptive cadence: learned-only probe LB, then after final step 1 and every 10 learned-final steps before the last\n"
                       << "Opacity scale:   " << (cfg.opacityScaleMode == imc_postprocess_tde::OpacityScaleMode::Planck ? "planck" :
                                                   cfg.opacityScaleMode == imc_postprocess_tde::OpacityScaleMode::Rosseland ? "rosseland" : "disabled")
                       << " alpha bounds [" << cfg.opacityScaleAlphaMin << ", "
@@ -599,7 +608,7 @@ int PostProcessIMC::RunPostProcessMain(
                       << "Adaptive source: " << (cfg.adaptiveSourceCells ? "enabled" : "disabled") << "\n"
                       << "  MG schedule:   1 exact-1 burn-in, 19 exact-3 burn-in, learned-only exact-75 probe, LB, "
                       << cfg.nGenerations << " Neyman-allocated final steps\n"
-                      << "  final LB cadence: every 10 learned-final steps before the last\n"
+                      << "  final LB cadence: after final step 1 and every 10 learned-final steps before the last\n"
                       << "  min esc frac:  " << cfg.adaptiveSourceMinEscapedFrac << "\n"
                       << "  strength:      " << cfg.adaptiveSourceStrength << "\n"
                       << "  EMA:           " << cfg.adaptiveSourceEma << "\n"
