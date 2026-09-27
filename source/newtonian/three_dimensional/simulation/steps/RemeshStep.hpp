@@ -40,6 +40,9 @@ public:
 
     std::string getName(void) const override { return step_name; }
 
+    MeshBuildTiming getMeshBuildTiming(void) const override
+    { return meshBuildTiming; }
+
     #ifdef RICH_MPI
         bool allowRebalance(void) override;
 
@@ -56,6 +59,7 @@ private:
     std::vector<Conserved3D> &extensives;
     PointGenerator generator;
     PostRebuildCallback postRebuild;
+    MeshBuildTiming meshBuildTiming;
 
     #ifdef RICH_MPI
         ExchangeChain exchangeChain;

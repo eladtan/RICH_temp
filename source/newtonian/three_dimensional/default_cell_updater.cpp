@@ -413,25 +413,20 @@ void DefaultCellUpdater::UpdateIndividual(
 	const IndividualStepContext& context) const
 {
 	size_t const owned_count = tess.GetPointNo();
-	if(!IndividualAllActiveCellUpdateRequested() ||
-	   !HasCompleteOrderedOwnedActivity(context, owned_count) ||
-	   res.size() < owned_count || extensives.size() < owned_count)
-	{
-		CellUpdater3D::UpdateIndividual(
-			res, eos, tess, extensives, context);
-		return;
-	}
+	bool const replace_whole_vectors =
+		IndividualAllActiveCellUpdateRequested() &&
+		HasCompleteOrderedOwnedActivity(context, owned_count) &&
+		res.size() >= owned_count && extensives.size() >= owned_count;
 
-	// Retain the legacy transaction boundary: if the concrete update throws,
-	// the caller's primitive and extensive arrays remain untouched.  A complete
-	// owned active set lets a successful update commit the candidate vectors in
-	// O(1), because DefaultCellUpdater only changes the owned prefix.  The MPI
-	// entropy path may resize the candidate extensive array; preserve its legacy
-	// owned-only commit in that case.
+	// When the entropy fix is enabled, the individual hydro path refreshes every
+	// compact ghost cell through SyncPartialBuildData before primitive recovery.
+	// MadVoro's duplicate send indices address the much larger all-points array
+	// during a sparse build, so repeating the legacy MPI exchange here would
+	// index the compact event vectors with all-point indices.
 	vector<ComputationalCell3D> candidate_cells = res;
 	vector<Conserved3D> candidate_extensives = extensives;
-	(*this)(candidate_cells, eos, tess, candidate_extensives);
-	if(candidate_cells.size() == res.size() &&
+	UpdateCells(candidate_cells, eos, tess, candidate_extensives, false);
+	if(replace_whole_vectors && candidate_cells.size() == res.size() &&
 	   candidate_extensives.size() == extensives.size())
 	{
 		res.swap(candidate_cells);
@@ -453,13 +448,25 @@ void DefaultCellUpdater::UpdateIndividual(
 void DefaultCellUpdater::operator()(vector<ComputationalCell3D> &res, EquationOfState const& eos,
 	const Tessellation3D& tess, vector<Conserved3D>& extensives) const
 {
+	UpdateCells(res, eos, tess, extensives, true);
+}
+
+void DefaultCellUpdater::UpdateCells(vector<ComputationalCell3D> &res,
+	EquationOfState const& eos, const Tessellation3D& tess,
+	vector<Conserved3D>& extensives,
+	bool const synchronize_entropy_ghosts) const
+{
+#ifndef RICH_MPI
+	(void)synchronize_entropy_ghosts;
+#endif
   entropy_index_ = ComputationalCell3D::tracerNames.size();
   vector<string>::const_iterator it = binary_find(ComputationalCell3D::tracerNames.begin(),
 						  ComputationalCell3D::tracerNames.end(), string("Entropy"));
   if (it != ComputationalCell3D::tracerNames.end())
     entropy_index_ = static_cast<size_t>(it - ComputationalCell3D::tracerNames.begin());
 #ifdef RICH_MPI
-  if (entropy_index_ < ComputationalCell3D::tracerNames.size())
+	if (synchronize_entropy_ghosts &&
+		entropy_index_ < ComputationalCell3D::tracerNames.size())
 	{
 		MPI_exchange_data(tess, extensives, true);
 	}

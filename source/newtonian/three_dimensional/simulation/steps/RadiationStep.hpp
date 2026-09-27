@@ -34,6 +34,11 @@ public:
         IndividualStepContext const& context,
         std::vector<double>& time_step_limits) const override;
 
+    void suggestIndividualWakeDeadlines(
+        IndividualStepContext const& context,
+        std::vector<double>& wake_deadlines) const override;
+
+
     void afterIndividualAMR(void) noexcept override;
 
     void onIndividualForceAllActiveLatch(void) noexcept override;
@@ -41,6 +46,19 @@ public:
     void beforeIndividualRebalance(void) noexcept override;
 
     double suggestTimeStep(void) const override;
+
+    // The driver's per-cell form of the last global step's limit, matched to
+    // the current owned cells by ID (the mesh has moved and cells migrated
+    // since); unmatched cells set no limit.
+    bool collectCellTimeStepLimits(std::vector<double>& limits) const override;
+
+    bool cellTimeStepLimitsCached(void) const override {return true;}
+
+    std::size_t cellTimeStepLimitFallbacks(void) const override
+    {return cell_limit_fallbacks;}
+
+    double cellTimeStepLimitMinimum(void) const override
+    {return cell_limit_minimum;}
 
     std::string getName(void) const override;
 
@@ -69,7 +87,12 @@ private:
     ProgressTracker &pt;
     const RadiationDriver &matrix_builder;
     double suggested_dt;
+    std::vector<std::size_t> cell_limit_ids;
+    std::vector<double> cell_limit_values;
+    mutable std::size_t cell_limit_fallbacks = 0;
+    double cell_limit_minimum = std::numeric_limits<double>::infinity();
     std::vector<double> suggested_individual_dt;
+    std::vector<double> suggested_individual_wake_deadline;
     std::size_t cumulative_individual_rejected_candidates = 0;
     double smallest_individual_candidate_fraction = 1.0;
     std::map<std::string, double> last_individual_performance;

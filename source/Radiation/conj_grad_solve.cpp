@@ -10,6 +10,7 @@
 #include <vectorclass.h>
 #include "boost/math/special_functions/pow.hpp"
 #include "misc/memory_profile.hpp"
+#include "newtonian/three_dimensional/simulation/RuntimeLog.hpp"
 
 using boost::math::pow;
 
@@ -3655,12 +3656,13 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         sub_x.clear();
         char const* const trace_value =
             std::getenv("RICH_INDIVIDUAL_PERF_TRACE");
-        bool const trace_matrix_build = trace_value != nullptr &&
+        bool const trace_matrix_build = RuntimeLogDetailed() ||
+            (trace_value != nullptr &&
             trace_value[0] != '\0' &&
             std::strcmp(trace_value, "0") != 0 &&
             std::strcmp(trace_value, "false") != 0 &&
             std::strcmp(trace_value, "off") != 0 &&
-            std::strcmp(trace_value, "no") != 0;
+            std::strcmp(trace_value, "no") != 0);
         auto const matrix_build_start = std::chrono::steady_clock::now();
         {
             MEMORY_PROFILE_SCOPE("diffusion matrix build");
@@ -3765,7 +3767,7 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
             1u << static_cast<unsigned int>(local_direct_csr_state);
         if(trace_matrix_build && rank == 0 &&
            (reported_direct_csr_states & direct_csr_state_bit) == 0u) {
-            std::clog << "MG_DIRECT_GLOBAL_CSR requested="
+            RuntimeTraceStream() << "MG_DIRECT_GLOBAL_CSR requested="
                       << (direct_csr_requested ? 1 : 0)
                       << " supported=" << (direct_csr_supported ? 1 : 0)
                       << " enabled="
@@ -3779,7 +3781,7 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         if(trace_matrix_build && rank == 0 &&
            (reported_fused_reduction_states &
             fused_reduction_state_bit) == 0u) {
-            std::clog << "MG_FUSED_REDUCTIONS requested="
+            RuntimeTraceStream() << "MG_FUSED_REDUCTIONS requested="
                       << (fused_reductions_requested ? 1 : 0)
                       << " enabled=" << (fused_reductions ? 1 : 0)
                       << std::endl;
@@ -3791,7 +3793,7 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         if(trace_matrix_build && rank == 0 &&
            (reported_three_round_pipeline_states &
             three_round_pipeline_state_bit) == 0u) {
-            std::clog
+            RuntimeTraceStream()
                 << "MG_THREE_ROUND_DIAGNOSTIC_PIPELINE requested="
                 << (three_round_pipeline_requested ? 1 : 0)
                 << " supported="
@@ -3804,7 +3806,7 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         }
         static bool reported_matrix_row_reuse = false;
         if(trace_matrix_build && rank == 0 && !reported_matrix_row_reuse) {
-            std::clog << "MG_MATRIX_ROW_CAPACITY_REUSE enabled="
+            RuntimeTraceStream() << "MG_MATRIX_ROW_CAPACITY_REUSE enabled="
                       << (reuse_matrix_row_capacity ? 1 : 0) << std::endl;
             reported_matrix_row_reuse = true;
         }
@@ -3857,7 +3859,7 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
                 "MPI_Allreduce(global matrix nonzero maximum)");
 #endif
             if(rank == 0)
-                std::clog << std::setprecision(17)
+                RuntimeTraceStream() << std::setprecision(17)
                           << "MG_MATRIX_BUILD_TIMING scope=global"
                           << " seconds_max=" << matrix_build_seconds
                           << " rows_total=" << total_rows
@@ -6263,7 +6265,7 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         }
 #endif
         if(rank == 0)
-            std::clog << "MG_BICGSTAB_REDUCTIONS scope=global"
+            RuntimeTraceStream() << "MG_BICGSTAB_REDUCTIONS scope=global"
                       << " enabled=" << (fused_reductions ? 1 : 0)
                       << " route=" << (three_round_pipeline ?
                           "three_round_diagnostic_pipeline" : "legacy")
@@ -6281,7 +6283,7 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
                           (fused_reductions ? 6 : 17))
                       << std::endl;
         if(rank == 0 && three_round_pipeline)
-            std::clog
+            RuntimeTraceStream()
                 << "MG_THREE_ROUND_DIAGNOSTIC_PIPELINE_RESULT"
                 << " round1_count_max=" << three_round_pipeline_stats[0]
                 << " round2_count_max=" << three_round_pipeline_stats[1]
@@ -6330,7 +6332,7 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
             "MPI_Allreduce(global neighbor correction matvec calls)");
 #endif
         if(rank == 0)
-            std::clog << "MG_PRECONDITIONER_APPLY kind="
+            RuntimeTraceStream() << "MG_PRECONDITIONER_APPLY kind="
                       << PreconditionerKindLabel(
                              direction_preconditioner.Kind())
                       << " requested_kind="
@@ -6359,7 +6361,7 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
             "MPI_Allreduce(global BiCGSTAB timing)");
 #endif
         if(rank == 0)
-            std::clog << "MG_BICGSTAB_TIMING scope=global"
+            RuntimeTraceStream() << "MG_BICGSTAB_TIMING scope=global"
                       << " outcome=" << (good_end ? "converged" : "failed")
                       << " iterations=" << total_iters
                       << " matvec_seconds_max=" << bicgstab_timing[0]

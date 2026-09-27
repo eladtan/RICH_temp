@@ -43,6 +43,13 @@ void HydroStep::suggestIndividualTimeSteps(
     this->sim.suggestIndividualTimeSteps(context, time_step_limits);
 }
 
+void HydroStep::suggestIndividualChangeWakes(
+    const IndividualStepContext &context,
+    std::vector<double> &change_ratios) const
+{
+    this->sim.suggestIndividualChangeWakes(context, change_ratios);
+}
+
 bool HydroStep::getIndividualGeneratorPoints(
     std::vector<Vector3D>& points) const
 {
@@ -51,6 +58,28 @@ bool HydroStep::getIndividualGeneratorPoints(
     if(canonical.empty())
         return false;
     points = canonical;
+    return true;
+}
+
+bool HydroStep::getIndividualLimitReasons(
+    std::vector<unsigned char>& reasons) const
+{
+    std::vector<unsigned char> const& canonical =
+        this->sim.GetIndividualLimitReasons();
+    if(canonical.empty())
+        return false;
+    reasons = canonical;
+    return true;
+}
+
+bool HydroStep::getIndividualCellCentroids(
+    std::vector<Vector3D>& centroids) const
+{
+    std::vector<Vector3D> const& canonical =
+        this->sim.GetIndividualCellCentroids();
+    if(canonical.empty())
+        return false;
+    centroids = canonical;
     return true;
 }
 

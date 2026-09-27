@@ -1,5 +1,38 @@
 #include "DiffusionForce.hpp"
+#include <stdexcept>
 #include <boost/math/special_functions/pow.hpp>
+#ifdef RICH_MPI
+#include "../mpi/IndividualGhostSources.hpp"
+#include <map>
+
+namespace
+{
+template<class Field>
+void exchange_individual_diffusion_field(
+    Tessellation3D const& tess,
+    std::vector<ComputationalCell3D> const& cells,
+    std::vector<std::vector<std::size_t> > const& source_indices,
+    std::multimap<std::size_t, std::size_t> const& ghost_slots,
+    std::vector<Field>& values)
+{
+    using TaggedField = std::pair<std::size_t, Field>;
+    std::vector<std::vector<TaggedField> > outgoing(source_indices.size());
+    for(std::size_t peer = 0; peer < source_indices.size(); ++peer)
+        for(std::size_t source : source_indices[peer])
+            outgoing[peer].emplace_back(cells[source].ID, values[source]);
+    auto const incoming = MPI_exchange_data(tess.GetDuplicatedProcs(), outgoing);
+    // Several communication paths may supply the same ID. Match the
+    // tessellation synchronization rule: the final peer's value wins.
+    for(auto const& peer_values : incoming)
+        for(auto const& tagged : peer_values)
+        {
+            auto const slots = ghost_slots.equal_range(tagged.first);
+            for(auto slot = slots.first; slot != slots.second; ++slot)
+                values[slot->second] = tagged.second;
+        }
+}
+}
+#endif
 // equations taken from "EQUATIONS AND ALGORITHMS FOR MIXED-FRAME FLUX-LIMITED DIFFUSION RADIATION HYDRODYNAMICS"
 
 void DiffusionForce::operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
@@ -39,8 +72,12 @@ void DiffusionForce::ApplyImpl(const Tessellation3D& tess,
 	    if(cells.size() < N || extensives.size() < N ||
 	       (context != nullptr && context->active_mask.size() < N))
 	        throw std::invalid_argument("DiffusionForce individual cell counts are inconsistent");
-	    std::vector<ComputationalCell3D> predicted_cells;
-	    const std::vector<ComputationalCell3D>* source_cells = &cells;
+		    std::vector<ComputationalCell3D> predicted_cells;
+		    const std::vector<ComputationalCell3D>* source_cells = &cells;
+#ifdef RICH_MPI
+        std::vector<std::vector<std::size_t> > ghost_source_indices;
+        std::multimap<std::size_t, std::size_t> ghost_slots;
+#endif
 	    if(context != nullptr)
 	    {
 	        predicted_cells = cells;
@@ -67,13 +104,29 @@ void DiffusionForce::ApplyImpl(const Tessellation3D& tess,
 	                predicted.internal_energy, predicted.tracers,
 	                ComputationalCell3D::tracerNames);
 	        }
-	        source_cells = &predicted_cells;
-	    }
-	    const std::vector<ComputationalCell3D>& source = *source_cells;
-	    std::vector<double> flux_limiter(N, 0), R2(N, 0);
-	    std::vector<double> new_Er(N, 0);
-	    for(size_t i = 0; i < N; ++i)
-	        new_Er[i] = source[i].Erad * source[i].density;
+		        source_cells = &predicted_cells;
+#ifdef RICH_MPI
+            ghost_source_indices = CollectIndividualGhostSourceIndices(tess);
+            for(std::size_t ghost = N;
+                ghost < cells.size() && ghost < tess.GetTotalPointNumber(); ++ghost)
+                if(!tess.IsPointOutsideBox(ghost))
+                    ghost_slots.emplace(cells[ghost].ID, ghost);
+            // The force uses velocity and density as well as radiation energy;
+            // all must come from the same owner-predicted state.
+            exchange_individual_diffusion_field(tess, cells, ghost_source_indices,
+                ghost_slots, predicted_cells);
+#endif
+		    }
+		    const std::vector<ComputationalCell3D>& source = *source_cells;
+        const std::size_t field_count = context == nullptr ? N :
+            std::min(source.size(), tess.GetTotalPointNumber());
+        std::vector<double> flux_limiter(N, 0), R2(field_count,
+            std::numeric_limits<double>::quiet_NaN());
+        std::fill_n(R2.begin(), N, 0.0);
+		    std::vector<double> new_Er(field_count, 0);
+		    for(size_t i = 0; i < field_count; ++i)
+            if(i < N || !tess.IsPointOutsideBox(i))
+		            new_Er[i] = source[i].Erad * source[i].density;
 	    std::vector<unsigned char> limiter_needed(N, context == nullptr ? 1 : 0);
 	    if(context != nullptr)
 	        for(size_t active : context->active_indices)
@@ -84,12 +137,18 @@ void DiffusionForce::ApplyImpl(const Tessellation3D& tess,
 	            tess.GetNeighbors(active, neighbors);
 	            for(size_t neighbor : neighbors)
 	                if(neighbor < N)
-	                    limiter_needed[neighbor] = 1;
-	        }
-		double max_Er = new_Er.empty() ? 0.0 :
-			*std::max_element(new_Er.begin(), new_Er.end());
+		                    limiter_needed[neighbor] = 1;
+		        }
 #ifdef RICH_MPI
-    MPI_exchange_data(tess, new_Er, true);
+        for(auto const& peer_sources : ghost_source_indices)
+            for(std::size_t local : peer_sources)
+                limiter_needed[local] = 1;
+#endif
+			double max_Er = N == 0 ? 0.0 :
+				*std::max_element(new_Er.begin(), new_Er.begin() + N);
+#ifdef RICH_MPI
+    if(context == nullptr)
+        MPI_exchange_data(tess, new_Er, true);
     MPI_Allreduce(MPI_IN_PLACE, &max_Er, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif
     size_t const Nzero = diffusion_.zero_cells_.size();
@@ -160,8 +219,33 @@ void DiffusionForce::ApplyImpl(const Tessellation3D& tess,
         }
     }
 #ifdef RICH_MPI
-    MPI_exchange_data(tess, R2, true);
+    if(context == nullptr)
+        MPI_exchange_data(tess, R2, true);
+    else
+        exchange_individual_diffusion_field(tess, cells, ghost_source_indices,
+            ghost_slots, R2);
 #endif
+    if(context != nullptr)
+    {
+        // Partial hydro builds close two source layers. Every physical
+        // neighbor of an active cell must therefore have a complete owner
+        // target whose R2 was computed above, never an inferred ghost gradient.
+        int neighbors_ready = 1;
+        for(std::size_t active : context->active_indices)
+        {
+            tess.GetNeighbors(active, neighbors);
+            for(std::size_t neighbor : neighbors)
+                if(!tess.IsPointOutsideBox(neighbor) &&
+                    (neighbor >= R2.size() || !std::isfinite(R2[neighbor])))
+                    neighbors_ready = 0;
+        }
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &neighbors_ready, 1, MPI_INT, MPI_MIN,
+            MPI_COMM_WORLD);
+#endif
+        if(neighbors_ready == 0)
+            throw std::runtime_error("DiffusionForce is missing an owner-computed neighbor R2");
+    }
 	    for(size_t i = 0; i < N; ++i)
 	    {
 	        if(context != nullptr && !context->isActive(i))
@@ -244,11 +328,15 @@ void DiffusionForce::ApplyImpl(const Tessellation3D& tess,
 	            diff *= 0.5;
 	        if(context != nullptr)
 	        {
-	            double const full_dt = context->cellTimeStep(i);
+	            double const applied_dt = context->cellTimeStep(i);
+	            double const nominal_dt =
+	                context->nominalCellTimeStep(i);
 	            double const fraction = phase == IndividualSourcePhase::Full ? 1.0 : 0.5;
 	            double const candidate = diff > 0 ?
-	                std::min(fraction * full_dt * 0.3 / diff, full_dt * 2.0) :
-	                full_dt * 2.0;
+	                std::min(
+	                    fraction * applied_dt * 0.3 / diff,
+	                    nominal_dt * 2.0) :
+	                nominal_dt * 2.0;
 	            individual_time_step_limits_[i] =
 	                std::min(individual_time_step_limits_[i], candidate);
 	        }
@@ -289,6 +377,17 @@ void DiffusionForce::ApplyImpl(const Tessellation3D& tess,
 double DiffusionForce::SuggestInverseTimeStep(void)const
 {
 	    return 1.0 / next_dt_;
+}
+
+void DiffusionForce::SynchronizedIndividualLimits(const Tessellation3D& /*tess*/,
+	const vector<ComputationalCell3D>& /*cells*/,
+	const vector<Conserved3D>& /*extensives*/,
+	double /*time*/,
+	vector<double>& /*limits*/,
+	vector<Vector3D>& /*accelerations*/) const
+{
+	throw std::logic_error(
+		"DiffusionForce cannot evaluate its individual limits on a rebuilt mesh (box growth in individual mode)");
 }
 
 void DiffusionForce::SuggestIndividualTimeSteps(

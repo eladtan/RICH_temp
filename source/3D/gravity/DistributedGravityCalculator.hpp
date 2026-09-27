@@ -14,6 +14,7 @@
 #include "GravityTree.hpp"
 #include "FlatGravityTree.hpp"
 #include "GravityTypes.h"
+#include "newtonian/three_dimensional/simulation/RuntimeLog.hpp"
 
 #ifndef SKELETON_DEPTH
 #define SKELETON_DEPTH 3
@@ -72,7 +73,8 @@ private:
 
 	static bool detailedTimingEnabled()
 	{
-		return timingOptionEnabled("RICH_INDIVIDUAL_PERF_TRACE");
+		return RuntimeLogDetailed() ||
+			timingOptionEnabled("RICH_INDIVIDUAL_PERF_TRACE");
 	}
 
 	static bool streamRemotePayloadEnabled()

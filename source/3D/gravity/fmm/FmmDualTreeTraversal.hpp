@@ -74,7 +74,8 @@ public:
                              std::size_t maxOperatorCacheBytes,
                              FmmSolveStats& stats,
                              FmmTraversalProgress progress = nullptr,
-                             void* progressContext = nullptr);
+                             void* progressContext = nullptr,
+                             const std::vector<unsigned char>* targetNodeMask = nullptr);
 
     static void run(const FmmTree& targetTree,
                     const FmmTree& sourceTree,

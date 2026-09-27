@@ -42,6 +42,29 @@ public:
 
 	void SetPointVelocities(const vector<Vector3D>* pv) { point_velocities_ = pv; }
 
+	/*! \brief Per-cell CFL timestep limits on the current mesh
+	  The wave-speed rule of the individual limiter evaluated for every owned
+	  cell and capped by the source term's global limit, without touching the
+	  stored step or communicating.  Lets a caller judge how much individual
+	  timesteps could gain from the current distribution.
+	  \param tess Tessellation
+	  \param cells Primitives (owned cells first)
+	  \param eos Equation of state
+	  \param face_velocities Face velocities of this mesh
+	  \param limits Output, one entry per owned cell
+	  \param include_source_limit Cap every cell by the source term's global
+	  limit (the global step's rule); false gives the wave-speed limit alone
+	*/
+	void CellTimeSteps(const Tessellation3D& tess,
+		const vector<ComputationalCell3D>& cells,
+		const EquationOfState& eos,
+		const vector<Vector3D>& face_velocities,
+		vector<double>& limits,
+		bool include_source_limit = true) const;
+
+	//! Factor applied to source-term limits (individual and global rules).
+	double GetSourceCFL(void) const {return sourcecfl_;}
+
 private:
 	const double cfl_, sourcecfl_;
 	SourceTerm3D const& source_;

@@ -67,6 +67,7 @@ public:
                bool compactMultipolePayload,
                std::size_t maxLetWaveBytes,
                std::size_t multipoleCoefficientCount,
+               bool geometryLog,
                FmmSolveStats& stats);
 
     // Number of payload waves every rank must execute. Collectively agreed in
@@ -88,6 +89,15 @@ public:
                       FmmSolveStats& stats);
 
     void progressExecute();
+
+    // Target mask for the next executions (one flag per local tree node, from
+    // FmmPasses::markTargetNodes; nullptr for none).  An interaction whose
+    // target subtree holds no target is neither executed nor requested from
+    // its source owner.  The pointer must stay valid until it is reset.
+    void setTargetNodeMask(const std::vector<unsigned char>* mask)
+    {
+        targetNodeMask_ = mask;
+    }
 
     void finishExecute(std::size_t wave,
                        const FmmTree& localTree,
@@ -253,6 +263,7 @@ private:
     bool compactParticlePayload_;
     bool quantizedParticlePayload_;
     bool compactMultipolePayload_;
+    const std::vector<unsigned char>* targetNodeMask_ = nullptr;
 };
 
 #endif // RICH_MPI

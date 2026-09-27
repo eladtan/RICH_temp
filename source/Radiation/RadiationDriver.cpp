@@ -34,6 +34,15 @@
 
 namespace {
 
+struct ActivePassiveCorrectionLedger
+{
+    double radiation_before = 0;
+    double correction_sum = 0;
+    double most_negative_term = 0;
+    std::size_t most_negative_group = std::numeric_limits<std::size_t>::max();
+    std::size_t terms = 0;
+};
+
 double dot(std::vector<double> const& left, std::vector<double> const& right)
 {
     double result = 0;
@@ -1104,13 +1113,6 @@ bool solveLocalBiCGSTAB(double tolerance,
                 last_true_assessment.representative_scale,
                 last_true_assessment.maximum_scale,
                 last_true_assessment.safe_minimum_scale);
-        else
-            std::clog << std::setprecision(17)
-                      << "MG_BICGSTAB_CONVERGENCE scope=serial_active"
-                      << " outcome=" << outcome
-                      << " reason=" << (reason != nullptr ? reason : "none")
-                      << " iterations=" << iterations
-                      << " error=" << error << std::endl;
         std::size_t const last_true_eta_age = iterations >=
             last_true_eta_iteration ? iterations - last_true_eta_iteration : 0;
         if(!result)
@@ -1753,10 +1755,15 @@ enum class IndividualPassiveRadiationPolicy
     FrozenDirichletMeasuredDefect = 2
 };
 
+constexpr IndividualPassiveRadiationPolicy
+    individual_passive_radiation_default =
+        IndividualPassiveRadiationPolicy::FrozenDirichletMeasuredDefect;
+
 struct IndividualRadiationDefectConfiguration
 {
-    std::uint64_t version = 1;
+    std::uint64_t version = 3;
     double local_withdrawal_limit = 1e-2;
+    double local_absolute_limit = 1e-9;
     double event_absolute_target = 1e-6;
     double cumulative_signed_limit = 1e-4;
     double cumulative_absolute_limit = 1e-3;
@@ -1808,7 +1815,7 @@ bool parseIndividualPassiveRadiationPolicy(
 struct IndividualPassiveRadiationRuntimeOption
 {
     IndividualPassiveRadiationPolicy policy =
-        IndividualPassiveRadiationPolicy::ImmediateConservativeLegacy;
+        individual_passive_radiation_default;
     bool valid = true;
     bool deprecated_alias_present = false;
 };
@@ -1945,6 +1952,7 @@ struct IndividualRadiationDelta : public Serializable
     std::size_t counterpart_cell_id = 0;
     std::size_t group = 0;
     double gain = 0;
+    double reference_time_step = 0;
 
     force_inline std::size_t dump(Serializer* serializer) const override
     {
@@ -1953,6 +1961,7 @@ struct IndividualRadiationDelta : public Serializable
         bytes += serializer->insert(counterpart_cell_id);
         bytes += serializer->insert(group);
         bytes += serializer->insert(gain);
+        bytes += serializer->insert(reference_time_step);
         return bytes;
     }
 
@@ -1965,6 +1974,7 @@ struct IndividualRadiationDelta : public Serializable
         bytes += serializer->extract(counterpart_cell_id, byte_offset + bytes);
         bytes += serializer->extract(group, byte_offset + bytes);
         bytes += serializer->extract(gain, byte_offset + bytes);
+        bytes += serializer->extract(reference_time_step, byte_offset + bytes);
         return bytes;
     }
 };
@@ -2312,7 +2322,7 @@ struct DistributedActiveRuntimeOptions
     bool pair_omega_reduction = true;
     bool fixed_16_remote_slots = false;
     IndividualPassiveRadiationPolicy passive_policy =
-        IndividualPassiveRadiationPolicy::ImmediateConservativeLegacy;
+        individual_passive_radiation_default;
 
     bool usesShadowPassiveRows() const
     {
@@ -4090,13 +4100,6 @@ bool solveDistributedActiveBiCGSTAB(
                 last_true_assessment.maximum_scale,
                 last_true_assessment.safe_minimum_scale,
                 &timing.report_identity_reductions);
-        else if(rank == 0)
-            std::clog << std::setprecision(17)
-                      << "MG_BICGSTAB_CONVERGENCE scope=distributed_active"
-                      << " outcome=" << outcome
-                      << " reason=" << (reason != nullptr ? reason : "none")
-                      << " iterations=" << iterations
-                      << " error=" << error << std::endl;
         if(preconditioner_ready && detailed_report)
         {
             timing.preconditioner_apply_seconds =
@@ -5083,6 +5086,26 @@ MappedAllActiveRuntimeOption const& mappedAllActiveRuntimeOption()
 }
 
 } // namespace
+
+RadiationDriver::IndividualRadiationLocalDefectMeasure
+RadiationDriver::measureIndividualRadiationLocalDefect(
+    double const withdrawal,
+    double const passive_extent,
+    double const roundoff_floor,
+    double const normalization_scale)
+{
+    IndividualRadiationDefectConfiguration const& configuration =
+        individualRadiationDefectConfiguration();
+    double const relative_scale =
+        std::max(0.0, passive_extent) + roundoff_floor;
+    IndividualRadiationLocalDefectMeasure result;
+    result.relative_fraction = withdrawal / relative_scale;
+    result.allowed_withdrawal =
+        configuration.local_withdrawal_limit * relative_scale +
+        configuration.local_absolute_limit * normalization_scale;
+    result.tolerance_ratio = withdrawal / result.allowed_withdrawal;
+    return result;
+}
 
 #ifdef RICH_MPI
 RadiationDriverTestHooks::OwnedCanonicalMappingProbeResult
@@ -6117,6 +6140,7 @@ bool RadiationDriver::stepIndividual(
     SpectralRepairEvent spectral_repair_event;
     IndividualRadiationDefectEvent pending_defect_event;
     bool pending_dirichlet_defect = false;
+    std::map<std::size_t, double> pending_dirichlet_wakes;
     double local_defect_rhs_magnitude = 0;
     // The rollback snapshot is also the immutable pre-correction state used by
     // the diagnostics below.  Keeping a second deep copy of Conserved3D made
@@ -6149,21 +6173,10 @@ bool RadiationDriver::stepIndividual(
                          runtime_options.passive_policy)
                   << " deprecated_shadow_alias="
                   << (passive_option.deprecated_alias_present ? 1 : 0)
-                  << " library_default=legacy" << std::endl;
-        IndividualRadiationDefectConfiguration const& configuration =
-            individualRadiationDefectConfiguration();
-        std::clog << std::setprecision(
-                         std::numeric_limits<long double>::max_digits10)
-                  << "INDIVIDUAL_RADIATION_DEFECT_CONFIG version="
-                  << configuration.version
-                  << " local_withdrawal_limit="
-                  << configuration.local_withdrawal_limit
-                  << " event_absolute_target="
-                  << configuration.event_absolute_target
-                  << " cumulative_signed_limit="
-                  << configuration.cumulative_signed_limit
-                  << " cumulative_absolute_limit="
-                  << configuration.cumulative_absolute_limit << std::endl;
+                  << " library_default="
+                  << individualPassiveRadiationPolicyLabel(
+                         individual_passive_radiation_default)
+                  << std::endl;
         passive_policy_reported = true;
     }
     if(runtime_options.profile && rank == 0)
@@ -7482,6 +7495,10 @@ bool RadiationDriver::stepIndividual(
     try {
         PostCG(tess, extensives, 0, cells, full_solution, full_solution);
     }
+    catch(UniversalError const& error) {
+        setStepFailure(error.getErrorMessage());
+        valid = false;
+    }
     catch(std::exception const& error) {
         setStepFailure(error.what());
         valid = false;
@@ -7513,7 +7530,7 @@ bool RadiationDriver::stepIndividual(
             inserted.first->second = cell;
     }
 
-    // A remote active face may target an inactive owned cell omitted from this
+    // An active face may target an inactive owned cell omitted from this
     // rank's partial mesh.  Keep those passive updates in the same candidate
     // transaction, keyed by the canonical stable ID, without refreshing their
     // primitive state.
@@ -7547,6 +7564,31 @@ bool RadiationDriver::stepIndividual(
     if(!collectiveAllTrue(valid))
         return reject();
 
+    // Local and remote active faces can both reach a canonical owned passive
+    // cell omitted from the partial mesh.  Load it into the same transaction.
+    auto const find_or_load_passive_cell = [&](std::size_t const cell_id)
+    {
+        auto found = owned_index_by_id.find(cell_id);
+        if(found == owned_index_by_id.end() &&
+           canonical_extensives != nullptr) {
+            auto const canonical = canonical_index_by_id.find(cell_id);
+            if(canonical != canonical_index_by_id.end() &&
+               cells.size() == extensives.size() &&
+               extensives.size() == transaction_start_extensives.size()) {
+                std::size_t const work_index = cells.size();
+                cells.push_back((*canonical_cells)[canonical->second]);
+                extensives.push_back(
+                    (*canonical_extensives)[canonical->second]);
+                transaction_start_extensives.push_back(
+                    (*canonical_extensives)[canonical->second]);
+                found = owned_index_by_id.emplace(cell_id, work_index).first;
+                canonical_work_indices.emplace_back(
+                    work_index, canonical->second);
+            }
+        }
+        return found;
+    };
+
     struct PendingPassiveTransfer
     {
         std::size_t passive = 0;
@@ -7555,6 +7597,7 @@ bool RadiationDriver::stepIndividual(
         int active_owner = -1;
         double proposed_gain = 0;
         double applied_gain = 0;
+        double reference_time_step = 0;
     };
     std::vector<PendingPassiveTransfer> passive_transfers;
     std::vector<std::vector<IndividualRadiationDelta> > outgoing(rank_count);
@@ -7604,13 +7647,14 @@ bool RadiationDriver::stepIndividual(
             (full_solution[active_unknown] -
              full_solution[passive_unknown]) *
             extensive_conversion;
-        if(!std::isfinite(passive_gain)) {
+        if(!std::isfinite(passive_gain) ||
+           !(face.time_step > 0) || !std::isfinite(face.time_step)) {
             valid = false;
             continue;
         }
         int const owner = point_owner[passive];
         if(owner == rank) {
-            auto const found = owned_index_by_id.find(cells[passive].ID);
+            auto const found = find_or_load_passive_cell(cells[passive].ID);
             if(found == owned_index_by_id.end()) {
                 valid = false;
                 continue;
@@ -7622,6 +7666,7 @@ bool RadiationDriver::stepIndividual(
             transfer.active_owner = rank;
             transfer.proposed_gain = passive_gain;
             transfer.applied_gain = passive_gain;
+            transfer.reference_time_step = face.time_step;
             passive_transfers.push_back(transfer);
         }
         else if(owner >= 0 && owner < rank_count) {
@@ -7630,6 +7675,7 @@ bool RadiationDriver::stepIndividual(
             packet.counterpart_cell_id = cells[active].ID;
             packet.group = face.group;
             packet.gain = passive_gain;
+            packet.reference_time_step = face.time_step;
             outgoing[owner].push_back(packet);
         }
         else
@@ -7645,28 +7691,12 @@ bool RadiationDriver::stepIndividual(
     valid = incoming.size() == static_cast<std::size_t>(rank_count);
     for(std::size_t peer = 0; peer < incoming.size(); ++peer)
         for(IndividualRadiationDelta const& packet : incoming[peer]) {
-            auto found = owned_index_by_id.find(packet.cell_id);
-            if(found == owned_index_by_id.end() &&
-               canonical_extensives != nullptr) {
-                auto const canonical = canonical_index_by_id.find(packet.cell_id);
-                if(canonical != canonical_index_by_id.end() &&
-                   cells.size() == extensives.size() &&
-                   extensives.size() == transaction_start_extensives.size()) {
-                    std::size_t const work_index = cells.size();
-                    cells.push_back((*canonical_cells)[canonical->second]);
-                    extensives.push_back(
-                        (*canonical_extensives)[canonical->second]);
-                    transaction_start_extensives.push_back(
-                        (*canonical_extensives)[canonical->second]);
-                    found = owned_index_by_id.emplace(
-                        packet.cell_id, work_index).first;
-                    canonical_work_indices.emplace_back(
-                        work_index, canonical->second);
-                }
-            }
+            auto const found = find_or_load_passive_cell(packet.cell_id);
             if(found == owned_index_by_id.end() ||
                packet.group >= unknowns_per_cell ||
-               !std::isfinite(packet.gain)) {
+               !std::isfinite(packet.gain) ||
+               !(packet.reference_time_step > 0) ||
+               !std::isfinite(packet.reference_time_step)) {
                 valid = false;
                 continue;
             }
@@ -7677,6 +7707,7 @@ bool RadiationDriver::stepIndividual(
             transfer.active_owner = static_cast<int>(peer);
             transfer.proposed_gain = packet.gain;
             transfer.applied_gain = packet.gain;
+            transfer.reference_time_step = packet.reference_time_step;
             passive_transfers.push_back(transfer);
         }
     for(PendingPassiveTransfer const& transfer : passive_transfers) {
@@ -7857,53 +7888,47 @@ bool RadiationDriver::stepIndividual(
                 pending_defect_event.valid = false;
                 continue;
             }
-            double const denominator =
-                std::max(0.0, passive_extent) + local_roundoff_floor;
-            double const fraction = withdrawal / denominator;
+            IndividualRadiationLocalDefectMeasure const local_measure =
+                measureIndividualRadiationLocalDefect(
+                    withdrawal, passive_extent, local_roundoff_floor,
+                    pending_defect_event.normalization_scale);
             std::uint64_t const active_id =
                 entry.second.representative_active_id;
             std::uint64_t const passive_id =
                 static_cast<std::uint64_t>(cells[cell].ID);
             std::tuple<double, std::uint64_t, std::uint64_t,
                        std::uint64_t> const candidate(
-                -fraction, active_id, passive_id,
+                -local_measure.tolerance_ratio, active_id, passive_id,
                 static_cast<std::uint64_t>(group));
             std::tuple<double, std::uint64_t, std::uint64_t,
                        std::uint64_t> const current(
-                -pending_defect_event.maximum_local_fraction,
+                -pending_defect_event.maximum_local_tolerance_ratio,
                 pending_defect_event.representative_active_id,
                 pending_defect_event.representative_passive_id,
                 pending_defect_event.representative_group);
-            if(!std::isfinite(fraction))
+            if(!std::isfinite(local_measure.relative_fraction) ||
+               !std::isfinite(local_measure.allowed_withdrawal) ||
+               local_measure.allowed_withdrawal <= 0 ||
+               !std::isfinite(local_measure.tolerance_ratio) ||
+               local_measure.tolerance_ratio < 0)
                 pending_defect_event.valid = false;
             else if(!have_representative || candidate < current) {
                 have_representative = true;
-                pending_defect_event.maximum_local_fraction = fraction;
-                pending_defect_event.representative_passive_extent =
-                    passive_extent;
-                pending_defect_event.representative_roundoff_floor =
-                    local_roundoff_floor;
-                pending_defect_event.representative_withdrawal_extent =
-                    withdrawal;
-                pending_defect_event.representative_deposit_extent =
-                    entry.second.deposit.Value();
-                pending_defect_event.representative_net_passive_extent =
-                    passive_extent - withdrawal +
-                    entry.second.deposit.Value();
-                pending_defect_event.
-                    representative_maximum_withdrawal_term =
-                    entry.second.representative_withdrawal_term;
+                pending_defect_event.maximum_local_tolerance_ratio =
+                    local_measure.tolerance_ratio;
                 pending_defect_event.representative_active_id = active_id;
                 pending_defect_event.representative_passive_id = passive_id;
                 pending_defect_event.representative_group = group;
-                pending_defect_event.representative_face_group_terms =
-                    entry.second.face_group_terms;
                 pending_defect_event.representative_active_rank =
                     entry.second.representative_active_owner >= 0 ?
                     static_cast<std::uint64_t>(
                         entry.second.representative_active_owner) :
                     std::numeric_limits<std::uint64_t>::max();
             }
+            if(std::isfinite(local_measure.relative_fraction))
+                pending_defect_event.maximum_local_fraction = std::max(
+                    pending_defect_event.maximum_local_fraction,
+                    local_measure.relative_fraction);
         }
         if(have_duplicate_face_group) {
             pending_defect_event.valid = false;
@@ -7914,9 +7939,29 @@ bool RadiationDriver::stepIndividual(
             pending_defect_event.representative_group =
                 std::get<2>(duplicate_face_group);
         }
-        if(!validateIndividualRadiationDefect(
-               pending_defect_event, "distributed_active"))
+        if(!validateIndividualRadiationDefect(pending_defect_event))
             return reject();
+        IndividualRadiationDefectConfiguration const& defect_configuration =
+            individualRadiationDefectConfiguration();
+        bool const synchronize_passive_neighbors =
+            pending_defect_event.maximum_local_tolerance_ratio > 1 ||
+            pending_defect_event.event_absolute_fraction >
+                defect_configuration.event_absolute_target;
+        if(synchronize_passive_neighbors)
+            for(PendingPassiveTransfer const& transfer : passive_transfers) {
+                if(transfer.proposed_gain == 0 ||
+                   transfer.passive >= cells.size())
+                    continue;
+                double const reference_time_step =
+                    std::isfinite(transfer.reference_time_step) &&
+                    transfer.reference_time_step > 0 ?
+                    transfer.reference_time_step : context.time_quantum;
+                auto const inserted = pending_dirichlet_wakes.emplace(
+                    transfer.passive, reference_time_step);
+                if(!inserted.second)
+                    inserted.first->second = std::min(
+                        inserted.first->second, reference_time_step);
+            }
         pending_dirichlet_defect = true;
         for(std::size_t cell = 0;
             cell < cells.size() &&
@@ -8123,16 +8168,28 @@ bool RadiationDriver::stepIndividual(
     if(!collectiveAllTrue(valid))
         return reject();
 
+    std::map<std::size_t, ActivePassiveCorrectionLedger>
+        active_passive_correction_ledger;
     for(auto const& correction : local_corrections) {
         std::size_t const cell = std::get<0>(correction);
         std::size_t const group = std::get<1>(correction);
         double const gain = std::get<2>(correction);
+        auto const inserted = active_passive_correction_ledger.emplace(
+            cell, ActivePassiveCorrectionLedger());
+        ActivePassiveCorrectionLedger& ledger = inserted.first->second;
+        if(inserted.second)
+            ledger.radiation_before = extensives[cell].Erad;
+        ledger.correction_sum += gain;
+        ++ledger.terms;
+        if(gain < ledger.most_negative_term) {
+            ledger.most_negative_term = gain;
+            ledger.most_negative_group = group;
+        }
         corrected_active[cell] = 1;
         extensives[cell].Erad += gain;
         if(unknowns_per_cell > 1)
             extensives[cell].Eg[group] += gain;
     }
-
     if(runtime_options.usesShadowPassiveRows()) {
         double const shadow_extensive_conversion =
             time_scale_ * time_scale_ /
@@ -8372,36 +8429,6 @@ bool RadiationDriver::stepIndividual(
                 globally_negligible_negative_floor ||
                 controlled.aggregate_sync_correction != 0))
                 corrected_active[cell] = 1;
-            if(globally_negligible_negative_floor)
-                std::clog << std::setprecision(17)
-                          << "MG_SPECTRAL_POSITIVITY_REPAIR"
-                          << " scope=individual_post_absorption_diffusion"
-                          << " rank=" << rank
-                          << " cell_id=" << cells[cell].ID
-                          << " E_cell=" << cell_radiation_extent
-                          << " global_E_max="
-                          << global_maximum_cell_radiation_extent
-                          << " diagnostic_E_cell_over_E_max="
-                          << controlled.diagnostic_total_to_global_max_ratio
-                          << " negative_extent="
-                          << repair.negative_extent
-                          << " positive_extent="
-                          << repair.positive_extent
-                          << " negative_extent_over_global_E_max="
-                          << controlled.global_negative.
-                                 negative_extent_to_global_max_ratio
-                          << " global_negative_tolerance="
-                          << RadiationPositivity::
-                                 spectral_globally_negligible_negative_fraction
-                          << " relative_deficit="
-                          << repair.relative_deficit
-                          << " affected_groups=" << repair.repaired_groups
-                          << " floor_extent=" << repair.floor_extent
-                          << " injected_extent=" << repair.injected_extent
-                          << " aggregate_sync_correction="
-                          << controlled.aggregate_sync_correction
-                          << " action=globally_negligible_negative_nonconservative_floor"
-                          << std::endl;
             if(!repair.repaired)
                 continue;
             ++spectral_repair_event.repaired_cells;
@@ -8471,13 +8498,73 @@ bool RadiationDriver::stepIndividual(
             continue;
         }
         if(!std::isfinite(extensives[cell].internal_energy) ||
-           extensives[cell].internal_energy <= 0 ||
-           !std::isfinite(extensives[cell].Erad) ||
-           extensives[cell].Erad < 0) {
-            setCellLocalStepFailure(
-                "active material energy is non-positive after radiation",
-                cells[cell].ID);
+           extensives[cell].internal_energy <= 0) {
+            std::ostringstream reason;
+            reason << std::setprecision(17)
+                   << "active internal energy is invalid at final radiation "
+                      "validation"
+                   << " internal_energy="
+                   << extensives[cell].internal_energy
+                   << " Erad=" << extensives[cell].Erad
+                   << " mass=" << extensives[cell].mass
+                   << " origin_rank=" << rank;
+            auto const correction =
+                active_passive_correction_ledger.find(cell);
+            if(correction != active_passive_correction_ledger.end()) {
+                reason << " Erad_before_passive_correction="
+                       << correction->second.radiation_before
+                       << " passive_correction_sum="
+                       << correction->second.correction_sum
+                       << " passive_correction_terms="
+                       << correction->second.terms
+                       << " most_negative_passive_correction="
+                       << correction->second.most_negative_term;
+                if(correction->second.most_negative_group !=
+                   std::numeric_limits<std::size_t>::max())
+                    reason << " most_negative_correction_group="
+                           << correction->second.most_negative_group;
+            }
+            setCellLocalStepFailure(reason.str(), cells[cell].ID);
             valid = false;
+            continue;
+        }
+        if(!std::isfinite(extensives[cell].Erad) ||
+           extensives[cell].Erad < 0) {
+            std::ostringstream reason;
+            reason << std::setprecision(17)
+                   << "active radiation extent is invalid at final radiation "
+                      "validation"
+                   << " Erad=" << extensives[cell].Erad
+                   << " pre_postsolve_global_maximum_cell_Erad="
+                   << global_maximum_cell_radiation_extent
+                   << " internal_energy="
+                   << extensives[cell].internal_energy
+                   << " mass=" << extensives[cell].mass
+                   << " origin_rank=" << rank;
+            if(std::isfinite(extensives[cell].Erad) &&
+               global_maximum_cell_radiation_extent > 0)
+                reason << " abs_Erad_over_pre_postsolve_global_maximum="
+                       << std::abs(extensives[cell].Erad) /
+                              global_maximum_cell_radiation_extent;
+            auto const correction =
+                active_passive_correction_ledger.find(cell);
+            if(correction != active_passive_correction_ledger.end()) {
+                reason << " Erad_before_passive_correction="
+                       << correction->second.radiation_before
+                       << " passive_correction_sum="
+                       << correction->second.correction_sum
+                       << " passive_correction_terms="
+                       << correction->second.terms
+                       << " most_negative_passive_correction="
+                       << correction->second.most_negative_term;
+                if(correction->second.most_negative_group !=
+                   std::numeric_limits<std::size_t>::max())
+                    reason << " most_negative_correction_group="
+                           << correction->second.most_negative_group;
+            }
+            setCellLocalStepFailure(reason.str(), cells[cell].ID);
+            valid = false;
+            continue;
         }
         if(unknowns_per_cell > 1)
             for(std::size_t group = 0;
@@ -8629,8 +8716,33 @@ bool RadiationDriver::stepIndividual(
     commitSpectralRepairAccounting(
         spectral_repair_event, "distributed_active");
     if(pending_dirichlet_defect)
-        commitIndividualRadiationDefect(
-            pending_defect_event, "distributed_active");
+        commitIndividualRadiationDefect(pending_defect_event);
+    for(auto const& wake : pending_dirichlet_wakes) {
+        if(wake.first >= cells.size())
+            continue;
+        auto const canonical =
+            canonical_index_by_id.find(cells[wake.first].ID);
+        if(canonical == canonical_index_by_id.end() ||
+           canonical->second >=
+               individual_passive_reference_time_steps_.size())
+            continue;
+        double& reference =
+            individual_passive_reference_time_steps_[canonical->second];
+        reference = std::min(reference, wake.second);
+    }
+    for(PendingPassiveTransfer const& transfer : passive_transfers) {
+        if(transfer.applied_gain == 0 || transfer.passive >= cells.size())
+            continue;
+        auto const canonical =
+            canonical_index_by_id.find(cells[transfer.passive].ID);
+        if(canonical == canonical_index_by_id.end() ||
+           canonical->second >=
+               individual_passive_reference_time_steps_.size())
+            continue;
+        double& reference =
+            individual_passive_reference_time_steps_[canonical->second];
+        reference = std::min(reference, transfer.reference_time_step);
+    }
     if(runtime_options.profile) {
         double const postprocess_seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - phase_start).count();
@@ -8668,6 +8780,7 @@ bool RadiationDriver::stepIndividual(
     SpectralRepairEvent spectral_repair_event;
     IndividualRadiationDefectEvent pending_defect_event;
     bool pending_dirichlet_defect = false;
+    std::map<std::size_t, double> pending_dirichlet_wakes;
     CG::HistoricalMGResidualCorrectionDiagnostics correction_diagnostics;
     IndividualContextGuard const guard(individual_context_,
                                        individual_interval_fraction_,
@@ -8689,25 +8802,23 @@ bool RadiationDriver::stepIndividual(
                          passive_option.policy)
                   << " deprecated_shadow_alias="
                   << (passive_option.deprecated_alias_present ? 1 : 0)
-                  << " library_default=legacy"
+                  << " library_default="
+                  << individualPassiveRadiationPolicyLabel(
+                         individual_passive_radiation_default)
                   << " serial_shadow_uses_legacy_commit=1" << std::endl;
-        IndividualRadiationDefectConfiguration const& configuration =
-            individualRadiationDefectConfiguration();
-        std::clog << std::setprecision(
-                         std::numeric_limits<long double>::max_digits10)
-                  << "INDIVIDUAL_RADIATION_DEFECT_CONFIG version="
-                  << configuration.version
-                  << " local_withdrawal_limit="
-                  << configuration.local_withdrawal_limit
-                  << " event_absolute_target="
-                  << configuration.event_absolute_target
-                  << " cumulative_signed_limit="
-                  << configuration.cumulative_signed_limit
-                  << " cumulative_absolute_limit="
-                  << configuration.cumulative_absolute_limit << std::endl;
         passive_policy_reported = true;
     }
 
+    struct SerialPassiveTransfer
+    {
+        std::size_t active = 0;
+        std::size_t passive = 0;
+        std::size_t group = 0;
+        double proposed_gain = 0;
+        double applied_gain = 0;
+        double reference_time_step = 0;
+    };
+    std::vector<SerialPassiveTransfer> passive_transfers;
     try {
         prepareIndividualCandidate(tess, cells);
         CG::mat full_matrix;
@@ -8967,15 +9078,6 @@ bool RadiationDriver::stepIndividual(
         double const extensive_conversion =
             time_scale_ * time_scale_ /
             (length_scale_ * length_scale_ * mass_scale_);
-        struct SerialPassiveTransfer
-        {
-            std::size_t active = 0;
-            std::size_t passive = 0;
-            std::size_t group = 0;
-            double proposed_gain = 0;
-            double applied_gain = 0;
-        };
-        std::vector<SerialPassiveTransfer> passive_transfers;
         std::vector<unsigned char> touched_passive(cells.size(), 0);
         for(IndividualFaceCoefficient const& face : individual_face_coefficients_) {
             bool const left_active = context.isActive(face.left);
@@ -8995,6 +9097,7 @@ bool RadiationDriver::stepIndividual(
             transfer.group = face.group;
             transfer.proposed_gain = passive_gain;
             transfer.applied_gain = passive_gain;
+            transfer.reference_time_step = face.time_step;
             passive_transfers.push_back(transfer);
         }
 
@@ -9159,48 +9262,43 @@ bool RadiationDriver::stepIndividual(
                     pending_defect_event.valid = false;
                     continue;
                 }
-                double const fraction = withdrawal /
-                    (std::max(0.0, passive_extent) + local_roundoff_floor);
+                IndividualRadiationLocalDefectMeasure const local_measure =
+                    measureIndividualRadiationLocalDefect(
+                        withdrawal, passive_extent, local_roundoff_floor,
+                        pending_defect_event.normalization_scale);
                 std::uint64_t const active_id =
                     entry.second.representative_active_id;
                 std::uint64_t const passive_id =
                     static_cast<std::uint64_t>(cells[cell].ID);
                 std::tuple<double, std::uint64_t, std::uint64_t,
                            std::uint64_t> const candidate(
-                    -fraction, active_id, passive_id,
+                    -local_measure.tolerance_ratio, active_id, passive_id,
                     static_cast<std::uint64_t>(group));
                 std::tuple<double, std::uint64_t, std::uint64_t,
                            std::uint64_t> const current(
-                    -pending_defect_event.maximum_local_fraction,
+                    -pending_defect_event.maximum_local_tolerance_ratio,
                     pending_defect_event.representative_active_id,
                     pending_defect_event.representative_passive_id,
                     pending_defect_event.representative_group);
-                if(!std::isfinite(fraction))
+                if(!std::isfinite(local_measure.relative_fraction) ||
+                   !std::isfinite(local_measure.allowed_withdrawal) ||
+                   local_measure.allowed_withdrawal <= 0 ||
+                   !std::isfinite(local_measure.tolerance_ratio) ||
+                   local_measure.tolerance_ratio < 0)
                     pending_defect_event.valid = false;
                 else if(!have_representative || candidate < current) {
                     have_representative = true;
-                    pending_defect_event.maximum_local_fraction = fraction;
-                    pending_defect_event.representative_passive_extent =
-                        passive_extent;
-                    pending_defect_event.representative_roundoff_floor =
-                        local_roundoff_floor;
-                    pending_defect_event.representative_withdrawal_extent =
-                        withdrawal;
-                    pending_defect_event.representative_deposit_extent =
-                        entry.second.deposit.Value();
-                    pending_defect_event.representative_net_passive_extent =
-                        passive_extent - withdrawal +
-                        entry.second.deposit.Value();
-                    pending_defect_event.
-                        representative_maximum_withdrawal_term =
-                        entry.second.representative_withdrawal_term;
+                    pending_defect_event.maximum_local_tolerance_ratio =
+                        local_measure.tolerance_ratio;
                     pending_defect_event.representative_active_id = active_id;
                     pending_defect_event.representative_passive_id = passive_id;
                     pending_defect_event.representative_group = group;
-                    pending_defect_event.representative_face_group_terms =
-                        entry.second.face_group_terms;
                     pending_defect_event.representative_active_rank = 0;
                 }
+                if(std::isfinite(local_measure.relative_fraction))
+                    pending_defect_event.maximum_local_fraction = std::max(
+                        pending_defect_event.maximum_local_fraction,
+                        local_measure.relative_fraction);
             }
             if(have_duplicate_face_group) {
                 pending_defect_event.valid = false;
@@ -9211,12 +9309,34 @@ bool RadiationDriver::stepIndividual(
                 pending_defect_event.representative_group =
                     std::get<2>(duplicate_face_group);
             }
-            if(!validateIndividualRadiationDefect(
-                   pending_defect_event, "serial_active")) {
+            if(!validateIndividualRadiationDefect(pending_defect_event)) {
                 cells = saved_cells;
                 extensives = saved_extensives;
                 return false;
             }
+            IndividualRadiationDefectConfiguration const&
+                defect_configuration =
+                    individualRadiationDefectConfiguration();
+            bool const synchronize_passive_neighbors =
+                pending_defect_event.maximum_local_tolerance_ratio > 1 ||
+                pending_defect_event.event_absolute_fraction >
+                    defect_configuration.event_absolute_target;
+            if(synchronize_passive_neighbors)
+                for(SerialPassiveTransfer const& transfer :
+                    passive_transfers) {
+                    if(transfer.proposed_gain == 0 ||
+                       transfer.passive >= cells.size())
+                        continue;
+                    double const reference_time_step =
+                        std::isfinite(transfer.reference_time_step) &&
+                        transfer.reference_time_step > 0 ?
+                        transfer.reference_time_step : context.time_quantum;
+                    auto const inserted = pending_dirichlet_wakes.emplace(
+                        transfer.passive, reference_time_step);
+                    if(!inserted.second)
+                        inserted.first->second = std::min(
+                            inserted.first->second, reference_time_step);
+                }
             pending_dirichlet_defect = true;
             for(std::size_t cell = 0;
                 cell < cells.size() && cell < saved_extensives.size(); ++cell) {
@@ -9297,6 +9417,28 @@ bool RadiationDriver::stepIndividual(
             }
 
         std::vector<unsigned char> corrected_active(cells.size(), 0);
+        std::map<std::size_t, ActivePassiveCorrectionLedger>
+            active_passive_correction_ledger;
+        auto apply_active_passive_correction =
+            [&](std::size_t const cell, std::size_t const group,
+                double const correction)
+            {
+                auto const inserted = active_passive_correction_ledger.emplace(
+                    cell, ActivePassiveCorrectionLedger());
+                ActivePassiveCorrectionLedger& ledger = inserted.first->second;
+                if(inserted.second)
+                    ledger.radiation_before = extensives.at(cell).Erad;
+                ledger.correction_sum += correction;
+                ++ledger.terms;
+                if(correction < ledger.most_negative_term) {
+                    ledger.most_negative_term = correction;
+                    ledger.most_negative_group = group;
+                }
+                corrected_active.at(cell) = 1;
+                extensives.at(cell).Erad += correction;
+                if(unknowns_per_cell > 1)
+                    extensives.at(cell).Eg.at(group) += correction;
+            };
         for(SerialPassiveTransfer& transfer : passive_transfers) {
             std::size_t const key =
                 transfer.passive * unknowns_per_cell + transfer.group;
@@ -9312,11 +9454,8 @@ bool RadiationDriver::stepIndividual(
                 transfer.proposed_gain - transfer.applied_gain;
             if(correction == 0)
                 continue;
-            corrected_active.at(transfer.active) = 1;
-            extensives.at(transfer.active).Erad += correction;
-            if(unknowns_per_cell > 1)
-                extensives.at(transfer.active).Eg.at(transfer.group) +=
-                    correction;
+            apply_active_passive_correction(
+                transfer.active, transfer.group, correction);
         }
         for(std::size_t cell = 0; cell < cells.size(); ++cell)
             for(std::size_t group = 0; group < unknowns_per_cell; ++group) {
@@ -9350,11 +9489,8 @@ bool RadiationDriver::stepIndividual(
                 passive_energy = 0;
                 if(unknowns_per_cell > 1)
                     extensives[cell].Erad += residual;
-                corrected_active.at(transfer.active) = 1;
-                extensives.at(transfer.active).Erad -= residual;
-                if(unknowns_per_cell > 1)
-                    extensives.at(transfer.active).Eg.at(transfer.group) -=
-                        residual;
+                apply_active_passive_correction(
+                    transfer.active, transfer.group, -residual);
             }
         double global_maximum_cell_radiation_extent = 0;
         if((canonical_cells == nullptr) !=
@@ -9428,38 +9564,6 @@ bool RadiationDriver::stepIndividual(
                    globally_negligible_negative_floor ||
                    controlled.aggregate_sync_correction != 0)
                     corrected_active[cell] = 1;
-                if(globally_negligible_negative_floor)
-                    std::clog << std::setprecision(17)
-                              << "MG_SPECTRAL_POSITIVITY_REPAIR"
-                              << " scope=individual_post_absorption_diffusion"
-                              << " rank=0"
-                              << " cell_id=" << cells[cell].ID
-                              << " E_cell=" << cell_radiation_extent
-                              << " global_E_max="
-                              << global_maximum_cell_radiation_extent
-                              << " diagnostic_E_cell_over_E_max="
-                              << controlled.diagnostic_total_to_global_max_ratio
-                              << " negative_extent="
-                              << repair.negative_extent
-                              << " positive_extent="
-                              << repair.positive_extent
-                              << " negative_extent_over_global_E_max="
-                              << controlled.global_negative.
-                                     negative_extent_to_global_max_ratio
-                              << " global_negative_tolerance="
-                              << RadiationPositivity::
-                                     spectral_globally_negligible_negative_fraction
-                              << " relative_deficit="
-                              << repair.relative_deficit
-                              << " affected_groups="
-                              << repair.repaired_groups
-                              << " floor_extent=" << repair.floor_extent
-                              << " injected_extent="
-                              << repair.injected_extent
-                              << " aggregate_sync_correction="
-                              << controlled.aggregate_sync_correction
-                              << " action=globally_negligible_negative_nonconservative_floor"
-                              << std::endl;
                 if(!repair.repaired)
                     continue;
                 ++spectral_repair_event.repaired_cells;
@@ -9516,12 +9620,70 @@ bool RadiationDriver::stepIndividual(
         }
         for(std::size_t cell : context.active_indices) {
             if(!std::isfinite(extensives[cell].internal_energy) ||
-               extensives[cell].internal_energy <= 0 ||
-               !std::isfinite(extensives[cell].Erad) ||
+               extensives[cell].internal_energy <= 0) {
+                std::ostringstream reason;
+                reason << std::setprecision(17)
+                       << "active internal energy is invalid at final "
+                          "radiation validation"
+                       << " internal_energy="
+                       << extensives[cell].internal_energy
+                       << " Erad=" << extensives[cell].Erad
+                       << " mass=" << extensives[cell].mass;
+                auto const correction =
+                    active_passive_correction_ledger.find(cell);
+                if(correction != active_passive_correction_ledger.end()) {
+                    reason << " Erad_before_passive_correction="
+                           << correction->second.radiation_before
+                           << " passive_correction_sum="
+                           << correction->second.correction_sum
+                           << " passive_correction_terms="
+                           << correction->second.terms
+                           << " most_negative_passive_correction="
+                           << correction->second.most_negative_term;
+                    if(correction->second.most_negative_group !=
+                       std::numeric_limits<std::size_t>::max())
+                        reason << " most_negative_correction_group="
+                               << correction->second.most_negative_group;
+                }
+                setCellLocalStepFailure(reason.str(), cells[cell].ID);
+                cells = saved_cells;
+                extensives = saved_extensives;
+                return false;
+            }
+            if(!std::isfinite(extensives[cell].Erad) ||
                extensives[cell].Erad < 0) {
-                setCellLocalStepFailure(
-                    "active material energy is non-positive after radiation",
-                    cells[cell].ID);
+                std::ostringstream reason;
+                reason << std::setprecision(17)
+                       << "active radiation extent is invalid at final "
+                          "radiation validation"
+                       << " Erad=" << extensives[cell].Erad
+                       << " pre_postsolve_global_maximum_cell_Erad="
+                       << global_maximum_cell_radiation_extent
+                       << " internal_energy="
+                       << extensives[cell].internal_energy
+                       << " mass=" << extensives[cell].mass;
+                if(std::isfinite(extensives[cell].Erad) &&
+                   global_maximum_cell_radiation_extent > 0)
+                    reason << " abs_Erad_over_pre_postsolve_global_maximum="
+                           << std::abs(extensives[cell].Erad) /
+                                  global_maximum_cell_radiation_extent;
+                auto const correction =
+                    active_passive_correction_ledger.find(cell);
+                if(correction != active_passive_correction_ledger.end()) {
+                    reason << " Erad_before_passive_correction="
+                           << correction->second.radiation_before
+                           << " passive_correction_sum="
+                           << correction->second.correction_sum
+                           << " passive_correction_terms="
+                           << correction->second.terms
+                           << " most_negative_passive_correction="
+                           << correction->second.most_negative_term;
+                    if(correction->second.most_negative_group !=
+                       std::numeric_limits<std::size_t>::max())
+                        reason << " most_negative_correction_group="
+                               << correction->second.most_negative_group;
+                }
+                setCellLocalStepFailure(reason.str(), cells[cell].ID);
                 cells = saved_cells;
                 extensives = saved_extensives;
                 return false;
@@ -9571,8 +9733,22 @@ bool RadiationDriver::stepIndividual(
     commitResidualCorrectionAccounting(correction_diagnostics);
     commitSpectralRepairAccounting(spectral_repair_event, "serial_active");
     if(pending_dirichlet_defect)
-        commitIndividualRadiationDefect(
-            pending_defect_event, "serial_active");
+        commitIndividualRadiationDefect(pending_defect_event);
+    for(auto const& wake : pending_dirichlet_wakes)
+        if(wake.first < individual_passive_reference_time_steps_.size()) {
+            double& reference =
+                individual_passive_reference_time_steps_[wake.first];
+            reference = std::min(reference, wake.second);
+        }
+    for(SerialPassiveTransfer const& transfer : passive_transfers)
+        if(transfer.applied_gain != 0 &&
+           transfer.passive <
+           individual_passive_reference_time_steps_.size()) {
+            double& reference =
+                individual_passive_reference_time_steps_[transfer.passive];
+            reference = std::min(
+                reference, transfer.reference_time_step);
+        }
     return true;
 #endif
 }
@@ -9650,6 +9826,7 @@ void RadiationDriver::recordIndividualFaceCoefficient(
     face.right = right;
     face.group = group;
     face.coefficient = coefficient;
+    face.time_step = individual_context_->faceTimeStep(left, right);
     individual_face_coefficients_.push_back(face);
 }
 
@@ -9684,6 +9861,8 @@ double RadiationDriver::collectiveIndividualRadiationDefectScale(
         accounting.config_version == configuration.version &&
         accounting.local_withdrawal_limit ==
             configuration.local_withdrawal_limit &&
+        accounting.local_absolute_limit ==
+            configuration.local_absolute_limit &&
         accounting.event_absolute_target ==
             configuration.event_absolute_target &&
         accounting.cumulative_signed_limit ==
@@ -9703,8 +9882,7 @@ double RadiationDriver::collectiveIndividualRadiationDefectScale(
 }
 
 bool RadiationDriver::validateIndividualRadiationDefect(
-    IndividualRadiationDefectEvent& local_event,
-    char const* const scope) const
+    IndividualRadiationDefectEvent& local_event) const
 {
     struct PackedEvent
     {
@@ -9713,12 +9891,7 @@ bool RadiationDriver::validateIndividualRadiationDefect(
         long double passive_withdrawal_extent;
         long double passive_deposit_extent;
         double maximum_local_fraction;
-        double representative_passive_extent;
-        double representative_roundoff_floor;
-        double representative_withdrawal_extent;
-        double representative_deposit_extent;
-        double representative_net_passive_extent;
-        double representative_maximum_withdrawal_term;
+        double maximum_local_tolerance_ratio;
         double candidate_start_positive_global_extent;
         double rhs_derived_global_floor;
         double normalization_scale;
@@ -9727,7 +9900,6 @@ bool RadiationDriver::validateIndividualRadiationDefect(
         std::uint64_t representative_active_id;
         std::uint64_t representative_passive_id;
         std::uint64_t representative_group;
-        std::uint64_t representative_face_group_terms;
         std::uint64_t representative_active_rank;
         std::uint64_t representative_rank;
         int valid;
@@ -9738,12 +9910,7 @@ bool RadiationDriver::validateIndividualRadiationDefect(
         local_event.passive_withdrawal_extent,
         local_event.passive_deposit_extent,
         local_event.maximum_local_fraction,
-        local_event.representative_passive_extent,
-        local_event.representative_roundoff_floor,
-        local_event.representative_withdrawal_extent,
-        local_event.representative_deposit_extent,
-        local_event.representative_net_passive_extent,
-        local_event.representative_maximum_withdrawal_term,
+        local_event.maximum_local_tolerance_ratio,
         local_event.candidate_start_positive_global_extent,
         local_event.rhs_derived_global_floor,
         local_event.normalization_scale,
@@ -9752,13 +9919,12 @@ bool RadiationDriver::validateIndividualRadiationDefect(
         local_event.representative_active_id,
         local_event.representative_passive_id,
         local_event.representative_group,
-        local_event.representative_face_group_terms,
         local_event.representative_active_rank,
         0,
         local_event.valid ? 1 : 0};
-    int rank = 0;
     std::vector<PackedEvent> events(1, local);
 #ifdef RICH_MPI
+    int rank = 0;
     int rank_count = 1;
     requireDistributedMpiSuccess(
         MPI_Comm_rank(MPI_COMM_WORLD, &rank),
@@ -9803,18 +9969,8 @@ bool RadiationDriver::validateIndividualRadiationDefect(
             std::isfinite(sample.passive_deposit_extent) &&
             std::isfinite(sample.maximum_local_fraction) &&
             sample.maximum_local_fraction >= 0 &&
-            std::isfinite(sample.representative_passive_extent) &&
-            sample.representative_passive_extent >= 0 &&
-            std::isfinite(sample.representative_roundoff_floor) &&
-            sample.representative_roundoff_floor >= 0 &&
-            std::isfinite(sample.representative_withdrawal_extent) &&
-            sample.representative_withdrawal_extent >= 0 &&
-            std::isfinite(sample.representative_deposit_extent) &&
-            sample.representative_deposit_extent >= 0 &&
-            std::isfinite(sample.representative_net_passive_extent) &&
-            std::isfinite(
-                sample.representative_maximum_withdrawal_term) &&
-            sample.representative_maximum_withdrawal_term >= 0 &&
+            std::isfinite(sample.maximum_local_tolerance_ratio) &&
+            sample.maximum_local_tolerance_ratio >= 0 &&
             std::isfinite(
                 sample.candidate_start_positive_global_extent) &&
             sample.candidate_start_positive_global_extent >= 0 &&
@@ -9863,10 +10019,13 @@ bool RadiationDriver::validateIndividualRadiationDefect(
                 sample.duplicate_face_group_terms;
         if(sample.duplicate_face_group_terms > 0)
             event.valid = false;
+        event.maximum_local_fraction = std::max(
+            event.maximum_local_fraction,
+            sample.maximum_local_fraction);
         std::tuple<int, double, std::uint64_t, std::uint64_t,
                    std::uint64_t, std::uint64_t> const candidate(
             sample.duplicate_face_group_terms > 0 ? 0 : 1,
-            -sample.maximum_local_fraction,
+            -sample.maximum_local_tolerance_ratio,
             sample.representative_active_id,
             sample.representative_passive_id,
             sample.representative_group,
@@ -9874,7 +10033,7 @@ bool RadiationDriver::validateIndividualRadiationDefect(
         std::tuple<int, double, std::uint64_t, std::uint64_t,
                    std::uint64_t, std::uint64_t> const current(
             representative_is_duplicate ? 0 : 1,
-            -event.maximum_local_fraction,
+            -event.maximum_local_tolerance_ratio,
             event.representative_active_id,
             event.representative_passive_id,
             event.representative_group,
@@ -9883,27 +10042,13 @@ bool RadiationDriver::validateIndividualRadiationDefect(
             have_representative = true;
             representative_is_duplicate =
                 sample.duplicate_face_group_terms > 0;
-            event.maximum_local_fraction =
-                sample.maximum_local_fraction;
+            event.maximum_local_tolerance_ratio =
+                sample.maximum_local_tolerance_ratio;
             event.representative_active_id =
                 sample.representative_active_id;
             event.representative_passive_id =
                 sample.representative_passive_id;
             event.representative_group = sample.representative_group;
-            event.representative_passive_extent =
-                sample.representative_passive_extent;
-            event.representative_roundoff_floor =
-                sample.representative_roundoff_floor;
-            event.representative_withdrawal_extent =
-                sample.representative_withdrawal_extent;
-            event.representative_deposit_extent =
-                sample.representative_deposit_extent;
-            event.representative_net_passive_extent =
-                sample.representative_net_passive_extent;
-            event.representative_maximum_withdrawal_term =
-                sample.representative_maximum_withdrawal_term;
-            event.representative_face_group_terms =
-                sample.representative_face_group_terms;
             event.representative_active_rank =
                 sample.representative_active_rank;
             event.representative_rank = sample.representative_rank;
@@ -9934,142 +10079,83 @@ bool RadiationDriver::validateIndividualRadiationDefect(
             event.passive_deposit_extent >= 0 &&
             accounting.cumulative_absolute_extent >= 0;
     }
-    bool const accepted = event.valid &&
-        event.maximum_local_fraction <=
-            configuration.local_withdrawal_limit &&
-        event.projected_cumulative_signed_fraction <=
-            configuration.cumulative_signed_limit &&
-        event.projected_cumulative_absolute_fraction <=
-            configuration.cumulative_absolute_limit;
-
-    if(rank == 0 && !accepted)
-        std::clog << std::setprecision(
-                         std::numeric_limits<long double>::max_digits10)
-                  << "INDIVIDUAL_RADIATION_DEFECT status=rejected"
-                  << " scope=" << (scope == nullptr ? "unknown" : scope)
-                  << " config_version=" << configuration.version
-                  << " signed=" << event.signed_extent
-                  << " absolute=" << event.absolute_extent
-                  << " withdrawal="
-                  << event.passive_withdrawal_extent
-                  << " deposit="
-                  << event.passive_deposit_extent
-                  << " scale=" << event.normalization_scale
-                  << " candidate_start_positive_global_extent="
-                  << event.candidate_start_positive_global_extent
-                  << " rhs_derived_global_floor="
-                  << event.rhs_derived_global_floor
-                  << " event_abs_fraction="
-                  << event.event_absolute_fraction
-                  << " event_absolute_target="
-                  << configuration.event_absolute_target
-                  << " event_abs_target_exceeded="
-                  << (event.event_absolute_fraction >
-                      configuration.event_absolute_target ? 1 : 0)
-                  << " max_local_fraction="
-                  << event.maximum_local_fraction
-                  << " representative_passive_extent="
-                  << event.representative_passive_extent
-                  << " representative_roundoff_floor="
-                  << event.representative_roundoff_floor
-                  << " representative_withdrawal_extent="
-                  << event.representative_withdrawal_extent
-                  << " representative_deposit_extent="
-                  << event.representative_deposit_extent
-                  << " representative_net_passive_extent="
-                  << event.representative_net_passive_extent
-                  << " representative_maximum_withdrawal_term="
-                  << event.representative_maximum_withdrawal_term
-                  << " representative_face_group_terms="
-                  << event.representative_face_group_terms
-                  << " local_withdrawal_limit="
-                  << configuration.local_withdrawal_limit
-                  << " projected_cumulative_signed_fraction="
-                  << event.projected_cumulative_signed_fraction
-                  << " cumulative_signed_limit="
-                  << configuration.cumulative_signed_limit
-                  << " projected_cumulative_absolute_fraction="
-                  << event.projected_cumulative_absolute_fraction
-                  << " cumulative_absolute_limit="
-                  << configuration.cumulative_absolute_limit
-                  << " terms=" << event.face_group_terms
-                  << " duplicate_terms="
-                  << event.duplicate_face_group_terms
-                  << " active_id="
-                  << event.representative_active_id
-                  << " passive_id="
-                  << event.representative_passive_id
-                  << " group="
-                  << event.representative_group
-                  << " active_rank="
-                  << event.representative_active_rank
-                  << " rank="
-                  << event.representative_rank << std::endl;
-
     local_event = event;
-    if(accepted)
+    if(event.valid)
         return true;
 
     ++accounting.defect_rejections;
-    std::ostringstream reason;
-    reason << std::setprecision(17)
-           << "frozen Dirichlet passive radiation defect rejected"
-           << ": valid=" << (event.valid ? 1 : 0)
-           << " maximum_local_fraction="
-           << event.maximum_local_fraction
-           << " representative_passive_extent="
-           << event.representative_passive_extent
-           << " representative_roundoff_floor="
-           << event.representative_roundoff_floor
-           << " representative_withdrawal_extent="
-           << event.representative_withdrawal_extent
-           << " representative_deposit_extent="
-           << event.representative_deposit_extent
-           << " representative_net_passive_extent="
-           << event.representative_net_passive_extent
-           << " representative_maximum_withdrawal_term="
-           << event.representative_maximum_withdrawal_term
-           << " representative_face_group_terms="
-           << event.representative_face_group_terms
-           << " local_limit=" << configuration.local_withdrawal_limit
-           << " event_absolute_fraction="
-           << event.event_absolute_fraction
-           << " projected_cumulative_signed_fraction="
-           << event.projected_cumulative_signed_fraction
-           << " cumulative_signed_limit="
-           << configuration.cumulative_signed_limit
-           << " projected_cumulative_absolute_fraction="
-           << event.projected_cumulative_absolute_fraction
-           << " cumulative_absolute_limit="
-           << configuration.cumulative_absolute_limit
-           << " duplicate_terms=" << event.duplicate_face_group_terms
-           << " passive_id=" << event.representative_passive_id
-           << " active_id=" << event.representative_active_id
-           << " group=" << event.representative_group
-           << " active_rank=" << event.representative_active_rank
-           << " representative_rank=" << event.representative_rank;
-    if(event.representative_active_rank ==
-       static_cast<std::uint64_t>(rank))
-        setCellLocalStepFailure(
-            reason.str(),
-            static_cast<std::size_t>(event.representative_active_id));
-    else {
-        setStepFailure(
-            reason.str(),
-            static_cast<std::size_t>(event.representative_active_id));
-        markStepFailureRemote();
-    }
+    std::string const reason =
+        "invalid frozen Dirichlet radiation defect accounting";
+    std::ostringstream diagnostics;
+    diagnostics << std::setprecision(17)
+                << "valid=" << (event.valid ? 1 : 0)
+                << " | signed_extent=" << event.signed_extent
+                << " | absolute_extent=" << event.absolute_extent
+                << " | passive_withdrawal_extent="
+                << event.passive_withdrawal_extent
+                << " | passive_deposit_extent="
+                << event.passive_deposit_extent
+                << " | normalization_scale=" << event.normalization_scale
+                << " | event_absolute_fraction="
+                << event.event_absolute_fraction
+                << " | event_absolute_target="
+                << configuration.event_absolute_target
+                << " | event_limit_ratio="
+                << event.event_absolute_fraction /
+                       configuration.event_absolute_target
+                << " | projected_cumulative_signed_fraction="
+                << event.projected_cumulative_signed_fraction
+                << " | cumulative_signed_limit="
+                << configuration.cumulative_signed_limit
+                << " | cumulative_signed_limit_ratio="
+                << event.projected_cumulative_signed_fraction /
+                       configuration.cumulative_signed_limit
+                << " | projected_cumulative_absolute_fraction="
+                << event.projected_cumulative_absolute_fraction
+                << " | cumulative_absolute_limit="
+                << configuration.cumulative_absolute_limit
+                << " | cumulative_absolute_limit_ratio="
+                << event.projected_cumulative_absolute_fraction /
+                       configuration.cumulative_absolute_limit
+                << " | maximum_local_fraction="
+                << event.maximum_local_fraction
+                << " | maximum_local_tolerance_ratio="
+                << event.maximum_local_tolerance_ratio
+                << " | local_tolerance_limit=1"
+                << " | candidate_start_positive_global_extent="
+                << event.candidate_start_positive_global_extent
+                << " | rhs_derived_global_floor="
+                << event.rhs_derived_global_floor
+                << " | face_group_terms=" << event.face_group_terms
+                << " | duplicate_face_group_terms="
+                << event.duplicate_face_group_terms;
+    auto append_identifier = [&diagnostics](
+        char const* const name, std::uint64_t const value) {
+        diagnostics << " | " << name << "=";
+        if(value == std::numeric_limits<std::uint64_t>::max())
+            diagnostics << "none";
+        else
+            diagnostics << value;
+    };
+    append_identifier("representative_active_id",
+                      event.representative_active_id);
+    append_identifier("representative_passive_id",
+                      event.representative_passive_id);
+    append_identifier("representative_group", event.representative_group);
+    append_identifier("representative_active_rank",
+                      event.representative_active_rank);
+    append_identifier("representative_rank", event.representative_rank);
+    std::string const failure_diagnostics = diagnostics.str();
+    setStepFailure(
+        reason, std::numeric_limits<size_t>::max(), failure_diagnostics);
     return false;
 }
 
 void RadiationDriver::commitIndividualRadiationDefect(
-    IndividualRadiationDefectEvent const& event,
-    char const* const scope) const
+    IndividualRadiationDefectEvent const& event) const
 {
     IndividualRadiationDefectAccounting& accounting =
         individualRadiationDefectAccounting();
-    IndividualRadiationDefectConfiguration const& configuration =
-        individualRadiationDefectConfiguration();
     if(accounting.initial_positive_global_extent == 0 &&
        event.candidate_start_positive_global_extent > 0)
         accounting.initial_positive_global_extent =
@@ -10082,75 +10168,8 @@ void RadiationDriver::commitIndividualRadiationDefect(
         event.event_absolute_fraction);
     accounting.maximum_local_fraction = std::max(
         accounting.maximum_local_fraction, event.maximum_local_fraction);
+    accounting.maximum_local_tolerance_ratio = std::max(
+        accounting.maximum_local_tolerance_ratio,
+        event.maximum_local_tolerance_ratio);
     ++accounting.accepted_dirichlet_candidates;
-    int rank = 0;
-#ifdef RICH_MPI
-    requireDistributedMpiSuccess(
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank),
-        "MPI_Comm_rank(individual radiation defect commit)");
-#endif
-    if(rank == 0)
-        std::clog << std::setprecision(
-                         std::numeric_limits<long double>::max_digits10)
-                  << "INDIVIDUAL_RADIATION_DEFECT status=accepted"
-                  << " scope=" << (scope == nullptr ? "unknown" : scope)
-                  << " config_version=" << configuration.version
-                  << " signed=" << event.signed_extent
-                  << " absolute=" << event.absolute_extent
-                  << " withdrawal=" << event.passive_withdrawal_extent
-                  << " deposit=" << event.passive_deposit_extent
-                  << " scale=" << event.normalization_scale
-                  << " candidate_start_positive_global_extent="
-                  << event.candidate_start_positive_global_extent
-                  << " rhs_derived_global_floor="
-                  << event.rhs_derived_global_floor
-                  << " event_abs_fraction="
-                  << event.event_absolute_fraction
-                  << " event_absolute_target="
-                  << configuration.event_absolute_target
-                  << " event_abs_target_exceeded="
-                  << (event.event_absolute_fraction >
-                      configuration.event_absolute_target ? 1 : 0)
-                  << " max_local_fraction="
-                  << event.maximum_local_fraction
-                  << " representative_passive_extent="
-                  << event.representative_passive_extent
-                  << " representative_roundoff_floor="
-                  << event.representative_roundoff_floor
-                  << " representative_withdrawal_extent="
-                  << event.representative_withdrawal_extent
-                  << " representative_deposit_extent="
-                  << event.representative_deposit_extent
-                  << " representative_net_passive_extent="
-                  << event.representative_net_passive_extent
-                  << " representative_maximum_withdrawal_term="
-                  << event.representative_maximum_withdrawal_term
-                  << " representative_face_group_terms="
-                  << event.representative_face_group_terms
-                  << " local_withdrawal_limit="
-                  << configuration.local_withdrawal_limit
-                  << " projected_cumulative_signed_fraction="
-                  << event.projected_cumulative_signed_fraction
-                  << " cumulative_signed_limit="
-                  << configuration.cumulative_signed_limit
-                  << " projected_cumulative_absolute_fraction="
-                  << event.projected_cumulative_absolute_fraction
-                  << " cumulative_absolute_limit="
-                  << configuration.cumulative_absolute_limit
-                  << " terms=" << event.face_group_terms
-                  << " active_id=" << event.representative_active_id
-                  << " passive_id=" << event.representative_passive_id
-                  << " group=" << event.representative_group
-                  << " active_rank="
-                  << event.representative_active_rank
-                  << " rank=" << event.representative_rank
-                  << " cumulative_signed_extent="
-                  << accounting.cumulative_signed_extent
-                  << " cumulative_absolute_extent="
-                  << accounting.cumulative_absolute_extent
-                  << " normalization_scale=" << event.normalization_scale
-                  << " accepted_candidates="
-                  << accounting.accepted_dirichlet_candidates
-                  << " history_complete="
-                  << (accounting.history_complete ? 1 : 0) << std::endl;
 }

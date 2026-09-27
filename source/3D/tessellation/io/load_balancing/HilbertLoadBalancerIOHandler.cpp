@@ -1,6 +1,8 @@
 #ifdef RICH_MPI
 
 #include "HilbertLoadBalancerIOHandler.hpp"
+#include <limits>
+#include <stdexcept>
 #include "LoadBalancerIOHandlerFactory.hpp"
 #include <MeshDecomposer3D/load_balancing/HilbertLoadBalancer.hpp>
 #include "3D/tessellation/io/hilbert/ConvertorIOHandlerFactory.hpp"
@@ -13,6 +15,12 @@ void HilbertLoadBalancerIOHandler::dump(HDF5Writer &writer, const std::string &g
     const auto &hlb = static_cast<const HilbertLoadBalancer<Vector3D> &>(lb);
     const auto &curve = static_cast<const CurveLoadBalancer<Vector3D> &>(lb);
     writer.WriteElement(group + "/information", curve.boundaries);
+    // Segmented ownership only; a missing dataset reads back as positional.
+    if(!curve.segmentOwner.empty())
+    {
+        std::vector<curve_index_t> owners(curve.segmentOwner.begin(), curve.segmentOwner.end());
+        writer.WriteElement(group + "/segment_owner", owners);
+    }
 
     auto convertor = hlb.getConvertor();
     if (convertor)
@@ -31,6 +39,19 @@ std::shared_ptr<LoadBalancer<Vector3D>> HilbertLoadBalancerIOHandler::load(const
 {
     std::vector<curve_index_t> boundaries;
     reader.ReadElement(group + "/information", boundaries);
+    std::vector<int> segmentOwner;
+    if (reader.Exists(group + "/segment_owner"))
+    {
+        std::vector<curve_index_t> owners;
+        reader.ReadElement(group + "/segment_owner", owners);
+        segmentOwner.reserve(owners.size());
+        for (curve_index_t owner : owners)
+        {
+            if (owner > static_cast<curve_index_t>(std::numeric_limits<int>::max()))
+                throw std::runtime_error("HilbertLoadBalancerIOHandler: segment owner out of range");
+            segmentOwner.push_back(static_cast<int>(owner));
+        }
+    }
 
     std::shared_ptr<HilbertConvertor3D<Vector3D>> convertor;
     if (reader.Exists(group + "/convertor/type"))
@@ -48,7 +69,7 @@ std::shared_ptr<LoadBalancer<Vector3D>> HilbertLoadBalancerIOHandler::load(const
         indexing = std::make_shared<const Kernelization3D::Identity<Vector3D>>();
     }
 
-    return std::make_shared<HilbertLoadBalancer<Vector3D>>(convertor, indexing, boundaries);
+    return std::make_shared<HilbertLoadBalancer<Vector3D>>(convertor, indexing, boundaries, segmentOwner);
 }
 
 namespace

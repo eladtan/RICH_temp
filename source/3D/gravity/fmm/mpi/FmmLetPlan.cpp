@@ -372,6 +372,7 @@ void FmmLetPlan::build(const FmmTree& localTree,
                        bool compactMultipolePayload,
                        std::size_t maxLetWaveBytes,
                        std::size_t multipoleCoefficientCount,
+                       bool geometryLog,
                        FmmSolveStats& stats)
 {
     const Clock::time_point start = Clock::now();
@@ -1031,9 +1032,7 @@ void FmmLetPlan::build(const FmmTree& localTree,
             return std::tie(first.sourceIndex, first.targetNode) <
                    std::tie(second.sourceIndex, second.targetNode);
         });
-    const char* geometryLog = std::getenv("RICH_FMM_GEOM_LOG");
-    if(geometryLog != nullptr && geometryLog[0] != '\0' &&
-       !(geometryLog[0] == '0' && geometryLog[1] == '\0'))
+    if(geometryLog)
     {
         std::set<int> m2lRanks;
         for(const M2LSource& source : m2lSources_)
@@ -1232,9 +1231,7 @@ void FmmLetPlan::build(const FmmTree& localTree,
     stats.letWaveCount = waveCount_;
     stats.letLocalWaveCount = localWaveCount;
     {
-        const char* waveLog = std::getenv("RICH_FMM_GEOM_LOG");
-        if(waveLog != nullptr && waveLog[0] != '\0' &&
-           !(waveLog[0] == '0' && waveLog[1] == '\0'))
+        if(geometryLog)
         {
             std::size_t requestedBytes = 0;
             for(const auto& entry : subscriptionSets)
@@ -1734,6 +1731,9 @@ void FmmLetPlan::beginExecute(
         throw UniversalError("FmmLetPlan::beginExecute: interaction plan is too large");
     if(wave >= waveCount_)
         throw UniversalError("FmmLetPlan::beginExecute: wave index out of range");
+    if(targetNodeMask_ != nullptr &&
+       targetNodeMask_->size() != localTree.nodes().size())
+        throw UniversalError("FmmLetPlan::beginExecute: target mask does not match the tree");
     // stats is reset per solve, but the plan survives warm solves that skip
     // build(), so restate the wave count here rather than only at build time.
     stats.letWaveCount = waveCount_;
@@ -1762,6 +1762,13 @@ void FmmLetPlan::beginExecute(
                 static_cast<std::uint64_t>(range.end - range.begin);
             continue;
         }
+        if(targetNodeMask_ != nullptr &&
+           (*targetNodeMask_)[range.targetNode] == 0)
+        {
+            stats.letTargetPrunedM2LCount +=
+                static_cast<std::uint64_t>(range.end - range.begin);
+            continue;
+        }
         for(std::uint32_t i = range.begin; i < range.end; ++i)
         {
             activeM2LInteractionIndices_.push_back(i);
@@ -1787,6 +1794,13 @@ void FmmLetPlan::beginExecute(
                 static_cast<std::uint64_t>(range.end - range.begin);
             continue;
         }
+        if(targetNodeMask_ != nullptr &&
+           (*targetNodeMask_)[range.targetNode] == 0)
+        {
+            stats.letTargetPrunedP2PBlockCount +=
+                static_cast<std::uint64_t>(range.end - range.begin);
+            continue;
+        }
         for(std::uint32_t i = range.begin; i < range.end; ++i)
         {
             activeP2PInteractionIndices_.push_back(i);
@@ -1809,6 +1823,13 @@ void FmmLetPlan::beginExecute(
         if(localTree.nodes()[range.targetNode].particleCount() == 0)
         {
             stats.letInactiveM2PCount +=
+                static_cast<std::uint64_t>(range.end - range.begin);
+            continue;
+        }
+        if(targetNodeMask_ != nullptr &&
+           (*targetNodeMask_)[range.targetNode] == 0)
+        {
+            stats.letTargetPrunedM2PCount +=
                 static_cast<std::uint64_t>(range.end - range.begin);
             continue;
         }

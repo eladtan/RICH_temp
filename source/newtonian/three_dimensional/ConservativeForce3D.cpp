@@ -9,6 +9,18 @@
 
 namespace
 {
+	void RequireOnEveryRank(bool valid, char const* message)
+	{
+#ifdef RICH_MPI
+		int valid_on_every_rank = valid ? 1 : 0;
+		MPI_Allreduce(MPI_IN_PLACE, &valid_on_every_rank, 1, MPI_INT, MPI_MIN,
+			MPI_COMM_WORLD);
+		valid = valid_on_every_rank != 0;
+#endif
+		if(!valid)
+			throw std::runtime_error(message);
+	}
+
 	Vector3D MassFlux(Tessellation3D const& tess, size_t point,vector<Conserved3D> const& fluxes)
 	{
 		Vector3D dm;
@@ -257,6 +269,60 @@ void ConservativeForce3D::ApplyIndividual(
 	}
 }
 
+bool ConservativeForce3D::IndividualFirstHalfNeedsGeometry(
+	const IndividualStepContext& context) const
+{
+	// The mass-flux energy term reads face geometry; the cached kick does not.
+	if(mass_flux_)
+		return true;
+	// A cell without a pending half kick has no cached acceleration for the
+	// interval that is closing and must evaluate one on the interval-start
+	// mesh, exactly as ApplyIndividual's FirstHalf branch does.
+	for(std::size_t index : context.active_indices)
+		if(index >= context.gravity_half_kick_pending.size() ||
+		   index >= context.cached_accelerations.size() ||
+		   context.gravity_half_kick_pending[index] == 0)
+			return true;
+	return false;
+}
+
+void ConservativeForce3D::ApplyIndividualFirstHalfFromCache(
+	const vector<ComputationalCell3D>& cells,
+	const vector<Vector3D>& /*point_velocities*/,
+	double /*time*/,
+	const IndividualStepContext& context,
+	vector<Conserved3D>& extensives) const
+{
+	bool valid = !mass_flux_ && cells.size() == extensives.size() &&
+		context.cell_time_steps.size() >= extensives.size() &&
+		context.cached_accelerations.size() >= extensives.size() &&
+		context.gravity_half_kick_pending.size() >= extensives.size();
+	for(std::size_t index : context.active_indices)
+		if(index >= extensives.size() ||
+		   context.gravity_half_kick_pending[index] == 0)
+		{
+			valid = false;
+			break;
+		}
+	RequireOnEveryRank(valid,
+		"Individual conservative force cannot apply its first half from cache");
+	// The same kick as ApplyIndividual's cached FirstHalf branch, on canonical
+	// arrays and without a mesh: the energy change is the kinetic change.
+	for(std::size_t index : context.active_indices)
+	{
+		Vector3D const& acceleration = context.cached_accelerations[index];
+		context.gravity_half_kick_pending[index] = 0;
+		const double dt = 0.5 * context.cellTimeStep(index);
+		Conserved3D& extensive = extensives[index];
+		const double old_kinetic = 0.5 * ScalarProd(extensive.momentum,
+			extensive.momentum) / extensive.mass;
+		extensive.momentum += extensive.mass * acceleration * dt;
+		const double new_kinetic = 0.5 * ScalarProd(extensive.momentum,
+			extensive.momentum) / extensive.mass;
+		extensive.energy += new_kinetic - old_kinetic;
+	}
+}
+
 void ConservativeForce3D::SuggestIndividualTimeSteps(
 	const Tessellation3D& tess,
 	const vector<ComputationalCell3D>& /*cells*/,
@@ -271,6 +337,63 @@ void ConservativeForce3D::SuggestIndividualTimeSteps(
 		else if(index < acc_buf_.size() && fastabs(acc_buf_[index]) > 0)
 			limit = fastsqrt(tess.GetWidth(index) / fastabs(acc_buf_[index]));
 		time_step_limits.at(index) = std::min(time_step_limits.at(index), limit);
+	}
+}
+
+void ConservativeForce3D::RefreshIndividualAccelerations(
+	const Tessellation3D& tess,
+	const vector<ComputationalCell3D>& cells,
+	const vector<Conserved3D>& extensives,
+	double time,
+	vector<Vector3D>& accelerations) const
+{
+	std::size_t const N = tess.GetPointNo();
+	RequireOnEveryRank(cells.size() >= N && extensives.size() >= N,
+		"Conservative-force acceleration refresh needs one entry per owned cell");
+	// ApplyIndividual's evaluation with every owned cell as a target: sources
+	// are the cells' centroids and masses on this mesh.
+	RequireOnEveryRank(acc_.SupportsIndividualTargetEvaluation(),
+		"Conservative-force acceleration refresh needs an acceleration with target evaluation");
+	vector<Vector3D> points(N);
+	vector<double> masses(N);
+	vector<std::uint64_t> ids(N);
+	vector<ComputationalCell3D> target_cells(cells.begin(),
+		cells.begin() + static_cast<std::ptrdiff_t>(N));
+	for(std::size_t index = 0; index < N; ++index)
+	{
+		points[index] = tess.GetCellCM(index);
+		masses[index] = extensives[index].mass;
+		ids[index] = static_cast<std::uint64_t>(cells[index].ID);
+		double const volume = tess.GetVolume(index);
+		if(volume > 0 && std::isfinite(volume))
+			target_cells[index].density = extensives[index].mass / volume;
+	}
+	vector<Vector3D> acceleration;
+	acc_.EvaluateIndividualTargets(tess.GetBoxCoordinates(), points, masses,
+		ids, points, target_cells, time, acceleration);
+	RequireOnEveryRank(acceleration.size() == N,
+		"Acceleration provider returned the wrong refreshed target count");
+	accelerations.swap(acceleration);
+}
+
+void ConservativeForce3D::SynchronizedIndividualLimits(
+	const Tessellation3D& tess,
+	const vector<ComputationalCell3D>& cells,
+	const vector<Conserved3D>& extensives,
+	double time,
+	vector<double>& limits,
+	vector<Vector3D>& accelerations) const
+{
+	std::size_t const N = tess.GetPointNo();
+	RequireOnEveryRank(limits.size() >= N,
+		"Synchronized conservative-force limits need one entry per owned cell");
+	RefreshIndividualAccelerations(tess, cells, extensives, time, accelerations);
+	for(std::size_t index = 0; index < N; ++index)
+	{
+		double const magnitude = fastabs(accelerations[index]);
+		if(magnitude > 0)
+			limits[index] = std::min(limits[index],
+				1.0 / fastsqrt(magnitude / tess.GetWidth(index)));
 	}
 }
 

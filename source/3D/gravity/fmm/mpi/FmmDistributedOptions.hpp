@@ -36,6 +36,20 @@ struct FmmDistributedOptions
     bool persistentLocalTreeTopology = true;
     double persistentLeafSplitFactor = 4.0;
     double persistentLeafMergeFactor = 0.2;
+    // A structural leaf change on ONE rank forces EVERY rank to rebuild the
+    // process topology and the LET plan, which costs far more than the change
+    // is worth: measured on the TDE, one rank in 256 splitting one leaf drove
+    // 10.8% of solves into a ~1.7 s rebuild and accounted for the entire
+    // growth of the gravity cost over the run.  Leaf capacity is a performance
+    // parameter, not a correctness one, so capacity-driven splits and merges
+    // are batched into a window: a rank may make them only on a solve at least
+    // this many solves after the last topology rebuild made while the window
+    // was open.  Geometric splits (maxLeafHalfSize), a changed root and the
+    // merge of a completely emptied subtree are never deferred, and the
+    // rebuilds they force while the window is closed do not restart it.  0
+    // disables the batching and restores per-solve splitting.
+    // Overridden at runtime by RICH_FMM_STRUCTURAL_INTERVAL.
+    std::uint64_t minSolvesBetweenStructuralChanges = 32;
 
     // Retained particle subscriptions reserve more than the current leaf
     // occupancy.  This keeps count-only moving-mesh changes from rebuilding the
@@ -150,6 +164,14 @@ struct FmmDistributedOptions
     // an unbounded MPI_Allgatherv allocation.
     std::size_t maxReplicatedDescriptorBytes =
         static_cast<std::size_t>(256) * 1024 * 1024;
+
+    // Re-sample the gravity-owner splitters of spatiallyRedistributeForGravity
+    // when the domain changes (the Hilbert keys are normalized by it) and when
+    // the measured straggler time since the last sampling has paid for the
+    // rebuild a re-sampling costs.  False keeps the first solve's splitters
+    // for the calculator's lifetime (the behaviour before 2026-09-24).
+    // Overridden at runtime by RICH_FMM_GRAVITY_RESPLIT=0|1.
+    bool resampleGravitySplitters = true;
 };
 
 #endif // FMM_DISTRIBUTED_OPTIONS_HPP

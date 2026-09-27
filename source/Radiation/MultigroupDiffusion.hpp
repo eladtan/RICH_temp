@@ -141,6 +141,7 @@ public:
         std::vector<ComputationalCell3D> const* canonical_owned_cells,
         std::vector<std::size_t> const* local_to_global) const override;
 
+
     void BuildMatrix(Tessellation3D const& tess,
                      mat& A,
                      size_t_mat& A_indeces,

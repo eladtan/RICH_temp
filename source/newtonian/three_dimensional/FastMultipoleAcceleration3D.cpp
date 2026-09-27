@@ -1,12 +1,16 @@
 #include "newtonian/three_dimensional/FastMultipoleAcceleration3D.hpp"
 
+#include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
 #include <functional>
+#include <vector>
 #include <iostream>
 #include <limits>
 #include <sstream>
+#include <string>
 #include <unordered_map>
 
 #include "misc/memory_profile.hpp"
@@ -97,36 +101,268 @@ void requireOnEveryRank(bool localCondition, const char* message)
 }
 #endif
 
+#ifndef RICH_MPI
+// Serial builds read the switch directly.  MPI builds take it from the
+// distributed calculator, which reads it once, collectively on its own
+// communicator, at construction (see FastMultipoleAcceleration3D below).
 bool fmmTraceEnabled()
 {
-#ifdef RICH_MPI
-    static int enabled = -1;
-    if(enabled < 0)
-    {
-        int rank = 0;
-        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-        int rootEnabled = 0;
-        if(rank == 0)
-        {
-            const char* value = std::getenv("RICH_FMM_TRACE");
-            rootEnabled = value != nullptr && value[0] != '\0' &&
-                          !(value[0] == '0' && value[1] == '\0') ? 1 : 0;
-        }
-        MPI_Bcast(&rootEnabled, 1, MPI_INT, 0, MPI_COMM_WORLD);
-        enabled = rootEnabled;
-    }
-    return enabled != 0;
-#else
     const char* value = std::getenv("RICH_FMM_TRACE");
     return value != nullptr && value[0] != '\0' &&
            !(value[0] == '0' && value[1] == '\0');
+}
+#endif
+
+// Print-only load-balance record for one solve (RICH_FMM_TRACE).  Collective:
+// every rank contributes one fixed row to a Gather; rank 0 returns the
+// aggregate line (and, behind RICH_FMM_TRACE_RANKS, one row per rank on a few
+// solves).  Other ranks return an empty string.
+std::string traceFmmBalance(const FmmSolveStats& stats, std::uint64_t call)
+{
+#ifdef RICH_MPI
+    enum Column
+    {
+        cOwned, cInput, cLocalTraversal, cLetExecute, cLocalPairs, cLocalM2L,
+        cLocalBlocks, cLetPairs, cLetM2L, cLeaves, cMaxLeaf, cMaxDepth,
+        cOverCapacity, cOverSplit, cDepthCap, cMaxLeafDepthCap, cLeafSquared,
+        cRootHalf, cExtentX, cExtentY, cExtentZ, cCenterX, cCenterY, cCenterZ,
+        cUpward, cDownward, cLocalBypass, cLetBypass, cTotal, cLetP2PSeconds,
+        cLetM2LSeconds, cBytesOwned, cLocalPlanBytes, cLetM2P, cDiagSeconds,
+        cLetP2PBlocks, cColumns
+    };
+    double row[cColumns] = {};
+    row[cOwned] = static_cast<double>(stats.particleCount);
+    row[cInput] = static_cast<double>(stats.diagInputParticleCount);
+    row[cLocalTraversal] = stats.localTraversalSeconds;
+    row[cLetExecute] = stats.letExecuteSeconds;
+    row[cLocalPairs] = static_cast<double>(stats.diagLocalP2PPairCount);
+    row[cLocalM2L] = static_cast<double>(stats.diagLocalM2LCount);
+    row[cLocalBlocks] = static_cast<double>(stats.diagLocalP2PBlockCount);
+    row[cLetPairs] = static_cast<double>(stats.diagLetP2PPairCount);
+    row[cLetM2L] = static_cast<double>(stats.letM2LCount);
+    row[cLeaves] = static_cast<double>(stats.leafCount);
+    row[cMaxLeaf] = static_cast<double>(stats.maxLeafOccupancy);
+    row[cMaxDepth] = static_cast<double>(stats.maxDepth);
+    row[cOverCapacity] = static_cast<double>(stats.diagLeavesOverCapacity);
+    row[cOverSplit] = static_cast<double>(stats.diagLeavesOverSplitCapacity);
+    row[cDepthCap] = static_cast<double>(stats.diagLeavesAtDepthCap);
+    row[cMaxLeafDepthCap] = static_cast<double>(stats.diagMaxLeafAtDepthCap);
+    row[cLeafSquared] = stats.diagLeafSquaredOccupancy;
+    row[cRootHalf] = stats.diagRootHalfSize;
+    row[cExtentX] = stats.diagParticleExtent[0];
+    row[cExtentY] = stats.diagParticleExtent[1];
+    row[cExtentZ] = stats.diagParticleExtent[2];
+    row[cCenterX] = stats.diagRootCenter[0];
+    row[cCenterY] = stats.diagRootCenter[1];
+    row[cCenterZ] = stats.diagRootCenter[2];
+    row[cUpward] = stats.upwardSeconds;
+    row[cDownward] = stats.downwardSeconds;
+    row[cLocalBypass] = static_cast<double>(stats.localOperatorCacheBypasses);
+    row[cLetBypass] = static_cast<double>(stats.letOperatorCacheBypasses);
+    row[cTotal] = stats.totalSeconds;
+    row[cLetP2PSeconds] = stats.letP2PSeconds;
+    row[cLetM2LSeconds] = stats.letM2LSeconds;
+    row[cBytesOwned] = static_cast<double>(stats.bytesOwned);
+    row[cLocalPlanBytes] = static_cast<double>(stats.localInteractionPlanBytes);
+    row[cLetM2P] = static_cast<double>(stats.letM2PCount);
+    row[cDiagSeconds] = stats.diagSeconds;
+    row[cLetP2PBlocks] = static_cast<double>(stats.letP2PBlockCount);
+
+    int rank = 0;
+    int size = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    std::vector<double> rows;
+    if(rank == 0)
+        rows.resize(static_cast<std::size_t>(size) * cColumns);
+    MPI_Gather(row, cColumns, MPI_DOUBLE, rank == 0 ? rows.data() : nullptr,
+               cColumns, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    if(rank != 0)
+        return std::string();
+
+    const auto value = [&](int r, int c) {
+        return rows[static_cast<std::size_t>(r) * cColumns +
+                    static_cast<std::size_t>(c)];
+    };
+    const auto argmax = [&](int c) {
+        int best = 0;
+        for(int r = 1; r < size; ++r)
+            if(value(r, c) > value(best, c))
+                best = r;
+        return best;
+    };
+    const auto mean = [&](int c) {
+        double sum = 0.0;
+        for(int r = 0; r < size; ++r)
+            sum += value(r, c);
+        return sum / static_cast<double>(size);
+    };
+    const auto maximum = [&](int c) { return value(argmax(c), c); };
+    const auto minimum = [&](int c) {
+        double best = value(0, c);
+        for(int r = 1; r < size; ++r)
+            best = std::min(best, value(r, c));
+        return best;
+    };
+    const auto sum = [&](int c) { return mean(c) * static_cast<double>(size); };
+    const auto correlation = [&](int a, int b) {
+        const double ma = mean(a);
+        const double mb = mean(b);
+        double sab = 0.0, saa = 0.0, sbb = 0.0;
+        for(int r = 0; r < size; ++r)
+        {
+            const double da = value(r, a) - ma;
+            const double db = value(r, b) - mb;
+            sab += da * db;
+            saa += da * da;
+            sbb += db * db;
+        }
+        return saa > 0.0 && sbb > 0.0 ? sab / std::sqrt(saa * sbb) : 0.0;
+    };
+    const auto describe = [&](std::ostringstream& out, const char* prefix,
+                              int r) {
+        out << ' ' << prefix << "_rank=" << r
+            << ' ' << prefix << "_owned=" << value(r, cOwned)
+            << ' ' << prefix << "_input=" << value(r, cInput)
+            << ' ' << prefix << "_local_traversal=" << value(r, cLocalTraversal)
+            << ' ' << prefix << "_let_execute=" << value(r, cLetExecute)
+            << ' ' << prefix << "_total=" << value(r, cTotal)
+            << ' ' << prefix << "_upward=" << value(r, cUpward)
+            << ' ' << prefix << "_downward=" << value(r, cDownward)
+            << ' ' << prefix << "_local_p2p_pairs=" << value(r, cLocalPairs)
+            << ' ' << prefix << "_local_p2p_blocks=" << value(r, cLocalBlocks)
+            << ' ' << prefix << "_local_m2l=" << value(r, cLocalM2L)
+            << ' ' << prefix << "_let_p2p_pairs=" << value(r, cLetPairs)
+            << ' ' << prefix << "_let_p2p_blocks=" << value(r, cLetP2PBlocks)
+            << ' ' << prefix << "_let_m2l=" << value(r, cLetM2L)
+            << ' ' << prefix << "_let_m2p=" << value(r, cLetM2P)
+            << ' ' << prefix << "_let_p2p_s=" << value(r, cLetP2PSeconds)
+            << ' ' << prefix << "_let_m2l_s=" << value(r, cLetM2LSeconds)
+            << ' ' << prefix << "_leaves=" << value(r, cLeaves)
+            << ' ' << prefix << "_max_leaf=" << value(r, cMaxLeaf)
+            << ' ' << prefix << "_max_depth=" << value(r, cMaxDepth)
+            << ' ' << prefix << "_leaves_over_cap=" << value(r, cOverCapacity)
+            << ' ' << prefix << "_leaves_over_split=" << value(r, cOverSplit)
+            << ' ' << prefix << "_leaves_depth_cap=" << value(r, cDepthCap)
+            << ' ' << prefix << "_max_leaf_depth_cap="
+            << value(r, cMaxLeafDepthCap)
+            << ' ' << prefix << "_leaf_sq=" << value(r, cLeafSquared)
+            << ' ' << prefix << "_root_half=" << value(r, cRootHalf)
+            << ' ' << prefix << "_extent=" << value(r, cExtentX) << ','
+            << value(r, cExtentY) << ',' << value(r, cExtentZ)
+            << ' ' << prefix << "_root_center=" << value(r, cCenterX) << ','
+            << value(r, cCenterY) << ',' << value(r, cCenterZ)
+            << ' ' << prefix << "_cache_bypass_local=" << value(r, cLocalBypass)
+            << ' ' << prefix << "_cache_bypass_let=" << value(r, cLetBypass)
+            << ' ' << prefix << "_bytes_owned=" << value(r, cBytesOwned)
+            << ' ' << prefix << "_local_plan_bytes=" << value(r, cLocalPlanBytes);
+    };
+
+    std::ostringstream line;
+    line.setf(std::ios::scientific);
+    line.precision(4);
+    const int slow = argmax(cLocalTraversal);
+    const int big = argmax(cOwned);
+    line << "fmm_balance_trace call=" << call
+         << " solve=" << stats.diagSolveIndex
+         << " splitter_solve=" << stats.diagSplitterSolve
+         << " domain_lower=" << stats.diagDomainLower[0] << ','
+         << stats.diagDomainLower[1] << ',' << stats.diagDomainLower[2]
+         << " domain_upper=" << stats.diagDomainUpper[0] << ','
+         << stats.diagDomainUpper[1] << ',' << stats.diagDomainUpper[2]
+         << " owned_min=" << minimum(cOwned)
+         << " owned_mean=" << mean(cOwned)
+         << " owned_max=" << maximum(cOwned)
+         << " owned_max_rank=" << big
+         << " fresh_split_owned_min=" << stats.diagFreshOwnedCountMin
+         << " fresh_split_owned_max=" << stats.diagFreshOwnedCountMax
+         << " input_mean=" << mean(cInput)
+         << " input_max=" << maximum(cInput)
+         << " local_traversal_mean=" << mean(cLocalTraversal)
+         << " local_traversal_max=" << maximum(cLocalTraversal)
+         << " corr_lt_owned=" << correlation(cLocalTraversal, cOwned)
+         << " corr_lt_local_pairs=" << correlation(cLocalTraversal, cLocalPairs)
+         << " corr_lt_local_m2l=" << correlation(cLocalTraversal, cLocalM2L)
+         << " corr_lt_leaf_sq=" << correlation(cLocalTraversal, cLeafSquared)
+         << " corr_let_execute_let_pairs="
+         << correlation(cLetExecute, cLetPairs)
+         << " local_p2p_pairs_sum=" << sum(cLocalPairs)
+         << " local_p2p_pairs_max=" << maximum(cLocalPairs)
+         << " local_m2l_sum=" << sum(cLocalM2L)
+         << " local_m2l_max=" << maximum(cLocalM2L)
+         << " let_p2p_pairs_sum=" << sum(cLetPairs)
+         << " let_p2p_pairs_max=" << maximum(cLetPairs)
+         << " let_m2l_sum=" << sum(cLetM2L)
+         << " let_m2l_max=" << maximum(cLetM2L)
+         << " leaf_sq_sum=" << sum(cLeafSquared)
+         << " leaf_sq_max=" << maximum(cLeafSquared)
+         << " max_leaf_max=" << maximum(cMaxLeaf)
+         << " max_depth_max=" << maximum(cMaxDepth)
+         << " leaves_over_cap_sum=" << sum(cOverCapacity)
+         << " leaves_over_split_sum=" << sum(cOverSplit)
+         << " leaves_depth_cap_sum=" << sum(cDepthCap)
+         << " root_half_mean=" << mean(cRootHalf)
+         << " root_half_max=" << maximum(cRootHalf)
+         << " diag_seconds_max=" << maximum(cDiagSeconds);
+    describe(line, "slow", slow);
+    if(big != slow)
+        describe(line, "big", big);
+    // Five slowest local traversals: rank:seconds:owned:local_pairs:local_m2l.
+    std::vector<int> order(static_cast<std::size_t>(size));
+    for(int r = 0; r < size; ++r)
+        order[static_cast<std::size_t>(r)] = r;
+    std::sort(order.begin(), order.end(), [&](int a, int b) {
+        return value(a, cLocalTraversal) > value(b, cLocalTraversal); });
+    line << " top_local_traversal=";
+    for(int i = 0; i < std::min(size, 5); ++i)
+    {
+        const int r = order[static_cast<std::size_t>(i)];
+        line << (i == 0 ? "" : ";") << r << ':' << value(r, cLocalTraversal)
+             << ':' << value(r, cOwned) << ':' << value(r, cLocalPairs) << ':'
+             << value(r, cLocalM2L);
+    }
+    line << '\n';
+
+    // Detail behind a flag: one row per rank on the first solve, every tenth
+    // solve, every solve with a root change, and the solve after one.
+    static std::uint64_t lastRootChangeCall = 0;
+    const bool rootChange = stats.ranksWithRootGeometryChange != 0;
+    const bool dumpSolve = call == 1 || call % 10 == 0 || rootChange ||
+        (lastRootChangeCall != 0 && call == lastRootChangeCall + 1);
+    if(rootChange)
+        lastRootChangeCall = call;
+    const char* const detail = std::getenv("RICH_FMM_TRACE_RANKS");
+    if(dumpSolve && detail != nullptr && detail[0] != '\0' &&
+       !(detail[0] == '0' && detail[1] == '\0'))
+    {
+        for(int r = 0; r < size; ++r)
+        {
+            line << "fmm_rank_trace call=" << call;
+            describe(line, "r", r);
+            line << '\n';
+        }
+    }
+    return line.str();
+#else
+    (void) stats;
+    (void) call;
+    return std::string();
 #endif
 }
 
-void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
+// individualPrepareSeconds / individualFinishSeconds: the target-evaluation
+// caller's own work before and after the solve (negative: not such a solve).
+void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled,
+                   double individualPrepareSeconds = -1.0,
+                   double individualFinishSeconds = -1.0)
 {
+#ifdef RICH_MPI
+    if(!explicitlyEnabled)
+        return;
+#else
     if(!explicitlyEnabled && !fmmTraceEnabled())
         return;
+#endif
 
     static std::uint64_t call = 0;
     ++call;
@@ -249,7 +485,25 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
         static_cast<unsigned long long>(stats.letMaxIncomingBytes),
         static_cast<unsigned long long>(stats.letMaxSendCapacityBytes)};
     unsigned long long maximumExchangeBytes[3] = {};
+    const unsigned long long localPruneCounts[9] = {
+        stats.targetPruneActive ? 1ull : 0ull,
+        static_cast<unsigned long long>(stats.targetParticleCount),
+        static_cast<unsigned long long>(stats.targetNodeCount),
+        static_cast<unsigned long long>(stats.localTargetPrunedM2LCount),
+        static_cast<unsigned long long>(stats.localTargetPrunedP2PBlockCount),
+        static_cast<unsigned long long>(stats.letTargetPrunedM2LCount),
+        static_cast<unsigned long long>(stats.letTargetPrunedP2PBlockCount),
+        static_cast<unsigned long long>(stats.letTargetPrunedM2PCount),
+        static_cast<unsigned long long>(stats.downwardTargetPrunedLeafCount)};
+    unsigned long long globalPruneCounts[9] = {};
+    const double localIndividualTimes[3] = {
+        stats.targetMaskSeconds, individualPrepareSeconds,
+        individualFinishSeconds};
+    double maximumIndividualTimes[3] = {};
     int rank = 0;
+    // Print-only load-balance record; collective, so gathered on every rank.
+    const std::string balanceLine = stats.diagFilled ?
+        traceFmmBalance(stats, call) : std::string();
 #ifdef RICH_MPI
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Reduce(localTimes, minimumTimes, 22, MPI_DOUBLE, MPI_MIN, 0,
@@ -292,6 +546,10 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
                MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(localExchangeBytes, maximumExchangeBytes, 3,
                MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(localPruneCounts, globalPruneCounts, 9,
+               MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(localIndividualTimes, maximumIndividualTimes, 3, MPI_DOUBLE,
+               MPI_MAX, 0, MPI_COMM_WORLD);
     for(int i = 0; i < 22; ++i)
         meanTimes[i] /= static_cast<double>(stats.mpiRankCount);
 #else
@@ -312,6 +570,10 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
         maximumDetailedExchangeTimes[i] = localDetailedExchangeTimes[i];
     for(int i = 0; i < 3; ++i)
         maximumExchangeBytes[i] = localExchangeBytes[i];
+    for(int i = 0; i < 9; ++i)
+        globalPruneCounts[i] = localPruneCounts[i];
+    for(int i = 0; i < 3; ++i)
+        maximumIndividualTimes[i] = localIndividualTimes[i];
 #endif
     if(rank != 0)
         return;
@@ -343,6 +605,15 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
          << " rebuilds=" << stats.topologyRebuildCount
          << " process_rebuilds=" << stats.processTopologyRebuildCount
          << " let_rebuilds=" << stats.letTopologyRebuildCount
+         << " gravity_resplit=" << (stats.gravityResampleEnabled ? 1 : 0)
+         << " gravity_resample_reason=" << stats.gravityResampleReason
+         << " gravity_resample_count=" << stats.gravityResampleCount
+         << " straggler_excess=" << stats.gravityStragglerExcessSeconds
+         << " straggler_baseline=" << stats.gravityStragglerBaselineSeconds
+         << " straggler_baseline_pending="
+         << (stats.gravityStragglerBaselinePending ? 1 : 0)
+         << " straggler_debt=" << stats.gravityStragglerDebtSeconds
+         << " resample_threshold=" << stats.gravityResampleThresholdSeconds
          << " root_change_ranks=" << stats.ranksWithRootGeometryChange
          << " leaf_change_ranks=" << stats.ranksWithLeafTopologyChange
          << " occupancy_change_ranks="
@@ -446,8 +717,22 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
          << " let_cache_misses_sum=" << globalCacheCounts[4]
          << " let_cache_bypasses_sum=" << globalCacheCounts[5]
          << " process_cache_misses_sum=" << globalCacheCounts[6]
-         << " process_cache_bypasses_sum=" << globalCacheCounts[7];
+         << " process_cache_bypasses_sum=" << globalCacheCounts[7]
+         << " target_prune_ranks=" << globalPruneCounts[0]
+         << " target_particles_sum=" << globalPruneCounts[1]
+         << " target_nodes_sum=" << globalPruneCounts[2]
+         << " local_target_pruned_m2l_sum=" << globalPruneCounts[3]
+         << " local_target_pruned_p2p_blocks_sum=" << globalPruneCounts[4]
+         << " let_target_pruned_m2l_sum=" << globalPruneCounts[5]
+         << " let_target_pruned_p2p_blocks_sum=" << globalPruneCounts[6]
+         << " let_target_pruned_m2p_sum=" << globalPruneCounts[7]
+         << " downward_target_pruned_leaves_sum=" << globalPruneCounts[8]
+         << " target_mask_max=" << maximumIndividualTimes[0]
+         << " individual_prepare_max=" << maximumIndividualTimes[1]
+         << " individual_finish_max=" << maximumIndividualTimes[2];
     std::cout << line.str() << std::endl;
+    if(!balanceLine.empty())
+        std::cout << balanceLine << std::flush;
 }
 }
 
@@ -461,7 +746,9 @@ FastMultipoleAcceleration3D::FastMultipoleAcceleration3D(FmmGravityOptions optio
     traceEnabled_(false),
     calculator_(validateAccelerationOptions(options))
 {
-#ifndef RICH_MPI
+#ifdef RICH_MPI
+    traceEnabled_ = calculator_.solveTraceRequested();
+#else
     if(!std::isfinite(G_))
         throw UniversalError("FastMultipoleAcceleration3D: G must be finite");
 #endif
@@ -475,7 +762,9 @@ FastMultipoleAcceleration3D::FastMultipoleAcceleration3D(
     G_(validateDistributedGravityConstant(G)),
     traceEnabled_(distributedOptions.emitSolveTrace),
     calculator_(validateAccelerationOptions(options), distributedOptions)
-{}
+{
+    traceEnabled_ = traceEnabled_ || calculator_.solveTraceRequested();
+}
 #endif
 
 void FastMultipoleAcceleration3D::operator()(const Tessellation3D& tess,
@@ -589,6 +878,7 @@ void FastMultipoleAcceleration3D::EvaluateIndividualTargets(
     // The FMM backend evaluates its source set.  Individual gravity targets
     // are exact canonical source centroids, so recover their source slots and
     // extract only those accelerations after the collective solve.
+    const auto prepareStart = std::chrono::steady_clock::now();
     std::unordered_map<PositionKey, std::size_t, PositionKeyHash>
         source_index_by_position;
     source_index_by_position.reserve(source_points.size());
@@ -621,12 +911,21 @@ void FastMultipoleAcceleration3D::EvaluateIndividualTargets(
     masses_ = source_masses;
 #ifdef RICH_MPI
     cellIds_ = source_ids;
+    // Only the target slots are read back, so the solve may skip work that
+    // reaches no target (DistributedFmmGravityCalculator::solve).
+    targetMask_.assign(points_.size(), 0u);
+    for(std::size_t source : target_source_indices)
+        targetMask_[source] = 1u;
+    const double prepareSeconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - prepareStart).count();
     calculator_.solve(points_, masses_, cellIds_, bounds.first, bounds.second,
-                      acc);
+                      acc, nullptr, &targetMask_);
 #else
+    const double prepareSeconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - prepareStart).count();
     calculator_.solve(points_, masses_, bounds.first, bounds.second, acc);
 #endif
-    traceFmmSolve(calculator_.stats(), traceEnabled_);
+    const auto finishStart = std::chrono::steady_clock::now();
 
 #ifdef RICH_MPI
     requireOnEveryRank(acc.size() == points_.size(),
@@ -672,6 +971,9 @@ void FastMultipoleAcceleration3D::EvaluateIndividualTargets(
     for(std::size_t source : target_source_indices)
         target_accelerations.push_back(acc[source]);
     acc.swap(target_accelerations);
+    traceFmmSolve(calculator_.stats(), traceEnabled_, prepareSeconds,
+                  std::chrono::duration<double>(
+                      std::chrono::steady_clock::now() - finishStart).count());
 }
 
 const FmmSolveStats& FastMultipoleAcceleration3D::getLastStats() const noexcept

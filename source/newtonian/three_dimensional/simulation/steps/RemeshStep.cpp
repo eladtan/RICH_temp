@@ -16,21 +16,28 @@ RemeshStep::RemeshStep(Tessellation3D &tess,
 
 void RemeshStep::step(double /*dt*/)
 {
+    this->meshBuildTiming = MeshBuildTiming();
     std::vector<Vector3D> newPoints = this->generator(this->tess, 0);
 
 #ifdef RICH_MPI
     this->exchangeChain.Reset(this->tess.GetPointNo());
-    this->tess.BuildParallel(newPoints);
-    this->exchangeChain.Exchange(this->tess.GetSentProcs(),
-                                 this->tess.GetSentPoints(),
-                                 this->tess.GetSelfIndex());
+    {
+        MeshBuildTimer meshBuildTimer(this->meshBuildTiming);
+        this->tess.BuildParallel(newPoints);
+        this->exchangeChain.Exchange(this->tess.GetSentProcs(),
+                                     this->tess.GetSentPoints(),
+                                     this->tess.GetSelfIndex());
+    }
 
     MPI_exchange_data(this->tess, this->extensives, false);
     MPI_exchange_data(this->tess, this->cells, false);
     ComputationalCell3D cdummy;
     MPI_exchange_data(this->tess, this->cells, true, 1, &cdummy);
 #else
-    this->tess.Build(newPoints);
+    {
+        MeshBuildTimer meshBuildTimer(this->meshBuildTiming);
+        this->tess.Build(newPoints);
+    }
 #endif // RICH_MPI
 
     if (this->postRebuild)

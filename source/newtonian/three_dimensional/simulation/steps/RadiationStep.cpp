@@ -2,6 +2,7 @@
 #include "misc/memory_debug.hpp"
 #include "misc/universal_error.hpp"
 #include "newtonian/three_dimensional/simulation/ActiveMeshView.hpp"
+#include "newtonian/three_dimensional/simulation/RuntimeLog.hpp"
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -13,6 +14,7 @@
 #include <map>
 #include <sstream>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 #ifdef RICH_MPI
 #include <mpi.h>
@@ -22,6 +24,8 @@ namespace {
 
 bool individualPerformanceTraceEnabled()
 {
+	if(RuntimeLogDetailed())
+		return true;
     static bool const enabled = []()
     {
         char const* const value = std::getenv("RICH_INDIVIDUAL_PERF_TRACE");
@@ -43,7 +47,8 @@ double elapsedSeconds(std::chrono::steady_clock::time_point const start)
 #ifdef RICH_MPI
 void broadcast_step_failure(RadiationDriver const& matrix_builder,
                             std::string& reason,
-                            size_t& cell_id)
+                            size_t& cell_id,
+                            std::string& diagnostics)
 {
     int rank = 0;
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
@@ -67,20 +72,29 @@ void broadcast_step_failure(RadiationDriver const& matrix_builder,
         : std::numeric_limits<int>::max();
     if (source_rank == std::numeric_limits<int>::max()) {
         reason.clear();
+        diagnostics.clear();
         cell_id = std::numeric_limits<size_t>::max();
         return;
     }
 
     char reason_buf[2048] = {};
+    char diagnostics_buf[4096] = {};
     std::uint64_t local_cell_id = static_cast<std::uint64_t>(matrix_builder.getLastStepFailureCellId());
     if (rank == source_rank) {
         std::string const& local_reason = matrix_builder.getLastStepFailureReason();
         std::strncpy(reason_buf, local_reason.c_str(), sizeof(reason_buf) - 1);
+        std::string const& local_diagnostics =
+            matrix_builder.getLastStepFailureDiagnostics();
+        std::strncpy(diagnostics_buf, local_diagnostics.c_str(),
+                     sizeof(diagnostics_buf) - 1);
     }
     MPI_Bcast(reason_buf, static_cast<int>(sizeof(reason_buf)), MPI_CHAR, source_rank, MPI_COMM_WORLD);
+    MPI_Bcast(diagnostics_buf, static_cast<int>(sizeof(diagnostics_buf)),
+              MPI_CHAR, source_rank, MPI_COMM_WORLD);
     MPI_Bcast(&local_cell_id, 1, MPI_UINT64_T, source_rank, MPI_COMM_WORLD);
 
     reason = reason_buf;
+    diagnostics = diagnostics_buf;
     cell_id = static_cast<size_t>(local_cell_id);
 }
 
@@ -126,9 +140,11 @@ bool has_collective_step_failure(RadiationDriver const& matrix_builder)
 #else
 void broadcast_step_failure(RadiationDriver const& matrix_builder,
                             std::string& reason,
-                            size_t& cell_id)
+                            size_t& cell_id,
+                            std::string& diagnostics)
 {
     reason = matrix_builder.getLastStepFailureReason();
+    diagnostics = matrix_builder.getLastStepFailureDiagnostics();
     cell_id = matrix_builder.getLastStepFailureCellId();
 }
 
@@ -151,17 +167,16 @@ bool has_collective_step_failure(RadiationDriver const& matrix_builder)
 }
 #endif
 
-double passive_radiation_time_step_limit(
+bool passive_radiation_change_fraction(
     ComputationalCell3D const& primitive,
     Conserved3D const& before,
     Conserved3D const& after,
     double maximum_radiation_energy_density,
-    double event_dt)
+    double& difference)
 {
-    if(!(event_dt > 0) || !std::isfinite(event_dt) ||
-       !(primitive.density > 0) || !std::isfinite(primitive.density) ||
+    if(!(primitive.density > 0) || !std::isfinite(primitive.density) ||
        !(before.mass > 0) || !std::isfinite(before.mass))
-        return std::numeric_limits<double>::max();
+        return false;
 
     double const inverse_volume = primitive.density / before.mass;
     double const before_Erad = before.Erad * inverse_volume;
@@ -171,7 +186,7 @@ double passive_radiation_time_step_limit(
         std::abs(before_Erad), std::abs(after_Erad));
     bool changed = std::abs(after_Erad - before_Erad) >
         epsilon * std::max(1.0, total_reference);
-    double difference = std::abs(after_Erad - before_Erad) /
+    difference = std::abs(after_Erad - before_Erad) /
         (std::abs(after_Erad) +
          0.02 * maximum_radiation_energy_density +
          std::numeric_limits<double>::min());
@@ -195,19 +210,29 @@ double passive_radiation_time_step_limit(
                 (std::abs(after_group) + group_floor +
                  std::numeric_limits<double>::min()));
     }
-    if(!changed || !std::isfinite(difference))
-        return std::numeric_limits<double>::max();
+    return changed && std::isfinite(difference) && difference > 0;
+}
 
-    // Extrapolate this event's accepted passive flux to the same 15% target
-    // used by the active MG limiter.  Do not cap the estimate at two event
-    // steps: commitEvent already compares it with the passive cell's actual
-    // remaining interval.  A requested interval shorter than the event just
-    // accepted cannot be applied retroactively, so wake at the next event.
-    double const safe_dt = event_dt * 0.15 /
+double passive_radiation_wake_interval(
+    double difference,
+    double transfer_dt,
+    double time_quantum)
+{
+    if(!(difference > 0) || !std::isfinite(difference) ||
+       !(transfer_dt > 0) || !std::isfinite(transfer_dt) ||
+       !(time_quantum > 0) || !std::isfinite(time_quantum))
+        return std::numeric_limits<double>::infinity();
+
+    // The accepted conservative transfer was integrated over the
+    // active-passive face timestep, not the scheduler's event spacing.
+    // Extrapolate that measured rate to the same 15% target used by the
+    // active radiation limiter.  If the accepted change already exceeded
+    // the target, the earliest representable wake is one scheduler quantum.
+    double const safe_dt = transfer_dt * 0.15 /
         std::max(difference, std::numeric_limits<double>::min());
     if(!std::isfinite(safe_dt))
-        return std::numeric_limits<double>::max();
-    return std::max(event_dt, safe_dt);
+        return std::numeric_limits<double>::infinity();
+    return std::max(time_quantum, safe_dt);
 }
 
 class RetryProbeBackoff
@@ -293,6 +318,53 @@ bool identityOwnedMoveRequested()
             throw UniversalError(
                 "RICH_INDIVIDUAL_IDENTITY_OWNED_MOVE differs between MPI "
                 "ranks");
+        return (option_state & 2u) != 0u;
+    }();
+    return enabled;
+}
+
+// Whether a rejected radiation candidate also lowers the hydro bins of the
+// cells it touched at the next commit (the historical behaviour), or only
+// sub-cycles the radiation inside the event the way the global scheme
+// sub-steps a rejected candidate inside its step.  On the TDE the bin
+// lowering, cascaded by neighbour closure, set an event cadence 20-60x finer
+// than the global dt that the same physics ran at (jobs 10199442 vs
+// 10199059).  Default keeps the historical behaviour; values must agree on
+// every MPI rank.
+bool radiationRetryLimitsBins()
+{
+    static bool const enabled = []()
+    {
+        char const* const value =
+            std::getenv("RICH_INDIVIDUAL_RADIATION_RETRY_LIMITS_BINS");
+        bool local_enabled = true;
+        bool local_valid = true;
+        if(value != nullptr && value[0] != '\0') {
+            if(std::strcmp(value, "0") == 0 ||
+               std::strcmp(value, "false") == 0 ||
+               std::strcmp(value, "off") == 0 ||
+               std::strcmp(value, "no") == 0)
+                local_enabled = false;
+            else if(std::strcmp(value, "1") != 0 &&
+                    std::strcmp(value, "true") != 0 &&
+                    std::strcmp(value, "on") != 0 &&
+                    std::strcmp(value, "yes") != 0)
+                local_valid = false;
+        }
+        unsigned int option_state = !local_valid ? 4u :
+            (local_enabled ? 2u : 1u);
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &option_state, 1, MPI_UNSIGNED, MPI_BOR,
+                      MPI_COMM_WORLD);
+#endif
+        if((option_state & 4u) != 0u)
+            throw UniversalError(
+                "RICH_INDIVIDUAL_RADIATION_RETRY_LIMITS_BINS must be unset or "
+                "one of 0, 1, false, true, off, on, no, yes");
+        if((option_state & 3u) == 3u)
+            throw UniversalError(
+                "RICH_INDIVIDUAL_RADIATION_RETRY_LIMITS_BINS differs between "
+                "MPI ranks");
         return (option_state & 2u) != 0u;
     }();
     return enabled;
@@ -404,9 +476,13 @@ void RadiationStep::step(double dt)
 		dt_try = std::min(dt_try, dt - total_elapsed_time);
 
 		double const candidate_time = this->pt.getTime() + total_elapsed_time;
+		double const attempted_dt = dt_try;
+		auto const candidate_start = std::chrono::steady_clock::now();
 		bool step_success = this->matrix_builder.step(CG_eps, total_iters,
 			this->tess, this->cells, this->extensives, dt_try,
 			candidate_time);
+		double const candidate_seconds = std::chrono::duration<double>(
+			std::chrono::steady_clock::now() - candidate_start).count();
 		MEMORY_DEBUG_PRINT("radiation: after solver step");
 
 		max_iter_done = std::max(max_iter_done, total_iters);
@@ -420,23 +496,18 @@ void RadiationStep::step(double dt)
 			dt_try *= 0.5;
 			dt_try_ceiling = std::min(dt_try_ceiling, dt_try);
 			std::string reason;
+			std::string diagnostics;
 				size_t cell_id = std::numeric_limits<size_t>::max();
-			broadcast_step_failure(this->matrix_builder, reason, cell_id);
-			if(rank == 0) {
-				std::ostringstream msg;
-				msg << "Reducing dt, new dt " << dt_try;
-				if (!reason.empty()) {
-					msg << " (" << reason;
-					if (cell_id != std::numeric_limits<size_t>::max())
-						msg << ", example cell ID " << cell_id;
-					msg << ")";
-				}
-				if(rejected_retry_probe)
-					msg << " [retry probe rejected; next probe after "
-					    << retry_probe_backoff.cooldown()
-					    << " accepted candidates]";
-				std::clog << msg.str() << std::endl;
-			}
+			broadcast_step_failure(
+				this->matrix_builder, reason, cell_id, diagnostics);
+			StepRetryRecord retry;
+			retry.attempted_dt_min = attempted_dt;
+			retry.attempted_dt_max = attempted_dt;
+			retry.elapsed_seconds = candidate_seconds;
+			retry.reason = reason.empty() ? "solver_rejected" : reason;
+			retry.diagnostics = diagnostics;
+			retry.representative_cell = cell_id;
+			reportStepRetry(retry);
 			
 			double const next_elapsed_time = total_elapsed_time + dt_try;
 			double const accepted_time = this->pt.getTime() + total_elapsed_time;
@@ -498,6 +569,25 @@ void RadiationStep::step(double dt)
 	}
 
 	this->suggested_dt = this->matrix_builder.calculate_dt(dt, this->tess, this->cells);
+	cell_limit_ids.clear();
+	cell_limit_values.clear();
+	cell_limit_minimum = std::numeric_limits<double>::infinity();
+	if(std::vector<double> const* per_cell = this->matrix_builder.lastCellTimeStepLimits())
+	{
+		std::size_t const points = this->tess.GetPointNo();
+		if(per_cell->size() == points && this->cells.size() >= points)
+		{
+			cell_limit_values = *per_cell;
+			cell_limit_ids.resize(points);
+			for(std::size_t i = 0; i < points; ++i)
+			{
+				cell_limit_ids[i] = this->cells[i].ID;
+				if(cell_limit_values[i] > 0)
+					cell_limit_minimum = std::min(cell_limit_minimum,
+						cell_limit_values[i]);
+			}
+		}
+	}
 
 	this->matrix_builder.poststep();
 	MEMORY_DEBUG_PRINT("radiation: after poststep");
@@ -549,6 +639,10 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
         return;
 #endif
 
+    // Global-step limits describe a state individual events have left.
+    cell_limit_ids.clear();
+    cell_limit_values.clear();
+    cell_limit_minimum = std::numeric_limits<double>::infinity();
     bool const trace_performance = individualPerformanceTraceEnabled();
     last_individual_performance.clear();
     auto phase_start = std::chrono::steady_clock::now();
@@ -584,12 +678,13 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
         use_identity_owned_move = collective_eligible != 0;
     }
     if((trace_performance || identity_owned_move_requested) && rank == 0)
-        std::clog << "RADIATION_IDENTITY_OWNED_MOVE requested="
-                  << (identity_owned_move_requested ? 1 : 0)
-                  << " mapping_identity=" << (owned_mapping_identity ? 1 : 0)
-                  << " all_active=" << (local_all_active ? 1 : 0)
-                  << " selected=" << (use_identity_owned_move ? 1 : 0)
-                  << " owned_cells=" << canonical_owned_size << std::endl;
+        RuntimeTraceStream()
+            << "RADIATION_IDENTITY_OWNED_MOVE requested="
+            << (identity_owned_move_requested ? 1 : 0)
+            << " mapping_identity=" << (owned_mapping_identity ? 1 : 0)
+            << " all_active=" << (local_all_active ? 1 : 0)
+            << " selected=" << (use_identity_owned_move ? 1 : 0)
+            << " owned_cells=" << canonical_owned_size << std::endl;
 
     std::vector<ComputationalCell3D> local_cells;
     std::vector<Conserved3D> local_extensives;
@@ -649,18 +744,13 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
     std::size_t rejected_retry_probes = 0;
     std::size_t maximum_retry_probe_cooldown = retry_probe_backoff.cooldown();
     std::string representative_reason;
+    std::string representative_diagnostics;
     std::size_t representative_cell = std::numeric_limits<std::size_t>::max();
     std::map<std::size_t, double> cell_retry_fractions;
     bool retry_limiter_requires_all_active = false;
     int maximum_iterations = 0;
-    std::uint64_t global_active_cells =
-        static_cast<std::uint64_t>(local_context.active_indices.size());
-#ifdef RICH_MPI
-    MPI_Allreduce(MPI_IN_PLACE, &global_active_cells, 1, MPI_UINT64_T,
-                  MPI_SUM, MPI_COMM_WORLD);
-#endif
-
     phase_start = std::chrono::steady_clock::now();
+    matrix_builder.beginIndividualPassiveWakeTracking(canonical_owned_size);
     matrix_builder.prestepIndividual(tess, local_cells, local_context);
     if(trace_performance)
         last_individual_performance["radiation-prestep"] =
@@ -673,15 +763,26 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
         smallest_individual_candidate_fraction = std::min(
             smallest_individual_candidate_fraction, candidate_fraction);
         int iterations = 0;
+        double attempted_dt_min = std::numeric_limits<double>::infinity();
+        double attempted_dt_max = 0;
+        for(std::size_t const active_index : context.active_indices) {
+            double const active_dt =
+                candidate_fraction * context.cellTimeStep(active_index);
+            attempted_dt_min = std::min(attempted_dt_min, active_dt);
+            attempted_dt_max = std::max(attempted_dt_max, active_dt);
+        }
         double const candidate_end_time = context.previous_event_time +
             (completed_fraction + candidate_fraction) *
             (context.event_time - context.previous_event_time);
+        auto const candidate_start = std::chrono::steady_clock::now();
         bool const accepted = matrix_builder.stepIndividual(
             tolerance, iterations, tess, local_cells, local_extensives,
             local_context, candidate_fraction, candidate_end_time,
             use_identity_owned_move ? &all_cells : &cells,
             use_identity_owned_move ? &all_extensives : &extensives,
             &mesh_view.localToGlobalMapping());
+        double const candidate_seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - candidate_start).count();
         if(defect_accounting != nullptr &&
            defect_accounting->defect_rejections >
                observed_defect_rejections) {
@@ -694,6 +795,17 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
             if(defect_retry_active)
                 ++pending_defect_retry_substeps;
             completed_fraction += candidate_fraction;
+            if(completed_fraction < 1 - 1e-13) {
+                // An accepted fractional solve changes owned primitives and
+                // extensives.  Refresh the compact ghosts before the next matrix
+                // candidate in canonical all-point index space.
+                if(!use_identity_owned_move) {
+                    all_cells = cells;
+                    all_extensives = extensives;
+                }
+                tess.SyncPartialBuildData(local_cells, all_cells);
+                tess.SyncPartialBuildData(local_extensives, all_extensives);
+            }
             retry_probe_backoff.recordAcceptance(candidate_is_retry_probe);
             candidate_is_retry_probe = false;
             double const old_ceiling = candidate_fraction_ceiling;
@@ -724,32 +836,21 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
         }
         ++rejected_candidates;
         broadcast_step_failure(
-            matrix_builder, representative_reason, representative_cell);
+            matrix_builder, representative_reason, representative_cell,
+            representative_diagnostics);
+        StepRetryRecord retry;
+        retry.attempted_dt_min = attempted_dt_min;
+        retry.attempted_dt_max = attempted_dt_max;
+        retry.elapsed_seconds = candidate_seconds;
+        retry.reason = representative_reason.empty() ?
+            "solver_rejected" : representative_reason;
+        retry.diagnostics = representative_diagnostics;
+        retry.representative_cell = representative_cell;
+		reportStepRetry(retry);
         std::vector<std::size_t> const failed_cells =
             collect_step_failure_cells(matrix_builder);
         bool const collective_failure =
             has_collective_step_failure(matrix_builder);
-        if(rejected_candidates == 1 && rank == 0) {
-            std::clog << "INDIVIDUAL_RADIATION_REJECTION"
-                      << " completed_fraction=" << completed_fraction
-                      << " rejected_fraction=" << candidate_fraction
-                      << " previous_event_tick="
-                      << context.previous_event_tick
-                      << " event_tick=" << context.event_tick
-                      << " previous_event_time="
-                      << context.previous_event_time
-                      << " event_time=" << context.event_time
-                      << " outer_dt="
-                      << (context.event_time -
-                          context.previous_event_time)
-                      << " candidate_end_time=" << candidate_end_time
-                      << " global_active_cells=" << global_active_cells;
-            if(!representative_reason.empty())
-                std::clog << " reason=" << representative_reason;
-            if(representative_cell != std::numeric_limits<std::size_t>::max())
-                std::clog << " cell_id=" << representative_cell;
-            std::clog << " solver_iterations=" << iterations << std::endl;
-        }
         candidate_fraction *= 0.5;
         // A rejected candidate is transactionally rolled back.  Hold the
         // accepted substeps at or below its halved interval for a short
@@ -803,21 +904,28 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
         local_context, tess, local_cells, local_suggested_dt,
         use_identity_owned_move ? &all_cells : &cells,
         &mesh_view.localToGlobalMapping());
-    if(retry_limiter_requires_all_active)
-        for(std::size_t local : local_context.active_indices)
-            local_suggested_dt.at(local) = std::min(
-                local_suggested_dt.at(local),
-                event_minimum_candidate_fraction *
-                    local_context.cellTimeStep(local));
-    else if(!cell_retry_fractions.empty())
-        for(std::size_t local : local_context.active_indices) {
-            auto const retry = cell_retry_fractions.find(
-                local_cells.at(local).ID);
-            if(retry != cell_retry_fractions.end())
+    // With the switch off, a rejected candidate has already been absorbed by
+    // sub-cycling above; the physical limiter (calculateIndividualTimeSteps)
+    // alone shapes the next bin, and the retry cooldown remembered in the
+    // defect accounting keeps the next event's radiation from re-probing the
+    // rejected interval at once.
+    if(radiationRetryLimitsBins()) {
+        if(retry_limiter_requires_all_active)
+            for(std::size_t local : local_context.active_indices)
                 local_suggested_dt.at(local) = std::min(
                     local_suggested_dt.at(local),
-                    retry->second * local_context.cellTimeStep(local));
-        }
+                    event_minimum_candidate_fraction *
+                        local_context.cellTimeStep(local));
+        else if(!cell_retry_fractions.empty())
+            for(std::size_t local : local_context.active_indices) {
+                auto const retry = cell_retry_fractions.find(
+                    local_cells.at(local).ID);
+                if(retry != cell_retry_fractions.end())
+                    local_suggested_dt.at(local) = std::min(
+                        local_suggested_dt.at(local),
+                        retry->second * local_context.cellTimeStep(local));
+            }
+    }
     if(trace_performance)
         last_individual_performance["radiation-driver"] =
             elapsedSeconds(phase_start);
@@ -842,10 +950,10 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
     phase_start = std::chrono::steady_clock::now();
 
     // Diffusion may conservatively update an inactive recipient without
-    // refreshing its primitive state.  Limit that cell from its accepted
-    // radiation-flux rate so the scheduler wakes it only when that
-    // limit is shorter than the passive cell's remaining interval.
-    double const event_dt = context.event_time - context.previous_event_time;
+    // refreshing its primitive state.  Frozen Dirichlet may instead request
+    // synchronization while leaving that recipient unchanged.  In both cases
+    // use the shortest accepted active-passive face timestep; the unrelated
+    // global event spacing is not the transfer integration interval.
     double maximum_radiation_energy_density =
         std::numeric_limits<double>::min();
     if(all_cells.size() == all_extensives.size())
@@ -863,37 +971,69 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
     MPI_Allreduce(MPI_IN_PLACE, &maximum_radiation_energy_density, 1,
                   MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif
+    suggested_individual_wake_deadline.assign(
+        cells.size(), std::numeric_limits<double>::infinity());
+    std::vector<double> const& passive_reference_time_steps =
+        matrix_builder.getIndividualPassiveReferenceTimeSteps();
     if(all_cells.size() == extensives.size() &&
        all_extensives.size() == extensives.size())
         for(std::size_t global = 0; global < extensives.size(); ++global) {
             if(context.isActive(global))
                 continue;
-            double const passive_limit = passive_radiation_time_step_limit(
+            bool const have_transfer_dt =
+                global < passive_reference_time_steps.size() &&
+                passive_reference_time_steps[global] > 0 &&
+                std::isfinite(passive_reference_time_steps[global]) &&
+                passive_reference_time_steps[global] <
+                    std::numeric_limits<double>::max();
+            double difference = 0;
+            bool const passive_changed = passive_radiation_change_fraction(
                 all_cells[global], all_extensives[global],
                 extensives[global], maximum_radiation_energy_density,
-                event_dt);
-            suggested_individual_dt[global] = std::min(
-                suggested_individual_dt[global], passive_limit);
+                difference);
+            if(!passive_changed && !have_transfer_dt)
+                continue;
+
+            if(!have_transfer_dt) {
+                // Missing accepted-face metadata must not turn the unrelated
+                // scheduler event spacing into a physical transfer rate.
+                // Wake at the earliest representable event instead.
+                suggested_individual_wake_deadline[global] =
+                    context.time_quantum;
+                continue;
+            }
+            if(passive_changed)
+                suggested_individual_wake_deadline[global] =
+                    passive_radiation_wake_interval(
+                        difference, passive_reference_time_steps[global],
+                        context.time_quantum);
+            else
+                suggested_individual_wake_deadline[global] = std::max(
+                    context.time_quantum,
+                    passive_reference_time_steps[global]);
         }
 
-    if(rejected_candidates > 0 && rank == 0) {
-        std::clog << "Individual radiation retries: " << rejected_candidates;
+    if(rejected_candidates > 0 && trace_performance && rank == 0) {
+        std::ostream& trace_stream = RuntimeTraceStream();
+        trace_stream << "Individual radiation retries: "
+                     << rejected_candidates;
         if(!representative_reason.empty()) {
-            std::clog << ", representative reason: " << representative_reason;
+            trace_stream << ", representative reason: "
+                         << representative_reason;
             if(representative_cell != std::numeric_limits<std::size_t>::max())
-                std::clog << ", cell ID " << representative_cell;
+                trace_stream << ", cell ID " << representative_cell;
         }
-        std::clog << ", maximum solver iterations " << maximum_iterations
-                  << ", next-step limiter scope "
-                  << (retry_limiter_requires_all_active ?
-                      "all_active" : "failed_cells")
-                  << ", limited cells " << cell_retry_fractions.size()
-                  << ", minimum fraction "
-                  << event_minimum_candidate_fraction
-                  << ", failed recovery probes " << rejected_retry_probes
-                  << ", maximum probe cooldown "
-                  << maximum_retry_probe_cooldown
-                  << std::endl;
+        trace_stream << ", maximum solver iterations " << maximum_iterations
+                     << ", next-step limiter scope "
+                     << (retry_limiter_requires_all_active ?
+                         "all_active" : "failed_cells")
+                     << ", limited cells " << cell_retry_fractions.size()
+                     << ", minimum fraction "
+                     << event_minimum_candidate_fraction
+                     << ", failed recovery probes " << rejected_retry_probes
+                     << ", maximum probe cooldown "
+                     << maximum_retry_probe_cooldown
+                     << std::endl;
     }
     if(trace_performance)
         last_individual_performance["radiation-limit-update"] =
@@ -916,11 +1056,11 @@ void RadiationStep::suggestIndividualTimeSteps(
     IndividualStepContext const& context,
     std::vector<double>& time_step_limits) const
 {
-    std::size_t const common_size = std::min(
-        suggested_individual_dt.size(), time_step_limits.size());
-    for(std::size_t cell = 0; cell < common_size; ++cell)
-        if(suggested_individual_dt[cell] <
-           std::numeric_limits<double>::max())
+    for(std::size_t const cell : context.active_indices)
+        if(cell < suggested_individual_dt.size() &&
+           cell < time_step_limits.size() &&
+           suggested_individual_dt[cell] <
+               std::numeric_limits<double>::max())
             time_step_limits[cell] = std::min(
                 time_step_limits[cell], suggested_individual_dt[cell]);
     for(std::size_t cell : context.active_indices)
@@ -929,9 +1069,59 @@ void RadiationStep::suggestIndividualTimeSteps(
                 time_step_limits.at(cell), suggested_dt);
 }
 
+void RadiationStep::suggestIndividualWakeDeadlines(
+    IndividualStepContext const& context,
+    std::vector<double>& wake_deadlines) const
+{
+    std::size_t const common_size = std::min(
+        suggested_individual_wake_deadline.size(), wake_deadlines.size());
+    for(std::size_t cell = 0; cell < common_size; ++cell)
+        if(!context.isActive(cell) &&
+           suggested_individual_wake_deadline[cell] <
+               std::numeric_limits<double>::max())
+            wake_deadlines[cell] = std::min(
+                wake_deadlines[cell],
+                suggested_individual_wake_deadline[cell]);
+}
+
+
 double RadiationStep::suggestTimeStep(void) const
 {
     return this->suggested_dt;
+}
+
+bool RadiationStep::collectCellTimeStepLimits(std::vector<double>& limits) const
+{
+    cell_limit_fallbacks = 0;
+    if(cell_limit_ids.empty())
+        return false;
+    std::size_t const N = this->tess.GetPointNo();
+    if(this->cells.size() < N)
+        return false;
+    bool aligned = cell_limit_ids.size() == N;
+    for(std::size_t i = 0; aligned && i < N; ++i)
+        aligned = this->cells[i].ID == cell_limit_ids[i];
+    if(aligned)
+    {
+        limits = cell_limit_values;
+        return true;
+    }
+    std::unordered_map<std::size_t, double> by_id;
+    by_id.reserve(cell_limit_ids.size());
+    for(std::size_t i = 0; i < cell_limit_ids.size(); ++i)
+        by_id.emplace(cell_limit_ids[i], cell_limit_values[i]);
+    // A cell without a cached limit (migrated from another rank, or new)
+    // sets none: the bound may overstate the gain, never understate it.
+    limits.assign(N, std::numeric_limits<double>::infinity());
+    for(std::size_t i = 0; i < N; ++i)
+    {
+        auto const found = by_id.find(this->cells[i].ID);
+        if(found != by_id.end())
+            limits[i] = found->second;
+        else
+            ++cell_limit_fallbacks;
+    }
+    return true;
 }
 
 std::string RadiationStep::getName(void) const

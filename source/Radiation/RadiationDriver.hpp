@@ -103,8 +103,17 @@ public:
  * @return The maximum allowable time step size.
  */
         virtual double calculate_dt(double const dt,
-                                    Tessellation3D& tess, 
+                                    Tessellation3D& tess,
                                     std::vector<ComputationalCell3D>& cells) const = 0;
+
+        // The last calculate_dt limit cell by cell, indexed like the owned
+        // cells it was given (infinity where a cell sets no limit, no growth
+        // cap), or nullptr for a driver with only the global limit.  Read by
+        // the adaptive gain bound; it never shapes a step.
+        virtual std::vector<double> const* lastCellTimeStepLimits() const
+        {
+            return nullptr;
+        }
 
         /** Serial active-row implicit solve used by individual timesteps. */
         virtual bool supportsIndividualTimeSteps() const { return false; }
@@ -131,6 +140,19 @@ public:
 
         virtual bool poststepIndividual() const { return poststep(); }
 
+        void beginIndividualPassiveWakeTracking(
+            std::size_t canonical_cell_count) const
+        {
+            individual_passive_reference_time_steps_.assign(
+                canonical_cell_count, std::numeric_limits<double>::max());
+        }
+
+        std::vector<double> const&
+        getIndividualPassiveReferenceTimeSteps() const
+        {
+            return individual_passive_reference_time_steps_;
+        }
+
         // Release state whose shape follows the committed cell ownership or
         // tessellation.  Called only after an event commits, before AMR/LB
         // state is reused.
@@ -144,9 +166,11 @@ public:
             std::vector<ComputationalCell3D> const* canonical_owned_cells = nullptr,
             std::vector<std::size_t> const* local_to_global = nullptr) const;
 
+
         void clearStepFailure() const
         {
             last_step_failure_reason_.clear();
+            last_step_failure_diagnostics_.clear();
             last_step_failure_cell_id_ = std::numeric_limits<size_t>::max();
             last_step_failure_cell_local_ = false;
             last_step_failure_remote_ = false;
@@ -154,10 +178,12 @@ public:
 
         void setStepFailure(
             std::string const& reason,
-            size_t cell_id = std::numeric_limits<size_t>::max()) const
+            size_t cell_id = std::numeric_limits<size_t>::max(),
+            std::string const& diagnostics = std::string()) const
         {
             if (!reason.empty() && last_step_failure_reason_.empty()) {
                 last_step_failure_reason_ = reason;
+                last_step_failure_diagnostics_ = diagnostics;
                 last_step_failure_cell_id_ = cell_id;
                 last_step_failure_cell_local_ = false;
                 last_step_failure_remote_ = false;
@@ -167,10 +193,12 @@ public:
         /** Record a failure caused by one owned active cell. */
         void setCellLocalStepFailure(
             std::string const& reason,
-            size_t cell_id) const
+            size_t cell_id,
+            std::string const& diagnostics = std::string()) const
         {
             if (!reason.empty() && last_step_failure_reason_.empty()) {
                 last_step_failure_reason_ = reason;
+                last_step_failure_diagnostics_ = diagnostics;
                 last_step_failure_cell_id_ = cell_id;
                 last_step_failure_cell_local_ = true;
                 last_step_failure_remote_ = false;
@@ -195,6 +223,8 @@ public:
         }
 
         std::string const& getLastStepFailureReason() const { return last_step_failure_reason_; }
+        std::string const& getLastStepFailureDiagnostics() const
+        {return last_step_failure_diagnostics_;}
         size_t getLastStepFailureCellId() const { return last_step_failure_cell_id_; }
         bool getLastStepFailureIsCellLocal() const
         {return last_step_failure_cell_local_;}
@@ -216,6 +246,8 @@ protected:
         std::size_t right = 0;
         std::size_t group = 0;
         double coefficient = 0;
+        // Full scheduler face interval; coefficient includes candidate fraction.
+        double time_step = 0;
     };
 
     struct SpectralRepairEvent
@@ -234,6 +266,13 @@ protected:
         double owned_radiation_energy = 0;
     };
 
+    struct IndividualRadiationLocalDefectMeasure
+    {
+        double relative_fraction = 0;
+        double allowed_withdrawal = 0;
+        double tolerance_ratio = 0;
+    };
+
     // Candidate-local omitted active/passive interface transfer.  This record
     // remains pending until every solver, residual, mapping, positivity, and
     // post-solve check has accepted the surrounding transaction.
@@ -244,12 +283,7 @@ protected:
         long double passive_withdrawal_extent = 0;
         long double passive_deposit_extent = 0;
         double maximum_local_fraction = 0;
-        double representative_passive_extent = 0;
-        double representative_roundoff_floor = 0;
-        double representative_withdrawal_extent = 0;
-        double representative_deposit_extent = 0;
-        double representative_net_passive_extent = 0;
-        double representative_maximum_withdrawal_term = 0;
+        double maximum_local_tolerance_ratio = 0;
         double candidate_start_positive_global_extent = 0;
         double rhs_derived_global_floor = 0;
         double normalization_scale = 0;
@@ -264,7 +298,6 @@ protected:
             std::numeric_limits<std::uint64_t>::max();
         std::uint64_t representative_group =
             std::numeric_limits<std::uint64_t>::max();
-        std::uint64_t representative_face_group_terms = 0;
         std::uint64_t representative_active_rank =
             std::numeric_limits<std::uint64_t>::max();
         std::uint64_t representative_rank =
@@ -294,12 +327,16 @@ protected:
         double& rhs_derived_global_floor) const;
     IndividualRadiationDefectAccounting&
         individualRadiationDefectAccounting() const;
+    static IndividualRadiationLocalDefectMeasure
+        measureIndividualRadiationLocalDefect(
+            double withdrawal,
+            double passive_extent,
+            double roundoff_floor,
+            double normalization_scale);
     bool validateIndividualRadiationDefect(
-        IndividualRadiationDefectEvent& local_event,
-        char const* scope) const;
+        IndividualRadiationDefectEvent& local_event) const;
     void commitIndividualRadiationDefect(
-        IndividualRadiationDefectEvent const& event,
-        char const* scope) const;
+        IndividualRadiationDefectEvent const& event) const;
     virtual void prepareIndividualCandidate(
         Tessellation3D const&,
         std::vector<ComputationalCell3D> const&) const
@@ -374,6 +411,7 @@ protected:
 
     EquationOfState const& eos_;
     mutable std::string last_step_failure_reason_;
+    mutable std::string last_step_failure_diagnostics_;
     mutable size_t last_step_failure_cell_id_ =
         std::numeric_limits<size_t>::max();
     mutable bool last_step_failure_cell_local_ = false;
@@ -385,6 +423,7 @@ protected:
     mutable IndividualStepContext const* individual_context_ = nullptr;
     mutable double individual_interval_fraction_ = 1.0;
     mutable std::vector<IndividualFaceCoefficient> individual_face_coefficients_;
+    mutable std::vector<double> individual_passive_reference_time_steps_;
     mutable RadiationRepairAccounting standalone_repair_accounting_;
     mutable IndividualRadiationDefectAccounting
         standalone_defect_accounting_;

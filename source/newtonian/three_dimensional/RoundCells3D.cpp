@@ -30,7 +30,14 @@ namespace
 				min_loc = i;
 			}
 		}
-		double other_width = tess.IsPointOutsideBox(neigh[min_loc]) ? 0.0 : tess.GetWidth(neigh[min_loc]);
+		// A neighbour past the velocity and no-move arrays (MPI ghosts are
+		// inside them once synchronized) is, on a serial partial
+		// (individual-event) mesh, an unbuilt support point: it has no cell
+		// geometry or velocity here, so it slows nothing down.
+		size_t const nearest = neigh[min_loc];
+		double other_width = tess.IsPointOutsideBox(nearest) ||
+			nearest >= velocities.size() || nearest >= nomove.size() ?
+			0.0 : tess.GetWidth(nearest);
 		if (min_d < 0.4 * std::min(R, other_width))
 		{
 			size_t face = tess.GetCellFaces(index)[min_loc];
@@ -191,6 +198,11 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 #endif
 			cs = std::max(cs, eos_.dp2c(cells[neigh[j]].density, cells[neigh[j]].pressure, cells[neigh[j]].tracers, ComputationalCell3D::tracerNames));
 			cs = std::max(cs, fastabs(cells[neigh[j]].velocity));
+#ifndef RICH_MPI
+			// A serial partial (individual-event) mesh has no cell geometry for
+			// its support points past the built cells; their primitives count.
+			if(neigh[j] < tess.GetPointNo())
+#endif
 			min_R = std::min(min_R, tess.GetWidth(neigh[j]));
 #ifdef RICH_DEBUG
 			if (!std::isfinite(cs))

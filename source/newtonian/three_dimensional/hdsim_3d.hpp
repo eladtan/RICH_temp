@@ -3,12 +3,15 @@
 
 #include <cassert>
 #include <chrono>
+#include <limits>
 #include <memory>
+#include <unordered_map>
 #include <MeshDecomposer3D/hilbert/HilbertOrder3D.hpp>
 #include "misc/utils.hpp"
 #include "computational_cell.hpp"
 #include "3D/tessellation/Tessellation3D.hpp"
 #include "conserved_3d.hpp"
+#include "IndividualChangeWakeAccounting.hpp"
 #include "../common/equation_of_state.hpp"
 #include "point_motion_3d.hpp"
 #include "time_step_function3D.hpp"
@@ -18,6 +21,7 @@
 #include "SourceTerm3D.hpp"
 #include "newtonian/three_dimensional/simulation/ProgressTracker.hpp"
 #include "newtonian/three_dimensional/simulation/IndividualTimeStep.hpp"
+#include "newtonian/three_dimensional/simulation/StepDiagnostics.hpp"
 #include "CostCalculator3D.hpp"
 #include "Hllc3D.hpp"
 
@@ -80,6 +84,59 @@ public:
 
   void suggestIndividualTimeSteps(const IndividualStepContext& context,
     vector<double>& time_step_limits) const;
+
+  /*! \brief Wakes passive cells whose conserved state changed too much
+    since their activation (see individual_conserved_change_).
+    \param context Event context
+    \param wake_deadlines Per canonical cell wake interval, reduced in place
+  */
+  /*! \brief Per-cell CFL limits of the current full mesh
+    Valid after a global step (face velocities of this mesh are cached) until
+    the mesh is rebuilt (AMR, rebalance, box growth).  Returns false when the
+    timestep function cannot supply them or the cached face velocities are
+    not those of the current mesh (CellTimeStepLimitsStale).
+    \param limits Output, one entry per owned cell
+    \return Whether limits were filled
+  */
+  bool CollectCellTimeStepLimits(vector<double>& limits) const;
+
+  /*! \brief True when CollectCellTimeStepLimits could supply limits but the
+    cached face velocities do not belong to the current mesh: it was rebuilt
+    after the last global step set them, or they were overwritten since.
+  */
+  bool CellTimeStepLimitsStale(void) const;
+
+  /*! \brief Per-cell limits of every owned cell on the current full mesh,
+    before anything advances on it (after a box growth): the individual
+    event's rule -- wave-speed CFL, the source term's per-cell limits times the
+    source factor, and the mesh-drift guard -- with face velocities and
+    closing speeds from `point_velocities` (owned cells, mesh order: the
+    velocities each generator moves with through its next interval).
+    `accelerations` receives the refreshed individual acceleration cache when
+    the source keeps one (else stays empty).  Collective under MPI; false on
+    every rank when the timestep function has no per-cell rule or the mesh
+    does not hold exactly the owned cells.
+  */
+  bool SynchronizedTimeStepLimits(vector<Vector3D> const& point_velocities,
+    vector<double>& limits, vector<Vector3D>& accelerations) const;
+
+  /*! \brief The source's individual acceleration of every owned cell on the
+    current full mesh (SourceTerm3D::RefreshIndividualAccelerations), for the
+    acceleration cache.  Collective under MPI; false on every rank when the
+    source keeps no acceleration cache, cannot refresh it (an acceleration
+    without target evaluation), or the mesh does not hold exactly the owned
+    cells.
+  */
+  bool RefreshIndividualAccelerations(vector<Vector3D>& accelerations) const;
+
+  void suggestIndividualChangeWakes(const IndividualStepContext& context,
+    vector<double>& change_ratios) const;
+
+  SourceStepTiming GetLastSourceStepTiming(void) const
+  {return last_source_step_timing_;}
+
+  MeshBuildTiming GetLastMeshBuildTiming(void) const
+  {return last_mesh_build_timing_;}
 
   /*! \brief Second order time advance with Lagrangian x-boundaries
     \param left_external Exterior state at left x-boundary (nullptr = vacuum)
@@ -146,6 +203,25 @@ public:
     std::shared_ptr<SphericalShellProjector3D> projector,
     FluxCalculator3D const& perturbation_flux_calculator);
 
+  /*! \brief The hydro part of the step a global step would take, as of the
+    latest individual time-step suggestion: the guard floor's cached smallest
+    CFL/source limit over all cells (see RICH_INDIVIDUAL_GUARD_FLOOR).  Zero
+    before the first suggestion or with the floor off.  Identical on every rank.
+  */
+  double GetIndividualGlobalStepReference(void) const
+  {return individual_global_step_reference_;}
+
+  //! \brief Forget the reference (a global phase makes it stale).
+  void ResetIndividualGlobalStepReference(void)
+  {individual_global_step_reference_ = 0;}
+
+  /*! \brief Seed the reference when an individual phase starts, with the step
+    the last global step took, so the first event (before the first suggestion
+    refreshes it) scales per-step drivers by its own interval.
+  */
+  void SetIndividualGlobalStepReference(double reference)
+  {individual_global_step_reference_ = std::isfinite(reference) && reference > 0 ? reference : 0;}
+
   size_t GetSphericalPerturbationEvaluationCount(void) const
   {return spherical_perturbation_evaluation_count_;}
 
@@ -153,7 +229,11 @@ public:
   {
     individual_points_.clear();
     individual_centroids_.clear();
+    DrainIndividualChangeWakeSamples();
+    individual_conserved_change_.clear();
+    individual_limit_at_activation_.clear();
     individual_mesh_target_ids_.clear();
+    individual_adjacency_.clear();
     individual_mesh_restore_pending_ = false;
     individual_event_mesh_reusable_ = false;
   }
@@ -168,6 +248,7 @@ public:
   {
     vector<Vector3D>().swap(point_vel_scratch_);
     vector<Vector3D>().swap(face_vel_scratch_);
+    face_vel_build_generation_ = kNoFaceVelocityGeneration;
     vector<Vector3D>().swap(individual_points_);
     vector<Vector3D>().swap(individual_centroids_);
     vector<Vector3D>().swap(oldpoints_scratch_);
@@ -181,12 +262,25 @@ public:
     std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> >().swap(
       face_values_scratch_);
     vector<size_t>().swap(individual_mesh_target_ids_);
+    vector<IndividualAdjacencyRecord>().swap(individual_adjacency_);
+    // Indexed by owned cell: an ownership change misaligns it even when the
+    // count survives.
+    std::vector<unsigned char>().swap(individual_limit_reason_);
     individual_mesh_restore_pending_ = false;
     individual_event_mesh_reusable_ = false;
   }
 
   const vector<Vector3D>& GetIndividualGeneratorPoints(void) const
   {return individual_points_;}
+
+  // Cadence diagnostic (see individual_limit_reason_).
+  std::vector<unsigned char> const& GetIndividualLimitReasons(void) const
+  {
+    return individual_limit_reason_;
+  }
+
+  const vector<Vector3D>& GetIndividualCellCentroids(void) const
+  {return individual_centroids_;}
 
   const vector<size_t>& GetIndividualMeshTargetIDs(void) const
   {return individual_mesh_target_ids_;}
@@ -236,13 +330,75 @@ private:
   const	SourceTerm3D &source_;
   const ProgressTracker &pt_;
   const bool special_relativity_;
+  SourceStepTiming last_source_step_timing_;
+  MeshBuildTiming last_mesh_build_timing_;
 	  vector<Vector3D> point_vel_scratch_;
 	  vector<Vector3D> face_vel_scratch_;
+	  // Build generation of tess_ that face_vel_scratch_ belongs to: set where
+	  // timeAdvance2 leaves face velocities of its final mesh, cleared
+	  // wherever the scratch is reused (CollectCellTimeStepLimits).
+	  static constexpr size_t kNoFaceVelocityGeneration =
+		  std::numeric_limits<size_t>::max();
+	  size_t face_vel_build_generation_ = kNoFaceVelocityGeneration;
 	  vector<Vector3D> individual_points_;
 	  vector<Vector3D> individual_centroids_;
+	  // Per canonical cell since its last activation (IndividualChangeWakeAccounting.hpp).
+	  mutable vector<IndividualConservedChange> individual_conserved_change_;
+	  // Conserved-change wake accuracy since the last report.
+	  mutable IndividualChangeWakeAccounting individual_change_wake_accounting_;
+	  // Censors every outstanding wake sample before the accumulators are discarded.
+	  void DrainIndividualChangeWakeSamples(void) const;
+	  // Ratio above which a woken cell's change at activation is a violation (twice the wake fraction).
+	  double IndividualChangeWakeRatioLimit(void) const;
+	  /*! \brief Timestep limit in force when each canonical cell's current
+	    interval opened, kept so that the next activation can report an
+	    interval that ran longer than its own limit allowed.
+	  */
+	  mutable vector<double> individual_limit_at_activation_;
+	  // Which hydro limit set each active cell's suggestion at its latest
+	  // activation: 1 CFL/source, 2 mesh drift, 3 mass loss, 4 thermal loss.
+	  mutable std::vector<unsigned char> individual_limit_reason_;
+	  // Hydro/source limit of each cell at its latest activation or
+	  // synchronized evaluation on this rank, by cell ID, for the guard floor
+	  // (RICH_INDIVIDUAL_GUARD_FLOOR).  Keyed by ID so it survives AMR, which
+	  // runs ResetIndividualMeshState (that keeps it).  Entries do not follow a
+	  // cell that migrates to another rank; the cell counts again from its next
+	  // activation there (the floor's report gives the coverage, not the age).
+	  mutable std::unordered_map<size_t, double> individual_hydro_limit_by_id_;
+	  mutable double individual_global_step_reference_ = 0;
+	  /*! \brief Measured costs of individual event-mesh builds, for the
+	    adaptive per-rank closure threshold (RICH_INDIVIDUAL_PARTIAL_THRESHOLD_ADAPTIVE):
+	    exponentially weighted sums of the per-attempt partial-build time
+	    (max over ranks) against the largest per-rank target fraction, of the
+	    attempts per partial build, and of the full-build time.  Updated from
+	    reduced values after every build, so identical on every rank.
+	  */
+	  struct IndividualPartialBuildCostModel
+	  {
+	    double w = 0, x = 0, xx = 0, y = 0, xy = 0;  // per-attempt fit
+	    double attempts = 0, attempts_w = 0;
+	    double full = 0, full_w = 0;
+	    std::size_t partial_samples = 0, full_samples = 0;
+	    double fraction = 0;  // 0 until enough samples
+	  };
+	  mutable IndividualPartialBuildCostModel individual_partial_cost_;
+	  vector<Conserved3D> individual_pre_flux_extensives_scratch_;
 	  bool individual_event_mesh_reusable_ = false;
 	  vector<size_t> individual_mesh_target_ids_;
 	  bool individual_mesh_restore_pending_ = false;
+	  /*! \brief Face neighbours of a canonical cell as of the last event mesh
+	    that contained it, by stable ID with the owning rank.  Seeds the
+	    partial-build target with the two-cell reconstruction shell before the
+	    build, so the closure check after it rarely adds cells and rebuilds.
+	    A record whose ID no longer matches its slot is ignored.
+	  */
+	  struct IndividualAdjacencyRecord
+	  {
+	    size_t cell_id = std::numeric_limits<size_t>::max();
+	    vector<size_t> neighbor_ids;
+	    vector<int> neighbor_owners;
+	  };
+	  vector<IndividualAdjacencyRecord> individual_adjacency_;
 	  vector<Vector3D> oldpoints_scratch_;
   vector<Vector3D> tessellation_points_scratch_;
   vector<Conserved3D> fluxes_scratch_;

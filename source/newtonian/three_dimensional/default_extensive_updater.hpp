@@ -8,6 +8,16 @@
 
 #include "conserved_3d.hpp"
 #include "extensive_updater3d.hpp"
+#include <cstdint>
+#include <string>
+
+// Bits: Erad=1, radiation derivatives=2/4, groups=8, mass=16,
+// nonfinite total energy=32, tracked thermal energy=64, momentum=128.
+// Negative finite thermal energy remains eligible for entropy recovery.
+std::uint64_t IndividualHydroInvalidComponentMask(Conserved3D const& state);
+
+void PersistIndividualHydroDiagnosticRecord(const std::string& record_id,
+	const std::string& record);
 
 //! \brief Generates a list of conserved variables
 class DefaultExtensiveUpdater: public ExtensiveUpdater3D

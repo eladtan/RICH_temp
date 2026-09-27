@@ -16,6 +16,7 @@
 #include <limits>
 
 #include "newtonian/three_dimensional/ConservativeForce3D.hpp"
+#include "newtonian/three_dimensional/simulation/RuntimeLog.hpp"
 #include "misc/memory_profile.hpp"
 
 class GravityAcceleration3D : public Acceleration3D
@@ -159,6 +160,8 @@ public:
 private:
 	static bool IndividualTimingEnabled(void)
 	{
+		if(RuntimeLogDetailed())
+			return true;
 		char const* const value = std::getenv("RICH_INDIVIDUAL_PERF_TRACE");
 		return value != nullptr && value[0] != '\0' &&
 			std::strcmp(value, "0") != 0 &&

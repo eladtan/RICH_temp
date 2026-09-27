@@ -1,5 +1,6 @@
 #include "ConditionActionFlux1.hpp"
 
+#include <algorithm>
 #include <cmath>
 
 ConditionActionFlux1::ConditionActionFlux1(const vector<pair<const Condition3D*, const Action3D*> >& sequence,
@@ -53,26 +54,53 @@ namespace
 			cell.pressure * div_v / cell.density;
 
 		ComputationalCell3D candidate = face_value;
-		candidate.density += time_offset * drho;
-		candidate.velocity += time_offset * dv;
-		candidate.internal_energy += time_offset * de;
-		for(std::size_t tracer = 0; tracer < candidate.tracers.size(); ++tracer)
+		double predictor_factor = 1;
+		for(std::size_t attempt = 0; attempt < 20; ++attempt)
 		{
-			const double dq = -directional_derivative(vx, vy, vz,
-				slope.xderivative.tracers[tracer],
-				slope.yderivative.tracers[tracer],
-				slope.zderivative.tracers[tracer]);
-			candidate.tracers[tracer] += time_offset * dq;
+			candidate.density = face_value.density +
+				predictor_factor * time_offset * drho;
+			candidate.velocity = face_value.velocity +
+				predictor_factor * time_offset * dv;
+			candidate.internal_energy = face_value.internal_energy +
+				predictor_factor * time_offset * de;
+			for(std::size_t tracer = 0; tracer < candidate.tracers.size(); ++tracer)
+			{
+				const double dq = -directional_derivative(vx, vy, vz,
+					slope.xderivative.tracers[tracer],
+					slope.yderivative.tracers[tracer],
+					slope.zderivative.tracers[tracer]);
+				candidate.tracers[tracer] = face_value.tracers[tracer] +
+					predictor_factor * time_offset * dq;
+			}
+
+			bool const primitive_valid = candidate.density > 0 &&
+				candidate.internal_energy > 0 &&
+				std::isfinite(candidate.density) &&
+				std::isfinite(candidate.internal_energy) &&
+				std::isfinite(candidate.velocity.x) &&
+				std::isfinite(candidate.velocity.y) &&
+				std::isfinite(candidate.velocity.z);
+			if(primitive_valid)
+			{
+				try
+				{
+					candidate.pressure = eos.de2p(candidate.density,
+						candidate.internal_energy, candidate.tracers,
+						ComputationalCell3D::tracerNames);
+					if(candidate.pressure > 0 &&
+					   std::isfinite(candidate.pressure))
+					{
+						face_value = candidate;
+						return;
+					}
+				}
+				catch(UniversalError&)
+					{}
+			}
+			predictor_factor *= 0.5;
 		}
-		if(candidate.density > 0 && candidate.internal_energy > 0 &&
-			std::isfinite(candidate.density) && std::isfinite(candidate.internal_energy))
-		{
-			candidate.pressure = eos.de2p(candidate.density,
-				candidate.internal_energy, candidate.tracers,
-				ComputationalCell3D::tracerNames);
-			if(candidate.pressure > 0 && std::isfinite(candidate.pressure))
-				face_value = candidate;
-		}
+		// The spatially reconstructed face state was already EOS-closed.  Keep it
+		// when no admissible temporal correction can be found.
 	}
 
 	void choose_action(size_t face, const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
@@ -90,8 +118,12 @@ namespace
 			{
 #endif
 				if (flag_aux.first)
-					return (*sequence[i].second)
-					(face, tess, face_velocity, cells, eos, flag_aux.second, res, time, face_values);
+				{
+					(*sequence[i].second)(
+						face, tess, face_velocity, cells, eos,
+						flag_aux.second, res, time, face_values);
+					return;
+				}
 #ifdef RICH_DEBUG
 			}
 			catch (UniversalError &eo)
@@ -139,6 +171,7 @@ void ConditionActionFlux1::CalculateIndividual(
 	fluxes.assign(tess.GetTotalFacesNumber(), Conserved3D());
 	const std::vector<Slope3D>* slopes = interp_.GetSlopesForTimePrediction();
 	const std::size_t norg = context.active_mask.size();
+	const std::size_t owned_cell_count = tess.GetPointNo();
 
 	for(std::size_t face = 0; face < fluxes.size(); ++face)
 	{
@@ -150,7 +183,7 @@ void ConditionActionFlux1::CalculateIndividual(
 
 		double face_dt = 0;
 		if(neighbors.first < norg && neighbors.second < norg)
-			face_dt = context.faceTimeStep(neighbors.first, neighbors.second);
+			face_dt = context.hydroFaceTimeStep(neighbors.first, neighbors.second);
 		else if(neighbors.first < norg)
 			face_dt = context.cellTimeStep(neighbors.first);
 		else
@@ -158,6 +191,7 @@ void ConditionActionFlux1::CalculateIndividual(
 
 		if(slopes)
 		{
+			const bool boundary_face = tess.BoundaryFace(face);
 			const double midpoint_time = context.event_time - 0.5 * face_dt;
 			auto prediction_offset = [&](std::size_t index,
 				std::size_t fallback_index)
@@ -177,20 +211,34 @@ void ConditionActionFlux1::CalculateIndividual(
 					? context.cached_accelerations[source]
 					: Vector3D();
 			};
-			if(neighbors.first < slopes->size())
+			// Physical boundary ghosts have no cell-centred primitive state.
+			// Their face state is supplied by the boundary reconstruction/action.
+			if(neighbors.first < slopes->size() &&
+				(!boundary_face || neighbors.first < owned_cell_count))
 				predict_primitive(face_values[face].first, cells[neighbors.first],
 					(*slopes)[neighbors.first], eos, face_velocities[face],
 					prediction_acceleration(neighbors.first, neighbors.second),
 					prediction_offset(neighbors.first, neighbors.second));
-			if(neighbors.second < slopes->size())
+			if(neighbors.second < slopes->size() &&
+				(!boundary_face || neighbors.second < owned_cell_count))
 				predict_primitive(face_values[face].second, cells[neighbors.second],
 					(*slopes)[neighbors.second], eos, face_velocities[face],
 					prediction_acceleration(neighbors.second, neighbors.first),
 					prediction_offset(neighbors.second, neighbors.first));
 		}
 
-		if(face_values[face].first.density <= 0 || face_values[face].first.internal_energy <= 0 ||
-			face_values[face].second.density <= 0 || face_values[face].second.internal_energy <= 0)
+		if(!(face_values[face].first.density > 0) ||
+			!(face_values[face].first.pressure > 0) ||
+			!(face_values[face].first.internal_energy > 0) ||
+			!(face_values[face].second.density > 0) ||
+			!(face_values[face].second.pressure > 0) ||
+			!(face_values[face].second.internal_energy > 0) ||
+			!std::isfinite(face_values[face].first.density) ||
+			!std::isfinite(face_values[face].first.pressure) ||
+			!std::isfinite(face_values[face].first.internal_energy) ||
+			!std::isfinite(face_values[face].second.density) ||
+			!std::isfinite(face_values[face].second.pressure) ||
+			!std::isfinite(face_values[face].second.internal_energy))
 			throw UniversalError("Bad input to individual flux calculator");
 		choose_action(face, tess, cells, eos, face_velocities[face], sequence_,
 			fluxes[face], context.event_time - 0.5 * face_dt, face_values[face]);

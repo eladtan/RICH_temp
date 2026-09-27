@@ -3,6 +3,7 @@
 #include "SpectralPositivity.hpp"
 #include "misc/memory_debug.hpp"
 #include "misc/memory_profile.hpp"
+#include "newtonian/three_dimensional/simulation/RuntimeLog.hpp"
 // TODO: make a units namespace used by all the program 
 #include "CMMC/src/units/units.hpp"
 #include "CMMC/src/planck_integral/planck_integral.hpp"
@@ -27,6 +28,9 @@ namespace
 {
 bool mgRuntimeFlagEnabled(char const* const name)
 {
+	if(std::strcmp(name, "RICH_INDIVIDUAL_PERF_TRACE") == 0 &&
+	   RuntimeLogDetailed())
+		return true;
     char const* const value = std::getenv(name);
     std::string const setting = value == nullptr ? "" : std::string(value);
     return !setting.empty() && setting != "0" && setting != "false" &&
@@ -58,6 +62,45 @@ double mgElapsedSeconds(MultigroupClock::time_point const start)
 {
     return std::chrono::duration<double>(
         MultigroupClock::now() - start).count();
+}
+
+ComputationalCell3D multigroupRadiationCellInCgs(
+    ComputationalCell3D const& cell,
+    double const length_scale,
+    double const time_scale,
+    double const mass_scale)
+{
+    ComputationalCell3D result(cell);
+    result.density *= mass_scale / pow<3>(length_scale);
+    double const specific_energy_scale =
+        pow<2>(length_scale) / pow<2>(time_scale);
+    result.internal_energy *= specific_energy_scale;
+    result.Erad *= specific_energy_scale;
+    result.velocity *= length_scale / time_scale;
+    for(std::size_t group = 0; group < ENERGY_GROUPS_NUM; ++group)
+        result.Eg[group] *= specific_energy_scale;
+    return result;
+}
+
+std::vector<double> comptonTransportScatteringExtinction(
+    std::vector<std::vector<double>> const& tau_matrix,
+    std::vector<double> const& occupation)
+{
+    if(tau_matrix.size() != occupation.size())
+        throw std::logic_error("inconsistent Compton transport group count");
+    std::vector<double> extinction(occupation.size(), 0.0);
+    for(std::size_t group = 0; group < occupation.size(); ++group) {
+        if(tau_matrix[group].size() != occupation.size())
+            throw std::logic_error("inconsistent Compton transport matrix");
+        double outgoing_rate = 0;
+        for(std::size_t target_group = 0;
+            target_group < occupation.size(); ++target_group)
+            if(target_group != group)
+                outgoing_rate += tau_matrix[group][target_group] *
+                    (1 + occupation[target_group]);
+        extinction[group] = std::max(0.0, outgoing_rate);
+    }
+    return extinction;
 }
 
 class MultigroupPhaseTimer
@@ -883,6 +926,7 @@ double MultigroupDiffusion::calculate_dt(double const dt,
     return suggested_dt;
 }
 
+
 void MultigroupDiffusion::calculateIndividualTimeSteps(
     IndividualStepContext const& context,
     Tessellation3D& tess,
@@ -1014,10 +1058,11 @@ void MultigroupDiffusion::calculateIndividualTimeSteps(
         int const component = change.component;
 
         double const current_dt = context.cellTimeStep(i);
+        double const nominal_dt = context.nominalCellTimeStep(i);
         double const limit = std::min(
             current_dt * mg_timestep_change_fraction /
                 std::max(difference, std::numeric_limits<double>::min()),
-            current_dt * mg_individual_timestep_growth_cap);
+            nominal_dt * mg_individual_timestep_growth_cap);
         time_step_limits.at(i) = std::min(time_step_limits.at(i), limit);
         if(i < radiation_force_time_step_limits_.size()) {
             double const force_limit = radiation_force_time_step_limits_[i];
@@ -1192,19 +1237,14 @@ void MultigroupDiffusion::prepareIndividualCandidate(
                   MPI_COMM_WORLD);
 #endif
 
-    char const* const trace_value =
-        std::getenv("RICH_INDIVIDUAL_PERF_TRACE");
-    std::string const trace_setting = trace_value == nullptr ? "" :
-        std::string(trace_value);
-    bool const trace_prepare = !trace_setting.empty() &&
-        trace_setting != "0" && trace_setting != "false" &&
-        trace_setting != "off" && trace_setting != "no";
+    bool const trace_prepare =
+        mgRuntimeFlagEnabled("RICH_INDIVIDUAL_PERF_TRACE");
     int prepare_rank = 0;
 #ifdef RICH_MPI
     MPI_Comm_rank(MPI_COMM_WORLD, &prepare_rank);
 #endif
     if(trace_prepare && prepare_rank == 0)
-        std::clog << "MG_ALL_ACTIVE_PREPARE"
+        RuntimeTraceStream() << "MG_ALL_ACTIVE_PREPARE"
                   << " scope=" << (all_active_global_route ?
                         "all_active_global" : "reduced_active")
                   << " requested=" << (elide_requested ? 1 : 0)
@@ -1245,14 +1285,9 @@ void MultigroupDiffusion::prepareIndividualCandidate(
         }
 
     cells_cgs = cells;
-    for(std::size_t i = 0; i < cells_cgs.size(); ++i) {
-        cells_cgs[i].density *= mass_scale_ / pow<3>(length_scale_);
-        cells_cgs[i].internal_energy *= pow<2>(length_scale_) / pow<2>(time_scale_);
-        cells_cgs[i].Erad *= pow<2>(length_scale_) / pow<2>(time_scale_);
-        cells_cgs[i].velocity *= length_scale_ / time_scale_;
-        for(std::size_t group = 0; group < ENERGY_GROUPS_NUM; ++group)
-            cells_cgs[i].Eg[group] *= pow<2>(length_scale_) / pow<2>(time_scale_);
-    }
+    for(std::size_t i = 0; i < cells_cgs.size(); ++i)
+        cells_cgs[i] = multigroupRadiationCellInCgs(
+            cells[i], length_scale_, time_scale_, mass_scale_);
 
     calculate_group_absorption_and_scattering_coefficients(tess, cells_cgs, 0);
     calculate_planck_integrals(tess, cells_cgs);
@@ -1793,14 +1828,9 @@ bool MultigroupDiffusion::step(double const tolerance,
         }
 
         cells_cgs = cells;
-        for (std::size_t i=0; i<N; ++i) {
-            cells_cgs[i].density *= mass_scale_ / pow<3>(length_scale_);
-            cells_cgs[i].internal_energy *= pow<2>(length_scale_) / pow<2>(time_scale_);
-            cells_cgs[i].Erad *= pow<2>(length_scale_) / pow<2>(time_scale_);
-            cells_cgs[i].velocity *= length_scale_ / time_scale_;
-            for (std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g)
-                cells_cgs[i].Eg[g] *= pow<2>(length_scale_) / pow<2>(time_scale_);
-        }
+        for(std::size_t i = 0; i < N; ++i)
+            cells_cgs[i] = multigroupRadiationCellInCgs(
+                cells[i], length_scale_, time_scale_, mass_scale_);
 
 #ifdef RICH_MPI
         MPI_exchange_data(tess, cells_cgs, true);
@@ -2033,8 +2063,8 @@ bool MultigroupDiffusion::step(double const tolerance,
         MPI_Allreduce(MPI_IN_PLACE, &split_suppressed_energy_, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(MPI_IN_PLACE, &split_injected_energy_, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 #endif
-        if (rank == 0)
-            std::clog << "Total iterations: " << total_iters
+        if (RuntimeLogDetailed() && rank == 0)
+            std::cout << "Total iterations: " << total_iters
                       << " split Compton cells " << split_count
                       << " split substeps " << split_subcycle_count_
                       << " suppressed energy " << split_suppressed_energy_
@@ -2050,7 +2080,8 @@ bool MultigroupDiffusion::step(double const tolerance,
                 planck_absorption_seconds + fleck_seconds +
                 bicgstab_seconds + postcg_seconds +
                 split_compton_repair_seconds;
-            std::clog << "MG_GLOBAL_STEP_PHASE_TIMING scope=rank_local"
+            RuntimeTraceStream()
+                      << "MG_GLOBAL_STEP_PHASE_TIMING scope=rank_local"
                       << " rank=" << rank
                       << " group_opacity_seconds=" << group_opacity_seconds
                       << " planck_integral_seconds=" << planck_integral_seconds
@@ -3222,7 +3253,8 @@ void MultigroupDiffusion::ensureComptonBulkRuntimeOptions() const
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
         if(rank == 0)
-            std::clog << "MG_COMPTON_BULK_COEFFICIENTS enabled="
+            RuntimeTraceStream()
+                      << "MG_COMPTON_BULK_COEFFICIENTS enabled="
                       << (compton_bulk_coefficients_enabled_ ? 1 : 0)
                       << " shadow="
                       << (compton_bulk_shadow_enabled_ ? 1 : 0)
@@ -3815,7 +3847,8 @@ void MultigroupDiffusion::BuildMatrixCSR(
         MPI_Comm_rank(MPI_COMM_WORLD, &cache_rank);
 #endif
         if(cache_rank == 0)
-            std::clog << "MG_DIRECT_STRUCTURE_CACHE scope=rank_local"
+            RuntimeTraceStream()
+                      << "MG_DIRECT_STRUCTURE_CACHE scope=rank_local"
                       << " rank=" << cache_rank
                       << " requested="
                       << (cache_requested ? 1 : 0)
@@ -5089,7 +5122,7 @@ void MultigroupDiffusion::BuildMatrixImpl(
         double const implicit_compton_fraction = matrix_cell_counts[0] == 0 ?
             0.0 : static_cast<double>(matrix_cell_counts[1]) /
                 static_cast<double>(matrix_cell_counts[0]);
-        std::clog << "MG_MATRIX_PHASE_TIMING scope=rank_local"
+        RuntimeTraceStream() << "MG_MATRIX_PHASE_TIMING scope=rank_local"
                   << " rank=" << rank
                   << " lazy_compton_recovery_requested="
                   << (lazy_compton_recovery_requested ? 1 : 0)
@@ -7187,10 +7220,6 @@ void MultigroupDiffusion::fillComptonScatteringRates(
     std::vector<std::vector<double>> const& tau_mat,
     std::vector<double> const& occ) const
 {
-    for (std::size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
-        double out = 0.0;
-        for (std::size_t gt = 0; gt < ENERGY_GROUPS_NUM; ++gt)
-            if (gt != g) out += tau_mat[g][gt] * (1.0 + occ[gt]);
-        sigma_scattering_group[cell_index][g] = std::max(0.0, out);
-    }
+    sigma_scattering_group[cell_index] =
+        comptonTransportScatteringExtinction(tau_mat, occ);
 }

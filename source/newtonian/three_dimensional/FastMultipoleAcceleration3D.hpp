@@ -57,6 +57,7 @@ private:
     mutable std::vector<double> masses_;
 #ifdef RICH_MPI
     mutable std::vector<std::uint64_t> cellIds_;
+    mutable std::vector<unsigned char> targetMask_;
 #endif
 };
 

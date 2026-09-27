@@ -246,8 +246,13 @@ public:
     bool poststep() const override;
 
     double calculate_dt(double const dt,
-                        Tessellation3D& tess, 
+                        Tessellation3D& tess,
                         std::vector<ComputationalCell3D>& cells) const override;
+
+    std::vector<double> const* lastCellTimeStepLimits() const override
+    {
+        return &last_cell_dt_limits_;
+    }
 
     void calculateIndividualTimeSteps(
         IndividualStepContext const& context,
@@ -256,6 +261,7 @@ public:
         std::vector<double>& time_step_limits,
         std::vector<ComputationalCell3D> const* canonical_owned_cells,
         std::vector<std::size_t> const* local_to_global) const override;
+
 
     void BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells, 
             double const dt, std::vector<double>& b, std::vector<double>& x0, double const current_time) const override;
@@ -291,6 +297,11 @@ public:
 	    // accepted cells for every candidate.
 	    mutable std::vector<double> individual_event_old_Er;
 	    mutable std::vector<double> individual_event_old_T;
+	    // Event-start internal energy per volume, the baseline of the relative-increment
+	    // limit (RICH_INDIVIDUAL_RADIATION_INCREMENT_LIMIT).
+	    mutable std::vector<double> individual_event_old_Eint;
+	    // calculate_dt's limit per owned cell, dt * 0.15 / diff (lastCellTimeStepLimits).
+	    mutable std::vector<double> last_cell_dt_limits_;
     mutable std::vector<ComputationalCell3D> cells_temp;
     mutable std::vector<Conserved3D> extensives_temp;
     mutable CG::BiCGSTABWorkspace cg_workspace_;

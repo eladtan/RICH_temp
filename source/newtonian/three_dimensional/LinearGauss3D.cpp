@@ -1,18 +1,26 @@
 #include "LinearGauss3D.hpp"
 #include "Hllc3D.hpp"
 #include "../../misc/utils.hpp"
+#include <algorithm>
 #include <array>
 #include <iostream>
 #include <cstring>  // for memcpy in fused operations
+#include <limits>
+#include <map>
 #ifdef RICH_MPI
 #include "../../mpi/mpi_commands.hpp"
+#include "../../mpi/IndividualGhostSources.hpp"
 #endif
 
 namespace
 {
 	void CheckCell(ComputationalCell3D const& cell)
 	{
-		if ((!(cell.density > 0)) || (!(cell.internal_energy > 0)) || (!std::isfinite(cell.velocity.x)) || (!std::isfinite(cell.velocity.y)) || (!std::isfinite(cell.velocity.z)))
+		if (!(cell.density > 0) || !std::isfinite(cell.density) ||
+			!(cell.pressure > 0) || !std::isfinite(cell.pressure) ||
+			!(cell.internal_energy > 0) || !std::isfinite(cell.internal_energy) ||
+			!std::isfinite(cell.velocity.x) || !std::isfinite(cell.velocity.y) ||
+			!std::isfinite(cell.velocity.z))
 			throw UniversalError("Bad cell after interpolation in LinearGauss3D");
 	}
 
@@ -224,10 +232,12 @@ namespace
 #endif
 		for (size_t i = 0; i < N; i++)
 		{
-			if (p > neigh[i].pressure)
-				res = std::min(res, neigh[i].pressure / p);
-			else
-				res = std::min(res, p / neigh[i].pressure);
+			double const neighbor_pressure = neigh[i].pressure;
+			// Select the pressures before dividing: SIMD may evaluate both
+			// branches of a conditional division, including inactive lanes.
+			double const ratio = std::min(p, neighbor_pressure) /
+				std::max(p, neighbor_pressure);
+			res = std::min(res, ratio);
 		}
 		return res;
 	}
@@ -271,19 +281,112 @@ namespace
 		sv.z = e1.z * c1 * psi1 + e2.z * c2 * psi2 + e3.z * c3 * psi3;
 	}
 
+	void close_interpolated_thermodynamics(ComputationalCell3D& cell,
+		EquationOfState const& eos, bool pressure_calc,
+		double source_density, double source_pressure,
+		double source_internal_energy, tvector const& source_tracers)
+	{
+		auto close_state = [&cell, &eos, pressure_calc]()
+		{
+			if(!(cell.density > 0) || !std::isfinite(cell.density) ||
+			   (pressure_calc &&
+			    (!(cell.pressure > 0) || !std::isfinite(cell.pressure))) ||
+			   (!pressure_calc &&
+			    (!(cell.internal_energy > 0) ||
+			     !std::isfinite(cell.internal_energy))))
+				throw UniversalError(
+					"Invalid interpolated state before EOS closure");
+			if(pressure_calc)
+				cell.internal_energy = eos.dp2e(cell.density, cell.pressure,
+					cell.tracers, ComputationalCell3D::tracerNames);
+			else
+				cell.pressure = eos.de2p(cell.density, cell.internal_energy,
+					cell.tracers, ComputationalCell3D::tracerNames);
+			CheckCell(cell);
+		};
+
+		try
+		{
+			close_state();
+			return;
+		}
+		catch(UniversalError& face_error)
+		{
+			const double face_density = cell.density;
+			const double face_pressure = cell.pressure;
+			const double face_internal_energy = cell.internal_energy;
+			const tvector face_tracers = cell.tracers;
+
+			// Verify that the EOS supports the requested closure and that the
+			// cell-center state is valid before treating this as a slope problem.
+			cell.density = source_density;
+			cell.pressure = source_pressure;
+			cell.internal_energy = source_internal_energy;
+			cell.tracers = source_tracers;
+			try
+			{
+				close_state();
+			}
+			catch(UniversalError& source_error)
+			{
+				source_error.Append2ErrorMessage(
+					"; interpolated and cell-center EOS closure both failed");
+				source_error.join(face_error);
+				throw source_error;
+			}
+			const double closed_source_pressure = cell.pressure;
+			const double closed_source_internal_energy = cell.internal_energy;
+
+			// The thermodynamic variables and EOS tracers are limited separately.
+			// Contract their face increments together until the EOS accepts the
+			// state.  Only this face loses order; stored slopes are unchanged.
+			double slope_factor = 0.5;
+			for(size_t retry = 0; retry < 20; ++retry)
+			{
+				cell.density = source_density + slope_factor *
+					(face_density - source_density);
+				cell.pressure = source_pressure + slope_factor *
+					(face_pressure - source_pressure);
+				cell.internal_energy = source_internal_energy + slope_factor *
+					(face_internal_energy - source_internal_energy);
+				for(size_t tracer = 0; tracer < cell.tracers.size(); ++tracer)
+					cell.tracers[tracer] = source_tracers[tracer] + slope_factor *
+						(face_tracers[tracer] - source_tracers[tracer]);
+				try
+				{
+					close_state();
+					return;
+				}
+				catch(UniversalError&)
+				{}
+				slope_factor *= 0.5;
+			}
+
+			// The verified cell-center closure is the fail-safe first-order state.
+			cell.density = source_density;
+			cell.pressure = closed_source_pressure;
+			cell.internal_energy = closed_source_internal_energy;
+			cell.tracers = source_tracers;
+		}
+	}
+
 	ComputationalCell3D interp(ComputationalCell3D const& cell, Slope3D const& slope,
 		Vector3D const& target, Vector3D const& cm, EquationOfState const& eos, 
 		bool pressure_calc)
 	{
 		ComputationalCell3D res(cell);
+		const double source_density = res.density;
+		const double source_pressure = res.pressure;
+		const double source_internal_energy = res.internal_energy;
 		ComputationalCellAddMult(res, slope.xderivative, target.x - cm.x);
 		ComputationalCellAddMult(res, slope.yderivative, target.y - cm.y);
 		ComputationalCellAddMult(res, slope.zderivative, target.z - cm.z);
 		if (pressure_calc)
 			try
 		{
-			//res.pressure = eos.de2p(res.density, res.internal_energy, res.tracers, tsn.tracer_names);
-		  res.internal_energy = eos.dp2e(res.density, res.pressure, res.tracers, ComputationalCell3D::tracerNames);
+			close_interpolated_thermodynamics(res, eos, true,
+				source_density, source_pressure, source_internal_energy,
+				cell.tracers);
 		}
 		catch (UniversalError &eo)
 		{
@@ -306,15 +409,18 @@ namespace
 		Vector3D const& target, Vector3D const& cm, EquationOfState const& eos,
 		bool pressure_calc)
 	{
+		const double source_density = res.density;
+		const double source_pressure = res.pressure;
+		const double source_internal_energy = res.internal_energy;
+		const tvector source_tracers = res.tracers;
 		// Use vectorized version - processes all 3 derivatives in one pass
 		ComputationalCellAddMult3(res, slope.xderivative, slope.yderivative, slope.zderivative,
 			target.x - cm.x, target.y - cm.y, target.z - cm.z);
 		try
 		{
-			if (!pressure_calc)
-			  res.pressure = eos.de2p(res.density, res.internal_energy, res.tracers, ComputationalCell3D::tracerNames);
-			else
-			  res.internal_energy = eos.dp2e(res.density, res.pressure, res.tracers, ComputationalCell3D::tracerNames);
+			close_interpolated_thermodynamics(res, eos, pressure_calc,
+				source_density, source_pressure, source_internal_energy,
+				source_tracers);
 		}
 		catch (UniversalError &eo)
 		{
@@ -332,6 +438,7 @@ namespace
 		string const& skip_key, Tessellation3D const& tess,
 		size_t cell_index, face_vec const& faces, EquationOfState const& eos,
 		vector<Vector3D> const& face_cms_cache, bool apply_principal_limit_flag,
+		bool couple_thermodynamic_slopes,
 		vector<double> &psi_buf)
 	{
 		ReplaceComputationalCell(cmax, cell);
@@ -614,6 +721,16 @@ namespace
 		}
 		psi[1] = std::min(psi[1], psi[5]);
 		psi[5] = psi[1];
+		if(couple_thermodynamic_slopes && shock_w > 0.5)
+		{
+			// In sufficiently shocked individual-timestep cells, if any of density,
+			// pressure, or internal energy is unsafe, contract all three.
+			const double thermodynamic_factor =
+				std::min(psi[0], std::min(psi[1], psi[5]));
+			psi[0] = thermodynamic_factor;
+			psi[1] = thermodynamic_factor;
+			psi[5] = thermodynamic_factor;
+		}
 		if (shock_w > 0.85)
 		{
 			double psi_scalar_min = std::min(psi[1], psi[5]);
@@ -698,7 +815,8 @@ namespace
 		vector<Vector3D> &neighbor_cm_list,
  string const& skip_key,
 		std::vector<Vector3D> &c_ij, vector<ComputationalCell3D> &neighbor_list,
-		vector<Vector3D>& face_cms_cache, vector<double>& face_areas_cache, bool apply_principal_limit_flag,
+		vector<Vector3D>& face_cms_cache, vector<double>& face_areas_cache,
+		bool apply_principal_limit_flag, bool couple_thermodynamic_slopes,
 		vector<double>& psi_buf)
 	{
 		face_vec const& faces = tess.GetCellFaces(cell_index);
@@ -763,7 +881,9 @@ namespace
 						neighbor_list, pressure_ratio,
 						eos.de2c(cell.density, cell.internal_energy, cell.tracers, ComputationalCell3D::tracerNames));
 					blended_slope_limit(cell, tess.GetCellCM(cell_index), neighbor_list, res, temp2, temp3, temp4, temp5,
-						diffusecoeff, sw, skip_key, tess, cell_index, faces, eos, face_cms_cache, apply_principal_limit_flag, psi_buf);
+						diffusecoeff, sw, skip_key, tess, cell_index, faces, eos,
+						face_cms_cache, apply_principal_limit_flag,
+						couple_thermodynamic_slopes, psi_buf);
 				}
 				if(!std::isfinite( res.xderivative.density))
 				{
@@ -789,6 +909,155 @@ namespace
 	{
 		vector<Slope3D> all_slopes;
 		tess.SyncPartialBuildData(slopes, all_slopes);
+	}
+
+	// Use the tessellation's canonical duplicated-point map for sends.  Partial
+	// boundary-face topology is rank-local and cannot safely infer the remote
+	// owner of every ghost slope after a restart or partial rebuild.
+	void exchange_active_ghost_slopes(
+		Tessellation3D const& tess,
+		vector<ComputationalCell3D> const& cells,
+		vector<Slope3D>& slopes,
+		vector<size_t> const& boundary_faces,
+		vector<vector<size_t> > const& source_cells)
+	{
+		using TaggedSlope = std::pair<size_t, Slope3D>;
+		const size_t owned_cell_count = tess.GetPointNo();
+		const size_t total_point_count = tess.GetTotalPointNumber();
+		auto const& peers = tess.GetDuplicatedProcs();
+
+		bool metadata_valid = peers.size() == source_cells.size() &&
+			slopes.size() >= owned_cell_count &&
+			cells.size() >= total_point_count;
+		if(slopes.size() < total_point_count)
+			slopes.resize(total_point_count);
+
+		vector<std::pair<size_t, size_t> > expected;
+		for(size_t face : boundary_faces)
+		{
+			if(tess.BoundaryFace(face))
+				continue;
+			auto const neighbors = tess.GetFaceNeighbors(face);
+			bool const first_owned = neighbors.first < owned_cell_count;
+			bool const second_owned = neighbors.second < owned_cell_count;
+			if(first_owned == second_owned)
+			{
+				metadata_valid = false;
+				continue;
+			}
+			size_t const ghost = first_owned ? neighbors.second : neighbors.first;
+			if(ghost >= cells.size())
+			{
+				metadata_valid = false;
+				continue;
+			}
+			expected.emplace_back(cells[ghost].ID, ghost);
+		}
+		std::sort(expected.begin(), expected.end());
+		expected.erase(std::unique(expected.begin(), expected.end()),
+			expected.end());
+
+		vector<vector<TaggedSlope> > outgoing(peers.size());
+		for(size_t peer = 0; peer < source_cells.size(); ++peer)
+		{
+			for(size_t local : source_cells[peer])
+			{
+				if(local >= owned_cell_count || local >= cells.size() ||
+				   local >= slopes.size())
+				{
+					metadata_valid = false;
+					continue;
+				}
+				outgoing[peer].emplace_back(
+					cells[local].ID, slopes[local]);
+			}
+			auto& tagged = outgoing[peer];
+			std::sort(tagged.begin(), tagged.end(),
+				[](TaggedSlope const& left, TaggedSlope const& right)
+				{
+					return left.first < right.first;
+				});
+			tagged.erase(std::unique(tagged.begin(), tagged.end(),
+				[](TaggedSlope const& left, TaggedSlope const& right)
+				{
+					return left.first == right.first;
+				}), tagged.end());
+		}
+
+		int metadata_valid_int = metadata_valid ? 1 : 0;
+		MPI_Allreduce(MPI_IN_PLACE, &metadata_valid_int, 1, MPI_INT, MPI_MIN,
+			MPI_COMM_WORLD);
+		if(metadata_valid_int == 0)
+			throw UniversalError(
+				"LinearGauss3D: invalid active ghost-slope exchange metadata");
+
+		vector<vector<TaggedSlope> > const incoming =
+			MPI_exchange_data(peers, outgoing);
+		if(incoming.size() != peers.size())
+			throw UniversalError(
+				"LinearGauss3D: active ghost-slope peer count mismatch");
+
+		bool incoming_valid = true;
+		for(auto const& received : incoming)
+			for(size_t i = 1; i < received.size(); ++i)
+				if(received[i - 1].first >= received[i].first)
+					incoming_valid = false;
+		int incoming_valid_int = incoming_valid ? 1 : 0;
+		MPI_Allreduce(MPI_IN_PLACE, &incoming_valid_int, 1, MPI_INT, MPI_MIN,
+			MPI_COMM_WORLD);
+		if(incoming_valid_int == 0)
+			throw UniversalError(
+				"LinearGauss3D: active ghost-slope IDs are not strictly increasing");
+
+		// Match SyncPartialBuildData when several communication paths provide
+		// the same stable cell ID: the final peer with a value wins.
+		std::map<size_t, Slope3D> received_by_id;
+		for(auto const& received : incoming)
+			for(auto const& tagged : received)
+			{
+				auto const found = received_by_id.find(tagged.first);
+				if(found == received_by_id.end())
+					received_by_id.emplace(tagged.first, tagged.second);
+				else
+					found->second = tagged.second;
+			}
+
+		bool ids_match = true;
+		size_t missing_id = 0;
+		for(size_t expected_index = 0; expected_index < expected.size();)
+		{
+			size_t const id = expected[expected_index].first;
+			auto const received = received_by_id.find(id);
+			if(received == received_by_id.end())
+			{
+				ids_match = false;
+				missing_id = id;
+				break;
+			}
+			do
+			{
+				slopes[expected[expected_index].second] = received->second;
+				++expected_index;
+			}
+			while(expected_index < expected.size() &&
+			      expected[expected_index].first == id);
+		}
+		int ids_match_int = ids_match ? 1 : 0;
+		MPI_Allreduce(MPI_IN_PLACE, &ids_match_int, 1, MPI_INT, MPI_MIN,
+			MPI_COMM_WORLD);
+		if(ids_match_int == 0)
+		{
+			UniversalError error(
+				"LinearGauss3D: active ghost-slope cell ID mismatch");
+			error.addEntry("Expected ghost slots",
+				static_cast<double>(expected.size()));
+			error.addEntry("Received unique slope IDs",
+				static_cast<double>(received_by_id.size()));
+			if(!ids_match)
+				error.addEntry("Missing expected cell ID",
+					static_cast<double>(missing_id));
+			throw error;
+		}
 	}
 #endif//RICH_MPI
 }
@@ -869,7 +1138,8 @@ void LinearGauss3D::BuildSlopes(Tessellation3D const& tess, std::vector<Computat
 		calc_slope(tess, new_cells_, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_, eos_, ghost_, time,
 			calc_tracers_, naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
 			neighbor_mesh_list, neighbor_cm_list, skip_key_, c_ij, neighbor_list,
-			face_cms_cache, face_areas_cache, apply_principal_limit_, psi_buf0);
+			face_cms_cache, face_areas_cache, apply_principal_limit_, false,
+			psi_buf0);
 	}
 #ifdef RICH_MPI
 	// communicate ghost slopes
@@ -923,6 +1193,16 @@ void LinearGauss3D::InterpolateImpl(
 				reconstruct[neighbors.second] = 1;
 		}
 	}
+#ifdef RICH_MPI
+	vector<vector<size_t> > ghost_slope_sources;
+	if(active_mask != nullptr)
+	{
+		ghost_slope_sources = CollectIndividualGhostSourceIndices(tess);
+		for(auto const& peer_sources : ghost_slope_sources)
+			for(size_t local : peer_sources)
+				reconstruct[local] = 1;
+	}
+#endif
 	vector<size_t> boundaryedges;
 	boundaryedges.reserve(static_cast<size_t>(std::pow(static_cast<double>(CellNumber), 0.6666)*8.0));
 	// Reuse persistent buffer instead of allocating a new vector each call
@@ -989,7 +1269,9 @@ void LinearGauss3D::InterpolateImpl(
 		calc_slope(tess, new_cells_, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_, eos_, ghost_, time,
 			calc_tracers_, naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
 			neighbor_mesh_list, neighbor_cm_list, skip_key_, c_ij, neighbor_list,
-			face_cms_cache, face_areas_cache, apply_principal_limit_, psi_buf);
+			face_cms_cache, face_areas_cache, apply_principal_limit_,
+			active_mask != nullptr,
+			psi_buf);
 		face_vec const& faces = tess.GetCellFaces(i);
 		const size_t nloop = faces.size();
 		// Use pre-computed cell CM - avoid repeated lookups
@@ -1097,7 +1379,12 @@ void LinearGauss3D::InterpolateImpl(
 	}
 #ifdef RICH_MPI
 	// communicate ghost slopes
-	exchange_ghost_slopes(tess, rslopes_);
+	if(active_mask == nullptr)
+		exchange_ghost_slopes(tess, rslopes_);
+	else
+		exchange_active_ghost_slopes(
+			tess, new_cells_, rslopes_, boundaryedges,
+			ghost_slope_sources);
 #endif //RICH_MPI
 	// Interpolate the boundary edges
 	size_t Nboundary = boundaryedges.size();

@@ -1,9 +1,16 @@
 #include "Diffusion.hpp"
+#include "newtonian/three_dimensional/simulation/RuntimeLog.hpp"
 #include "misc/memory_debug.hpp"
 #include "misc/memory_profile.hpp"
 #include "misc/utils.hpp"
 #include <boost/math/special_functions.hpp>
+#include <algorithm>
+#include <cmath>
+#include <cstdlib>
+#include <iomanip>
+#include <limits>
 #include <sstream>
+#include <vector>
 #include <stdexcept>
 
 #ifdef RICH_MPI
@@ -21,6 +28,26 @@ double reduce_grey_reference_scale(double local_maximum)
 #endif
 	return local_maximum;
 }
+
+ComputationalCell3D radiationCellInCgs(
+    ComputationalCell3D const& cell,
+    double const length_scale,
+    double const time_scale,
+    double const mass_scale)
+{
+    ComputationalCell3D result(cell);
+    result.density *= mass_scale /
+        (length_scale * length_scale * length_scale);
+    result.Erad *= length_scale * length_scale /
+        (time_scale * time_scale);
+    result.Erad_dt *= length_scale * length_scale /
+        (time_scale * time_scale * time_scale);
+    result.Erad_dt_dt *= length_scale * length_scale /
+        (time_scale * time_scale * time_scale * time_scale);
+    result.velocity *= length_scale / time_scale;
+    return result;
+}
+
 }
 
 namespace CG
@@ -150,6 +177,9 @@ bool Diffusion::prestepIndividual(
 	bool const result = prestep(tess, cells);
 	individual_event_old_Er = old_Er;
 	individual_event_old_T = old_T;
+	individual_event_old_Eint.resize(cells.size());
+	for(std::size_t i = 0; i < cells.size(); ++i)
+		individual_event_old_Eint[i] = cells[i].internal_energy * cells[i].density;
 	return result;
 }
 
@@ -232,6 +262,7 @@ double Diffusion::calculate_dt(double const dt,
 		zero_indeces.push_back(binary_index_find(ComputationalCell3D::stickerNames, zero_cells_[i]));
 	double max_diff = -1;
 	size_t max_loc = max_size_t;
+	last_cell_dt_limits_.assign(N, std::numeric_limits<double>::infinity());
 	for(size_t i = 0; i < N; ++i)
 	{
 		bool to_calc = true;
@@ -252,6 +283,14 @@ double Diffusion::calculate_dt(double const dt,
 			diff *= 0.2;
 		if(!std::isfinite(diff))
 			continue;
+		// The grid-wide limit below is the smallest of these (before its
+		// 1.25 growth cap); individual steps apply the same rule per cell.
+		// Stored as infinity when not representable, tested before dividing
+		// (diff < 1 keeps diff * max finite).
+		double const numerator = dt * 0.15;
+		if(diff > 0 && (diff >= 1 ||
+			numerator < diff * std::numeric_limits<double>::max()))
+			last_cell_dt_limits_[i] = numerator / diff;
 		if(max_loc == max_size_t || diff > max_diff)
 		{
 			max_diff = diff;
@@ -279,28 +318,107 @@ double Diffusion::calculate_dt(double const dt,
 		std::max(max_diff, std::numeric_limits<double>::min());
 	double const suggested_dt =
 		dt * std::min(1.25, 0.15 / difference_scale);
-	if(has_limiting_cell && rank == max_data.mpi_id)
+	bool const detailed_runtime_log = RuntimeLogDetailed();
+	unsigned long long limiting_cell_id =
+		std::numeric_limits<unsigned long long>::max();
+	if(detailed_runtime_log && has_limiting_cell && rank == max_data.mpi_id)
+		limiting_cell_id =
+			static_cast<unsigned long long>(cells[max_loc].ID);
+#ifdef RICH_MPI
+	if(detailed_runtime_log && has_limiting_cell)
+		MPI_Bcast(&limiting_cell_id, 1, MPI_UNSIGNED_LONG_LONG,
+			max_data.mpi_id, MPI_COMM_WORLD);
+#endif
+	std::string limiting_cell_details;
+	if(detailed_runtime_log && has_limiting_cell)
 	{
-		std::cout<<"Radiation time step ID "<<cells[max_loc].ID<<" old Er "<<old_Er[max_loc]<<" new Er "<<cells[max_loc].Erad * cells[max_loc].density<<
-		" diff "<<max_diff<<" Tgas "<<cells[max_loc].temperature<<" Trad "<<std::pow(new_Er[max_loc] / CG::radiation_constant, 0.25)<<" max_Er "<<max_Er<<" rank "<<rank<<" density "<<cells[max_loc].density<<
-		" width "<<tess.GetWidth(max_loc)<<" Tgas_old "<<old_T[max_loc]<<" location "<<tess.GetMeshPoint(max_loc)<<std::endl;
-		PrintDebugData(max_loc);
-		std::cout<<"Next time step is "<<suggested_dt<<std::endl;
-		std::cout<<"GREY_TIMESTEP_LIMIT mode=global current_dt="<<dt
-			<<" suggested_dt="<<suggested_dt<<" difference="<<max_diff
-			<<" max_Er="<<max_Er<<" growth_cap=1.25"
-			<<" reference_scope=mesh_global cell_id="<<cells[max_loc].ID
-			<<" rank="<<rank<<std::endl;
+		if(rank == max_data.mpi_id)
+		{
+			std::ostringstream details;
+			details<<"Radiation time step ID "<<cells[max_loc].ID
+				<<" old Er "<<old_Er[max_loc]
+				<<" new Er "<<cells[max_loc].Erad * cells[max_loc].density
+				<<" diff "<<max_diff<<" Tgas "<<cells[max_loc].temperature
+				<<" Trad "<<std::pow(new_Er[max_loc] /
+					CG::radiation_constant, 0.25)
+				<<" max_Er "<<max_Er<<" rank "<<rank
+				<<" density "<<cells[max_loc].density
+				<<" width "<<tess.GetWidth(max_loc)
+				<<" Tgas_old "<<old_T[max_loc]
+				<<" location "<<tess.GetMeshPoint(max_loc)<<std::endl;
+			std::streambuf* const original_buffer = std::cout.rdbuf(
+				details.rdbuf());
+			try
+			{
+				PrintDebugData(max_loc);
+			}
+			catch(...)
+			{
+				std::cout.rdbuf(original_buffer);
+				throw;
+			}
+			std::cout.rdbuf(original_buffer);
+			details<<"Next time step is "<<suggested_dt<<std::endl;
+			limiting_cell_details = details.str();
+		}
+#ifdef RICH_MPI
+		unsigned long long detail_size =
+			static_cast<unsigned long long>(limiting_cell_details.size());
+		MPI_Bcast(&detail_size, 1, MPI_UNSIGNED_LONG_LONG,
+			max_data.mpi_id, MPI_COMM_WORLD);
+		if(detail_size >
+		   static_cast<unsigned long long>(std::numeric_limits<int>::max()))
+			throw std::overflow_error(
+				"Grey timestep diagnostic is too large for MPI");
+		if(rank != max_data.mpi_id)
+			limiting_cell_details.resize(static_cast<std::size_t>(detail_size));
+		if(detail_size > 0)
+			MPI_Bcast(&limiting_cell_details[0], static_cast<int>(detail_size),
+				MPI_CHAR, max_data.mpi_id, MPI_COMM_WORLD);
+#endif
 	}
-	else if(!has_limiting_cell && rank == 0)
+	if(detailed_runtime_log && rank == 0)
 	{
+		std::cout<<limiting_cell_details;
 		std::cout<<"GREY_TIMESTEP_LIMIT mode=global current_dt="<<dt
-			<<" suggested_dt="<<suggested_dt<<" difference=0"
+			<<" suggested_dt="<<suggested_dt
+			<<" difference="<<(has_limiting_cell ? max_diff : 0)
 			<<" max_Er="<<max_Er<<" growth_cap=1.25"
-			<<" reference_scope=mesh_global cell_id=none rank=-1"<<std::endl;
+			<<" reference_scope=mesh_global cell_id=";
+		if(has_limiting_cell)
+			std::cout<<limiting_cell_id<<" rank="<<max_data.mpi_id;
+		else
+			std::cout<<"none rank=-1";
+		std::cout<<std::endl;
 	}
 
     return suggested_dt;
+}
+
+
+namespace
+{
+	// Relative-increment limit (decision 2026-09-22 D5, R1'): the fraction of a
+	// cell's internal or radiation energy that one radiation update may change;
+	// the next step is bounded by applied_dt * fraction / r with
+	// r = max(|de_int| / e_int0, |dE_r| / E_r0) over the event.  0 (unset) = off;
+	// 0.15 is the value D5 specified.  Must agree on every rank.
+	double IndividualRadiationIncrementLimit()
+	{
+		static double const value = []()
+		{
+			char const* const text = std::getenv("RICH_INDIVIDUAL_RADIATION_INCREMENT_LIMIT");
+			if(text == nullptr || text[0] == '\0')
+				return 0.0;
+			char* end = nullptr;
+			double const parsed = std::strtod(text, &end);
+			if(end == text || *end != '\0' || !std::isfinite(parsed) || parsed < 0)
+				throw std::invalid_argument(
+					"RICH_INDIVIDUAL_RADIATION_INCREMENT_LIMIT must be a finite number >= 0");
+			return parsed;
+		}();
+		return value;
+	}
 }
 
 void Diffusion::calculateIndividualTimeSteps(
@@ -379,6 +497,11 @@ void Diffusion::calculateIndividualTimeSteps(
 	std::size_t representative = cells.size();
 	double representative_suggested_dt = 0;
 	unsigned long long active_cells = 0;
+	double const increment_fraction = IndividualRadiationIncrementLimit();
+	unsigned long long increment_limited = 0;
+	double increment_tightest = std::numeric_limits<double>::infinity();
+	unsigned long long increment_example_id = 0;
+	double increment_example_r = 0;
     for(std::size_t i : context.active_indices) {
         if(i >= cells.size() || i >= time_step_limits.size() ||
            i >= event_old_Er.size())
@@ -406,12 +529,44 @@ void Diffusion::calculateIndividualTimeSteps(
              std::numeric_limits<double>::min());
         if(fleck_factor.at(i) < 0.4)
             difference *= 0.2;
-	        double const factor = std::min(
-	            2.0,
-	            0.15 / std::max(difference, std::numeric_limits<double>::min()));
-		double const suggested_dt = context.cellTimeStep(i) * factor;
+        double const applied_dt = context.cellTimeStep(i);
+        double const nominal_dt = context.nominalCellTimeStep(i);
+        double const suggested_dt = std::min(
+            applied_dt * 0.15 /
+                std::max(difference, std::numeric_limits<double>::min()),
+            nominal_dt * 2.0);
         time_step_limits.at(i) = std::min(
 			time_step_limits.at(i), suggested_dt);
+		// Relative-increment limit on the net change of this event: both
+		// budgets positive and finite, else the cell is skipped.  Shortens
+		// only; relaxes as the coupling weakens.
+		if(increment_fraction > 0 && i < individual_event_old_Eint.size())
+		{
+			double const e_old = individual_event_old_Eint[i];
+			double const e_new = cells[i].internal_energy * cells[i].density;
+			double const er_old = event_old_Er.at(i);
+			if(e_old > 0 && er_old > 0 && std::isfinite(e_old) && std::isfinite(er_old) &&
+				std::isfinite(e_new) && std::isfinite(new_Er_cell) && applied_dt > 0)
+			{
+				double const r = std::max(std::abs(e_new - e_old) / e_old,
+					std::abs(new_Er_cell - er_old) / er_old);
+				if(r > 0)
+				{
+					double const limit = applied_dt * increment_fraction / r;
+					if(limit < time_step_limits.at(i))
+					{
+						time_step_limits.at(i) = limit;
+						++increment_limited;
+						if(limit / applied_dt < increment_tightest)
+						{
+							increment_tightest = limit / applied_dt;
+							increment_example_id = static_cast<unsigned long long>(cells[i].ID);
+							increment_example_r = r;
+						}
+					}
+				}
+			}
+		}
 		if(difference > local_max_difference)
 		{
 			local_max_difference = difference;
@@ -431,17 +586,61 @@ void Diffusion::calculateIndividualTimeSteps(
 	MPI_Allreduce(MPI_IN_PLACE, &active_cells, 1, MPI_UNSIGNED_LONG_LONG,
 		MPI_SUM, MPI_COMM_WORLD);
 #endif
-	if(active_cells > 0 && rank == max_data.mpi_id)
+	if(increment_fraction > 0)
+	{
+		// Rank-0 aggregate: cells limited this event and the tightest one.
+		unsigned long long limited_total = increment_limited;
+		struct { double val; int mpi_id; } tightest = {increment_tightest, rank};
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, &limited_total, 1, MPI_UNSIGNED_LONG_LONG,
+			MPI_SUM, MPI_COMM_WORLD);
+		MPI_Allreduce(MPI_IN_PLACE, &tightest, 1, MPI_DOUBLE_INT, MPI_MINLOC,
+			MPI_COMM_WORLD);
+		MPI_Bcast(&increment_example_id, 1, MPI_UNSIGNED_LONG_LONG, tightest.mpi_id,
+			MPI_COMM_WORLD);
+		MPI_Bcast(&increment_example_r, 1, MPI_DOUBLE, tightest.mpi_id, MPI_COMM_WORLD);
+#endif
+		if(rank == 0 && limited_total > 0)
+			std::cout << std::setprecision(6)
+				<< "INDIVIDUAL_RADIATION_INCREMENT_LIMITED event_time=" << context.event_time
+				<< " cells=" << limited_total << " fraction=" << increment_fraction
+				<< " tightest_limit_over_interval=" << tightest.val
+				<< " example_cell_id=" << increment_example_id
+				<< " example_r=" << increment_example_r
+				<< " example_rank=" << tightest.mpi_id << std::endl;
+	}
+	bool const detailed_runtime_log = RuntimeLogDetailed();
+	unsigned long long representative_cell_id =
+		std::numeric_limits<unsigned long long>::max();
+	double representative_timesteps[2] = {0, 0};
+	if(detailed_runtime_log && active_cells > 0 && rank == max_data.mpi_id)
 	{
 		if(representative >= cells.size())
 			throw std::logic_error(
 				"Grey timestep representative is missing on the winning rank");
+		representative_cell_id =
+			static_cast<unsigned long long>(cells[representative].ID);
+		representative_timesteps[0] = context.cellTimeStep(representative);
+		representative_timesteps[1] = representative_suggested_dt;
+	}
+#ifdef RICH_MPI
+	if(detailed_runtime_log && active_cells > 0)
+	{
+		MPI_Bcast(&representative_cell_id, 1, MPI_UNSIGNED_LONG_LONG,
+			max_data.mpi_id, MPI_COMM_WORLD);
+		MPI_Bcast(representative_timesteps, 2, MPI_DOUBLE,
+			max_data.mpi_id, MPI_COMM_WORLD);
+	}
+#endif
+	if(detailed_runtime_log && active_cells > 0 && rank == 0)
+	{
 		std::cout<<"GREY_TIMESTEP_LIMIT mode=individual event_time="
 			<<context.event_time<<" active_cells="<<active_cells
-			<<" cell_id="<<cells[representative].ID<<" rank="<<rank
-			<<" current_dt="<<context.cellTimeStep(representative)
-			<<" suggested_dt="<<representative_suggested_dt
-			<<" difference="<<local_max_difference<<" max_Er="<<max_Er
+			<<" cell_id="<<representative_cell_id
+			<<" rank="<<max_data.mpi_id
+			<<" current_dt="<<representative_timesteps[0]
+			<<" suggested_dt="<<representative_timesteps[1]
+			<<" difference="<<max_data.val<<" max_Er="<<max_Er
 			<<" growth_cap=2 reference_scope="
 			<<(canonical_reference ? "canonical_owned_global" : "mesh_global")
 			<<std::endl;
@@ -456,6 +655,7 @@ bool Diffusion::step(double const tolerance,
                       double const dt,
                       double const time) const {
     MEMORY_PROFILE_SCOPE("diffusion step");
+    clearStepFailure();
     
     int rank = 0;
 #ifdef RICH_MPI
@@ -537,7 +737,10 @@ bool Diffusion::step(double const tolerance,
 
     if(minErData.value < 0) {
         if(rank == minErData.rank && min_index < N) {
-            std::cout << "Negative Er! Rank: " << minErData.rank << ", Index: " << min_index <<" location "<<tess.GetMeshPoint(min_index)<<" Er value "<<minErData.value<<" cell "<<cells[min_index]<<std::endl;
+            setCellLocalStepFailure(
+                "negative radiation energy after diffusion solve",
+                cells[min_index].ID);
+            std::clog << "Negative Er! Rank: " << minErData.rank << ", Index: " << min_index <<" location "<<tess.GetMeshPoint(min_index)<<" Er value "<<minErData.value<<" cell "<<cells[min_index]<<std::endl;
         }
 
         return false;
@@ -548,8 +751,8 @@ bool Diffusion::step(double const tolerance,
         MEMORY_DEBUG_PRINT("diffusion: after PostCG");
     } catch(UniversalError const& eo) {
         if(rank == 0){
-            std::cout<< "PostCG Exception:" << std::endl;
-            std::cout<< eo.getErrorMessage() << std::endl;
+            std::clog<< "PostCG Exception:" << std::endl;
+            std::clog<< eo.getErrorMessage() << std::endl;
         }
         
         extensives = std::move(extensives_temp);
@@ -580,7 +783,12 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         cells_cgs[i].velocity *= length_scale_ / time_scale_;
      }
 #ifdef RICH_MPI
-	MPI_exchange_data(tess, cells_cgs, true);	
+	// RadiationStep refreshes compact individual-mesh primitives with
+	// SyncPartialBuildData.  MadVoro's sparse send indices address the canonical
+	// all-point array, so the legacy compact-vector exchange is valid only for
+	// the full/global path.
+	if(individual_context_ == nullptr)
+		MPI_exchange_data(tess, cells_cgs, true);
 #endif
     b.resize(Nlocal, 0);
     x0.resize(individual_context_ == nullptr ? Nlocal : cells_cgs.size(), 0);
@@ -702,7 +910,25 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
                     (set_to_zero ? zero_value : 1);
         }
 #ifdef RICH_MPI
-    MPI_exchange_data(tess, D, true);
+	if(individual_context_ == nullptr)
+		MPI_exchange_data(tess, D, true);
+	else
+	{
+		// A diffusion coefficient is cell-local.  Computing compact ghost values
+		// from the already synchronized primitive state is exact and avoids using
+		// canonical all-point indices on a compact array.
+		D.resize(cells_cgs.size());
+		for(size_t i = Nlocal; i < cells_cgs.size(); ++i)
+		{
+			// Physical boundary generators have no primitive state and their
+			// diffusion coefficient is never used as an interior-cell value.
+			if(tess.IsPointOutsideBox(i))
+				continue;
+			D[i] = D_coefficient_calcualtor.CalcDiffusionCoefficient(cells_cgs[i]);
+			if(D[i] < 0)
+				throw UniversalError("Negative D");
+		}
+	}
 #endif
     size_t max_neigh = 0;
     // Find maximum number of neighbors and allocate data
@@ -744,7 +970,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
             b[i] += pre_factor * volume * theta * T * new_Er[i];
         }
         if(A[i][0] < 0)
-	        std::cout<<"Negative A in matrix build, density "<<cells_cgs[i].density<<" T "<<cells_cgs[i].temperature<<" fleck "<<fleck_factor[i]<<
+	        std::clog<<"Negative A in matrix build, density "<<cells_cgs[i].density<<" T "<<cells_cgs[i].temperature<<" fleck "<<fleck_factor[i]<<
 	        " sig_P "<<sigma_planck[i]<<" sig_s "<<sigma_s[i]<<" dt "<<dt_cell * time_scale_<<" Erad "<<cells_cgs[i].Erad * cells_cgs[i].density<<" compton term "<<fleck_factor[i] * dt_cell * time_scale_ * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light)<<std::endl;
     }
 
@@ -775,7 +1001,16 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         max_R.push_back(max_R_local);
     }
 #ifdef RICH_MPI
-    MPI_exchange_data(tess, max_R, true);
+	if(individual_context_ == nullptr)
+		MPI_exchange_data(tess, max_R, true);
+	else
+	{
+		// Only constructed owner cells have a complete stencil for max_R.
+		// Sync them through canonical index space; non-target geometric supports
+		// retain zero, matching the partial-build volume convention.
+		std::vector<double> canonical_max_R;
+		tess.SyncPartialBuildData(max_R, canonical_max_R);
+	}
 #endif
     Vector3D dummy_v;
     std::vector<Vector3D> gradE(Nlocal);
@@ -951,7 +1186,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         A[i].resize(max_neigh, 0);
         A_indeces[i].resize(max_neigh, max_size_t);
 	if(A[i][0] < 0)
-	  std::cout<<"Negative A in matrix build, density "<<cells_cgs[i].density<<" T "<<cells_cgs[i].temperature<<" fleck "<<fleck_factor[i]<<
+	  std::clog<<"Negative A in matrix build, density "<<cells_cgs[i].density<<" T "<<cells_cgs[i].temperature<<" fleck "<<fleck_factor[i]<<
 	  " sig_P "<<sigma_planck[i]<<" dt "<<individualCellTimeStep(i, dt) * time_scale_<<" Erad "<<cells_cgs[i].Erad * cells_cgs[i].density<<std::endl;
     }
 }
@@ -973,16 +1208,46 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
     for(size_t i = 0; i < Nzero; ++i)
         zero_indeces.push_back(binary_index_find(ComputationalCell3D::stickerNames, zero_cells_[i]));
 
-    double Einit = 0;
-    for(size_t i = 0; i < N; ++i)
-        Einit += extensives[i].Erad + extensives[i].energy;
-#ifdef RICH_MPI
-    MPI_Allreduce(MPI_IN_PLACE, &Einit, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    MPI_Barrier(MPI_COMM_WORLD);
-#endif
-
     int good_end = 1;
+    std::string local_failure_details;
     old_T.resize(N, 0);
+    // Mean active cell volume (code units) for the failing-cell record
+    // (decision 2026-09-22 D5); computed only when the detailed log or the D5
+    // trace switch below is on; no effect on the update.
+    // RICH_INDIVIDUAL_D5_TRACE=1 emits the D5 aggregate at production speed;
+    // RICH_RUNTIME_LOG=detailed (which slows every phase ~11x on the TDE)
+    // additionally prints the per-cell detail blocks.
+    static bool const d5_trace = []()
+    {
+        char const* const value = std::getenv("RICH_INDIVIDUAL_D5_TRACE");
+        return value != nullptr && value[0] != '\0' && value[0] != '0';
+    }();
+    double mean_active_volume = 0;
+    if(RuntimeLogDetailed() || d5_trace)
+    {
+        std::size_t active_count = 0;
+        for(size_t i = 0; i < N; ++i)
+            if(individualCellActive(i))
+            {
+                mean_active_volume += tess.GetVolume(i);
+                ++active_count;
+            }
+        double sum_count[2] = {mean_active_volume, static_cast<double>(active_count)};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, sum_count, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+#endif
+        mean_active_volume = sum_count[1] > 0 ? sum_count[0] / sum_count[1] : 0;
+    }
+    // Per-rank first-failure record, gathered to rank 0 below so the failing
+    // population (one cell per failing rank) can be summarized, not just one
+    // representative.  Plain doubles so it is trivially MPI-gatherable.
+    struct D5Record
+    {
+        double has = 0, stage = 0, cell = 0, dt_cell = 0, nominal_dt = 0, volume = 0,
+            volume_ratio = 0, e_int0 = 0, erad0 = 0, de_int = 0, derad = 0, erad_de = 0;
+    };
+    static_assert(sizeof(D5Record) == 12 * sizeof(double), "D5Record must be 12 doubles");
+    D5Record d5{};
     for(size_t i = 0; i < N; ++i)
     {
         if(!individualCellActive(i))
@@ -990,6 +1255,7 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         double const dt_cell = individualCellTimeStep(i, dt);
         double const old_e_therm = extensives[i].internal_energy;
         double const volume = tess.GetVolume(i) * length_scale_ * length_scale_* length_scale_;
+        double const Erad0 = extensives[i].Erad;
         extensives[i].Erad = CG_result[i] * volume * time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
         double const T = cells[i].temperature;
         old_T[i] = T;
@@ -1018,38 +1284,61 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         e_v2 *= time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_);
         extensives[i].energy += dE;
         extensives[i].internal_energy += dE;
-        if(extensives[i].internal_energy < 0 || !std::isfinite(extensives[i].internal_energy) || extensives[i].Erad < 0)
+        if(extensives[i].internal_energy < 0 ||
+            !std::isfinite(extensives[i].internal_energy) ||
+            !(extensives[i].Erad > 0) ||
+            !std::isfinite(extensives[i].Erad))
         {
+            if(!RuntimeLogDetailed())
+            {
+                double const nominal_dt = individual_context_ != nullptr ?
+                    individual_context_->nominalCellTimeStep(i) : dt_cell;
+                d5 = D5Record{1, 1, static_cast<double>(cells[i].ID), dt_cell, nominal_dt,
+                    tess.GetVolume(i), mean_active_volume > 0 ? tess.GetVolume(i) / mean_active_volume : 0,
+                    old_e_therm, Erad0, extensives[i].internal_energy - old_e_therm,
+                    extensives[i].Erad - Erad0, 0.0};
+            }
+            setCellLocalStepFailure(
+                "negative or invalid energy during radiation update",
+                cells[i].ID);
             good_end = 0;
-            std::cout<<"Negative internal energy in postcg1, "<<extensives[i].internal_energy<<" ID "<<cells[i].ID<<
-                " T "<<T<<std::endl;
-                std::cout<<" CG_result "<<CG_result[i]<<" old Er "<<cells[i].Erad * cells[i].density * mass_scale_ / (time_scale_ * time_scale_ * length_scale_)
-                <<" v "<<fastabs(cells[i].velocity)<<" mass "<<
-                extensives[i].mass<<" dE "<<dE<<" R2 "<<R2[i]<<" old_e_therm "<<old_e_therm<<std::endl;
-            std::cout<<cells[i]<<std::endl;
-            std::cout<<extensives[i]<<std::endl;
-            std::cout<<"max emitt "<<fleck_factor[i] * CG::speed_of_light * dt_cell * sigma_planck[i] * T * T * T * T * CG::radiation_constant
-             * volume * time_scale_ * time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_)<<" full_CG_result "<<full_CG_result[i]<<std::endl;
-            std::cout<<"relativity "<<fleck_factor[i] * CG::speed_of_light * dt_cell * sigma_planck[i]
-             *0.5 * (3 - R2[i]) * ScalarProd(cells[i].velocity, cells[i].velocity) * full_CG_result[i] * length_scale_ * length_scale_ / (CG::speed_of_light * CG::speed_of_light * time_scale_ * time_scale_) * volume * time_scale_* time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_)<<std::endl;
-             std::cout<<" fleck "<<fleck_factor[i]<<" sigma_planck "<<sigma_planck[i]<<
-                " other dE "<<fleck_factor[i] * CG::speed_of_light * dt_cell * sigma_planck[i] * (full_CG_result[i] - T * T * T * T * CG::radiation_constant
-            -0.5 * (3 - R2[i]) * ScalarProd(cells[i].velocity, cells[i].velocity) * full_CG_result[i] * length_scale_ * length_scale_ / (CG::speed_of_light * CG::speed_of_light * time_scale_ * time_scale_)) * volume * time_scale_
-             * time_scale_ * time_scale_ / (length_scale_ * length_scale_ * mass_scale_)<<" density "<<cells[i].density<<
-             " compton_term "<<compton_term<<" old_Tr "<<old_Tr<<std::endl;
+            if(RuntimeLogDetailed())
+            {
+                std::ostringstream details;
+                details<<"RICH_RADIATION_DETAIL stage=postcg1 cell_id="<<cells[i].ID<<std::endl;
+                details<<"  state | internal_energy="<<extensives[i].internal_energy
+                    <<" | T="<<T<<" | velocity="<<fastabs(cells[i].velocity)
+                    <<" | mass="<<extensives[i].mass<<std::endl;
+                details<<"  solve | CG_result="<<CG_result[i]
+                    <<" | full_CG_result="<<full_CG_result[i]
+                    <<" | old_Er="<<cells[i].Erad * cells[i].density * mass_scale_ /
+                        (time_scale_ * time_scale_ * length_scale_)<<std::endl;
+                details<<"  energy | dE="<<dE<<" | R2="<<R2[i]
+                    <<" | old_e_therm="<<old_e_therm
+                    <<" | compton_term="<<compton_term
+                    <<" | old_Tr="<<old_Tr<<std::endl;
+                {
+                    double const nominal_dt = individual_context_ != nullptr ?
+                        individual_context_->nominalCellTimeStep(i) : dt_cell;
+                    d5 = D5Record{1, 1, static_cast<double>(cells[i].ID), dt_cell, nominal_dt,
+                        tess.GetVolume(i), mean_active_volume > 0 ? tess.GetVolume(i) / mean_active_volume : 0,
+                        old_e_therm, Erad0, extensives[i].internal_energy - old_e_therm,
+                        extensives[i].Erad - Erad0, 0.0};
+                    details<<"  d5 | dt_cell="<<dt_cell<<" | nominal_dt="<<nominal_dt
+                        <<" | applied_over_nominal="<<(nominal_dt > 0 ? dt_cell / nominal_dt : 0)
+                        <<" | volume="<<tess.GetVolume(i)
+                        <<" | mean_active_volume="<<mean_active_volume
+                        <<" | volume_ratio="<<d5.volume_ratio
+                        <<" | E_int0="<<old_e_therm<<" | Erad0="<<Erad0
+                        <<" | dE_int="<<d5.de_int<<" | dErad="<<d5.derad
+                        <<" | Erad_dE="<<0.0<<" | e_absorb="<<e_absorb<<" | e_emitt="<<e_emitt
+                        <<" | fleck="<<fleck_factor[i]<<std::endl;
+                }
+                details<<"  cell | "<<cells[i]<<std::endl;
+                details<<"  extensive | "<<extensives[i]<<std::endl;
+                local_failure_details = details.str();
+            }
             break;
-            // UniversalError eo("Bad internal energy in Diffusion::PostCG");
-            // eo.addEntry("cell index", i);
-            // eo.addEntry("energy", extensives[i].internal_energy);
-	        // eo.addEntry("mass",extensives[i].mass);
-            // eo.addEntry("CG_result", CG_result[i]);
-            // eo.addEntry("T", T);
-            // eo.addEntry("Density", cells[i].density);
-            // eo.addEntry("ID", cells[i].ID);
-            // eo.addEntry("Fleck",fleck_factor[i]);
-            // eo.addEntry("old_Tr",old_Tr);
-            // eo.addEntry("dE",dE);
-            // throw eo;
         }
 
         tess.GetNeighbors(i, neighbors);
@@ -1101,67 +1390,110 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
                  extensives[i].Erad -= dE;
             extensives[i].energy = extensives[i].internal_energy +  ScalarProd(extensives[i].momentum, extensives[i].momentum) / (2 * extensives[i].mass);
         }
-        if(extensives[i].Erad < 0 || extensives[i].internal_energy < 0 || !std::isfinite(extensives[i].internal_energy) || cells[i].Erad < 0)
+        if(!(extensives[i].Erad > 0) ||
+            !std::isfinite(extensives[i].Erad) ||
+            extensives[i].internal_energy < 0 ||
+            !std::isfinite(extensives[i].internal_energy) ||
+            !(cells[i].Erad > 0) ||
+            !std::isfinite(cells[i].Erad))
         {
-            std::cout<<"Negative internal energy is postcg2, "<<extensives[i].internal_energy<<" ID "<<cells[i].ID<<
-                " T "<<T<<" CG_result "<<CG_result[i]<<" full_CG_result "<<full_CG_result[i]<<" v "<<fastabs(cells[i].velocity)<<" sigma_planck "<<
-                sigma_planck[i]<<" sigma_r "<<CG::speed_of_light / (3 * Dcell)<<" E_init "<<cells[i].Erad*cells[i].density* mass_scale_ / (time_scale_ * time_scale_ * length_scale_)
-                <<" volume "<<tess.GetVolume(i)<<" Erad "<<extensives[i].Erad<<" mass "<<extensives[i].mass<<" dP "<<dP.x<<","<<dP.y<<","<<dP.z<<" momentum "<<extensives[i].momentum.x<<","<<extensives[i].momentum.y<<","<<extensives[i].momentum.z<<std::endl;
-            std::cout<<"Erad_dE "<<Erad_dE<<" cell_flux_limiter "<<cell_flux_limiter[i]<<" e_absorb "<<e_absorb<<" e_emitt "<<e_emitt<<" e_v2 "<<e_v2<<std::endl;
-            std::cout<<"total relativity "<<total_relativity<<" etherm_mid "<<etherm_mid<<" fleck_factor "<<fleck_factor[i]<<" gradE "<<gradE * (1.0 / tess.GetVolume(i))<<std::endl;
-            for(size_t j = 0; j < Nneigh; ++j)
+            if(RuntimeLogDetailed())
             {
-                size_t const neighbor_j = neighbors[j];
-                r_ij = point - tess.GetMeshPoint(neighbor_j);
-                double const r_ij_size = abs(r_ij);
-                r_ij *= 1.0 / r_ij_size;
-                double Er_j = 0;
-                if(tess.IsPointOutsideBox(neighbor_j))
-                    boundary_calc_.GetOutSideValues(tess, cells, i, neighbor_j, CG_result, Er_j, dummy_v);
-                else
-                    Er_j = full_CG_result[neighbor_j];
+                std::ostringstream details;
+                details<<"RICH_RADIATION_DETAIL stage=postcg2 cell_id="<<cells[i].ID<<std::endl;
+                details<<"  state | internal_energy="<<extensives[i].internal_energy
+                    <<" | Erad="<<extensives[i].Erad<<" | T="<<T
+                    <<" | velocity="<<fastabs(cells[i].velocity)
+                    <<" | mass="<<extensives[i].mass<<std::endl;
+                details<<"  solve | CG_result="<<CG_result[i]
+                    <<" | full_CG_result="<<full_CG_result[i]
+                    <<" | sigma_planck="<<sigma_planck[i]
+                    <<" | sigma_r="<<CG::speed_of_light / (3 * Dcell)<<std::endl;
+                {
+                    double const nominal_dt = individual_context_ != nullptr ?
+                        individual_context_->nominalCellTimeStep(i) : dt_cell;
+                    d5 = D5Record{1, 2, static_cast<double>(cells[i].ID), dt_cell, nominal_dt,
+                        tess.GetVolume(i), mean_active_volume > 0 ? tess.GetVolume(i) / mean_active_volume : 0,
+                        old_e_therm, Erad0, extensives[i].internal_energy - old_e_therm,
+                        extensives[i].Erad - Erad0, Erad_dE};
+                    details<<"  d5 | dt_cell="<<dt_cell<<" | nominal_dt="<<nominal_dt
+                        <<" | applied_over_nominal="<<(nominal_dt > 0 ? dt_cell / nominal_dt : 0)
+                        <<" | volume="<<tess.GetVolume(i)
+                        <<" | mean_active_volume="<<mean_active_volume
+                        <<" | volume_ratio="<<d5.volume_ratio
+                        <<" | E_int0="<<old_e_therm<<" | Erad0="<<Erad0
+                        <<" | dE_int="<<d5.de_int<<" | dErad="<<d5.derad
+                        <<" | Erad_dE="<<Erad_dE<<" | e_absorb="<<e_absorb<<" | e_emitt="<<e_emitt
+                        <<" | fleck="<<fleck_factor[i]<<std::endl;
+                }
+                details<<"  energy | Erad_dE="<<Erad_dE
+                    <<" | e_absorb="<<e_absorb<<" | e_emitt="<<e_emitt
+                    <<" | e_v2="<<e_v2<<" | total_relativity="<<total_relativity
+                    <<" | etherm_mid="<<etherm_mid<<std::endl;
+                details<<"  motion | dP="<<dP.x<<","<<dP.y<<","<<dP.z
+                    <<" | momentum="<<extensives[i].momentum.x<<","<<extensives[i].momentum.y<<","<<extensives[i].momentum.z
+                    <<" | flux_limiter="<<cell_flux_limiter[i]
+                    <<" | gradE="<<gradE * (1.0 / tess.GetVolume(i))<<std::endl;
+                for(size_t j = 0; j < Nneigh; ++j)
+                {
+                    size_t const neighbor_j = neighbors[j];
+                    r_ij = point - tess.GetMeshPoint(neighbor_j);
+                    double const r_ij_size = abs(r_ij);
+                    r_ij *= 1.0 / r_ij_size;
+                    double Er_j = 0;
+                    if(tess.IsPointOutsideBox(neighbor_j))
+                        boundary_calc_.GetOutSideValues(tess, cells, i, neighbor_j, CG_result, Er_j, dummy_v);
+                    else
+                        Er_j = full_CG_result[neighbor_j];
 
-                Vector3D const cm_ij = CM - tess.GetCellCM(neighbor_j);
-                Vector3D const grad_E = r_ij * ScalarProd(r_ij, cm_ij) * (1.0 / (length_scale_ * ScalarProd(cm_ij, cm_ij)));   
-                double mid_D = 0.5 * (D[neighbor_j] + Dcell);
-                double const flux_limiter_face = flux_limiter_ ? CalcSingleFluxLimiter(grad_E * (CG_result[i] - Er_j), mid_D, 0.5 * (CG_result[i] + Er_j)) : 1;
-                double const max_local_v = std::min(max_v, std::max(-max_v, ScalarProd(cells[i].velocity, r_ij)));
-                double const v_ratio = max_local_v / ScalarProd(cells[i].velocity, r_ij);
-                double const momentum_term = (0.5 * dt_cell * cell_flux_limiter[i] * tess.GetArea(faces[j]) * ScalarProd(cells[i].velocity, r_ij) * (Er_j + full_CG_result[i]) / 3) * (time_scale_ * time_scale_ * length_scale_ / mass_scale_);
-                double const relativity_term = -v_ratio * fleck_factor[i] * momentum_term * 2 * 3 * sigma_planck[i] * Dcell / CG::speed_of_light;
-                std::cout<<"relativity_term "<<relativity_term<<" flux_limiter_face "<<flux_limiter_face<<" Er_j "<<Er_j<<" Er_j_init "<<cells[neighbor_j].density * 
-                    cells[neighbor_j].Erad* mass_scale_ / (time_scale_ * time_scale_ * length_scale_)<<" ID "<<cells[neighbor_j].ID<<" v_ratio "<<v_ratio<<" Area "<<tess.GetArea(faces[j])<<std::endl;
+                    Vector3D const cm_ij = CM - tess.GetCellCM(neighbor_j);
+                    Vector3D const grad_E = r_ij * ScalarProd(r_ij, cm_ij) * (1.0 / (length_scale_ * ScalarProd(cm_ij, cm_ij)));
+                    double mid_D = 0.5 * (D[neighbor_j] + Dcell);
+                    double const flux_limiter_face = flux_limiter_ ? CalcSingleFluxLimiter(grad_E * (CG_result[i] - Er_j), mid_D, 0.5 * (CG_result[i] + Er_j)) : 1;
+                    double const max_local_v = std::min(max_v, std::max(-max_v, ScalarProd(cells[i].velocity, r_ij)));
+                    double const v_ratio = max_local_v / ScalarProd(cells[i].velocity, r_ij);
+                    double const momentum_term = (0.5 * dt_cell * cell_flux_limiter[i] * tess.GetArea(faces[j]) * ScalarProd(cells[i].velocity, r_ij) * (Er_j + full_CG_result[i]) / 3) * (time_scale_ * time_scale_ * length_scale_ / mass_scale_);
+                    double const relativity_term = -v_ratio * fleck_factor[i] * momentum_term * 2 * 3 * sigma_planck[i] * Dcell / CG::speed_of_light;
+                    details<<"  neighbor | cell_id="<<cells[neighbor_j].ID
+                        <<" | relativity_term="<<relativity_term
+                        <<" | flux_limiter="<<flux_limiter_face
+                        <<" | Er="<<Er_j
+                        <<" | initial_Er="<<cells[neighbor_j].density * cells[neighbor_j].Erad * mass_scale_ /
+                            (time_scale_ * time_scale_ * length_scale_)
+                        <<" | v_ratio="<<v_ratio
+                        <<" | area="<<tess.GetArea(faces[j])<<std::endl;
+                }
+                local_failure_details = details.str();
             }
 
+            if(!RuntimeLogDetailed())
+            {
+                double const nominal_dt = individual_context_ != nullptr ?
+                    individual_context_->nominalCellTimeStep(i) : dt_cell;
+                d5 = D5Record{1, 2, static_cast<double>(cells[i].ID), dt_cell, nominal_dt,
+                    tess.GetVolume(i), mean_active_volume > 0 ? tess.GetVolume(i) / mean_active_volume : 0,
+                    old_e_therm, Erad0, extensives[i].internal_energy - old_e_therm,
+                    extensives[i].Erad - Erad0, Erad_dE};
+            }
+            setCellLocalStepFailure(
+                "negative or invalid energy after radiation update",
+                cells[i].ID);
             good_end = 0;
-            std::cout<<"Negative internal energy is postcg2, "<<extensives[i].internal_energy<<" ID "<<cells[i].ID<<
-                " T "<<T<<" CG_result "<<CG_result[i]<<" v "<<fastabs(cells[i].velocity)<<" mass "<<
-                extensives[i].mass<<std::endl;
             break;
-            UniversalError eo("Bad internal energy in Diffusion::PostCG second part");
-            eo.addEntry("cell index", i);
-            eo.addEntry("energy", extensives[i].internal_energy);
-            eo.addEntry("CG_result", CG_result[i]);
-            eo.addEntry("T", T);
-            eo.addEntry("Density", cells[i].density);
-            eo.addEntry("ID", cells[i].ID);
-            eo.addEntry("cell_flux_limiter", cell_flux_limiter[i]);
-            eo.addEntry("sigma_planck", sigma_planck[i]);
-            eo.addEntry("sigma_rossland", CG::speed_of_light / (3 * Dcell));
-            eo.addEntry("Vx", cells[i].velocity.x);
-            eo.addEntry("Vy", cells[i].velocity.y);
-            eo.addEntry("Vz", cells[i].velocity.z);
-            eo.addEntry("newVx", extensives[i].momentum.x / extensives[i].mass);
-            eo.addEntry("newVy", extensives[i].momentum.y / extensives[i].mass);
-            eo.addEntry("newVz", extensives[i].momentum.z / extensives[i].mass);
-            throw eo;
         }
 
         double const old_Edot = cells[i].Erad_dt;
         cells[i].Erad_dt = (extensives[i].Erad / extensives[i].mass - cells[i].Erad) / dt_cell;
         cells[i].Erad_dt_dt = (cells[i].Erad_dt - old_Edot) / dt_cell;
-        if(!std::isfinite(cells[i].Erad_dt) || !std::isfinite(cells[i].Erad_dt))
-            std::cout<<"Bad Edot "<<cells[i].Erad_dt<<" edot_dt_dt "<<cells[i].Erad_dt_dt<<" i "<<i<<" ID "<<cells[i].ID<<" dt "<<dt_cell<<" Erad "<<extensives[i].Erad<<" m "<<extensives[i].mass<<" old_Edot "<<old_Edot<<std::endl;
+        if(!std::isfinite(cells[i].Erad_dt) || !std::isfinite(cells[i].Erad_dt_dt))
+        {
+            std::clog<<"Bad Edot "<<cells[i].Erad_dt<<" edot_dt_dt "<<cells[i].Erad_dt_dt<<" i "<<i<<" ID "<<cells[i].ID<<" dt "<<dt_cell<<" Erad "<<extensives[i].Erad<<" m "<<extensives[i].mass<<" old_Edot "<<old_Edot<<std::endl;
+            setCellLocalStepFailure(
+                "non-finite radiation derivative after radiation update",
+                cells[i].ID);
+            good_end = 0;
+            break;
+        }
         cells[i].Erad = extensives[i].Erad / extensives[i].mass;
         cells[i].internal_energy = extensives[i].internal_energy / extensives[i].mass;
         try
@@ -1177,7 +1509,17 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         }
         catch(UniversalError &eo)
         {
-            reportError(eo);
+            if(RuntimeLogDetailed())
+            {
+                std::ostringstream details;
+                details<<"RICH_RADIATION_DETAIL stage=eos cell_id="<<cells[i].ID<<std::endl;
+                details<<"  error | message="<<eo.getErrorMessage()<<std::endl;
+                details<<"  state | density="<<cells[i].density
+                    <<" | internal_energy="<<cells[i].internal_energy
+                    <<" | Erad="<<cells[i].Erad<<std::endl;
+                local_failure_details = details.str();
+            }
+            setCellLocalStepFailure(eo.getErrorMessage(), cells[i].ID);
             good_end = 0;
             break;
         }
@@ -1185,31 +1527,103 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
     int rank = 0;
 #ifdef RICH_MPI
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    bool was_bad = false;
-    if(good_end == 0)
-    {
-        std::cout<<"Zero good_end rank "<<rank<<std::endl;
-        was_bad = true;
-    }
-    MPI_Barrier(MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &good_end, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
-    if(was_bad)
-        std::cout<<"rank "<<rank<<" good_end "<<good_end<<std::endl;
 #endif
+    if((RuntimeLogDetailed() || d5_trace) && good_end == 0)
+    {
+        int world_size = 1;
+#ifdef RICH_MPI
+        MPI_Comm_size(MPI_COMM_WORLD, &world_size);
+#endif
+        std::vector<D5Record> all_d5(rank == 0 ? static_cast<std::size_t>(world_size) : 1);
+#ifdef RICH_MPI
+        MPI_Gather(&d5, 12, MPI_DOUBLE, all_d5.data(), 12, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+#else
+        all_d5[0] = d5;
+#endif
+        if(rank == 0)
+        {
+            std::vector<D5Record> failing;
+            for(D5Record const& record : all_d5)
+                if(record.has > 0)
+                    failing.push_back(record);
+            auto median_of = [&](double D5Record::* field)
+            {
+                std::vector<double> values;
+                for(D5Record const& record : failing)
+                    values.push_back(record.*field);
+                if(values.empty())
+                    return 0.0;
+                std::sort(values.begin(), values.end());
+                return values[values.size() / 2];
+            };
+            std::size_t below_nominal = 0, de_int_negative = 0, derad_negative = 0, stage1 = 0;
+            double ratio_min = std::numeric_limits<double>::infinity(), ratio_max = 0;
+            for(D5Record const& record : failing)
+            {
+                if(record.dt_cell < record.nominal_dt * (1 - 1e-9))
+                    ++below_nominal;
+                if(record.de_int < 0)
+                    ++de_int_negative;
+                if(record.derad < 0)
+                    ++derad_negative;
+                if(record.stage == 1)
+                    ++stage1;
+                ratio_min = std::min(ratio_min, record.volume_ratio);
+                ratio_max = std::max(ratio_max, record.volume_ratio);
+            }
+            std::cout << std::setprecision(6)
+                      << "RICH_RADIATION_D5_AGGREGATE failing_ranks=" << failing.size()
+                      << " of=" << world_size
+                      << " stage_during=" << stage1
+                      << " stage_after=" << (failing.size() - stage1)
+                      << " volume_ratio_median=" << median_of(&D5Record::volume_ratio)
+                      << " volume_ratio_min=" << (failing.empty() ? 0 : ratio_min)
+                      << " volume_ratio_max=" << ratio_max
+                      << " dt_cell_median=" << median_of(&D5Record::dt_cell)
+                      << " nominal_dt_median=" << median_of(&D5Record::nominal_dt)
+                      << " below_nominal=" << below_nominal
+                      << " de_int_negative=" << de_int_negative
+                      << " derad_negative=" << derad_negative
+                      << " e_int0_median=" << median_of(&D5Record::e_int0)
+                      << " erad0_median=" << median_of(&D5Record::erad0)
+                      << std::endl;
+        }
+        if(RuntimeLogDetailed())
+        {
+#ifdef RICH_MPI
+        int detail_rank = local_failure_details.empty() ?
+            std::numeric_limits<int>::max() : rank;
+        MPI_Allreduce(MPI_IN_PLACE, &detail_rank, 1, MPI_INT, MPI_MIN,
+            MPI_COMM_WORLD);
+        if(detail_rank != std::numeric_limits<int>::max())
+        {
+            unsigned long long detail_size = rank == detail_rank ?
+                static_cast<unsigned long long>(local_failure_details.size()) : 0;
+            MPI_Bcast(&detail_size, 1, MPI_UNSIGNED_LONG_LONG, detail_rank,
+                MPI_COMM_WORLD);
+            if(detail_size > static_cast<unsigned long long>(
+                std::numeric_limits<int>::max()))
+                throw std::overflow_error(
+                    "Radiation failure diagnostic is too large for MPI");
+            if(rank != detail_rank)
+                local_failure_details.resize(
+                    static_cast<std::size_t>(detail_size));
+            if(detail_size > 0)
+                MPI_Bcast(&local_failure_details[0],
+                    static_cast<int>(detail_size), MPI_CHAR, detail_rank,
+                    MPI_COMM_WORLD);
+        }
+#endif
+        if(rank == 0 && !local_failure_details.empty())
+            std::cout<<local_failure_details<<std::endl;
+        }
+    }
     if(good_end == 0)
     {
-        // std::cout<<"throwing error"<<std::endl;
         throw UniversalError("Negative energy in POSTCG");
     }
 
-    double Efinal = 0;
-    for(size_t i = 0; i < N; ++i)
-        Efinal += extensives[i].Erad + extensives[i].energy;
-#ifdef RICH_MPI
-    MPI_Allreduce(MPI_IN_PLACE, &Efinal, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-#endif
-    if(rank == 0)
-        std::cout<<std::setprecision(14)<<"Einit "<<Einit<<" Efinal "<<Efinal<<std::endl;
 }
 
 void DiffusionSideBoundary::SetBoundaryValues(Tessellation3D const& tess, size_t const index, size_t const outside_point, double const dt, 

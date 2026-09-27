@@ -29,6 +29,12 @@ public:
 		vector<Conserved3D>& extensives,
 		const IndividualStepContext& context) const override;
 private:
+	void UpdateCells(vector<ComputationalCell3D> &res,
+		EquationOfState const& eos,
+		const Tessellation3D& tess,
+		vector<Conserved3D>& extensives,
+		bool synchronize_entropy_ghosts) const;
+
 	const bool SR_;
 	const double G_;
 	const bool includes_temperature_;

@@ -110,6 +110,19 @@ struct FmmSolveStats
     std::uint64_t letInactiveP2PBlockCount = 0;
     std::uint64_t letM2PCount = 0;
     std::uint64_t letInactiveM2PCount = 0;
+    // Target pruning (solve with a target mask): owned target particles,
+    // tree nodes with a target below them, and the interactions and leaf
+    // evaluations skipped because their target subtree holds no target.
+    bool targetPruneActive = false;
+    std::uint64_t targetParticleCount = 0;
+    std::uint64_t targetNodeCount = 0;
+    std::uint64_t localTargetPrunedM2LCount = 0;
+    std::uint64_t localTargetPrunedP2PBlockCount = 0;
+    std::uint64_t letTargetPrunedM2LCount = 0;
+    std::uint64_t letTargetPrunedP2PBlockCount = 0;
+    std::uint64_t letTargetPrunedM2PCount = 0;
+    std::uint64_t downwardTargetPrunedLeafCount = 0;
+    double targetMaskSeconds = 0.0;
     std::size_t letWaveCount = 1;
     std::size_t letLocalWaveCount = 1;
     std::size_t letMaxWavePayloadBytes = 0;
@@ -229,6 +242,50 @@ struct FmmSolveStats
     double letP2PSeconds = 0;
     double letM2PSeconds = 0;
     double localTraversalSeconds = 0;
+
+    // Gravity-owner re-sampling (spatiallyRedistributeForGravity).  The
+    // reason is a bit mask of the gravityResample* values below; the straggler
+    // times are the slowest rank's compute time above the mean on this solve,
+    // the baseline it is compared against (set on the first warm solve after a
+    // sampling), the accumulated debt, and the threshold (last measured
+    // process-topology rebuild) at which the debt triggers a re-sampling.
+    static constexpr int gravityResampleMissing = 1;
+    static constexpr int gravityResampleDomain = 2;
+    static constexpr int gravityResampleImbalance = 4;
+    bool gravityResampleEnabled = false;
+    int gravityResampleReason = 0;
+    std::uint64_t gravityResampleCount = 0;
+    double gravityStragglerExcessSeconds = 0;
+    double gravityStragglerBaselineSeconds = 0;
+    bool gravityStragglerBaselinePending = false;
+    double gravityStragglerDebtSeconds = 0;
+    double gravityResampleThresholdSeconds = 0;
+    // Order-independent fingerprint of this rank's gravity-owned particles.
+    std::uint64_t gravityOwnershipChecksum = 0;
+
+    // Print-only load-balance diagnostics.  Filled only while the solve trace
+    // (RICH_FMM_TRACE) is on; they never influence the solve.
+    bool diagFilled = false;
+    double diagSeconds = 0;
+    std::uint64_t diagSolveIndex = 0;
+    std::uint64_t diagSplitterSolve = 0;
+    std::size_t diagInputParticleCount = 0;
+    std::uint64_t diagFreshOwnedCountMin = 0;
+    std::uint64_t diagFreshOwnedCountMax = 0;
+    double diagDomainLower[3] = {0, 0, 0};
+    double diagDomainUpper[3] = {0, 0, 0};
+    std::uint64_t diagLocalP2PPairCount = 0;
+    std::uint64_t diagLocalM2LCount = 0;
+    std::uint64_t diagLocalP2PBlockCount = 0;
+    std::uint64_t diagLetP2PPairCount = 0;
+    std::size_t diagLeavesOverCapacity = 0;
+    std::size_t diagLeavesOverSplitCapacity = 0;
+    std::size_t diagLeavesAtDepthCap = 0;
+    std::size_t diagMaxLeafAtDepthCap = 0;
+    double diagLeafSquaredOccupancy = 0;
+    double diagRootHalfSize = 0;
+    double diagRootCenter[3] = {0, 0, 0};
+    double diagParticleExtent[3] = {0, 0, 0};
 };
 
 #endif // FMM_DIAGNOSTICS_HPP

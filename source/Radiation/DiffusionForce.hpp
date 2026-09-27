@@ -33,6 +33,16 @@ public:
 	      const IndividualStepContext& context,
 	      vector<double>& time_step_limits) const override;
 
+	    // Its per-cell limits come from the last radiation-force evaluation of
+	    // each cell and cannot be re-evaluated on a rebuilt mesh here: a box
+	    // growth during individual stepping is refused (every rank throws).
+	    void SynchronizedIndividualLimits(const Tessellation3D& tess,
+	      const vector<ComputationalCell3D>& cells,
+	      const vector<Conserved3D>& extensives,
+	      double time,
+	      vector<double>& limits,
+	      vector<Vector3D>& accelerations) const override;
+
 	private:
 	    void ApplyImpl(const Tessellation3D& tess,
 	      const vector<ComputationalCell3D>& cells,

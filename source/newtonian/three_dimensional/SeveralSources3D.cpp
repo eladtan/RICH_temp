@@ -57,6 +57,21 @@ void SeveralSources3D::SuggestIndividualTimeSteps(
                                            time_step_limits);
 }
 
+void SeveralSources3D::SynchronizedIndividualLimits(
+    const Tessellation3D& tess,
+    const vector<ComputationalCell3D>& cells,
+    const vector<Conserved3D>& extensives,
+    double time,
+    vector<double>& limits,
+    vector<Vector3D>& accelerations) const
+{
+    // At most one constituent keeps the acceleration cache
+    // (SupportsIndividualTimeSteps), so at most one fills `accelerations`.
+    for(auto const& source : sources_)
+        source->SynchronizedIndividualLimits(tess, cells, extensives, time,
+                                             limits, accelerations);
+}
+
 bool SeveralSources3D::SupportsPartialMesh(void) const
 {
     for(auto const& source : sources_)
@@ -65,10 +80,55 @@ bool SeveralSources3D::SupportsPartialMesh(void) const
     return true;
 }
 
+bool SeveralSources3D::SupportsIndividualAccelerationRefresh(void) const
+{
+	for(auto const& source : sources_)
+		if(source->UsesIndividualAccelerationCache())
+			return source->SupportsIndividualAccelerationRefresh();
+	return false;
+}
+
+void SeveralSources3D::RefreshIndividualAccelerations(
+	const Tessellation3D& tess,
+	const vector<ComputationalCell3D>& cells,
+	const vector<Conserved3D>& extensives,
+	double time,
+	vector<Vector3D>& accelerations) const
+{
+	for(auto const& source : sources_)
+		if(source->UsesIndividualAccelerationCache())
+		{
+			source->RefreshIndividualAccelerations(tess, cells, extensives,
+				time, accelerations);
+			return;
+		}
+}
+
 bool SeveralSources3D::UsesIndividualAccelerationCache(void) const
 {
 	for(auto const& source : sources_)
 		if(source->UsesIndividualAccelerationCache())
 			return true;
 	return false;
+}
+
+bool SeveralSources3D::IndividualFirstHalfNeedsGeometry(
+	const IndividualStepContext& context) const
+{
+	for(auto const& source : sources_)
+		if(source->IndividualFirstHalfNeedsGeometry(context))
+			return true;
+	return false;
+}
+
+void SeveralSources3D::ApplyIndividualFirstHalfFromCache(
+	const vector<ComputationalCell3D>& cells,
+	const vector<Vector3D>& point_velocities,
+	double time,
+	const IndividualStepContext& context,
+	vector<Conserved3D>& extensives) const
+{
+	for(auto const& source : sources_)
+		source->ApplyIndividualFirstHalfFromCache(cells, point_velocities,
+			time, context, extensives);
 }

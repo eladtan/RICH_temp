@@ -95,6 +95,15 @@ public:
 	bool SupportsPartialMesh(void) const override
 	{return acc_.SupportsIndividualTargetEvaluation();}
 	bool UsesIndividualAccelerationCache(void) const override { return true; }
+
+	bool SupportsIndividualAccelerationRefresh(void) const override
+	{ return acc_.SupportsIndividualTargetEvaluation(); }
+
+	void RefreshIndividualAccelerations(const Tessellation3D& tess,
+		const vector<ComputationalCell3D>& cells,
+		const vector<Conserved3D>& extensives,
+		double time,
+		vector<Vector3D>& accelerations) const override;
 	void ApplyIndividual(const Tessellation3D& tess,
 		const vector<ComputationalCell3D>& cells,
 		const vector<Conserved3D>& fluxes,
@@ -108,6 +117,27 @@ public:
 		const vector<ComputationalCell3D>& cells,
 		const IndividualStepContext& context,
 		vector<double>& time_step_limits) const override;
+
+	//! Accelerations of every owned cell on the full mesh and their limits
+	//! sqrt(width / |a|), as ApplyIndividual evaluates them for active cells.
+	void SynchronizedIndividualLimits(const Tessellation3D& tess,
+		const vector<ComputationalCell3D>& cells,
+		const vector<Conserved3D>& extensives,
+		double time,
+		vector<double>& limits,
+		vector<Vector3D>& accelerations) const override;
+
+	//! The first half is a kick from the cached acceleration unless a cell
+	//! has no pending kick or the mass-flux energy term needs face geometry.
+	bool IndividualFirstHalfNeedsGeometry(
+		const IndividualStepContext& context) const override;
+
+	void ApplyIndividualFirstHalfFromCache(
+		const vector<ComputationalCell3D>& cells,
+		const vector<Vector3D>& point_velocities,
+		double time,
+		const IndividualStepContext& context,
+		vector<Conserved3D>& extensives) const override;
 
 private:
 	const Acceleration3D& acc_;

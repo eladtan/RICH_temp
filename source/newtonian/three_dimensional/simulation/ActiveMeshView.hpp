@@ -135,6 +135,10 @@ public:
         local.active_mask.assign(meshLocalSize(), 0);
         local.cell_time_steps.assign(meshLocalSize(),
             std::numeric_limits<double>::infinity());
+        bool const have_time_bins =
+            global.cell_time_bins.size() == global.cell_time_steps.size();
+        if(have_time_bins)
+            local.cell_time_bins.assign(meshLocalSize(), 0);
         local.primitive_ticks.resize(meshLocalSize());
         local.point_velocities.resize(meshLocalSize());
         local.cached_accelerations.resize(meshLocalSize());
@@ -144,6 +148,9 @@ public:
             if(global_index == invalidIndex())
                 continue;
             local.cell_time_steps[local_index] = global.cellTimeStep(global_index);
+            if(have_time_bins)
+                local.cell_time_bins[local_index] =
+                    global.cell_time_bins[global_index];
             if(global_index < global.primitive_ticks.size())
                 local.primitive_ticks[local_index] = global.primitive_ticks[global_index];
             if(global_index < global.point_velocities.size())
@@ -170,6 +177,8 @@ public:
         };
         sync(local.active_mask, global.active_mask);
         sync(local.cell_time_steps, global.cell_time_steps);
+        if(have_time_bins)
+            sync(local.cell_time_bins, global.cell_time_bins);
         sync(local.primitive_ticks, global.primitive_ticks);
         sync(local.point_velocities, global.point_velocities);
         sync(local.cached_accelerations, global.cached_accelerations);

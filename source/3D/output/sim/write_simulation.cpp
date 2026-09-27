@@ -28,9 +28,11 @@ namespace fs = std::filesystem;
 namespace
 {
 #ifdef RICH_MPI
+    constexpr char AnonymousLoadBalanceName[] = "__rich_restart_current__";
+
     std::string SerializedLoadBalanceName(const std::string &name)
     {
-        return name.empty() ? "__rich_restart_current__" : name;
+        return name.empty() ? AnonymousLoadBalanceName : name;
     }
 #endif
 
@@ -89,15 +91,20 @@ namespace
             return;
 
         std::string const group = "/individual_time_steps";
-		writer.WriteElement(group + "/version", std::uint64_t(7));
+		writer.WriteElement(group + "/version", std::uint64_t(10));
         writer.WriteElement(group + "/time_origin", scheduler->timeOrigin());
         writer.WriteElement(group + "/time_quantum", scheduler->timeQuantum());
         writer.WriteElement(group + "/current_tick", scheduler->currentTick());
+        writer.WriteElement(group + "/last_full_source_sweep_tick",
+                            scheduler->lastFullSourceSweepTick());
         IndividualTimeStepOptions const& options = scheduler->options();
         writer.WriteElement(group + "/initial_bin", options.initial_bin);
         writer.WriteElement(group + "/maximum_bin", options.maximum_bin);
         writer.WriteElement(group + "/maximum_neighbor_bin_difference",
                             options.maximum_neighbor_bin_difference);
+        writer.WriteElement(
+            group + "/full_source_sweep_interval_minimum_steps",
+            options.full_source_sweep_interval_minimum_steps);
         writer.WriteElement(group + "/mesh_build_policy",
                             static_cast<std::uint8_t>(options.mesh_build_policy));
         writer.WriteElement(group + "/partial_build_fraction",
@@ -218,6 +225,9 @@ namespace
             defect.maximum_event_absolute_fraction);
         writer.WriteElement(defect_group + "/maximum_local_fraction",
             defect.maximum_local_fraction);
+        writer.WriteElement(
+            defect_group + "/maximum_local_tolerance_ratio",
+            defect.maximum_local_tolerance_ratio);
         writer.WriteElement(defect_group + "/accepted_dirichlet_candidates",
             defect.accepted_dirichlet_candidates);
         writer.WriteElement(defect_group + "/defect_rejections",
@@ -228,6 +238,8 @@ namespace
             defect.config_version);
         writer.WriteElement(defect_group + "/local_withdrawal_limit",
             defect.local_withdrawal_limit);
+        writer.WriteElement(defect_group + "/local_absolute_limit",
+            defect.local_absolute_limit);
         writer.WriteElement(defect_group + "/event_absolute_target",
             defect.event_absolute_target);
         writer.WriteElement(defect_group + "/cumulative_signed_limit",
@@ -246,15 +258,20 @@ namespace
         std::vector<CellTimeState> const& states = scheduler->states();
         std::vector<std::uint64_t> ids(states.size()), begin(states.size()),
             end(states.size()), primitive(states.size());
-        std::vector<std::uint8_t> bins(states.size()), gravity_phase(states.size());
+        std::vector<std::uint8_t> bins(states.size()),
+            pending_neighbor_bins(states.size()), gravity_phase(states.size());
         std::vector<Vector3D> point_velocity(states.size()), acceleration(states.size());
         for(std::size_t i = 0; i < states.size(); ++i)
         {
+            // change_wake_pending/ratio are not stored: they live only between
+            // commitEvent and finalizeChangeWakes inside one event, and every
+            // output follows the finalization.
             ids[i] = static_cast<std::uint64_t>(states[i].cell_id);
             begin[i] = states[i].begin_tick;
             end[i] = states[i].end_tick;
             primitive[i] = states[i].last_primitive_tick;
             bins[i] = states[i].time_bin;
+            pending_neighbor_bins[i] = states[i].pending_neighbor_bin;
             gravity_phase[i] = states[i].gravity_half_kick_pending ? 1 : 0;
             point_velocity[i] = states[i].point_velocity;
             acceleration[i] = states[i].cached_acceleration;
@@ -264,6 +281,8 @@ namespace
         writer.WriteElement(group + "/end_ticks", end);
         writer.WriteElement(group + "/primitive_ticks", primitive);
         writer.WriteElement(group + "/bins", bins);
+        writer.WriteElement(group + "/pending_neighbor_bins",
+                            pending_neighbor_bins);
         writer.WriteElement(group + "/point_velocity", point_velocity);
         writer.WriteElement(group + "/cached_acceleration", acceleration);
         writer.WriteElement(group + "/gravity_half_kick_pending", gravity_phase);
@@ -275,10 +294,37 @@ namespace
     void writeLoadBalancers(HDF5Writer &writer, const Simulation &sim)
     {
         auto loads = sim.GetLoads();
+        const std::string &current_load_name = sim.getCurrentLB();
+        if(current_load_name == AnonymousLoadBalanceName)
+            throw UniversalError(
+                "WriteSimulation: reserved load balancer name is in use");
+        const std::string current_name =
+            SerializedLoadBalanceName(current_load_name);
+        bool wrote_current = false;
         for(const auto &[name, lb] : loads)
         {
+            if(name == AnonymousLoadBalanceName)
+                throw UniversalError(
+                    "WriteSimulation: reserved load balancer name is in use");
+            if(!lb)
+                throw UniversalError(
+                    "WriteSimulation: registered load balancer is missing: " +
+                    name);
+            const std::string serialized_name =
+                SerializedLoadBalanceName(name);
             LoadBalancerIO::writeLoadBalancer(writer,
-                "/load_balance/" + SerializedLoadBalanceName(name), *lb);
+                "/load_balance/" + serialized_name, *lb);
+            wrote_current = wrote_current || name == current_load_name;
+        }
+
+        if(!wrote_current)
+        {
+            auto current_load = sim.getTessellation().GetLoadBalancer();
+            if(!current_load)
+                throw UniversalError(
+                    "WriteSimulation: current load balancer is missing");
+            LoadBalancerIO::writeLoadBalancer(writer,
+                "/load_balance/" + current_name, *current_load);
         }
     }
     #endif

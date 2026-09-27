@@ -4,6 +4,7 @@
 #include <thread>
 #include <chrono>
 #include <cstdint>
+#include <limits>
 #include <unordered_map>
 #include "newtonian/three_dimensional/simulation/steps/io/HydroStepIOHandler.hpp"
 #include "newtonian/three_dimensional/simulation/steps/io/RadiationStepIOHandler.hpp"
@@ -85,7 +86,8 @@ namespace
         std::uint64_t version = 0;
         reader.ReadElement(group + "/version", version);
 		if(version != 1 && version != 2 && version != 3 && version != 4 &&
-		   version != 5 && version != 6 && version != 7)
+		   version != 5 && version != 6 && version != 7 && version != 8 &&
+		   version != 9 && version != 10)
 			throw UniversalError("Unsupported individual timestep restart version");
 
         IndividualTimeStepOptions options;
@@ -94,6 +96,10 @@ namespace
         reader.ReadElement(group + "/maximum_bin", options.maximum_bin);
         reader.ReadElement(group + "/maximum_neighbor_bin_difference",
                            options.maximum_neighbor_bin_difference);
+        if(version >= 10)
+            reader.ReadElement(
+                group + "/full_source_sweep_interval_minimum_steps",
+                options.full_source_sweep_interval_minimum_steps);
         std::uint8_t mesh_policy = 0;
         reader.ReadElement(group + "/mesh_build_policy", mesh_policy);
         if(mesh_policy > static_cast<std::uint8_t>(IndividualMeshBuildPolicy::AutoPartial))
@@ -112,19 +118,26 @@ namespace
 		}
 
         std::vector<std::uint64_t> ids, begin, end, primitive;
-        std::vector<std::uint8_t> bins, gravity_phase;
+        std::vector<std::uint8_t> bins, pending_neighbor_bins, gravity_phase;
         std::vector<Vector3D> point_velocity, acceleration;
         reader.ReadElement(group + "/cell_ids", ids);
         reader.ReadElement(group + "/begin_ticks", begin);
         reader.ReadElement(group + "/end_ticks", end);
         reader.ReadElement(group + "/primitive_ticks", primitive);
         reader.ReadElement(group + "/bins", bins);
+        if(version >= 9)
+            reader.ReadElement(group + "/pending_neighbor_bins",
+                               pending_neighbor_bins);
         reader.ReadElement(group + "/point_velocity", point_velocity);
         reader.ReadElement(group + "/cached_acceleration", acceleration);
         reader.ReadElement(group + "/gravity_half_kick_pending", gravity_phase);
         std::size_t const count = ids.size();
+        if(version < 9)
+            pending_neighbor_bins.assign(
+                count, std::numeric_limits<std::uint8_t>::max());
         if(begin.size() != count || end.size() != count || primitive.size() != count ||
            bins.size() != count || point_velocity.size() != count ||
+           pending_neighbor_bins.size() != count ||
            acceleration.size() != count || gravity_phase.size() != count)
             throw UniversalError("Individual timestep restart arrays have inconsistent lengths");
 
@@ -147,6 +160,7 @@ namespace
             states[i].end_tick = end[source];
             states[i].last_primitive_tick = primitive[source];
             states[i].time_bin = bins[source];
+            states[i].pending_neighbor_bin = pending_neighbor_bins[source];
             states[i].point_velocity = point_velocity[source];
             states[i].cached_acceleration = acceleration[source];
             states[i].gravity_half_kick_pending = gravity_phase[source] != 0;
@@ -158,6 +172,10 @@ namespace
         reader.ReadElement(group + "/time_origin", time_origin);
         reader.ReadElement(group + "/time_quantum", time_quantum);
         reader.ReadElement(group + "/current_tick", current_tick);
+        std::uint64_t last_full_source_sweep_tick = current_tick;
+        if(version >= 10)
+            reader.ReadElement(group + "/last_full_source_sweep_tick",
+                               last_full_source_sweep_tick);
         RadiationRepairAccounting repair_accounting;
         if(version >= 3) {
             std::string const repair_group = group + "/radiation_repair";
@@ -305,6 +323,10 @@ namespace
                 defect_accounting.maximum_event_absolute_fraction);
             reader.ReadElement(defect_group + "/maximum_local_fraction",
                 defect_accounting.maximum_local_fraction);
+            if(version >= 8)
+                reader.ReadElement(
+                    defect_group + "/maximum_local_tolerance_ratio",
+                    defect_accounting.maximum_local_tolerance_ratio);
             reader.ReadElement(defect_group + "/accepted_dirichlet_candidates",
                 defect_accounting.accepted_dirichlet_candidates);
             reader.ReadElement(defect_group + "/defect_rejections",
@@ -315,6 +337,9 @@ namespace
                 defect_accounting.config_version);
             reader.ReadElement(defect_group + "/local_withdrawal_limit",
                 defect_accounting.local_withdrawal_limit);
+            if(version >= 8)
+                reader.ReadElement(defect_group + "/local_absolute_limit",
+                    defect_accounting.local_absolute_limit);
             reader.ReadElement(defect_group + "/event_absolute_target",
                 defect_accounting.event_absolute_target);
             reader.ReadElement(defect_group + "/cumulative_signed_limit",
@@ -331,6 +356,32 @@ namespace
             reader.ReadElement(defect_group + "/history_complete",
                                history_complete);
             defect_accounting.history_complete = history_complete != 0;
+            if(version < 8) {
+                bool const legacy_configuration =
+                    defect_accounting.config_version == 1 &&
+                    defect_accounting.local_withdrawal_limit == 1e-2 &&
+                    defect_accounting.event_absolute_target == 1e-6 &&
+                    defect_accounting.cumulative_signed_limit == 1e-4 &&
+                    defect_accounting.cumulative_absolute_limit == 1e-3;
+                if(!legacy_configuration)
+                    throw UniversalError(
+                        "Unsupported legacy radiation defect configuration");
+                defect_accounting.config_version = 2;
+                defect_accounting.local_absolute_limit = 1e-9;
+                defect_accounting.maximum_local_tolerance_ratio = 0;
+                defect_accounting.cooldown_accepted_candidates = 0;
+                defect_accounting.cooldown_fraction_ceiling = 1;
+                defect_accounting.history_complete = false;
+            }
+            if(defect_accounting.config_version == 2) {
+                // Version 3 keeps the same measured defect scales but makes
+                // their finite thresholds synchronization targets instead of
+                // candidate-rejection limits.
+                defect_accounting.config_version = 3;
+                defect_accounting.cooldown_accepted_candidates = 0;
+                defect_accounting.cooldown_fraction_ceiling = 1;
+                defect_accounting.history_complete = false;
+            }
         }
         else {
             defect_accounting = IndividualRadiationDefectAccounting();
@@ -350,7 +401,10 @@ namespace
         sim.EnableIndividualTimeSteps(options);
         sim.GetIndividualTimeStepScheduler()->restore(
             cells, time_origin, time_quantum, current_tick, std::move(states),
-            repair_accounting, defect_accounting, force_all_active_latched);
+            repair_accounting, defect_accounting, force_all_active_latched,
+            last_full_source_sweep_tick);
+        sim.GetIndividualTimeStepScheduler()->enforceNeighborBinClosure(
+            sim.getTessellation(), cells);
 
         double const restored_time = time_origin +
             time_quantum * static_cast<double>(current_tick);
@@ -360,18 +414,33 @@ namespace
     }
 
     #ifdef RICH_MPI
-    std::string readLoadBalancers(const HDF5Reader &reader, Simulation &sim)
+    constexpr char AnonymousLoadBalanceName[] = "__rich_restart_current__";
+
+    struct RestartLoadBalance
     {
-        std::string currentLBName;
+        std::string current_name;
+        bool anonymous_current = false;
+        std::shared_ptr<LoadBalancer<Vector3D>> current_load;
+    };
+
+    RestartLoadBalance readLoadBalancers(const HDF5Reader &reader,
+                                         Simulation &sim)
+    {
+        RestartLoadBalance result;
 
         if(!reader.Exists("/load_balance"))
         {
-            return currentLBName;
+            return result;
         }
 
         if(reader.Exists("/load_balance/current"))
         {
-            reader.ReadElement("/load_balance/current", currentLBName);
+            reader.ReadElement("/load_balance/current", result.current_name);
+            if(result.current_name == AnonymousLoadBalanceName)
+            {
+                result.current_name.clear();
+                result.anonymous_current = true;
+            }
         }
 
         auto lbEntries = reader.ReadGroupNames("/load_balance");
@@ -384,10 +453,14 @@ namespace
             }
 
             auto lb = LoadBalancerIO::readLoadBalancer(reader, group);
-            sim.storeLoadBalance(name, lb);
+            const std::string logical_name =
+                name == AnonymousLoadBalanceName ? std::string() : name;
+            sim.storeLoadBalance(logical_name, lb);
+            if(logical_name == result.current_name)
+                result.current_load = lb;
         }
 
-        return currentLBName;
+        return result;
     }
     #endif
 
@@ -498,24 +571,38 @@ void ReadSimulation(const std::string &filename,
 {
     HDF5Reader globalReader;
     openReader(globalReader, filename);
+
+#ifdef RICH_MPI
+    std::string currentLBName;
+    bool anonymousCurrent = false;
+    std::shared_ptr<LoadBalancer<Vector3D>> restartLoad;
+    if(parallel)
+    {
+        RestartLoadBalance const restart_state =
+            readLoadBalancers(globalReader, sim);
+        currentLBName = restart_state.current_name;
+        anonymousCurrent = restart_state.anonymous_current;
+        restartLoad = restart_state.current_load;
+
+        // Older checkpoints named an anonymous current load but did not write
+        // its state.  Preserve the caller's load before SetBox replaces the
+        // points manager.
+        if(!restartLoad && anonymousCurrent)
+            restartLoad = sim.getTessellation().GetLoadBalancer();
+
+        if((anonymousCurrent || !currentLBName.empty()) && !restartLoad)
+            throw UniversalError(
+                "ReadSimulation: current load balancer state is missing");
+    }
+#endif
+
     readGeneralInfo(globalReader, sim);
 
     std::shared_ptr<HDF5Reader> dataReader;
 
     #ifdef RICH_MPI
-    std::string currentLBName;
-    std::shared_ptr<LoadBalancer<Vector3D>> restartLoad;
     if(parallel)
     {
-        currentLBName = readLoadBalancers(globalReader, sim);
-
-        for(const auto& entry : sim.GetLoads())
-            if(entry.first == currentLBName)
-            {
-                restartLoad = entry.second;
-                break;
-            }
-
         int rank = 0;
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         int rank_to_read = (fake_rank >= 0) ? fake_rank : rank;
@@ -544,17 +631,9 @@ void ReadSimulation(const std::string &filename,
 #endif
 
 #ifdef RICH_MPI
-    if(parallel && !currentLBName.empty())
+    if(parallel && (anonymousCurrent || !currentLBName.empty()))
     {
-        auto loads = sim.GetLoads();
-        for(const auto &[name, lb] : loads)
-        {
-            if(name == currentLBName)
-            {
-                sim.getTessellation().PresetLoadBalancer(lb);
-                break;
-            }
-        }
+        sim.getTessellation().PresetLoadBalancer(restartLoad);
         sim.PresetLoadBalance(currentLBName);
     }
     #endif

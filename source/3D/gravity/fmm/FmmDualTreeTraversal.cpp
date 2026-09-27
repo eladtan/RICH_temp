@@ -311,12 +311,23 @@ void FmmDualTreeTraversal::runLocalPlan(
     std::size_t maxOperatorCacheBytes,
     FmmSolveStats& stats,
     FmmTraversalProgress progress,
-    void* progressContext)
+    void* progressContext,
+    const std::vector<unsigned char>* targetNodeMask)
 {
     if(!plan.initialized)
         throw UniversalError(
             "FmmDualTreeTraversal::runLocalPlan: uninitialized plan");
     const std::vector<FmmNode>& nodes = tree.nodes();
+    if(targetNodeMask != nullptr && targetNodeMask->size() != nodes.size())
+        throw UniversalError(
+            "FmmDualTreeTraversal::runLocalPlan: target mask does not match the tree");
+    // With a target mask, an interaction whose target subtree holds no target
+    // particle is skipped: its result would only reach particles whose
+    // acceleration the caller does not use.
+    const auto untargeted = [targetNodeMask](std::uint32_t node)
+    {
+        return targetNodeMask != nullptr && (*targetNodeMask)[node] == 0;
+    };
 
     // The persistent full-octant tree is a stable superset of all interactions
     // that may become active during this topology epoch. Build a cheap dynamic
@@ -344,6 +355,16 @@ void FmmDualTreeTraversal::runLocalPlan(
            nodes[pair.sourceNode].particleCount() == 0)
         {
             ++stats.localInactiveM2LCount;
+            if(progress != nullptr && --progressCountdown == 0)
+            {
+                progress(progressContext);
+                progressCountdown = progressEvery;
+            }
+            continue;
+        }
+        if(untargeted(pair.targetNode))
+        {
+            ++stats.localTargetPrunedM2LCount;
             if(progress != nullptr && --progressCountdown == 0)
             {
                 progress(progressContext);
@@ -417,6 +438,16 @@ void FmmDualTreeTraversal::runLocalPlan(
         if(target.particleCount() == 0 || source.particleCount() == 0)
         {
             ++stats.localInactiveP2PBlockCount;
+            if(progress != nullptr && --progressCountdown == 0)
+            {
+                progress(progressContext);
+                progressCountdown = progressEvery;
+            }
+            continue;
+        }
+        if(untargeted(pair.targetNode))
+        {
+            ++stats.localTargetPrunedP2PBlockCount;
             if(progress != nullptr && --progressCountdown == 0)
             {
                 progress(progressContext);

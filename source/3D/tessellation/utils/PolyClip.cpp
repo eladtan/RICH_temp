@@ -59,11 +59,13 @@ namespace
         {
             bool all_vertices_outside_this_plane = true;
             bool all_vertices_inside_this_plane = true;
+            const double offset = ScalarProd(plane.normal, plane.point);
             for(const Face &face : polyhedron)
             {
                 for(const Vector3D &vertex : face.vertices)
                 {
-                    const double d = plane.signedDistance(vertex);
+                    // The distance clipFace uses.
+                    const double d = ScalarProd(vertex, plane.normal) - offset;
                     if(std::abs(d) <= tol)
                     {
                         return false;
@@ -184,7 +186,87 @@ ClipBounds computeBounds(const std::vector<Face> &faces)
     return bounds;
 }
 
-std::pair<Face, Face> clipFace(const Face &face, const Plane &plane, bool print)
+namespace
+{
+    bool LexicographicallyLess(const Vector3D &a, const Vector3D &b)
+    {
+        if(a.x != b.x)
+        {
+            return a.x < b.x;
+        }
+        if(a.y != b.y)
+        {
+            return a.y < b.y;
+        }
+        return a.z < b.z;
+    }
+
+    // The on-plane band E of a clip: a bound on the rounding of n.v - n.p,
+    // from the magnitudes sum_k |n_k v_k| and sum_k |n_k p_k| of both dot
+    // products (it scales with the absolute coordinates, not with the face:
+    // far from the origin, copies of one vertex held by different faces differ
+    // by an ulp of the coordinates), or 1e-12 of the edge length.
+    //
+    // Accuracy contract of clipCells/clipPolyhedron (normalized planes, a
+    // convex, consistently connected input polyhedron P whose faces are
+    // resolved by the face cleanup, i.e. no feature of a face is shorter than
+    // CleanFace's threshold, 1e-12 of the face's longest edge or 100 ulps of
+    // its coordinates; RICH's Voronoi cells satisfy this): a vertex whose
+    // computed distance is within E is on the plane.  With e the evaluation
+    // error of the computed distance (|e| <= 64 eps * the same magnitudes, so
+    // e <= E), the result differs from the exact P cap H only within the slab
+    // |n.x - n.p| <= W = E + e <= 2E, and
+    //   |V_clip - V_exact| <= Vol(P cap slab) + eps_V <= 2 W max_{|t|<=W} A(t) + eps_V
+    // with A(t) the cross-section of P at offset t and eps_V the rounding of
+    // the volume sums; geometry thinner than W may be assigned wholly to either
+    // side.  Complementary clips (n, p) and (-n, p) conserve V(P) to the same
+    // bound.  Identical vertex coordinates always classify alike; the copies
+    // of a vertex in P's faces are identical when P comes from a tessellation
+    // (or exact MPI copies of it) and every cut point is formed canonically
+    // (below), so all faces agree on each vertex.  Two representations of one
+    // plane agree within their bands.
+    double OnPlaneBand(double max_edge, double error_scale)
+    {
+        return std::max(max_edge * 1e-12, 64 * std::numeric_limits<double>::epsilon() * error_scale);
+    }
+
+    double DotMagnitude(const Vector3D &v, const Vector3D &n)
+    {
+        return std::abs(v.x * n.x) + std::abs(v.y * n.y) + std::abs(v.z * n.z);
+    }
+
+    // The tolerance of one clip, the same for every face of the polyhedron so
+    // that a vertex held by several faces is classified alike in all of them:
+    // the band over the whole polyhedron, or 0 (raw signs) when every vertex
+    // lies within it.  Such a polyhedron is a slab thinner than the rounding
+    // around the plane; the band would put all of its faces on the plane and
+    // collapse it into one cap.
+    double ClipTolerance(const std::vector<Face> &faces, const Plane &plane)
+    {
+        const double offset = ScalarProd(plane.normal, plane.point);
+        double max_edge = 0;
+        double error_scale = DotMagnitude(plane.point, plane.normal);
+        double max_distance = 0;
+        for(const Face &face : faces)
+        {
+            const size_t n = face.vertices.size();
+            if(n < 3)
+            {
+                continue;
+            }
+            for(size_t i = 0; i < n; i++)
+            {
+                const Vector3D &curr = face.vertices[i];
+                max_edge = std::max(max_edge, fastabs(face.vertices[(i + 1) % n] - curr));
+                max_distance = std::max(max_distance, std::abs(ScalarProd(curr, plane.normal) - offset));
+                error_scale = std::max(error_scale, DotMagnitude(curr, plane.normal));
+            }
+        }
+        const double band = OnPlaneBand(max_edge, error_scale);
+        return max_distance <= band ? 0.0 : band;
+    }
+
+std::pair<Face, Face> clipFaceImpl(const Face &face, const Plane &plane, double tolerance, bool print)
 {
     Face out, clip_points;
     const size_t n = face.vertices.size();
@@ -192,77 +274,113 @@ std::pair<Face, Face> clipFace(const Face &face, const Plane &plane, bool print)
     {
         return {out, clip_points};
     }
-    double old_d = plane.signedDistance(face.vertices[0]);
+    // Signed distances n.v - n.p with n.p formed once, so that every point of
+    // the same plane gives the same distances.  A vertex within the tolerance
+    // (ClipTolerance, one per polyhedron and plane) is on the plane.  Only strict sign changes are cut, at a parameter clamped to
+    // the edge; on-plane vertices are kept and join the cap.
+    const double offset = ScalarProd(plane.normal, plane.point);
+    constexpr size_t local_size = 32;
+    double local_d[local_size];
+    std::vector<double> heap_d;
+    double *d = local_d;
+    if(n > local_size)
+    {
+        heap_d.resize(n);
+        d = heap_d.data();
+    }
     double maxR = 0;
     for(size_t i = 0; i < n; i++)
     {
         const Vector3D &curr = face.vertices[i];
         const Vector3D &next = face.vertices[(i + 1) % n];
-        double R = fastabs(next - curr);
-        maxR = std::max(maxR, R);
+        maxR = std::max(maxR, fastabs(next - curr));
+        d[i] = ScalarProd(curr, plane.normal) - offset;
     }
-    double maxD = std::abs(old_d);
+    bool any_inside = false;
+    bool all_on = true;
     for(size_t i = 0; i < n; i++)
     {
-        const Vector3D &curr = face.vertices[i];
-        const Vector3D &next = face.vertices[(i + 1) % n];
-        double R = fastabs(next - curr);
-        double d1 = old_d;
-        double d2 = plane.signedDistance(next);
-        maxD = std::max(maxD, std::abs(d2));
-        old_d = d2;
-        bool in1 = d1 >= -maxR * 1e-12;
-        bool in2 = d2 >= -maxR * 1e-12;
-        if(print)
+        any_inside = any_inside || d[i] > tolerance;
+        all_on = all_on && std::abs(d[i]) <= tolerance;
+    }
+    if(print)
+    {
+        std::cout << "clipFace tolerance " << tolerance << " maxR " << maxR << " all_on " << all_on
+                  << " any_inside " << any_inside << std::endl;
+        for(size_t i = 0; i < n; i++)
         {
-            std::cout << "i=" << i << " d1 = " << d1 << " d2 = " << d2 << " in1 = " << in1 << " in2 = " << in2 << " maxR = " << maxR << " R " << R << std::endl;
+            std::cout << "  d[" << i << "] = " << d[i] << std::endl;
         }
-        if(in1)
+    }
+    // A face on the plane belongs to the cap.  A face with no vertex strictly
+    // inside contributes no face, only its on-plane vertices to the cap.
+    if(all_on)
+    {
+        clip_points = face;
+        return {out, clip_points};
+    }
+    if(not any_inside)
+    {
+        for(size_t i = 0; i < n; i++)
+        {
+            if(std::abs(d[i]) <= tolerance)
+            {
+                clip_points.vertices.push_back(face.vertices[i]);
+            }
+        }
+        return {out, clip_points};
+    }
+    for(size_t i = 0; i < n; i++)
+    {
+        const size_t j = (i + 1) % n;
+        const Vector3D &curr = face.vertices[i];
+        const Vector3D &next = face.vertices[j];
+        const int side_curr = d[i] > tolerance ? 1 : (d[i] < -tolerance ? -1 : 0);
+        const int side_next = d[j] > tolerance ? 1 : (d[j] < -tolerance ? -1 : 0);
+        if(side_curr >= 0)
         {
             out.vertices.push_back(curr);
         }
-        if(in1 != in2)
+        if(side_curr == 0)
         {
-            if(R * 1e-12 < std::max(std::abs(d1), std::abs(d2)))
-            {
-                if(R * 1e-10 < std::max(std::abs(d1), std::abs(d2)))
-                {
-                    Vector3D intersection = plane.intersect(curr, next);
-                    out.vertices.push_back(intersection);
-                    clip_points.vertices.push_back(intersection);
-                }
-                else
-                {
-                    out.vertices.push_back(next);
-                    clip_points.vertices.push_back(next);
-                }
-            }
+            clip_points.vertices.push_back(curr);
+        }
+        if(side_curr * side_next < 0)
+        {
+            // From the endpoints in a canonical order, so that the two faces
+            // sharing the edge create the identical point (from each face's own
+            // direction the two points differ by ulps).
+            const bool swap = LexicographicallyLess(next, curr);
+            const Vector3D &p = swap ? next : curr;
+            const Vector3D &q = swap ? curr : next;
+            const double dp = swap ? d[j] : d[i];
+            const double dq = swap ? d[i] : d[j];
+            const double t = std::min(1.0, std::max(0.0, dp / (dp - dq)));
+            const Vector3D intersection = p + (q - p) * t;
+            out.vertices.push_back(intersection);
+            clip_points.vertices.push_back(intersection);
         }
     }
     Face out2;
-    if(maxD < maxR * 1e-10)
+    if(out.vertices.size() > 2)
     {
-        // out2 = face;
-        // clip_points.vertices.clear();
-        clip_points = face;
-    }
-    else
-    {
-        if(out.vertices.size() > 2)
+        out2.vertices.push_back(out.vertices[0]);
+        const size_t Nvert = out.vertices.size();
+        for(size_t i = 1; i < Nvert; i++)
         {
-            out2.vertices.push_back(out.vertices[0]);
-            size_t Nvert = out.vertices.size();
-            for(size_t i = 1; i < Nvert; i++)
+            if(fastabs(out.vertices[i] - out2.vertices.back()) > maxR * 1e-12)
             {
-                if(fastabs(out.vertices[i] - out2.vertices.back()) > maxR * 1e-12)
-                {
-                    out2.vertices.push_back(out.vertices[i]);
-                }
+                out2.vertices.push_back(out.vertices[i]);
             }
         }
     }
-
     return {out2, clip_points};
+}
+}
+
+std::pair<Face, Face> clipFace(const Face &face, const Plane &plane, bool print)
+{
+    return clipFaceImpl(face, plane, ClipTolerance(std::vector<Face>(1, face), plane), print);
 }
 
 Face ConvexHullFace(const Face &face)
@@ -371,6 +489,7 @@ Face CleanFace(const Face &face)
 
 std::vector<Face> clipPolyhedron(const std::vector<Face> &faces, const Plane &plane, bool print)
 {
+    const double tolerance = ClipTolerance(faces, plane);
     std::vector<Face> result;
     Face bottom;
     if(print)
@@ -387,7 +506,7 @@ std::vector<Face> clipPolyhedron(const std::vector<Face> &faces, const Plane &pl
         {
             std::cout << "Clipping face " << face << std::endl;
         }
-        auto clipped = clipFace(face, plane, print);
+        auto clipped = clipFaceImpl(face, plane, tolerance, print);
         if(print)
         {
             std::cout << "Clip result: " << clipped.first << ", " << clipped.second << std::endl;
@@ -434,6 +553,7 @@ void clipPolyhedron(const std::vector<Face> &faces, const Plane &plane, std::vec
 
 void clipPolyhedron(const std::vector<Face> &faces, const Plane &plane, std::vector<Face> &result, ClipWorkspace &workspace, bool print)
 {
+    const double tolerance = ClipTolerance(faces, plane);
     result.clear();
     result.reserve(faces.size() + 1);
     Face &bottom = workspace.bottom;
@@ -452,7 +572,7 @@ void clipPolyhedron(const std::vector<Face> &faces, const Plane &plane, std::vec
         {
             std::cout << "Clipping face " << face << std::endl;
         }
-        auto clipped = clipFace(face, plane, print);
+        auto clipped = clipFaceImpl(face, plane, tolerance, print);
         if(print)
         {
             std::cout << "Clip result: " << clipped.first << ", " << clipped.second << std::endl;

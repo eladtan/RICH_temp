@@ -1,5 +1,6 @@
 #include "AMR3D.hpp"
 #include <boost/array.hpp>
+#include <cstdint>
 #include <iostream>
 #include <boost/scoped_ptr.hpp>
 #include <limits>
@@ -350,7 +351,11 @@ namespace
 #ifdef RICH_MPI
 		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 		MPI_Comm_size(MPI_COMM_WORLD, &world_size);
-		MPI_exchange_data(tess, anchor_flags, true);
+		// Points that are not MPI ghosts (rigid-wall mirrors) would otherwise
+		// take the first entry's value, i.e. become anchors whenever local cell
+		// 0 is one.
+		const char no_anchor = 0;
+		MPI_exchange_data(tess, anchor_flags, true, 1, &no_anchor);
 #endif
 
 		std::vector<std::vector<PairProposal> > proposals(static_cast<size_t>(world_size));
@@ -365,6 +370,10 @@ namespace
 			size_t anchor_count = 0;
 			for (size_t neighbor : neigh)
 			{
+				// A rigid-wall mirror is not a cell: never an anchor, and it has
+				// no owner (GetOwner of a point outside the box throws).
+				if (neighbor >= norg && tess.IsPointOutsideBox(neighbor))
+					continue;
 				if (neighbor < anchor_flags.size() && anchor_flags[neighbor])
 				{
 					anchor_neighbor = neighbor;
@@ -1560,7 +1569,7 @@ namespace
 		std::vector<size_t> const& ToRemove, PointsToNeighborsMap const& target_map,
 		AMRExtensiveUpdater3D const& eu, std::vector<ComputationalCell3D> const& cells,
 		EquationOfState const& eos, std::vector<Conserved3D> &extensives,
-		SpatialReconstruction3D &interp)
+		SpatialReconstruction3D &interp, IndividualAMRChangeSet &changes)
 	{
 		std::vector<Plane> source_planes;
 		std::vector<Face> target_poly;
@@ -1596,6 +1605,8 @@ namespace
 				overlap_sum += dv;
 				if (dv > oldtess.GetVolume(source) * 1e-12)
 				{
+					changes.merge_targets.push_back({
+						cells[source].ID, cells[old_target].ID, 0});
 					Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(cells[source], eos, dv,
 						interp.GetSlopes()[source], oldtess.GetCellCM(source), clip_cm);
 					extensives[target] += toadd;
@@ -1622,7 +1633,8 @@ namespace
 		std::vector<size_t> const& ToRemove, PointsToNeighborsMap const& target_map,
 		AMRExtensiveUpdater3D const& eu, std::vector<ComputationalCell3D> const& cells,
 		EquationOfState const& eos, std::vector<Conserved3D> &extensives,
-		SpatialReconstruction3D &interp, bool distribute_clips)
+		SpatialReconstruction3D &interp, bool distribute_clips,
+		IndividualAMRChangeSet &changes)
 	{
 		int rank = 0;
 		int world_size = 1;
@@ -1672,6 +1684,7 @@ namespace
 				int source_rank;
 				size_t packet_index;
 				size_t target_index;
+				size_t recipient_cell_id;
 			};
 			std::vector<RemovalClipTask> task_info;
 			std::vector<double> packed_tasks;
@@ -1703,7 +1716,9 @@ namespace
 						ClipBounds no_plane_bounds;
 						PackBounds(no_plane_bounds, packed_tasks);
 						source_volumes.push_back(packet.source_volume);
-						task_info.push_back({source_rank, packet_index, target});
+						task_info.push_back({
+							source_rank, packet_index, target,
+							cells[old_target].ID});
 					}
 				}
 			}
@@ -1717,6 +1732,10 @@ namespace
 				const RemovalSourcePacket &packet =
 					packets[static_cast<size_t>(task.source_rank)][task.packet_index];
 				overlap_sums[static_cast<size_t>(task.source_rank)][task.packet_index] += entry.dv;
+				if (entry.dv > 0)
+					changes.merge_targets.push_back({
+						packet.source_id, task.recipient_cell_id,
+						task.source_rank});
 				Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(packet.cell, eos, entry.dv,
 					packet.slope, packet.source_cm, entry.clip_CM);
 				extensives[task.target_index] += toadd;
@@ -1749,6 +1768,9 @@ namespace
 						overlap_sums[static_cast<size_t>(source_rank)][packet_index] += dv;
 						if (dv > packet.source_volume * 1e-12)
 						{
+							changes.merge_targets.push_back({
+								packet.source_id, cells[old_target].ID,
+								source_rank});
 							Conserved3D toadd = eu.ConvertPrimitveToExtensive3D(packet.cell, eos, dv,
 								packet.slope, packet.source_cm, clip_cm);
 							extensives[target] += toadd;
@@ -2600,15 +2622,35 @@ AMR3D::AMR3D(EquationOfState const& eos,
 
 void AMR3D::operator() (Simulation &sim)
 {
+	std::uint64_t const local_cells_before = static_cast<std::uint64_t>(
+		sim.getTessellation().GetPointNo());
 	last_change_set_ = Apply(sim, nullptr, nullptr);
+	sim.ReportRuntimeAMREvent(
+		"global", sim.GetCycle(), sim.GetTime(), local_cells_before,
+		static_cast<std::uint64_t>(last_change_set_.child_parent_ids.size()),
+		static_cast<std::uint64_t>(last_change_set_.removed_cell_ids.size()),
+		static_cast<std::uint64_t>(sim.getTessellation().GetPointNo()));
 }
 
 IndividualAMRChangeSet AMR3D::ApplyIndividual(
 	Simulation &sim,
 	IndividualStepContext const& context)
 {
+	// The AMR mesh is built from the committed generators the caller passes in
+	// context.generator_points.  gravity_source_points are the cells'
+	// centroids: a mesh built from them moved every generator onto its
+	// centroid once a change set reset the generator cache from that mesh, a
+	// flux-free relaxation that global AMR never applies (it rounded slow
+	// cells and let the refinement criteria's roundness guards admit bursts of
+	// refinement after each individual stretch).
+	int missing = context.generator_points.size() < sim.getCells().size() ? 1 : 0;
+#ifdef RICH_MPI
+	MPI_Allreduce(MPI_IN_PLACE, &missing, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+	if(missing != 0)
+		throw UniversalError("AMR3D::ApplyIndividual: the context carries no committed generator positions");
 	last_change_set_ = Apply(sim, &context.active_indices,
-		&context.gravity_source_points);
+		&context.generator_points);
 	return last_change_set_;
 }
 
@@ -2624,6 +2666,7 @@ IndividualAMRChangeSet AMR3D::Apply(
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
 	Tessellation3D &tess = sim.getTessellation();
+	MeshBuildTiming mesh_build_timing;
 	std::vector<ComputationalCell3D> &cells = sim.getCells();
 	std::vector<Conserved3D> &extensives = sim.getExtensives();
 	EquationOfState const& eos = eos_;
@@ -2649,6 +2692,15 @@ IndividualAMRChangeSet AMR3D::Apply(
 			auto const mapped = current_map.find(i);
 			identity_mesh = mapped != current_map.end() && mapped->second == i;
 		}
+#ifdef RICH_MPI
+		// The build below is collective, so every rank must take the same
+		// branch: a rank whose partial target covered all its owned cells has
+		// an identity mesh while the others do not.
+		int identity_flag = identity_mesh ? 1 : 0;
+		MPI_Allreduce(MPI_IN_PLACE, &identity_flag, 1, MPI_INT, MPI_LAND,
+			MPI_COMM_WORLD);
+		identity_mesh = identity_flag != 0;
+#endif
 		if(!identity_mesh)
 		{
 			vector<Vector3D> all_points;
@@ -2661,11 +2713,15 @@ IndividualAMRChangeSet AMR3D::Apply(
 			if(all_points.size() < cells.size())
 				throw UniversalError("AMR3D::ApplyIndividual: partial mesh lost canonical generators");
 			all_points.resize(cells.size());
+			{
+				MeshBuildTimer mesh_build_timer(mesh_build_timing);
+				++mesh_build_timing.full_builds;
 		#ifdef RICH_MPI
-			tess.BuildParallel(all_points, true /* no rebalance */, true /* no exchange */);
+				tess.BuildParallel(all_points, true /* no rebalance */, true /* no exchange */);
 		#else
-			tess.Build(all_points);
-			#endif
+				tess.Build(all_points);
+		#endif
+			}
 		}
 	#ifdef RICH_MPI
 		// The mesh above is canonical and full.  Use the normal full-mesh ghost
@@ -2774,6 +2830,7 @@ IndividualAMRChangeSet AMR3D::Apply(
 			extensives.resize(tess.GetPointNo());
 		}
 	#endif
+		changes.mesh_build_timing = mesh_build_timing;
 		return changes;
 	}
 	if(rank == 0)
@@ -2796,9 +2853,17 @@ IndividualAMRChangeSet AMR3D::Apply(
 	RemoveVector(mask, ToRemove.first);
 	mask.resize(new_mesh.size(), std::numeric_limits<size_t>::max());
 	tess.PreparePoints(new_mesh, mask);
-	tess.BuildParallel(new_mesh, true /* no rebalance */, true /* no exchange */);
+	{
+		MeshBuildTimer mesh_build_timer(mesh_build_timing);
+		++mesh_build_timing.full_builds;
+		tess.BuildParallel(new_mesh, true /* no rebalance */, true /* no exchange */);
+	}
 #else // RICH_MPI
-	tess.Build(new_mesh);
+	{
+		MeshBuildTimer mesh_build_timer(mesh_build_timing);
+		++mesh_build_timing.full_builds;
+		tess.Build(new_mesh);
+	}
 #endif
 	// Fix extensives for refine
 	extensives.resize(oldtess->GetPointNo() + ToRefine.first.size());
@@ -2823,10 +2888,10 @@ IndividualAMRChangeSet AMR3D::Apply(
 	// retaining a single Voronoi rebuild.
 #ifdef RICH_MPI
 	MPIRemoveWithTargets(*oldtess, tess, ToRemove.first, removal_targets,
-		*eu_, cells, eos_, extensives, interp_, distribute_clips_);
+		*eu_, cells, eos_, extensives, interp_, distribute_clips_, changes);
 #else
 	LocalRemoveWithTargets(*oldtess, tess, ToRemove.first, removal_targets,
-		*eu_, cells, eos_, extensives, interp_);
+		*eu_, cells, eos_, extensives, interp_, changes);
 #endif
 	// Recalc cells
 	RemoveVector(cells, ToRemove.first);
@@ -2911,6 +2976,7 @@ IndividualAMRChangeSet AMR3D::Apply(
 #else
 	MaxID += Nrefine;
 #endif
+	changes.mesh_build_timing = mesh_build_timing;
 	return changes;
 }
 

@@ -3,9 +3,173 @@
 #include "../../misc/utils.hpp"
 #include <iostream>
 #include <cfloat>
+#include <cmath>
+#include <cstdint>
+#include <exception>
+#include <iomanip>
+#include <limits>
+#include <sstream>
+#include <string>
 #ifdef RICH_MPI
 #include "../../mpi/mpi_commands.hpp"
 #endif
+
+namespace
+{
+std::size_t diagnostic_cell_id(const vector<ComputationalCell3D>& cells,
+	std::size_t index)
+{
+	return index < cells.size() ? cells[index].ID :
+		std::numeric_limits<std::size_t>::max();
+}
+
+void report_individual_invalid_mass(
+	const vector<Conserved3D>& fluxes,
+	const Tessellation3D& tess,
+	const IndividualStepContext& context,
+	const vector<ComputationalCell3D>& cells,
+	const vector<Conserved3D>& extensives,
+	const vector<Vector3D>& face_velocities,
+	const vector<Vector3D>& point_velocities,
+	const std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> >&
+		face_values,
+	std::size_t index,
+	double time,
+	int rank)
+{
+	const Conserved3D& updated = extensives[index];
+	const double volume = tess.GetVolume(index);
+	const double primitive_mass = cells[index].density * volume;
+	const std::uint64_t no_tick = std::numeric_limits<std::uint64_t>::max();
+	const unsigned int time_bin = index < context.cell_time_bins.size() ?
+		static_cast<unsigned int>(context.cell_time_bins[index]) :
+		std::numeric_limits<unsigned int>::max();
+	const std::uint64_t primitive_tick =
+		index < context.primitive_ticks.size() ?
+		context.primitive_ticks[index] : no_tick;
+	const std::string record_id = std::to_string(rank) + ':' +
+		std::to_string(context.event_tick) + ':' +
+		std::to_string(cells[index].ID);
+	std::ostringstream diagnostic_record;
+
+	std::ostringstream header;
+	header << std::setprecision(17)
+		<< "INDIVIDUAL_HYDRO_INVALID_MASS"
+		<< " record_id=" << record_id
+		<< " rank=" << rank
+		<< " local_cell=" << index
+		<< " cell_id=" << cells[index].ID
+		<< " active=" << (context.isActive(index) ? 1 : 0)
+		<< " previous_event_tick=" << context.previous_event_tick
+		<< " event_tick=" << context.event_tick
+		<< " primitive_tick=" << primitive_tick
+		<< " time_bin=" << time_bin
+		<< " previous_event_time=" << context.previous_event_time
+		<< " event_time=" << context.event_time
+		<< " update_time=" << time
+		<< " cell_dt=" << context.cellTimeStep(index)
+		<< " volume=" << volume
+		<< " primitive_density=" << cells[index].density
+		<< " primitive_pressure=" << cells[index].pressure
+		<< " primitive_internal_energy=" << cells[index].internal_energy
+		<< " primitive_mass=" << primitive_mass
+		<< " updated=" << updated;
+	diagnostic_record << header.str() << '\n';
+
+	Conserved3D incident_flux_change;
+	const face_vec incident_faces = tess.GetCellFaces(index);
+	for(std::size_t face : incident_faces)
+	{
+		if(face >= fluxes.size())
+		{
+			std::ostringstream missing_face;
+			missing_face << "INDIVIDUAL_HYDRO_INVALID_MASS_FACE"
+				<< " record_id=" << record_id
+				<< " rank=" << rank
+				<< " cell_id=" << cells[index].ID
+				<< " face=" << face
+				<< " missing_flux=1";
+			diagnostic_record << missing_face.str() << '\n';
+			continue;
+		}
+
+		const auto neighbors = tess.GetFaceNeighbors(face);
+		const bool first_physical =
+			neighbors.first < context.cell_time_steps.size() &&
+			!tess.IsPointOutsideBox(neighbors.first);
+		const bool second_physical =
+			neighbors.second < context.cell_time_steps.size() &&
+			!tess.IsPointOutsideBox(neighbors.second);
+		double face_dt = 0;
+		if(first_physical && second_physical)
+			face_dt = context.hydroFaceTimeStep(neighbors.first, neighbors.second);
+		else if(first_physical)
+			face_dt = context.cellTimeStep(neighbors.first);
+		else if(second_physical)
+			face_dt = context.cellTimeStep(neighbors.second);
+
+		const double area = tess.GetArea(face);
+		const double orientation = neighbors.first == index ? -1.0 : 1.0;
+		const Conserved3D face_integral = fluxes[face] * (face_dt * area);
+		Conserved3D applied_change = face_integral * orientation;
+		applied_change.internal_energy = orientation *
+			(face_integral.energy -
+			 ScalarProd(cells[index].velocity, face_integral.momentum) +
+			 0.5 * ScalarProd(cells[index].velocity, cells[index].velocity) *
+			 face_integral.mass);
+		incident_flux_change += applied_change;
+
+		std::ostringstream face_record;
+		face_record << std::setprecision(17)
+			<< "INDIVIDUAL_HYDRO_INVALID_MASS_FACE"
+			<< " record_id=" << record_id
+			<< " rank=" << rank
+			<< " cell_id=" << cells[index].ID
+			<< " face=" << face
+			<< " first_index=" << neighbors.first
+			<< " first_id=" << diagnostic_cell_id(cells, neighbors.first)
+			<< " first_active=" <<
+				(neighbors.first < context.active_mask.size() &&
+				 context.isActive(neighbors.first) ? 1 : 0)
+			<< " second_index=" << neighbors.second
+			<< " second_id=" << diagnostic_cell_id(cells, neighbors.second)
+			<< " second_active=" <<
+				(neighbors.second < context.active_mask.size() &&
+				 context.isActive(neighbors.second) ? 1 : 0)
+			<< " orientation=" << orientation
+			<< " face_dt=" << face_dt
+			<< " area=" << area
+			<< " dt_area=" << face_dt * area
+			<< " flux=" << fluxes[face]
+			<< " applied_change=" << applied_change;
+		if(face < face_velocities.size())
+			face_record << " face_velocity=" << face_velocities[face];
+		if(neighbors.first < point_velocities.size())
+			face_record << " first_point_velocity=" <<
+				point_velocities[neighbors.first];
+		if(neighbors.second < point_velocities.size())
+			face_record << " second_point_velocity=" <<
+				point_velocities[neighbors.second];
+		if(face < face_values.size())
+			face_record << " reconstructed_first=" << face_values[face].first
+				<< " reconstructed_second=" << face_values[face].second;
+		diagnostic_record << face_record.str() << '\n';
+	}
+
+	std::ostringstream change_record;
+	change_record << std::setprecision(17)
+		<< "INDIVIDUAL_HYDRO_INVALID_MASS_CHANGE"
+		<< " record_id=" << record_id
+		<< " rank=" << rank
+		<< " cell_id=" << cells[index].ID
+		<< " primitive_mass=" << primitive_mass
+		<< " updated_mass=" << updated.mass
+		<< " mass_change_from_primitive=" << updated.mass - primitive_mass
+		<< " incident_flux_change=" << incident_flux_change;
+	diagnostic_record << change_record.str() << '\n';
+	PersistIndividualHydroDiagnosticRecord(record_id, diagnostic_record.str());
+}
+}
 
 ConditionExtensiveUpdater3D::Condition3D::~Condition3D() {}
 
@@ -34,18 +198,169 @@ void ConditionExtensiveUpdater3D::UpdateIndividual(
 		time, edge_velocities, point_velocities, interp_values,
 		canonical_cells, canonical_extensives);
 
-	for(std::size_t index : context.active_indices)
+	std::exception_ptr action_exception;
+	std::size_t action_index = std::numeric_limits<std::size_t>::max();
+	try
 	{
-		if(index >= tess.GetPointNo() || index >= cells.size() || index >= extensives.size())
-			throw std::out_of_range("Condition extensive individual cell is out of range");
-		for(const auto& item : sequence_)
-			if((*item.first)(index, tess, cells, time))
+		for(std::size_t index : context.active_indices)
+		{
+			action_index = index;
+			if(index >= tess.GetPointNo() || index >= cells.size() || index >= extensives.size())
+				throw std::out_of_range("Condition extensive individual cell is out of range");
+			for(const auto& item : sequence_)
+				if((*item.first)(index, tess, cells, time))
+				{
+					(*item.second)(fluxes, tess, context.cellTimeStep(index), cells,
+						extensives, index, time);
+					break;
+				}
+		}
+	}
+	catch(...)
+	{
+		action_exception = std::current_exception();
+	}
+
+	const std::size_t owned_count = tess.GetPointNo();
+	std::size_t invalid_index = owned_count;
+	std::uint64_t invalid_component_mask = 0;
+	bool invalid_canonical = false;
+	for(std::size_t index = 0; index < owned_count; ++index)
+	{
+		invalid_component_mask = IndividualHydroInvalidComponentMask(extensives[index]);
+		if(invalid_component_mask != 0)
+		{
+			invalid_index = index;
+			break;
+		}
+	}
+	if(invalid_component_mask == 0 && canonical_extensives != nullptr)
+		for(std::size_t index = 0; index < canonical_extensives->size(); ++index)
+		{
+			invalid_component_mask =
+				IndividualHydroInvalidComponentMask(canonical_extensives->at(index));
+			if(invalid_component_mask != 0)
 			{
-				(*item.second)(fluxes, tess, context.cellTimeStep(index), cells,
-					extensives, index, time);
+				invalid_index = index;
+				invalid_canonical = true;
 				break;
 			}
+		}
+
+	int rank = 0;
+#ifdef RICH_MPI
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+	int first_failing_rank = action_exception || invalid_component_mask != 0 ?
+		rank : std::numeric_limits<int>::max();
+#ifdef RICH_MPI
+	MPI_Allreduce(MPI_IN_PLACE, &first_failing_rank, 1, MPI_INT, MPI_MIN,
+		MPI_COMM_WORLD);
+#endif
+	if(first_failing_rank == std::numeric_limits<int>::max())
+		return;
+
+	std::string failure_message = action_exception ?
+		"Individual condition action failed" :
+		"Individual condition extensive update failed on another rank";
+	if((invalid_component_mask & 16) != 0 && !invalid_canonical)
+	{
+		report_individual_invalid_mass(fluxes, tess, context, cells,
+			extensives, edge_velocities, point_velocities, interp_values,
+			invalid_index, time, rank);
+		failure_message =
+			"Individual extensive update produced non-positive or non-finite mass";
 	}
+	else if((invalid_component_mask & 16) != 0)
+	{
+		const double mass = canonical_extensives->at(invalid_index).mass;
+		const std::string record_id = std::to_string(rank) + ':' +
+			std::to_string(context.event_tick) + ':' +
+			std::to_string(canonical_cells->at(invalid_index).ID);
+		std::ostringstream canonical_record;
+		canonical_record << std::setprecision(17)
+			<< "INDIVIDUAL_HYDRO_INVALID_MASS_CANONICAL"
+			<< " record_id=" << record_id
+			<< " rank=" << rank
+			<< " canonical_cell=" << invalid_index
+			<< " cell_id=" << canonical_cells->at(invalid_index).ID
+			<< " previous_event_tick=" << context.previous_event_tick
+			<< " event_tick=" << context.event_tick
+			<< " previous_event_time=" << context.previous_event_time
+			<< " event_time=" << context.event_time
+			<< " update_time=" << time
+			<< " updated_mass=" << mass
+			<< " pre_action_mass_available=0"
+			<< " updated=" << canonical_extensives->at(invalid_index)
+			<< '\n';
+		PersistIndividualHydroDiagnosticRecord(record_id,
+			canonical_record.str());
+		failure_message =
+			"Individual canonical extensive update produced non-positive or "
+			"non-finite mass";
+	}
+	else if(invalid_component_mask != 0)
+	{
+		const std::size_t cell_id = invalid_canonical ?
+			canonical_cells->at(invalid_index).ID : cells[invalid_index].ID;
+		const std::string record_id = std::to_string(rank) + ':' +
+			std::to_string(context.event_tick) + ':' + std::to_string(cell_id);
+		std::ostringstream record;
+		record << std::setprecision(17)
+			<< "INDIVIDUAL_HYDRO_INVALID_STATE record_id=" << record_id
+			<< " rank=" << rank << " cell_id=" << cell_id
+			<< " canonical=" << (invalid_canonical ? 1 : 0)
+			<< " component_mask=" << invalid_component_mask
+			<< " event_tick=" << context.event_tick
+			<< " updated=" << (invalid_canonical ?
+				canonical_extensives->at(invalid_index) : extensives[invalid_index])
+			<< '\n';
+		PersistIndividualHydroDiagnosticRecord(record_id, record.str());
+		failure_message = "Individual condition extensive update produced an invalid state";
+	}
+
+	UniversalError error(failure_message);
+	error.addEntry("rank", rank);
+	error.addEntry("first failing rank", first_failing_rank);
+	error.addEntry("previous event tick", context.previous_event_tick);
+	error.addEntry("event tick", context.event_tick);
+	error.addEntry("previous event time", context.previous_event_time);
+	error.addEntry("event time", context.event_time);
+	if(action_exception)
+	{
+		error.addEntry("action cell", action_index);
+		try
+		{
+			std::rethrow_exception(action_exception);
+		}
+		catch(UniversalError const& action_error)
+		{
+			error.Append2ErrorMessage(": " + action_error.getErrorMessage());
+			error.join(action_error);
+		}
+		catch(std::exception const& action_error)
+		{
+			error.Append2ErrorMessage(std::string(": ") + action_error.what());
+		}
+		catch(...)
+		{
+			error.Append2ErrorMessage(": unknown exception");
+		}
+	}
+	if(invalid_component_mask != 0)
+	{
+		error.addEntry("component mask", invalid_component_mask);
+		error.addEntry(invalid_canonical ? "canonical cell" : "local cell", invalid_index);
+		error.addEntry("cell ID", invalid_canonical ?
+			canonical_cells->at(invalid_index).ID : cells[invalid_index].ID);
+		error.addEntry("mass", invalid_canonical ?
+			canonical_extensives->at(invalid_index).mass : extensives[invalid_index].mass);
+	}
+#ifdef RICH_MPI
+	// Finish every rank's failure-only record before any caller can abort MPI.
+	MPI_Barrier(MPI_COMM_WORLD);
+#endif
+	throw error;
 }
 
 void ConditionExtensiveUpdater3D::operator()(const vector<Conserved3D>& fluxes, const Tessellation3D& tess,

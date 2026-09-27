@@ -31,9 +31,41 @@ public:
 
     void suggestIndividualTimeSteps(const IndividualStepContext &context,
                                     std::vector<double> &time_step_limits) const override;
+    void suggestIndividualChangeWakes(const IndividualStepContext &context,
+                                      std::vector<double> &change_ratios) const override;
+
+    void onIndividualSchedulerStart(double global_time_step) override
+    {this->sim.SetIndividualGlobalStepReference(global_time_step);}
 
     bool getIndividualGeneratorPoints(
         std::vector<Vector3D>& points) const override;
+
+    bool getIndividualCellCentroids(
+        std::vector<Vector3D>& centroids) const override;
+
+    bool contributesIndividualHydrodynamicSignal(void) const override
+    {return true;}
+
+    // 1 CFL/source, 2 mesh drift, 3 mass loss, 4 thermal loss (HDSim3D).
+    bool getIndividualLimitReasons(
+        std::vector<unsigned char>& reasons) const override;
+
+    bool collectCellTimeStepLimits(std::vector<double>& limits) const override
+    {return sim.CollectCellTimeStepLimits(limits);}
+
+    bool cellTimeStepLimitsStale(void) const override
+    {return sim.CellTimeStepLimitsStale();}
+
+    bool synchronizedCellTimeStepLimits(
+        std::vector<Vector3D> const& point_velocities,
+        std::vector<double>& limits,
+        std::vector<Vector3D>& accelerations) const override
+    {return sim.SynchronizedTimeStepLimits(point_velocities, limits,
+                                           accelerations);}
+
+    bool refreshIndividualAccelerations(
+        std::vector<Vector3D>& accelerations) const override
+    {return sim.RefreshIndividualAccelerations(accelerations);}
 
     const std::vector<size_t>& getIndividualMeshTargetIDs(void) const
     {return sim.GetIndividualMeshTargetIDs();}
@@ -49,6 +81,12 @@ public:
     void beforeIndividualRebalance(void) noexcept override;
 
     std::string getName(void) const override { return step_name; }
+
+    SourceStepTiming getSourceStepTiming(void) const override
+    {return sim.GetLastSourceStepTiming();}
+
+    MeshBuildTiming getMeshBuildTiming(void) const override
+    {return sim.GetLastMeshBuildTiming();}
 
     inline const Tessellation3D &getTessellation(void) const{return sim.getTessellation();};
     inline Tessellation3D &getTessellation(void){return sim.getTessellation();};

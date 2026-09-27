@@ -42,6 +42,56 @@ void SourceTerm3D::SuggestIndividualTimeSteps(const Tessellation3D& /*tess*/,
 		time_step_limits.at(index) = std::min(time_step_limits.at(index), limit);
 }
 
+void SourceTerm3D::SynchronizedIndividualLimits(const Tessellation3D& tess,
+	const vector<ComputationalCell3D>& /*cells*/,
+	const vector<Conserved3D>& /*extensives*/,
+	double /*time*/,
+	vector<double>& limits,
+	vector<Vector3D>& /*accelerations*/) const
+{
+	const double inverse = SuggestInverseTimeStep();
+	const double limit = inverse > 0 ? 1.0 / inverse : std::numeric_limits<double>::infinity();
+	for(std::size_t index = 0; index < tess.GetPointNo() && index < limits.size(); ++index)
+		limits[index] = std::min(limits[index], limit);
+}
+
+bool SourceTerm3D::IndividualFirstHalfNeedsGeometry(
+	const IndividualStepContext& /*context*/) const
+{
+	// Conservative default: a generic source evaluates on the mesh.
+	return true;
+}
+
+void SourceTerm3D::ApplyIndividualFirstHalfFromCache(
+	const vector<ComputationalCell3D>& /*cells*/,
+	const vector<Vector3D>& /*point_velocities*/,
+	double /*time*/,
+	const IndividualStepContext& /*context*/,
+	vector<Conserved3D>& /*extensives*/) const
+{
+	throw std::logic_error(
+		"Source term cannot apply its first individual half without geometry");
+}
+
+void ZeroForce3D::ApplyIndividual(const Tessellation3D& /*tess*/,
+	const vector<ComputationalCell3D>& /*cells*/,
+	const vector<Conserved3D>& /*fluxes*/,
+	const vector<Vector3D>& /*point_velocities*/,
+	double /*time*/,
+	const IndividualStepContext& context,
+	IndividualSourcePhase /*phase*/,
+	vector<Conserved3D>& extensives) const
+{
+	// The default copied every extensive per active cell only to write each
+	// back unchanged.  Keep its index checks so bad contexts still throw.
+	for(std::size_t index : context.active_indices)
+	{
+		if(index >= extensives.size())
+			throw std::out_of_range("Individual source cell index is out of range");
+		static_cast<void>(context.cellTimeStep(index));
+	}
+}
+
 void ZeroForce3D::operator()(const Tessellation3D& /*tess*/, const vector<ComputationalCell3D>& /*cells*/,
 		const vector<Conserved3D>& /*fluxes*/, const vector<Vector3D>& /*point_velocities*/, const double /*t*/, 
 		double /*dt*/, vector<Conserved3D> &/*extensives*/) const {} 
