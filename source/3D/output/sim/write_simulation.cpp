@@ -261,6 +261,7 @@ namespace
         std::vector<std::uint8_t> bins(states.size()),
             pending_neighbor_bins(states.size()), gravity_phase(states.size());
         std::vector<Vector3D> point_velocity(states.size()), acceleration(states.size());
+        std::vector<double> radiation_accuracy(states.size());
         for(std::size_t i = 0; i < states.size(); ++i)
         {
             // change_wake_pending/ratio are not stored: they live only between
@@ -275,6 +276,7 @@ namespace
             gravity_phase[i] = states[i].gravity_half_kick_pending ? 1 : 0;
             point_velocity[i] = states[i].point_velocity;
             acceleration[i] = states[i].cached_acceleration;
+            radiation_accuracy[i] = states[i].radiation_accuracy_limit;
         }
         writer.WriteElement(group + "/cell_ids", ids);
         writer.WriteElement(group + "/begin_ticks", begin);
@@ -286,6 +288,7 @@ namespace
         writer.WriteElement(group + "/point_velocity", point_velocity);
         writer.WriteElement(group + "/cached_acceleration", acceleration);
         writer.WriteElement(group + "/gravity_half_kick_pending", gravity_phase);
+        writer.WriteElement(group + "/radiation_accuracy_limit", radiation_accuracy);
         writer.WriteElement(group + "/force_all_active_latched",
             static_cast<std::uint8_t>(scheduler->forceAllActiveLatched()));
     }

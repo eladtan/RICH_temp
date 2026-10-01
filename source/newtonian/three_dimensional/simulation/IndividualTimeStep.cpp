@@ -48,9 +48,9 @@ namespace
     }
 
     // RICH_INDIVIDUAL_MAX_BIN_SPREAD = K >= 0: no cell's bin may exceed the
-    // finest occupied bin (over all ranks) by more than K, so no interval is
-    // longer than 2^K finest-bin intervals; -1 is off (the behaviour before
-    // 2026-09-27).  Default 2: on the TDE (jobs 10222210, 10222217) it cut the
+    // anchor bin (initial_bin) by more than K, so no interval is longer than 2^K
+    // anchor-bin intervals; -1 is off (the behaviour before 2026-09-27).  It was
+    // first finest-bin + K, which let one pinned cell drag every cell down.  Default 2: on the TDE (jobs 10222210, 10222217) it cut the
     // overrun cell-events by 70 % and the worst interval/allowance to 2.0, and
     // brought the terminal state closer to the global run's, at about the same
     // speed as K = 4.  Collective on first use (commitEvent or restore, on
@@ -226,6 +226,7 @@ struct AMRPendingBinResponse : public Serializable
     std::size_t recipient_cell_id = 0;
     std::uint8_t time_bin = 0;
     std::uint8_t pending_bin = std::numeric_limits<std::uint8_t>::max();
+    double radiation_accuracy_limit = 0;
 
     force_inline std::size_t dump(Serializer* serializer) const override
     {
@@ -233,6 +234,7 @@ struct AMRPendingBinResponse : public Serializable
         bytes += serializer->insert(recipient_cell_id);
         bytes += serializer->insert(time_bin);
         bytes += serializer->insert(pending_bin);
+        bytes += serializer->insert(radiation_accuracy_limit);
         return bytes;
     }
 
@@ -243,6 +245,7 @@ struct AMRPendingBinResponse : public Serializable
         bytes += serializer->extract(recipient_cell_id, byte_offset + bytes);
         bytes += serializer->extract(time_bin, byte_offset + bytes);
         bytes += serializer->extract(pending_bin, byte_offset + bytes);
+        bytes += serializer->extract(radiation_accuracy_limit, byte_offset + bytes);
         return bytes;
     }
 };
@@ -293,6 +296,7 @@ std::size_t CellTimeState::dump(Serializer* serializer) const
     bytes += serializer->insert(gravity_phase);
     bytes += serializer->insert(change_wake_pending);
     bytes += serializer->insert(change_wake_ratio);
+    bytes += serializer->insert(radiation_accuracy_limit);
     return bytes;
 }
 
@@ -313,6 +317,7 @@ std::size_t CellTimeState::load(const Serializer* serializer,
     gravity_half_kick_pending = gravity_phase != 0;
     bytes += serializer->extract(change_wake_pending, byte_offset + bytes);
     bytes += serializer->extract(change_wake_ratio, byte_offset + bytes);
+    bytes += serializer->extract(radiation_accuracy_limit, byte_offset + bytes);
     return bytes;
 }
 #endif
@@ -447,8 +452,20 @@ void IndividualTimeStepScheduler::initialize(const std::vector<ComputationalCell
     // cell's limits allowed: on its own grid that is initial_bin; on an anchor
     // grid, the coarsest bin within it (quantizeTimeStep throws below one
     // quantum).
-    std::uint8_t const start_bin = anchor_time_step > 0 ?
+    // On an anchor grid the first bin is also held under the bin-spread
+    // ceiling (initial_bin + K); an unanchored start is initial_bin itself.
+    // The anchor is collective, so MaximumBinSpread's first use is too.
+    std::uint8_t start_bin = anchor_time_step > 0 ?
         quantizeTimeStep(initial_time_step) : options_.initial_bin;
+    // An explicit quantum keeps initial_bin, but never a first interval
+    // longer than initial_time_step (the entry generator velocities are fixed
+    // for that step); a step below one quantum is rejected (quantizeTimeStep).
+    if(!(anchor_time_step > 0) && options_.time_quantum > 0)
+        start_bin = std::min(start_bin, quantizeTimeStep(initial_time_step));
+    if(anchor_time_step > 0 && MaximumBinSpread() >= 0)
+        start_bin = static_cast<std::uint8_t>(std::min<unsigned>(start_bin,
+            std::min<unsigned>(options_.maximum_bin,
+                static_cast<unsigned>(options_.initial_bin) + static_cast<unsigned>(MaximumBinSpread()))));
     const std::uint64_t initial_ticks = ticksForBin(start_bin);
     for(std::size_t i = 0; i < cells.size(); ++i)
     {
@@ -469,6 +486,7 @@ void IndividualTimeStepScheduler::initialize(const std::vector<ComputationalCell
         state.gravity_half_kick_pending = false;
         state.change_wake_pending = 0;
         state.change_wake_ratio = 0;
+        state.radiation_accuracy_limit = 0;
     }
     rebuildIndex(cells);
     initialized_ = true;
@@ -514,6 +532,7 @@ IndividualStepContext IndividualTimeStepScheduler::prepareEvent(
     result.previous_event_time = time_origin_ + time_quantum_ * static_cast<double>(current_tick_);
     result.event_time = time_origin_ + time_quantum_ * static_cast<double>(event_tick);
     result.time_quantum = time_quantum_;
+    result.anchor_time_step = std::ldexp(time_quantum_, static_cast<int>(options_.initial_bin));
     result.mesh_build_policy = options_.mesh_build_policy;
     result.partial_build_fraction = options_.partial_build_fraction;
     result.verify_partial_build = options_.verify_partial_build;
@@ -524,6 +543,7 @@ IndividualStepContext IndividualTimeStepScheduler::prepareEvent(
     result.cell_time_bins.resize(states_.size());
     result.primitive_ticks.resize(states_.size());
     result.point_velocities.resize(states_.size());
+    result.radiation_accuracy_limits.resize(states_.size());
     result.cached_accelerations.resize(states_.size());
     result.gravity_half_kick_pending.resize(states_.size());
 
@@ -531,6 +551,7 @@ IndividualStepContext IndividualTimeStepScheduler::prepareEvent(
     {
         const CellTimeState &state = states_[i];
         result.point_velocities[i] = state.point_velocity;
+        result.radiation_accuracy_limits[i] = state.radiation_accuracy_limit;
         result.cached_accelerations[i] = state.cached_acceleration;
         result.gravity_half_kick_pending[i] = state.gravity_half_kick_pending ? 1 : 0;
         if(force_all_active &&
@@ -584,6 +605,9 @@ void IndividualTimeStepScheduler::commitEvent(
     if(context.point_velocities.size() == states_.size())
         for(std::size_t i = 0; i < states_.size(); ++i)
             states_[i].point_velocity = context.point_velocities[i];
+    if(context.radiation_accuracy_limits.size() == states_.size())
+        for(std::size_t i = 0; i < states_.size(); ++i)
+            states_[i].radiation_accuracy_limit = context.radiation_accuracy_limits[i];
     if(context.cached_accelerations.size() == states_.size())
         for(std::size_t i = 0; i < states_.size(); ++i)
             states_[i].cached_acceleration = context.cached_accelerations[i];
@@ -619,6 +643,11 @@ void IndividualTimeStepScheduler::commitEvent(
             MPI_MIN, MPI_COMM_WORLD);
         shared_bin = static_cast<std::uint8_t>(shared_bin_value);
 #endif
+        // The shared bin also stays under the bin-spread ceiling.
+        if(MaximumBinSpread() >= 0)
+            shared_bin = static_cast<std::uint8_t>(std::min<unsigned>(shared_bin,
+                std::min<unsigned>(options_.maximum_bin,
+                    static_cast<unsigned>(options_.initial_bin) + static_cast<unsigned>(MaximumBinSpread()))));
         for(CellTimeState& state : states_)
         {
             state.begin_tick = context.event_tick;
@@ -786,13 +815,18 @@ void IndividualTimeStepScheduler::applyBinSpreadCap(std::uint64_t const event_ti
 {
     if(MaximumBinSpread() < 0)
         return;
-    // Collective: the finest bin over all ranks, then every cell above
-    // finest + K takes that bin with the begin-aware end (binnedEndTick: an
-    // overdue cell ends at the next finest-bin tick).  A common ceiling cannot
-    // widen any neighbour difference, so no closure follows.
+    // A fixed ceiling, the anchor bin (initial_bin, m x the global CFL
+    // suggestion) + K: every cell above it takes it with the begin-aware end
+    // (binnedEndTick: an overdue cell ends at the next finest-bin tick).  A
+    // common ceiling cannot widen any neighbour difference, so no closure
+    // follows.  It is not tied to the finest bin: on the TDE continuation one
+    // bin-26 cell (radiation retry limiter) held 8.9M cells at bin 28 under a
+    // finest-bin + K cap (job 10222326, t ~ 30.35).  Cells may still take any
+    // finer bin their limits or the closure require.  Collective (the minimum
+    // is refreshed for the begin-aware ends).
     refreshMinimumOccupiedBin();
     unsigned const cap = std::min<unsigned>(options_.maximum_bin,
-        static_cast<unsigned>(minimum_occupied_bin_) + static_cast<unsigned>(MaximumBinSpread()));
+        static_cast<unsigned>(options_.initial_bin) + static_cast<unsigned>(MaximumBinSpread()));
     for(CellTimeState& state : states_)
     {
         if(state.time_bin <= cap)
@@ -806,6 +840,9 @@ void IndividualTimeStepScheduler::applyBinSpreadCap(std::uint64_t const event_ti
         TraceSchedulerMutation("spread_cap", state.cell_id, event_tick, state.begin_tick, old_bin, capped,
             old_end, state.end_tick);
     }
+    // The ceiling can lower the minimum itself (every cell above it): if the
+    // global minimum was above the cap, every cell was capped to it.
+    minimum_occupied_bin_ = static_cast<std::uint8_t>(std::min<unsigned>(minimum_occupied_bin_, cap));
 }
 
 std::size_t IndividualTimeStepScheduler::clampToTerminalTick(
@@ -850,6 +887,19 @@ std::uint64_t IndividualTimeStepScheduler::nextEventTick(void) const
     for(const CellTimeState &state : states_)
         next_tick = std::min(next_tick, state.end_tick);
     return next_tick;
+}
+
+void IndividualTimeStepScheduler::setInitialPointVelocities(
+    std::vector<std::pair<std::size_t, Vector3D> > const& velocities)
+{
+    if(!initialized_ || current_tick_ != 0)
+        throw std::logic_error("Initial point velocities are set only on a fresh timeline");
+    for(auto const& entry : velocities)
+    {
+        auto const found = id_to_index_.find(entry.first);
+        if(found != id_to_index_.end())
+            states_[found->second].point_velocity = entry.second;
+    }
 }
 
 void IndividualTimeStepScheduler::resetTimeOrigin(double current_time)
@@ -1216,7 +1266,8 @@ void IndividualTimeStepScheduler::applyAMRChangeSet(
 
     auto apply_merged_state = [&](std::size_t recipient_id,
                                   std::uint8_t source_bin,
-                                  std::uint8_t pending_bin)
+                                  std::uint8_t pending_bin,
+                                  double source_accuracy_limit)
     {
         auto const recipient = remapped_index.find(recipient_id);
         if(recipient == remapped_index.end())
@@ -1238,6 +1289,11 @@ void IndividualTimeStepScheduler::applyAMRChangeSet(
         recipient_state.pending_neighbor_bin = std::min(
             recipient_state.pending_neighbor_bin,
             pending_bin);
+        // The recipient's interval now carries the donor's material: keep the
+        // tighter pending radiation accuracy limit.
+        if(source_accuracy_limit > 0 && (recipient_state.radiation_accuracy_limit <= 0 ||
+           source_accuracy_limit < recipient_state.radiation_accuracy_limit))
+            recipient_state.radiation_accuracy_limit = source_accuracy_limit;
         // A passive recipient has absorbed material its interval never saw;
         // like a conserved-change wake it ends at the next event.  An active
         // recipient has just opened its interval with the merged state.
@@ -1274,7 +1330,8 @@ void IndividualTimeStepScheduler::applyAMRChangeSet(
                !apply_merged_state(
                    target.recipient_cell_id,
                    source->second.time_bin,
-                   source->second.pending_neighbor_bin))
+                   source->second.pending_neighbor_bin,
+                   source->second.radiation_accuracy_limit))
                 merge_mapping_error = true;
             continue;
         }
@@ -1307,6 +1364,8 @@ void IndividualTimeStepScheduler::applyAMRChangeSet(
             response.time_bin = source->second.time_bin;
             response.pending_bin =
                 source->second.pending_neighbor_bin;
+            response.radiation_accuracy_limit =
+                source->second.radiation_accuracy_limit;
         }
 
     const std::vector<std::vector<AMRPendingBinResponse> >
@@ -1316,7 +1375,7 @@ void IndividualTimeStepScheduler::applyAMRChangeSet(
         for(AMRPendingBinResponse const& response : rank_responses)
             if(!apply_merged_state(
                    response.recipient_cell_id, response.time_bin,
-                   response.pending_bin))
+                   response.pending_bin, response.radiation_accuracy_limit))
                 merge_mapping_error = true;
 
     int merge_mapping_valid = merge_mapping_error ? 0 : 1;
@@ -1335,7 +1394,8 @@ void IndividualTimeStepScheduler::applyAMRChangeSet(
            !apply_merged_state(
                target.recipient_cell_id,
                source->second.time_bin,
-               source->second.pending_neighbor_bin))
+               source->second.pending_neighbor_bin,
+               source->second.radiation_accuracy_limit))
             throw std::logic_error(
                 "AMR pending-bin merge mapping is inconsistent");
     }

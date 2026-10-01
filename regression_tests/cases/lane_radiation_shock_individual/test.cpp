@@ -281,6 +281,8 @@ void PrintIndividualRestartFingerprint(Simulation const& simulation,
                   << defect.maximum_event_absolute_fraction
                   << " defect_maximum_local_fraction="
                   << defect.maximum_local_fraction
+                  << " defect_maximum_local_tolerance_ratio="
+                  << defect.maximum_local_tolerance_ratio
                   << " defect_accepted_dirichlet_candidates="
                   << defect.accepted_dirichlet_candidates
                   << " defect_rejections=" << defect.defect_rejections
@@ -289,6 +291,8 @@ void PrintIndividualRestartFingerprint(Simulation const& simulation,
                   << " defect_config_version=" << defect.config_version
                   << " defect_local_withdrawal_limit="
                   << defect.local_withdrawal_limit
+                  << " defect_local_absolute_limit="
+                  << defect.local_absolute_limit
                   << " defect_event_absolute_target="
                   << defect.event_absolute_target
                   << " defect_cumulative_signed_limit="
@@ -2907,6 +2911,8 @@ int main(void)
             << radiation_defect.maximum_event_absolute_fraction << '\n'
             << "radiation_defect_maximum_local_fraction "
             << radiation_defect.maximum_local_fraction << '\n'
+            << "radiation_defect_maximum_local_tolerance_ratio "
+            << radiation_defect.maximum_local_tolerance_ratio << '\n'
             << "radiation_defect_accepted_dirichlet_candidates "
             << radiation_defect.accepted_dirichlet_candidates << '\n'
             << "radiation_defect_rejections "
@@ -2917,6 +2923,8 @@ int main(void)
             << radiation_defect.config_version << '\n'
             << "radiation_defect_local_withdrawal_limit "
             << radiation_defect.local_withdrawal_limit << '\n'
+            << "radiation_defect_local_absolute_limit "
+            << radiation_defect.local_absolute_limit << '\n'
             << "radiation_defect_event_absolute_target "
             << radiation_defect.event_absolute_target << '\n'
             << "radiation_defect_cumulative_signed_limit "
@@ -3086,6 +3094,8 @@ int main(void)
             << radiation_defect.config_version << '\n'
             << "radiation_defect_local_withdrawal_limit "
             << radiation_defect.local_withdrawal_limit << '\n'
+            << "radiation_defect_local_absolute_limit "
+            << radiation_defect.local_absolute_limit << '\n'
             << "radiation_defect_event_absolute_target "
             << radiation_defect.event_absolute_target << '\n'
             << "radiation_defect_cumulative_signed_limit "

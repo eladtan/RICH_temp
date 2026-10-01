@@ -20,6 +20,7 @@ run_lane() {
   export RICH_TEST_POINT_COUNT="${points}"
   export RICH_TEST_MAX_CYCLES=1
   export OMP_NUM_THREADS=1
+  export RICH_RUNTIME_LOG=detailed
   unset RICH_INDIVIDUAL_MODE RICH_TEST_SPARSE_INITIAL_BIN \
     RICH_TEST_SPARSE_MAX_ER_CELL
   if [[ -n "${mode}" ]]; then

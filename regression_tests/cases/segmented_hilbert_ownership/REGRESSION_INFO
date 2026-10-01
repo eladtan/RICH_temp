@@ -1,0 +1,18 @@
+# Segmented Hilbert ownership (several curve ranges per rank): distributed
+# Voronoi builds under interleaved and scrambled segment owners and after a
+# balancer box change must reproduce a positional reference cell for cell;
+# every owned point must belong to its rank; the Hilbert rank tree must route
+# every owned point to its rank; the load balancer must survive an HDF5
+# round trip (positional and segmented).
+TEST_ID="segmented_hilbert_ownership"
+TAGS="mpi"
+CATEGORY="code_correctness"
+BUILD_TEST_NAME="regression_tests/cases/segmented_hilbert_ownership"
+RUN_DIR_REL="regression_tests/cases/segmented_hilbert_ownership"
+RUN_COMMAND="mpirun -np ${SLURM_NTASKS} \"${RICH_BIN}\""
+CHECK_FUNCTION="check_segmented_hilbert_ownership_case"
+RUN_MODE="slurm"
+SLURM_NTASKS="64"
+SLURM_PARTITION="bigrun"
+SLURM_EXCLUSIVE="1"
+SLURM_TIME_LIMIT="00:30:00"

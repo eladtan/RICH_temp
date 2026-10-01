@@ -67,6 +67,10 @@ struct CellTimeState
     // load balance run in between.
     std::uint8_t change_wake_pending = 0;
     double change_wake_ratio = 0;
+    // Gray radiation accuracy limit (seconds of code time, 0 = none) that the
+    // cell's current interval exceeds by less than 2x: the radiation step
+    // subcycles to it at the interval's end (RICH_INDIVIDUAL_RADIATION_ANCHOR_SUBCYCLE).
+    double radiation_accuracy_limit = 0;
 
 #ifdef RICH_MPI
     std::size_t dump(Serializer* serializer) const override;
@@ -183,6 +187,8 @@ struct IndividualStepContext
     double previous_event_time = 0;
     double event_time = 0;
     double time_quantum = 0;
+    // Interval of the anchor bin (initial_bin) on this timeline.
+    double anchor_time_step = 0;
     IndividualMeshBuildPolicy mesh_build_policy = IndividualMeshBuildPolicy::AutoPartial;
     double partial_build_fraction = 0.5;
     bool verify_partial_build = false;
@@ -197,6 +203,10 @@ struct IndividualStepContext
     // Last completed hydro activation; scheduler begin_tick has the same value.
     // A face was last integrated when either endpoint last became active.
     std::vector<std::uint64_t> primitive_ticks;
+    // Per canonical cell, CellTimeState::radiation_accuracy_limit: read by the
+    // radiation step for its active cells and replaced for them (committed
+    // back like the point velocities).
+    mutable std::vector<double> radiation_accuracy_limits;
     mutable std::vector<Vector3D> point_velocities;
     mutable std::vector<Vector3D> cached_accelerations;
     mutable std::vector<unsigned char> gravity_half_kick_pending;
@@ -257,6 +267,11 @@ public:
     std::uint64_t lastFullSourceSweepTick(void) const
     {return last_full_source_sweep_tick_;}
     const std::vector<CellTimeState> &states(void) const { return states_; }
+
+    // First-interval generator velocities of a freshly initialized timeline,
+    // by stable cell ID (cells not listed keep zero).  Only before the first
+    // event (tick 0).
+    void setInitialPointVelocities(std::vector<std::pair<std::size_t, Vector3D> > const& velocities);
     std::vector<CellTimeState> &states(void) { return states_; }
     bool forceAllActiveLatched(void) const
     {

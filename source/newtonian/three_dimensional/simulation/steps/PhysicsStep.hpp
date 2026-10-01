@@ -63,6 +63,35 @@ public:
     virtual void onIndividualSchedulerStart(double /*global_time_step*/)
     {}
 
+    // Global -> individual switch, on the global state (full mesh, ghost
+    // primitives present): prepare what the first individual intervals need
+    // from it; next_time_step is the step a global step would take.
+    virtual void prepareIndividualEntry(double /*next_time_step*/)
+    {}
+
+    // After the scheduler's initialization: the first-interval generator
+    // velocities by stable ID (false: none from this step).
+    // The tightest individual per-cell limit on the switch state (0: none).
+    virtual double individualEntryReferenceStep(void) const
+    {
+        return 0;
+    }
+
+    // Bound on the first interval, after the owned-only resize and before the
+    // scheduler's initialization: the tightest synchronized per-cell limit
+    // (wave speed, sources, mesh drift) on the switch state (0: none).
+    // Collective.
+    virtual double individualEntryIntervalBound(void)
+    {
+        return 0;
+    }
+
+    virtual bool takeIndividualEntryPointVelocities(
+        std::vector<std::pair<std::size_t, Vector3D> >& /*velocities*/)
+    {
+        return false;
+    }
+
     virtual bool getIndividualGeneratorPoints(
         std::vector<Vector3D>&) const
     {

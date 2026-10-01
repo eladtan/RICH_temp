@@ -137,6 +137,113 @@ if [[ "${closure_latch}" == 1 && -z "${closure_min_bin}" ]]; then
 fi
 export RICH_INDIVIDUAL_FORCE_ALL_ACTIVE_LATCH="${closure_latch}"
 
+fail_active_hilbert_policy()
+{
+  printf '%s\n' "$1" > "${lane_dir}/driver_error.txt"
+  printf '76\n' > "${lane_dir}/exit_code.txt"
+  exit 76
+}
+
+normalize_active_hilbert_toggle()
+{
+  if [[ "$1" != 0 && "$1" != 1 ]]; then
+    return 1
+  fi
+  printf '%s\n' "$1"
+}
+
+normalize_active_hilbert_skew()
+{
+  awk -v value="$1" 'BEGIN {
+    if (value !~ /^([0-9]+([.][0-9]*)?|[.][0-9]+)([eE][+-]?[0-9]+)?$/)
+      exit 1
+    number = value + 0
+    if (number < 1 || number > 1.7976931348623157e308)
+      exit 1
+    printf "%.17g\n", number
+  }'
+}
+
+if [[ -n "${restart_input}" && ! -s "${lane_dir}/run_info.txt" ]]; then
+  fail_active_hilbert_policy \
+    "restart is missing ${lane_dir}/run_info.txt"
+fi
+
+active_hilbert_cache="${RICH_INDIVIDUAL_ACTIVE_HILBERT_CACHE:-}"
+active_hilbert_threshold="${RICH_INDIVIDUAL_ACTIVE_HILBERT_THRESHOLD:-}"
+active_hilbert_max_owned_skew="${RICH_INDIVIDUAL_ACTIVE_HILBERT_MAX_OWNED_SKEW:-}"
+if [[ -n "${restart_input}" && -s "${lane_dir}/run_info.txt" ]]; then
+  previous_active_hilbert_cache="$(awk '
+    $1 == "individual_active_hilbert_cache" { value = $2 }
+    END { print value }
+  ' "${lane_dir}/run_info.txt")"
+  previous_active_hilbert_threshold="$(awk '
+    $1 == "individual_active_hilbert_threshold" { value = $2 }
+    END { print value }
+  ' "${lane_dir}/run_info.txt")"
+  previous_active_hilbert_max_owned_skew="$(awk '
+    $1 == "individual_active_hilbert_max_owned_skew" { value = $2 }
+    END { print value }
+  ' "${lane_dir}/run_info.txt")"
+
+  if [[ -z "${previous_active_hilbert_cache}" &&
+        -z "${previous_active_hilbert_threshold}" &&
+        -z "${previous_active_hilbert_max_owned_skew}" ]]; then
+    previous_active_hilbert_cache=0
+    previous_active_hilbert_threshold=1.25
+    previous_active_hilbert_max_owned_skew=2.0
+  elif [[ -z "${previous_active_hilbert_cache}" ||
+          -z "${previous_active_hilbert_threshold}" ||
+          -z "${previous_active_hilbert_max_owned_skew}" ]]; then
+    fail_active_hilbert_policy \
+      "incomplete active Hilbert policy in ${lane_dir}/run_info.txt"
+  fi
+
+  if ! previous_active_hilbert_cache="$(
+    normalize_active_hilbert_toggle "${previous_active_hilbert_cache}"
+  )" ||
+     ! previous_active_hilbert_threshold="$(
+    normalize_active_hilbert_skew "${previous_active_hilbert_threshold}"
+  )" ||
+     ! previous_active_hilbert_max_owned_skew="$(
+    normalize_active_hilbert_skew "${previous_active_hilbert_max_owned_skew}"
+  )"; then
+    fail_active_hilbert_policy \
+      "invalid active Hilbert policy in ${lane_dir}/run_info.txt"
+  fi
+
+  active_hilbert_cache="${active_hilbert_cache:-${previous_active_hilbert_cache}}"
+  active_hilbert_threshold="${active_hilbert_threshold:-${previous_active_hilbert_threshold}}"
+  active_hilbert_max_owned_skew="${active_hilbert_max_owned_skew:-${previous_active_hilbert_max_owned_skew}}"
+fi
+
+active_hilbert_cache="${active_hilbert_cache:-1}"
+active_hilbert_threshold="${active_hilbert_threshold:-1.25}"
+active_hilbert_max_owned_skew="${active_hilbert_max_owned_skew:-2.0}"
+if ! active_hilbert_cache="$(
+  normalize_active_hilbert_toggle "${active_hilbert_cache}"
+)" ||
+   ! active_hilbert_threshold="$(
+  normalize_active_hilbert_skew "${active_hilbert_threshold}"
+)" ||
+   ! active_hilbert_max_owned_skew="$(
+  normalize_active_hilbert_skew "${active_hilbert_max_owned_skew}"
+)"; then
+  fail_active_hilbert_policy "invalid active Hilbert runtime policy"
+fi
+
+if [[ -n "${restart_input}" && -s "${lane_dir}/run_info.txt" ]] &&
+   [[ "${active_hilbert_cache}" != "${previous_active_hilbert_cache}" ||
+      "${active_hilbert_threshold}" != "${previous_active_hilbert_threshold}" ||
+      "${active_hilbert_max_owned_skew}" != "${previous_active_hilbert_max_owned_skew}" ]]; then
+  fail_active_hilbert_policy \
+    "active Hilbert policy changed across restart"
+fi
+
+export RICH_INDIVIDUAL_ACTIVE_HILBERT_CACHE="${active_hilbert_cache}"
+export RICH_INDIVIDUAL_ACTIVE_HILBERT_THRESHOLD="${active_hilbert_threshold}"
+export RICH_INDIVIDUAL_ACTIVE_HILBERT_MAX_OWNED_SKEW="${active_hilbert_max_owned_skew}"
+
 mpi_ranks_per_node="${RICH_MPI_RANKS_PER_NODE:-16}"
 if [[ ! "${mpi_ranks_per_node}" =~ ^[1-9][0-9]*$ ]]; then
   printf 'invalid RICH_MPI_RANKS_PER_NODE: %s\n' "${mpi_ranks_per_node}" \
@@ -161,6 +268,14 @@ fi
     "${RICH_INDIVIDUAL_FORCE_ALL_ACTIVE_MIN_BIN:-disabled}"
   printf 'individual_force_all_active_latch %s\n' \
     "${RICH_INDIVIDUAL_FORCE_ALL_ACTIVE_LATCH}"
+  printf 'individual_active_hilbert_cache %s\n' \
+    "${RICH_INDIVIDUAL_ACTIVE_HILBERT_CACHE:-1}"
+  printf 'individual_active_hilbert_threshold %s\n' \
+    "${RICH_INDIVIDUAL_ACTIVE_HILBERT_THRESHOLD:-1.25}"
+  printf 'individual_active_hilbert_max_owned_skew %s\n' \
+    "${RICH_INDIVIDUAL_ACTIVE_HILBERT_MAX_OWNED_SKEW:-2.0}"
+  printf 'individual_perf_trace %s\n' \
+    "${RICH_INDIVIDUAL_PERF_TRACE:-0}"
   printf 'git_revision '
   git -C "${repo_root}" rev-parse HEAD
   sha256sum "${rich_bin}"
@@ -197,8 +312,10 @@ unset RICH_TEST_DISABLE_AMR RICH_TEST_PRESCRIBED_AMR \
   RICH_TEST_DISABLE_COMPTON RICH_TEST_DISABLE_DOPPLER
 if [[ "${lane}" == global ]]; then
   unset RICH_INDIVIDUAL_MODE
+  unset RICH_MG_DISTRIBUTED_ACTIVE_PROFILE
 else
   export RICH_INDIVIDUAL_MODE="${lane}"
+  export RICH_MG_DISTRIBUTED_ACTIVE_PROFILE=1
 fi
 
 cd "${case_dir}"
@@ -215,6 +332,10 @@ fi
     "${lane}" "${RICH_INDIVIDUAL_FORCE_ALL_ACTIVE_MIN_BIN:-disabled}" \
     "${RICH_INDIVIDUAL_FORCE_ALL_ACTIVE_LATCH}" \
     "${restart_input:-none}"
+  printf 'PRODUCTION_ACTIVE_HILBERT_POLICY lane=%s enabled=%s threshold=%s max_owned_skew=%s\n' \
+    "${lane}" "${RICH_INDIVIDUAL_ACTIVE_HILBERT_CACHE:-1}" \
+    "${RICH_INDIVIDUAL_ACTIVE_HILBERT_THRESHOLD:-1.25}" \
+    "${RICH_INDIVIDUAL_ACTIVE_HILBERT_MAX_OWNED_SKEW:-2.0}"
 } >> "${lane_dir}/run.log"
 set +e
 mpirun -np "${SLURM_NTASKS:-128}" --bind-to core \

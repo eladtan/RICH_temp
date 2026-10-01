@@ -193,6 +193,71 @@ Do not assume the example partition or module stack matches another cluster;
 follow [Running simulations](docs/running-simulations.md) for site-specific
 setup and output handling.
 
+## Individual timesteps
+
+RICH can advance each cell on its own power-of-two timestep bin instead of the
+global minimum step. This works for Newtonian, Cartesian, three-dimensional
+hydrodynamics with gravity and with grey or multigroup radiation diffusion,
+serially and under MPI, with local AMR and restarts. Monte Carlo transport
+(IMC, DDMC) is not supported and is rejected at setup.
+
+### Enabling it in a problem
+
+Register the physics steps, set the initial global timestep, then enable the
+scheduler; `HydroStep::TIMEADVANCE_2` is required:
+
+```cpp
+simulation.addPhysics(std::make_shared<HydroStep>(hydro, HydroStep::TIMEADVANCE_2));
+simulation.addPhysics(radiation_step);           // optional: grey or multigroup diffusion
+simulation.SetTimeStep(initial_dt);
+
+IndividualTimeStepOptions options;
+options.initial_bin = 30;                        // bin of the initial timestep
+options.maximum_bin = 40;
+options.maximum_neighbor_bin_difference = 1;
+options.mesh_build_policy = IndividualMeshBuildPolicy::AutoPartial;
+simulation.EnableIndividualTimeSteps(options);
+
+while(simulation.GetTime() < final_time)
+    simulation.step();
+```
+
+Production drivers can instead let the adaptive controller switch between
+global and individual stepping at run time (`RICH_INDIVIDUAL_ADAPTIVE_MODE`);
+the TDE driver in `runs/BaseTDEComptonIndividual` does this.
+
+### Recommended runtime settings
+
+These environment variables are read at the first collective use and must
+agree on every MPI rank. The values below are the configuration validated on
+the tidal-disruption run (`runs/BaseTDEComptonIndividual`, grey diffusion with
+Compton, 256 ranks): from snapshot 70 to t = 50 it ran 1.77x faster than the
+global-timestep control, with a run-minimum finest timestep of 0.97 of the
+global one and radiation-energy exchange closing to round-off.
+
+```bash
+export RICH_INDIVIDUAL_MAX_BIN_SPREAD=4                 # cap any bin at initial_bin + 4
+export RICH_INDIVIDUAL_BIN_ANCHOR_MARGIN=0.95           # anchor bins at 0.95 x the global suggestion
+export RICH_ADAPTIVE_STAY_INDIVIDUAL=1                  # stay individual once a probe is adopted
+export RICH_INDIVIDUAL_RADIATION_ANCHOR_SUBCYCLE=1      # subcycle radiation instead of refining the bin
+export RICH_INDIVIDUAL_RADIATION_ANCHOR_BAND=0.125      # up to 8 radiation pieces per anchor interval
+export RICH_INDIVIDUAL_RADIATION_RETRY_LIMITS_BINS=0    # a rejected solve sub-cycles; it does not shrink bins
+export RICH_INDIVIDUAL_RADIATION_ENTRY_PROBE=1          # let an earned retry probe start an event
+export RICH_INDIVIDUAL_CLOSURE_REEXPAND=1               # re-expand the partial-mesh closure until stable
+export RICH_RADIATION_MOMENTUM_POSITIVITY=1             # positivity-preserving, energy-conserving velocity term (grey)
+mpirun -np 256 ./rich
+```
+
+Useful diagnostics (all default off): `RICH_INDIVIDUAL_STATE_HASH=1` prints
+mass, momentum, energy and a state hash after every event;
+`RICH_INDIVIDUAL_CADENCE_TRACE=1` reports which limit set each event;
+`RICH_INDIVIDUAL_D5_TRACE=1` summarises radiation candidates that fail their
+energy checks; `RICH_RUNTIME_LOG=detailed` prints per-cell failure detail.
+
+The [Individual timesteps guide](docs/user-guide/individual-timesteps.md)
+documents every option, the scheduler, partial meshes, radiation coupling,
+restarts, MPI behaviour and the regression coverage.
+
 ## Regression tests
 
 RICH uses the embedded THUNDER framework. Test metadata lives beside each case,

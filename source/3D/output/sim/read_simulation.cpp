@@ -132,6 +132,15 @@ namespace
         reader.ReadElement(group + "/cached_acceleration", acceleration);
         reader.ReadElement(group + "/gravity_half_kick_pending", gravity_phase);
         std::size_t const count = ids.size();
+        // Checkpoints before 2026-09-29 have no pending radiation accuracy
+        // limits: none pending.
+        std::vector<double> radiation_accuracy;
+        if(reader.Exists(group + "/radiation_accuracy_limit"))
+            reader.ReadElement(group + "/radiation_accuracy_limit", radiation_accuracy);
+        else
+            radiation_accuracy.assign(count, 0.0);
+        if(radiation_accuracy.size() != count)
+            throw UniversalError("Individual timestep restart radiation accuracy array has the wrong length");
         if(version < 9)
             pending_neighbor_bins.assign(
                 count, std::numeric_limits<std::uint8_t>::max());
@@ -164,6 +173,7 @@ namespace
             states[i].point_velocity = point_velocity[source];
             states[i].cached_acceleration = acceleration[source];
             states[i].gravity_half_kick_pending = gravity_phase[source] != 0;
+            states[i].radiation_accuracy_limit = radiation_accuracy[source];
         }
 
         double time_origin = 0;

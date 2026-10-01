@@ -33,12 +33,10 @@ all three production lanes use that immutable snapshot. Rebuilding the normal
 an already running MPI job. Set `RICH_SOURCE_BINARY` to snapshot a binary from
 an alternate build subdirectory.
 
-The campaign explicitly unsets `RICH_QUIET`. Each lane retains complete mesh,
-radiation-step, BiCGSTAB convergence, limiting-cell, and thermodynamic output
-in `run.log`; selected MG diagnostics are also copied to
-`mg_solver_diagnostics.log` when the run ends. This includes
-`MG_SPECTRAL_POSITIVITY_REPAIR` and `MG_PASSIVE_ROUNDOFF_REPAIR`, which record
-conservative repairs of roundoff-scale group extents at active--passive faces.
+The campaign explicitly unsets `RICH_QUIET`. Each lane retains operational
+mesh, radiation-step, limiting-cell, and thermodynamic output in `run.log`.
+Detailed distributed-solver output is present only in lanes that explicitly
+enable profiling.
 
 The production runner pins
 `RICH_MG_INDIVIDUAL_PASSIVE_POLICY=dirichlet` only for the AutoPartial
@@ -55,12 +53,17 @@ only accepted candidates append their pending defect. This lane must therefore
 report both ordinary total-energy drift and the defect ledger. It must not be
 described as exactly conservative at active--passive interfaces.
 
-`mg_solver_diagnostics.log` retains both
-`MG_INDIVIDUAL_PASSIVE_POLICY` and every
-`INDIVIDUAL_RADIATION_DEFECT status=accepted|rejected` record. The final
-`counters.txt` records cumulative signed and absolute defect extents,
+The local gate combines a `1e-2` relative withdrawal limit with a `1e-9`
+absolute limit normalized by the global radiation scale. The per-event absolute
+fraction is a hard `1e-6` limit; cumulative signed and absolute limits remain
+`1e-4` and `1e-3`.
+
+Normal solver convergence and accepted defect decisions do not emit
+per-candidate records. The final `counters.txt` records cumulative signed and
+absolute defect extents,
 normalization scale, maximum event/local fractions, accepted/rejected/retry
-counts, versioned limits, cooldown state, and `history_complete`.
+counts, the mixed-tolerance ratio, versioned limits, cooldown state, and
+`history_complete`.
 
 MG timestep normalization is MPI-global in every mode. Each rank contributes
 reference maxima from all canonical owned cells, never just the active partial
@@ -128,6 +131,33 @@ the MG all-active global path.
 
 ### AutoPartial performance controls
 
+The active-event Hilbert cache is selected automatically for compatible MPI
+individual-timestep runs. Use explicit `0` and `1` settings for a matched A/B
+test with the same binary:
+
+```bash
+# Choose one per lane: 0 for the reference, 1 for active Hilbert.
+export RICH_INDIVIDUAL_ACTIVE_HILBERT_CACHE=0
+export RICH_INDIVIDUAL_ACTIVE_HILBERT_THRESHOLD=1.25
+export RICH_INDIVIDUAL_ACTIVE_HILBERT_MAX_OWNED_SKEW=2.0
+export RICH_RUNTIME_LOG=detailed
+```
+
+Each event is keyed by the global bit mask of its nonempty active scheduler
+bins. The cache stores only Hilbert cut coordinates computed with unit weight
+for active cells and zero weight for passive cells. Cached cuts are revalidated
+before reuse. A cut is rejected if its predicted total owned-cell max/mean
+exceeds the configured cap or if it would leave any MPI rank empty. Accepted
+cuts migrate all registered state before
+hydro, radiation, and gravity, so partial mesh construction sees the new
+ownership. The cache is in-memory only and rebuilds after restart. Enabling it
+supersedes the older pre-first-event and post-event whole-mesh rebalance paths.
+The production runner freezes the enable flag and both thresholds across
+restart segments, recovering omitted values and rejecting explicit changes.
+For a fresh lane, an omitted selector is exported as explicit `1`, so an
+incompatible setup fails instead of silently falling back; only a historical
+restart whose `run_info.txt` lacks all three controls recovers `0/1.25/2.0`.
+
 The post-event load balancer is off by default until its focused MPI and
 checkpoint gates pass. Enable it only in a disjoint validation root:
 
@@ -142,7 +172,8 @@ export RICH_INDIVIDUAL_REBALANCE_AMORTIZATION=2
 The decision is collective and occurs only after a committed event and AMR
 update. It uses the existing physics weights, migrates scheduler state through
 the standard transfer path, and records ownership epochs and migrated-cell
-counts. `RICH_INDIVIDUAL_PERF_TRACE=1` additionally reports rank
+counts. `RICH_RUNTIME_LOG=detailed` additionally writes `RICH_STEP_DETAIL`
+rank
 min/median/mean/p95/max for physics, radiation gather/sync/driver/scatter,
 event wall time, peak RSS, and global matrix construction. The trace is off by
 default and must be A/B checked for less than 2% overhead.

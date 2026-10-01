@@ -24,6 +24,13 @@ RELATIVE_RE = re.compile(
     r"\|Einit-Efinal\|/Einit = (?P<relative>[-+0-9.eE]+)"
 )
 KEY_VALUE_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=([^\s]+)")
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+RUNTIME_FIELD_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]*)=(\[[^]]*\]|[^\s]+)")
+RETRY_HEADER_FIELDS = (("mode", "cycle", "physics", "attempt"),)
+RETRY_ATTEMPT_FIELDS = ((
+    "active_cells", "active_bins", "attempted_dt_min", "attempted_dt_max",
+),)
+RETRY_FAILURE_FIELDS = (("retry_s", "reason", "cell"),)
 
 
 def as_float(value: str) -> int | float | str:
@@ -33,6 +40,63 @@ def as_float(value: str) -> int | float | str:
         return float(value)
     except ValueError:
         return value
+
+
+def ordered_runtime_fields(
+    path: Path,
+    line: str,
+    prefix: str,
+    separator: str,
+    expected_orders: tuple[tuple[str, ...], ...],
+    subject: str,
+) -> dict[str, str]:
+    pieces = line[len(prefix) :].rstrip().split(separator)
+    matches = [RUNTIME_FIELD_RE.fullmatch(piece) for piece in pieces]
+    if any(match is None for match in matches):
+        raise ValueError(f"malformed {subject} line in {path}: {line.rstrip()}")
+    items = [match.groups() for match in matches if match is not None]
+    if tuple(name for name, _ in items) not in expected_orders:
+        raise ValueError(f"malformed {subject} line in {path}: {line.rstrip()}")
+    return dict(items)
+
+
+def valid_retry_bins(value: str, mode: str, active_cells: int) -> bool:
+    if mode == "global":
+        return value == "global"
+    if value == "global":
+        return False
+    if len(value) < 2 or value[0] != "[" or value[-1] != "]":
+        return False
+    entries = value[1:-1].split("; ")
+    if not entries or any(not entry for entry in entries):
+        return False
+    count_sum = 0
+    previous_bin = -1
+    for entry in entries:
+        pieces = entry.split(",")
+        matches = [RUNTIME_FIELD_RE.fullmatch(piece) for piece in pieces]
+        if any(match is None for match in matches):
+            return False
+        items = [match.groups() for match in matches if match is not None]
+        if tuple(name for name, _ in items) != ("bin", "count", "dt"):
+            return False
+        fields = dict(items)
+        bin_number = as_float(fields["bin"])
+        count = as_float(fields["count"])
+        timestep = as_float(fields["dt"])
+        if (
+            not isinstance(bin_number, int)
+            or not previous_bin < bin_number < 63
+            or not isinstance(count, int)
+            or count <= 0
+            or not isinstance(timestep, (int, float))
+            or not math.isfinite(float(timestep))
+            or timestep <= 0
+        ):
+            return False
+        count_sum += count
+        previous_bin = bin_number
+    return count_sum == active_cells
 
 
 def finite_number(record: dict[str, Any], key: str) -> float | None:
@@ -67,7 +131,29 @@ def parse_log(path: Path) -> dict[str, Any]:
     positivity_repairs = 0
     passive_repairs = 0
     pending_energy: dict[str, Any] | None = None
-    for line_number, line in enumerate(lines, 1):
+    pending_runtime_retry: dict[str, Any] | None = None
+    runtime_retry_subject = 0
+    for line_number, raw_line in enumerate(lines, 1):
+        line = ANSI_ESCAPE_RE.sub("", raw_line)
+        if pending_runtime_retry is not None:
+            expected_prefixes = ("  attempt | ", "  failure | ")
+            if runtime_retry_subject == len(expected_prefixes):
+                if line != "":
+                    raise ValueError(
+                        f"missing blank line after RICH_RETRY block in {path}"
+                    )
+                if first_rejection is None:
+                    first_rejection = pending_runtime_retry
+                pending_runtime_retry = None
+                runtime_retry_subject = 0
+                continue
+            if (
+                not line.startswith(expected_prefixes[runtime_retry_subject])
+                and not line.startswith(expected_prefixes)
+            ):
+                raise ValueError(
+                    f"interleaved RICH_RETRY block in {path}: {line}"
+                )
         match = ENERGY_RE.search(line)
         if match:
             pending_energy = {
@@ -104,21 +190,109 @@ def parse_log(path: Path) -> dict[str, Any]:
                 pending_energy["defect_line"] = line_number
                 pending_energy = None
             continue
-        if line.startswith("INDIVIDUAL_RADIATION_REJECTION "):
-            if first_rejection is None:
-                first_rejection = {
-                    "line": line_number,
-                    "text": line,
-                    **{
-                        key: as_float(value.rstrip(","))
-                        for key, value in KEY_VALUE_RE.findall(line)
-                    },
-                }
+        if line.startswith("RICH_RETRY "):
+            if pending_runtime_retry is not None:
+                raise ValueError(
+                    f"incomplete RICH_RETRY block in {path} before line "
+                    f"{line_number}"
+                )
+            fields = ordered_runtime_fields(
+                path, line, "RICH_RETRY ", " ", RETRY_HEADER_FIELDS,
+                "RICH_RETRY header",
+            )
+            mode = fields.get("mode")
+            cycle = as_float(fields["cycle"])
+            attempt = as_float(fields["attempt"])
+            if (
+                mode not in {"global", "individual"}
+                or not isinstance(cycle, int)
+                or cycle < 0
+                or not isinstance(attempt, int)
+                or attempt <= 0
+            ):
+                raise ValueError(
+                    f"malformed RICH_RETRY header in {path}: {line.rstrip()}"
+                )
+            pending_runtime_retry = {
+                "line": line_number,
+                "text": line,
+                **{key: as_float(value) for key, value in fields.items()},
+            }
+            runtime_retry_subject = 0
+            continue
+        if line.startswith("  attempt | "):
+            if pending_runtime_retry is None or runtime_retry_subject != 0:
+                raise ValueError(
+                    f"unexpected retry attempt line in {path}: {line.rstrip()}"
+                )
+            fields = ordered_runtime_fields(
+                path, line, "  attempt | ", " | ", RETRY_ATTEMPT_FIELDS,
+                "retry attempt",
+            )
+            active_cells = as_float(fields["active_cells"])
+            attempted_dt_min = as_float(fields["attempted_dt_min"])
+            attempted_dt_max = as_float(fields["attempted_dt_max"])
+            if (
+                not isinstance(active_cells, int)
+                or active_cells < 0
+                or not valid_retry_bins(
+                    fields["active_bins"],
+                    str(pending_runtime_retry["mode"]),
+                    active_cells,
+                )
+                or not isinstance(attempted_dt_min, (int, float))
+                or not math.isfinite(float(attempted_dt_min))
+                or attempted_dt_min < 0
+                or not isinstance(attempted_dt_max, (int, float))
+                or not math.isfinite(float(attempted_dt_max))
+                or attempted_dt_max < attempted_dt_min
+            ):
+                raise ValueError(
+                    f"malformed retry attempt line in {path}: {line.rstrip()}"
+                )
+            pending_runtime_retry.update(
+                {key: as_float(value) for key, value in fields.items()}
+            )
+            runtime_retry_subject = 1
+            continue
+        if line.startswith("  failure | "):
+            if pending_runtime_retry is None or runtime_retry_subject != 1:
+                raise ValueError(
+                    f"unexpected retry failure line in {path}: {line.rstrip()}"
+                )
+            fields = ordered_runtime_fields(
+                path, line, "  failure | ", " | ", RETRY_FAILURE_FIELDS,
+                "retry failure",
+            )
+            retry_seconds = as_float(fields["retry_s"])
+            cell = as_float(fields["cell"])
+            if (
+                not isinstance(retry_seconds, (int, float))
+                or not math.isfinite(float(retry_seconds))
+                or retry_seconds < 0
+                or not (
+                    cell == "none" or isinstance(cell, int) and cell >= 0
+                )
+            ):
+                raise ValueError(
+                    f"malformed retry failure line in {path}: {line.rstrip()}"
+                )
+            pending_runtime_retry.update(
+                {key: as_float(value) for key, value in fields.items()}
+            )
+            runtime_retry_subject = 2
             continue
         if line.startswith("MG_SPECTRAL_POSITIVITY_REPAIR"):
             positivity_repairs += 1
         if line.startswith("MG_PASSIVE_ROUNDOFF_REPAIR"):
             passive_repairs += 1
+
+    if pending_runtime_retry is not None:
+        if runtime_retry_subject == 2:
+            raise ValueError(
+                f"missing blank line after RICH_RETRY block in {path}"
+            )
+        raise ValueError(f"incomplete RICH_RETRY block in {path}")
 
     violations: list[str] = []
     for index, defect in enumerate(defects):
@@ -144,6 +318,13 @@ def parse_log(path: Path) -> dict[str, Any]:
         local_fraction = first_finite(
             defect, "max_local_fraction", "maximum_local_fraction"
         )
+        local_tolerance_ratio = first_finite(
+            defect,
+            "max_local_tolerance_ratio",
+            "maximum_local_tolerance_ratio",
+        )
+        config_version = first_finite(defect, "config_version")
+        event_target = first_finite(defect, "event_absolute_target")
         projected_signed = finite_number(
             defect, "projected_cumulative_signed_fraction"
         )
@@ -162,9 +343,26 @@ def parse_log(path: Path) -> dict[str, Any]:
         if None not in (absolute, scale, event_fraction) and scale > 0:
             if not close(event_fraction, absolute / scale):
                 violations.append(prefix + ": event fraction mismatch")
-        if defect.get("status") == "accepted":
-            if local_fraction is not None and local_fraction > 1e-2:
-                violations.append(prefix + ": accepted above local hard limit")
+        hard_defect_limits = config_version is None or config_version < 3
+        if defect.get("status") == "accepted" and hard_defect_limits:
+            if local_tolerance_ratio is not None:
+                if local_tolerance_ratio > 1:
+                    violations.append(
+                        prefix + ": accepted above mixed local tolerance"
+                    )
+            elif local_fraction is not None and local_fraction > 1e-2:
+                violations.append(prefix + ": accepted above legacy local limit")
+            hard_event_gate = local_tolerance_ratio is not None or (
+                config_version is not None and config_version >= 2
+            )
+            if (
+                hard_event_gate
+                and event_fraction is not None
+                and event_fraction > (
+                    event_target if event_target is not None else 1e-6
+                )
+            ):
+                violations.append(prefix + ": accepted above event hard limit")
             if projected_signed is not None and abs(projected_signed) > 1e-4:
                 violations.append(prefix + ": accepted above cumulative signed limit")
             if projected_absolute is not None and projected_absolute > 1e-3:

@@ -158,7 +158,7 @@ run_restart_lane restart-continuous 2 ""
 run_restart_lane restart-resumed 2 \
   "${gate_root}/restart-source/final_state.h5"
 
-adverse_pattern='MG_BICGSTAB_(CONVERGENCE|RESULT|TIMING).*outcome=(rejected|breakdown|not_converged|nonfinite)|MG_MPI_FATAL|Reducing dt|INDIVIDUAL_RADIATION_REJECTION'
+adverse_pattern='MG_BICGSTAB_(CONVERGENCE|RESULT|TIMING).*outcome=(rejected|breakdown|not_converged|nonfinite)|MG_MPI_FATAL|Reducing dt|INDIVIDUAL_RADIATION_REJECTION|RICH_RETRY'
 mapfile -d '' run_logs < <(find "${gate_root}" -name run.log -type f -print0)
 if grep -EnH "${adverse_pattern}" "${run_logs[@]}" \
     > "${gate_root}/adverse_events.txt"; then

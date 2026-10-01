@@ -7198,6 +7198,8 @@ bool RadiationDriver::stepIndividual(
     }
     if(!valid)
         setStepFailure("individual radiation matrix references an unmapped active unknown");
+    else if(!validateIndividualVerificationRhs(local_to_global, unknowns_per_cell, verification_rhs, cells))
+        valid = false;
     if(!collectiveAllTrue(valid))
         return reject();
 
@@ -8899,6 +8901,11 @@ bool RadiationDriver::stepIndividual(
             rhs[local_row] = correction_row.Value();
             verification_rhs[local_row] = verification_row.Value();
             verification_scale[local_row] = fixed_scale_row.Value();
+        }
+        if(!validateIndividualVerificationRhs(local_to_global, unknowns_per_cell, verification_rhs, cells)) {
+            cells = saved_cells;
+            extensives = saved_extensives;
+            return false;
         }
 
         if(unknowns_per_cell == 0 ||

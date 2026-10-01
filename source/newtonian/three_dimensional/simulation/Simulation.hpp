@@ -266,11 +266,17 @@ public:
     #endif // RICH_MPI
 
 private:
+    // The scheduler unit test drives the adaptive controller with synthetic
+    // step walls and advances.
+    friend struct AdaptiveControllerTestAccess;
     void stepIndividual(void);
 
     // Adaptive integration mode: measured throughput per mode, probe and
     // dwell bookkeeping, and the potential-gain bound.  Every value is
     // derived from collectively reduced quantities so all ranks decide alike.
+    double individualEntryReference(void) const;
+    double individualAnchorReference(void) const;
+
     struct AdaptiveModeState
     {
         bool enabled = false;
@@ -299,6 +305,9 @@ private:
         // RICH_INDIVIDUAL_BIN_ANCHOR_MARGIN; 0 before any or when unavailable.
         // The same on every rank.
         double anchorReferenceStep = 0;
+        // An individual probe was judged faster and adopted this run
+        // (RICH_ADAPTIVE_STAY_INDIVIDUAL keeps individual mode from then on).
+        bool individualAdopted = false;
         // A due gain bound was skipped (stale per-cell limits): the next
         // global step retries it.  Replicated, as is the count of
         // consecutive skips.
@@ -475,6 +484,18 @@ private:
         std::uint64_t event_counter = 0;
         // Reverts so far: each doubles the next cooldown.
         int reverts = 0;
+        // Classes a measuring revert returned to positional ownership for
+        // (bit per class; the positional stretch collects their references),
+        // and the event from which re-adoption no longer waits for them.
+        unsigned measure_mask = 0;
+        // Aging of the current segmented plan: per class, the mean ledger
+        // seconds of its first events after a migration, and the excess of
+        // later same-class events over it (re-plans when it has paid for a
+        // migration).
+        std::array<double, classes> age_base_sum{};
+        std::array<std::uint64_t, classes> age_base_count{};
+        double age_debt = 0;
+        std::uint64_t measure_deadline_event = 0;
         // Planning seconds of a proposal awaiting its migration.
         double pending_planning_seconds = 0;
     } individualSegmentDecision;

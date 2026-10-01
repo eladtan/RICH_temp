@@ -288,6 +288,26 @@ public:
     mutable std::vector<double> D; 
     mutable std::vector<double> R2; 
     mutable std::vector<double> cell_flux_limiter;
+    // RICH_RADIATION_MOMENTUM_POSITIVITY: per owned cell and GetCellFaces slot,
+    // the lumped fraction w of the face's velocity term (0: central face value);
+    // rebuilt by every BuildMatrix, consumed by the following PostCG.
+    mutable std::vector<std::vector<double> > momentum_face_weight_;
+    // Per owned cell: the matrix's v_ratio (PostCG reuses it so both sides
+    // carry the same alpha) and whether the row has a boundary face.
+    mutable std::vector<double> momentum_v_ratio_;
+    mutable std::vector<char> momentum_row_boundary_;
+    // Per owned cell and face slot: the assembled velocity coefficient T_f (0 on
+    // boundary faces), for PostCG's independent closure check.
+    mutable std::vector<std::vector<double> > momentum_face_term_;
+    // Per owned cell and face slot: the lumped excess e moved to the diagonal,
+    // stored on the first face of its column (0 elsewhere).
+    mutable std::vector<std::vector<double> > momentum_face_excess_;
+    // Smallest physical verification RHS of the last individual candidate
+    // (interior rows; +inf when none), reported with the exchange record.
+    mutable double momentum_minimum_verification_rhs_ = std::numeric_limits<double>::infinity();
+    mutable bool momentum_positivity_reject_ = false;
+    mutable std::string momentum_positivity_reason_;
+    mutable std::size_t momentum_positivity_reject_cell_ = std::numeric_limits<std::size_t>::max();
     mutable std::vector<double> new_Er;
     mutable std::vector<double> new_Er_full;
 	    mutable std::vector<double> old_Er;
@@ -319,8 +339,50 @@ public:
                 setStepFailure("non-positive grey Fleck factor", cells.at(i).ID);
                 return false;
             }
+        // RICH_RADIATION_MOMENTUM_POSITIVITY: the last BuildMatrix could not
+        // certify the assembled matrix (a positive coupling the velocity term
+        // does not explain, or a non-positive row sum).
+        if(momentum_positivity_reject_) {
+            setStepFailure(momentum_positivity_reason_, momentum_positivity_reject_cell_);
+            return false;
+        }
         return true;
     }
+
+    // RICH_RADIATION_MOMENTUM_POSITIVITY: the certificate also needs a
+    // non-negative physical right-hand side on every certified (interior-only)
+    // row; rows with boundary faces are excluded from the certificate.
+    bool validateIndividualVerificationRhs(
+        std::vector<std::size_t> const& local_to_global,
+        std::size_t const unknowns_per_cell,
+        std::vector<double> const& verification_rhs,
+        std::vector<ComputationalCell3D> const& cells) const override
+    {
+        if(momentum_row_boundary_.empty() || unknowns_per_cell == 0)
+            return true;
+        std::size_t failing_cell = std::numeric_limits<std::size_t>::max();
+        for(std::size_t row = 0; row < local_to_global.size() && row < verification_rhs.size(); ++row) {
+            std::size_t const cell = local_to_global[row] / unknowns_per_cell;
+            if(cell >= momentum_row_boundary_.size() || momentum_row_boundary_[cell] != 0)
+                continue;
+            momentum_minimum_verification_rhs_ = std::min(momentum_minimum_verification_rhs_, verification_rhs[row]);
+            if(!(verification_rhs[row] >= 0) && failing_cell == std::numeric_limits<std::size_t>::max())
+                failing_cell = cell;
+        }
+        if(failing_cell == std::numeric_limits<std::size_t>::max())
+            return true;
+        setStepFailure("momentum positivity: negative physical right-hand side",
+            failing_cell < cells.size() ? cells[failing_cell].ID : std::numeric_limits<std::size_t>::max());
+        return false;
+    }
+
+    bool MatrixBuildRejected() const override;
+
+    // RICH_RADIATION_MOMENTUM_POSITIVITY=1 (default off): positivity-preserving,
+    // energy-consistent treatment of the velocity (momentum/relativity) term
+    // of the gray matrix on interior faces with hydro on.  Agreed across ranks
+    // at first (collective) use.  See docs/fixes/radiation-momentum-positivity-design-2026-09-30.md.
+    static bool MomentumPositivityEnabled();
 };
 
 //! D=D0*rho^alpha*T^beta, sigma_planck=sigma_planck0*rho^alpha_planck*T^beta_planck

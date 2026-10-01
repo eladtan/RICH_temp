@@ -36,7 +36,8 @@ simulation.SetTimeStep(initial_dt);
 IndividualTimeStepOptions options;
 options.initial_bin = 30;
 options.maximum_bin = 40;
-options.maximum_neighbor_bin_difference = 2;
+options.maximum_neighbor_bin_difference = 1;
+options.full_source_sweep_interval_minimum_steps = 128;
 options.mesh_build_policy = IndividualMeshBuildPolicy::AutoPartial;
 simulation.EnableIndividualTimeSteps(options);
 
@@ -52,6 +53,84 @@ Registering physics before `EnableIndividualTimeSteps` is recommended because
 unsupported steps fail together during setup. RICH also checks steps added
 after individual mode has been enabled.
 
+## Recommended runtime settings
+
+The settings below were validated on the tidal-disruption run
+(`runs/BaseTDEComptonIndividual`, grey diffusion with Compton coupling, 256 MPI
+ranks, 2026-10-01). From snapshot 70 (t = 41.86) to t = 50 the individual run
+took 16531 s against 29173 s for the global-timestep control (1.77x). Its
+run-minimum finest timestep was 0.97 of the global run's, and it had 69
+radiation retries against 701. Every variable is agreed across MPI ranks at
+first use; a mismatch throws.
+
+| Variable | Default | Validated | Effect |
+|---|---|---|---|
+| `RICH_INDIVIDUAL_MAX_BIN_SPREAD` | 2 | 4 | No bin exceeds `initial_bin + K`, so no interval is longer than 2^K anchor intervals; -1 disables the cap. |
+| `RICH_INDIVIDUAL_BIN_ANCHOR_MARGIN` | 0.8 | 0.95 | Anchors bin `initial_bin` at m times the uncapped CFL/source suggestion of the last global step instead of the (possibly ramped) step itself. |
+| `RICH_ADAPTIVE_STAY_INDIVIDUAL` | off | 1 | Once the adaptive controller has adopted individual mode, it no longer spends wall time probing the global mode. |
+| `RICH_INDIVIDUAL_RADIATION_ANCHOR_SUBCYCLE` | on | 1 | A grey relative-change limit in [band, 1) x the anchor interval subcycles radiation inside the hydro interval instead of moving the cell to a finer bin. |
+| `RICH_INDIVIDUAL_RADIATION_ANCHOR_BAND` | 0.5 | 0.125 | Lower edge of that band; 0.125 allows up to eight radiation pieces per anchor interval. |
+| `RICH_INDIVIDUAL_RADIATION_RETRY_LIMITS_BINS` | on | 0 | Off: a rejected radiation candidate is absorbed by subcycling and does not lower the next hydro bin. |
+| `RICH_INDIVIDUAL_RADIATION_ENTRY_PROBE` | off | 1 | Lets an earned recovery probe be an event's first radiation candidate, so a persisted retry ceiling of 1/2 can recover. |
+| `RICH_INDIVIDUAL_CLOSURE_REEXPAND` | off | 1 | Repeats the partial-mesh closure expansion until no rank adds cells (hydro results unchanged to round-off). |
+| `RICH_RADIATION_MOMENTUM_POSITIVITY` | off | 1 | Positivity-preserving, energy-conserving treatment of the grey velocity term (below). |
+| `RICH_RADIATION_MOMENTUM_KINETIC_LOSS_FRACTION` | 0.5 | 0.5 | Fraction L used by the two caps of the momentum-positivity treatment. |
+
+A complete launch, run from the problem directory, with the restart and final
+time chosen by the driver's own variables:
+
+```bash
+export RICH_INDIVIDUAL_MAX_BIN_SPREAD=4 RICH_INDIVIDUAL_BIN_ANCHOR_MARGIN=0.95 \
+       RICH_ADAPTIVE_STAY_INDIVIDUAL=1 RICH_INDIVIDUAL_RADIATION_ANCHOR_SUBCYCLE=1 \
+       RICH_INDIVIDUAL_RADIATION_ANCHOR_BAND=0.125 RICH_INDIVIDUAL_RADIATION_RETRY_LIMITS_BINS=0 \
+       RICH_INDIVIDUAL_RADIATION_ENTRY_PROBE=1 RICH_INDIVIDUAL_CLOSURE_REEXPAND=1 \
+       RICH_RADIATION_MOMENTUM_POSITIVITY=1
+mpirun -np 256 ../../build/intelReleaseMPI/rich
+```
+
+### Momentum positivity (grey diffusion)
+
+The grey diffusion matrix contains the radiation pressure-work and O(v/c)
+relativistic exchange term `T_ij = ½(1 − α_i) k_ij`, central-differenced on each
+face. Where it is positive and larger than the diffusion coupling, the matrix
+loses its M-matrix property. Dim cells next to bright ones can then solve to
+negative radiation energy at any timestep, which caused deep retry cascades in
+late TDE phases.
+
+With `RICH_RADIATION_MOMENTUM_POSITIVITY=1`:
+
+- **Lumping.** Per interior column, only the positive excess of the assembled
+  coupling is moved to the diagonal: a minimal upwind shift of that face's
+  velocity term. The row action on a uniform field is unchanged.
+- **Rejection.** A row is rejected collectively before preconditioning if:
+  - it has a positive coupling the velocity term does not explain;
+  - it has a positive diffusion coupling;
+  - its diagonal or row sum is non-positive (interior rows only);
+  - a physical right-hand side is negative.
+- **Energy exchange.** PostCG uses the same lumped face values, face timesteps
+  and α as the matrix. The radiation-gas exchange is therefore identical to what
+  the matrix removed.
+- **Kinetic cap.** If the radiation-force impulse would make the gas gain more
+  than L of the cell's available radiation energy, the impulse is scaled down to
+  exactly that amount.
+- **Thermal cap.** If the relativistic exchange would take more than L of the
+  gas internal energy after absorption and emission, radiation pays the excess.
+- **Conservation.** Both caps conserve total energy exactly; the kinetic cap
+  only withholds momentum, which flux-limited diffusion does not track.
+
+Rank 0 prints one `RICH_RADIATION_MOMENTUM_POSITIVITY stage=matrix` line per
+matrix build and one `stage=exchange` line per candidate:
+
+- the `matrix` line counts changed rows, lumped faces and certificate
+  violations;
+- the `exchange` line reports the lumping energy, pressure work, cap counts and
+  energies;
+- a coefficient closure and a reservoir closure check that the exchange matches
+  the assembled matrix. Both stay at round-off.
+
+With `RICH_INDIVIDUAL_D5_TRACE=1`, a failing cell also prints a rank-local
+`RICH_RADIATION_MOMENTUM_FAILURE` line with the terms of its final energies.
+
 ## Options and timeline
 
 `IndividualTimeStepOptions` has these defaults:
@@ -61,7 +140,8 @@ after individual mode has been enabled.
 | `time_quantum` | `0` | Exact timeline quantum. A non-positive value derives `initial_dt / 2^initial_bin`. |
 | `initial_bin` | `30` | Initial bin assigned to every cell. |
 | `maximum_bin` | `40` | Largest permitted bin; it must not exceed 62. |
-| `maximum_neighbor_bin_difference` | `2` | Largest bin difference allowed across a face. |
+| `maximum_neighbor_bin_difference` | `1` | Largest bin difference allowed across a face. |
+| `full_source_sweep_interval_minimum_steps` | `128` | Run a true all-source hydro wake sweep after this many widths of the globally smallest occupied bin have elapsed. |
 | `mesh_build_policy` | `AutoPartial` | Use partial Voronoi construction when its closure is small enough. |
 | `partial_build_fraction` | `0.5` | Fall back to a full build when the partial target exceeds this fraction of owned cells. |
 | `verify_partial_build` | `false` | Build a full reference mesh and compare active geometry before continuing. Intended for tests and debugging. |
@@ -76,8 +156,9 @@ dt(b) = q * 2^b.
 Cell times are stored as 64-bit integer ticks. `CellTimeState` records the
 stable cell ID, begin and end ticks, last primitive-state tick, bin, predicted
 generator velocity, cached gravitational acceleration, and pending gravity
-half-kick state. Floating-point time is reconstructed only at the physics
-interface.
+half-kick state. It also stores the finest pending neighbor-induced bin
+reduction that must propagate after the cell completes that physical bin.
+Floating-point time is reconstructed only at the physics interface.
 
 Choose `time_quantum` small enough to represent every physical limit expected
 in the run. If a hydro, gravity, or radiation limit is below one quantum, RICH
@@ -104,16 +185,35 @@ One call to `Simulation::step()` advances one synchronization event:
    activation time.
 4. Evaluate the optional AMR callback for active cells and remap scheduler
    state using stable IDs.
-5. Ask every physics step for per-active-cell timestep limits and commit the
-   event to the scheduler.
-6. Apply the neighbor-bin limiter, including MPI neighbors. A newly shorter
-   signal can wake an inactive cell before its old end tick.
+5. Ask every physics step for per-active-cell timestep limits and passive
+   wake deadlines, then commit the event to the scheduler.
+6. Apply wake deadlines, then propagate physical bin reductions across one
+   Voronoi-face layer, including MPI neighbors.
 7. Advance the simulation clock to the event time and report the next event
    interval.
 
 A bin decrease takes effect immediately. A bin can increase by at most one
 level per activation, and only when the event tick is aligned with the larger
 power-of-two interval.
+
+The default face constraint is one bin. If a source at bin `b` reaches a
+neighbor above `b + 1`, that neighbor changes directly to `b + 1` and wakes
+at its earliest aligned tick. Sources are snapshotted, so a reduction cannot
+cascade through multiple face layers in the same event. A neighbor-induced
+reduction is retained as pending state and becomes a source only after that cell
+completes its full nominal physical-bin interval. Initialization, restart, and
+AMR remapping instead perform a one-time full closure without creating pending
+propagation.
+
+An interrupted cell keeps its physical bin and schedules its next activation
+at the next tick aligned with that bin. This also applies to terminal clamps
+and forced all-active overlays. The first catch-up interval can be shorter than
+the bin interval; subsequent activations return to the shared power-of-two
+phase instead of creating a permanent off-grid event sequence.
+Physics integrates that first event over the actual catch-up interval, while
+radiation timestep growth caps use the retained bin's nominal interval. A
+short wake therefore cannot become a real small physical bin merely because
+the limiter allows at most a factor-of-two increase.
 
 For an exact requested output endpoint, call the scheduler's terminal clamp
 before the next event whenever a cell interval crosses that endpoint.  The
@@ -132,7 +232,19 @@ At an event, the hydro step:
 
 1. Predicts every mesh-generating point to the event time without committing
    passive primitive states.
-2. Seeds the target with active cells and the previous reconstruction halo.
+2. Seeds the target with active cells, the previous reconstruction halo, and
+   the two-cell reconstruction shell around the active cells taken from a
+   per-cell adjacency cache: the face neighbours recorded the last time each
+   cell was in an event mesh, by stable ID with the owning rank. Remote
+   neighbours are requested from their owner in one sparse exchange per
+   shell. The closure check in step 5 then rarely has to add cells and
+   rebuild; without the seed a mesh typically took two or three builds.
+   With the seed on, the previous accepted target is no longer added as a
+   warm start: that set contains its own warm start and could only grow
+   between full builds, so after a large active set events with a few active
+   cells rebuilt nearly the whole mesh as a "partial" target.
+   `RICH_INDIVIDUAL_ADJACENCY_SEED=0` disables the cache and the seed and
+   restores the warm start.
 3. Calls `BuildPartially` in serial or `BuildPartiallyParallel` in MPI. All
    predicted generators remain eligible geometric neighbors even though only
    target cells are requested.
@@ -180,7 +292,40 @@ Hydrodynamics remains second order in space and time:
   as spendable energy. Any limited transfer applies the exact opposite
   correction to the face neighbor, including across MPI ranks by stable ID.
 - Primitive recovery is performed only for active cells after incoming
-  conserved updates have been assembled.
+  conserved updates have been assembled. The fluxes of an interval use the
+  primitives stamped at the interval start and the generator velocities that
+  moved the mesh during the interval; the velocity for the coming interval is
+  chosen after the update, from the recovered primitives on the event mesh.
+- Two conserved-state guards complement the wave-speed criteria. The mass-loss
+  limit bounds the next step so that no interval removes more than a fraction
+  of a cell's mass at the loss rate just measured. The conserved-change wake
+  ends a passive cell's interval when its accumulated mass or energy change
+  exceeds a fraction of its activation value, which signal-speed wakes cannot
+  detect. Both fractions default to 0.25 (see the runtime controls).
+- A mesh-deformation limit bounds how far a generator may travel relative to a
+  neighbouring generator within one interval. The CFL is evaluated on the faces
+  that exist when an interval opens; it bounds the gas crossing those faces and
+  says nothing about the mesh redrawing itself under its own point velocities.
+  Two neighbours whose generator velocities differ by `dv` replace the face
+  between them on the timescale `d/dv`, and a face that grows late in a long
+  interval is still charged the whole of it. The limit is floored at one
+  sixteenth of the cell's own CFL limit, so a degenerate generator pair cannot
+  drive it to zero; a mesh that needs more than that is the regulariser's
+  problem, not the scheduler's.
+- The step audit records the limit in force when each interval opens and
+  reports, per event, any interval that outlasted it (`step_overruns`). Limits
+  applied after the hydro step can only shorten an interval further, so a
+  reported overrun is a real one, and it means a computed limit was not
+  honoured rather than that a limit was missing.
+- An interval may never outlast the allowance of the bin it carries. Lowering a
+  cell's bin part way through an interval - by neighbour closure, by its own
+  limit while passive, or by an AMR merge - used to clip the end only to the
+  next tick aligned to the new bin. When that aligned tick is the end the cell
+  already had, the bin was relabelled and the interval kept its old length, so
+  a cell could carry bin 36 and run a bin-37 interval. The end is now bounded
+  by the bin's allowance as well, and `INDIVIDUAL_BIN_OVERRUN` reports any cell
+  that still completes more than its allowance, which can only happen when the
+  request arrives after the allowance has already elapsed.
 
 In MPI, an inter-rank face has one deterministic owner. Conserved deltas are
 sent by stable cell ID, which prevents duplicate face work and avoids relying
@@ -190,6 +335,19 @@ Supported conservative gravity sources use active-target acceleration
 evaluation and kick-drift-kick integration. The acceleration and half-kick
 phase are cached per cell. Gravity limits participate in bin selection and can
 wake a passive cell.
+
+The first-half source phase runs for the cells that close their interval at
+the event. For a conservative force whose active cells all carry a pending
+half kick it needs no geometry: it is a momentum kick from the cached
+acceleration. The mesh at the interval-start generator positions existed only
+to serve that phase (the fluxes use the event mesh), so when every rank's
+source reports that its first half can run from cache, that build is skipped
+and the phase is applied on the canonical owned-cell arrays. A cell without a
+pending kick (the first event, a cleared cache, a centre-sink reset) makes
+every rank build the interval-start mesh as before.
+`RICH_INDIVIDUAL_FIRST_HALF_FROM_CACHE=0` restores the unconditional build;
+any event-mesh reuse experiment (`RICH_INDIVIDUAL_REUSE_EVENT_MESH*`) also
+keeps it.
 
 Gravity monopoles remain at cell centroids, matching the global integrator.
 At an event, cached passive centroids are predicted with the generator velocity
@@ -227,41 +385,69 @@ multigroup diffusion it has `Nactive * Ngroups` rows:
 - absorption, emission, scattering, material coupling, radiation force,
   Compton, and Doppler terms use the active cell interval.
 
-Grey diffusion retains the immediate conservative behavior: the solve commits
-active primitive states and applies the opposite face-energy transfer to
-passive conserved radiation extents without refreshing passive primitives.
+When the conservative `legacy` active--passive diffusion transfer changes an
+inactive recipient, radiation supplies a wake deadline rather than changing
+that cell's physical bin. The wake rate uses the shortest active--passive face
+timestep that contributed nonzero accepted energy, never the global scheduler
+event spacing. The face timestep is carried with cross-rank transfer metadata,
+so serial, MPI, grey, and multigroup paths use the same definition.
+If a changed passive recipient unexpectedly lacks that metadata, it wakes after
+one scheduler quantum instead of estimating a rate from unrelated event timing.
 
-Multigroup individual diffusion selects one MPI-consistent passive-boundary
-policy with `RICH_MG_INDIVIDUAL_PASSIVE_POLICY`:
+Individual grey and multigroup diffusion select one MPI-consistent
+passive-boundary policy with `RICH_MG_INDIVIDUAL_PASSIVE_POLICY`:
 
-- `legacy` is the library default. It retains the immediate equal-and-opposite
-  passive conserved commit.
+- `dirichlet` is the library default. It freezes passive radiation energy in
+  the active-row right-hand side and commits only active state. Passive
+  primitive and conserved radiation state remain unchanged during that
+  candidate.
+- `legacy` explicitly restores the immediate equal-and-opposite passive
+  conserved commit.
 - `shadow` enables the owner-held conservative shadow-reservoir experiment.
   It is not the production AutoPartial policy.
-- `dirichlet` freezes passive primitive group energies in the active-row
-  right-hand side and commits only active state. Passive primitive and
-  conserved radiation state remain unchanged during that candidate.
 
-The deprecated `RICH_MG_INDIVIDUAL_SHADOW_RESERVOIRS` flag remains an alias
-for `shadow`; conflicting selectors are rejected collectively. None of these
-settings changes the synchronized global radiation path. Flux limiters,
-boundary conditions, cooling limits, hydro feedback, all energy groups,
-Compton safeguards, and Doppler terms remain active.
+The deprecated `RICH_MG_INDIVIDUAL_SHADOW_RESERVOIRS` flag remains a
+compatibility selector: `1` selects `shadow` and `0` selects `legacy`.
+Conflicting selectors are rejected collectively. None of these settings
+changes the synchronized global radiation path. Flux limiters, boundary
+conditions, cooling limits, hydro feedback, all energy groups, Compton
+safeguards, and Doppler terms remain active.
 
 Dirichlet mode deliberately omits the equal-and-opposite passive interface
 transfer. Before commit, it measures that omitted transfer from the same face
 coefficients and final active unknowns used by the candidate. Accepted events
 append signed, absolute, normalized, and worst-local contributions to a
-rollback-safe defect ledger. Collective defect limits can reject the candidate;
-a rejected candidate changes neither passive state nor committed defect
-accounting. Therefore Dirichlet mode is measured-defect conservative, not
-exactly conservative across active--passive interfaces.
+rollback-safe defect ledger. Finite conservation thresholds are synchronization
+targets, not candidate-acceptance limits. Crossing the local or event target
+keeps the candidate, leaves passive radiation unchanged, and requests every
+passive endpoint of that accepted radiation event to wake after the shortest
+contributing face interval. Solver, mapping, nonfinite, and positivity failures
+remain hard rejections. Dirichlet mode therefore has measured, but not exact,
+conservation across active--passive interfaces.
 
-Each decision emits `INDIVIDUAL_RADIATION_DEFECT status=accepted|rejected`.
+The version-3 local synchronization target uses the mixed extensive tolerance
+
+`withdrawal <= 1e-2 * (passive_extent + roundoff_floor) + 1e-9 * global_scale`.
+
+The relative term remains strict for resolved passive radiation reservoirs,
+while the absolute term prevents a floor-dominated cell from requesting
+synchronization for globally negligible roundoff. An event absolute defect
+above `1e-6` of `global_scale` also requests passive synchronization.
+The cumulative signed and absolute reference levels remain `1e-4` and
+`1e-3`, but are diagnostic because the scalar ledger cannot repay a
+cell/group transfer. They never reduce every active cell's future timestep.
+
+Normal solver convergence and accepted defect decisions are silent. Detailed
+distributed-solver reports remain available only when the existing profiling
+selector is enabled. Invalid defect bookkeeping uses the ordinary event-level
+failure summary; finite target crossings do not enter the retry loop.
 The scheduler-owned ledger, its versioned limits, retry/cooldown state, and
 `history_complete` flag are checkpointed. Benchmark restart fingerprints and
 `counters.txt` print those fields so a restarted energy audit can distinguish
-a complete accumulated history from a reconstructed default.
+a complete accumulated history from a reconstructed default. Loading a
+version-1 or version-2 defect ledger preserves its cumulative extents, resets
+its obsolete retry ceiling, adopts the version-3 semantics, and marks
+`history_complete=false`.
 
 Radiation uses backward Euler and is first order in time. Each candidate is
 transactional for active cells, any passive recipients used by its policy, and
@@ -480,9 +666,12 @@ cells. It returns an `IndividualAMRChangeSet` keyed by stable IDs.
 Refinement and derefinement conservatively remap mass, momentum, material
 energy, grey or multigroup radiation energy, and registered extra conserved
 extents. New children receive new stable IDs and initially inherit the parent
-tick and bin. Derefinement may deposit conserved extents into passive
-neighbors. The scheduler, predictors, acceleration cache, radiation metadata,
-and active-mesh maps are remapped after the topology change.
+tick, bin, and pending neighbor source. Derefinement may deposit conserved
+extents into passive neighbors. Every actual overlap recipient retains the
+minimum of its own and the removed source's physical and pending bins; MPI
+recipients obtain that state from the source owner by stable ID. The scheduler,
+predictors, acceleration cache, radiation metadata, and active-mesh maps are
+remapped after the topology change, followed by full neighbor closure.
 
 Distributed second-order AMR neighbor requests use three distinct index
 spaces. MadVoro duplicate-point entries are compact all-point indices; they are
@@ -490,6 +679,148 @@ converted first to the original build-input index and then through the inverse
 owned mapping to a local mesh index. Ghost ownership comes from the paired
 ghost/duplicated-rank metadata, not a spatial owner query. Mapping failures are
 validated collectively before recursive neighbor traversal.
+
+## Box growth
+
+`UpdateBox` (`source/3D/GeometryCommon/UpdateBox.hpp`) grows the box when cells
+faster than `min_velocity` come within five times the largest such width of a
+wall: the wall moves out by that distance, random cells with a reference state
+fill the new region, the mesh is rebuilt with rebalancing, and every extensive
+is recomputed from its primitive (the legacy semantics, kept in both modes by
+decision of 2026-09-24; the reset can change total energy by the dual-energy
+difference). It needs a synchronized state, so in individual mode:
+
+- `BoxGrowthDue(sim, min_velocity)` evaluates the same criterion after every
+  event on the committed state (generator positions from
+  `Simulation::CommittedGeneratorPoints`, widths from mass / density). It is a
+  trigger: when it holds, call `RequestSynchronizedIndividualEvent()`.
+- `UpdateBoxSynchronized(...)` decides exactly on a synchronized state (call it
+  at every synchronized individual event and on global boundaries) and grows
+  through `Simulation::GrowDomainAtSynchronizedIndividualState`: primitives,
+  extensives and scheduler states migrate together by stable ID; every cell's
+  interval is then capped by the individual event's rule evaluated on the
+  rebuilt mesh with the point velocities committed for its next interval
+  (`PhysicsStep::synchronizedCellTimeStepLimits`: wave-speed CFL, source
+  per-cell limits through `SourceTerm3D::SynchronizedIndividualLimits`, and
+  the mesh-drift guard), new and volume-changed cells also by the finest bin
+  in use (with `force_synchronized`, one shared bin). A conservative force
+  with target evaluation refreshes the acceleration cache on the rebuilt
+  state (one full solve), so the next first half kicks run from it;
+  `DiffusionForce` cannot re-evaluate its limits and refuses the growth. The
+  neighbour closure runs, topology caches are released, and the adaptive
+  controller is told (`NotifyDomainChanged`).
+- A request the controller answers by switching to global is served on that
+  global boundary. The returned `DomainGrowthReport` carries the counts, the
+  timing and the conserved totals before and after, with the inserted amounts.
+
+The adaptive controller tags every measured throughput with a domain epoch.
+`NotifyDomainChanged` (also called by drivers after a global growth) restarts
+the current window, and a probe that ends against a baseline from an older
+epoch returns to the baseline mode to re-measure it: box growth can change the
+gravity cost ten-fold, so the old comparison would be against another workload.
+`runs/BaseTDEComptonIndividual` shows the driver loop
+(`RICH_TDE_UPDATE_BOX=1`; records `RICH_UPDATE_BOX_REQUEST`,
+`RICH_UPDATE_BOX ... mode=individual`, `RICH_MODE_DOMAIN_CHANGE`). Growth
+times differ between modes (global checks every 7 steps, individual after
+every event), so mode A/B comparisons see different domain histories.
+
+## Adaptive integration mode
+
+A run may let the simulation decide whether individual timesteps pay at all.
+`Simulation::SetAdaptiveIntegrationMode(true, options)` (or
+`RICH_INDIVIDUAL_ADAPTIVE_MODE=1`, which overrides the call) installs a
+controller that switches between the real global path (`timeAdvance2`, point
+exchange and load balancing included) and individual events, in both
+directions, from two measurements:
+
+- **Potential gain.** While stepping globally, every `gate_interval` steps the
+  per-cell limits of the full mesh are quantized to power-of-two bins above
+  the smallest of them. Per-cell limits come from every physics step that
+  has them (`PhysicsStep::collectCellTimeStepLimits`): hydro wave speeds and
+  the source cap from `CourantFriedrichsLewy::CellTimeSteps`, and grey
+  `Diffusion`'s radiation limit `dt * 0.15 / diff_i` from the last global
+  step, the rule individual mode applies cell by cell (without the growth
+  caps). Other steps act as a uniform cap through `suggestTimeStep()`. The
+  ratio of global cell-updates to the ideal individual cell-updates,
+  `N / sum_i 2^-bin_i`, bounds the speedup any individual scheme could reach
+  from that distribution. Below `gain_min` (default 1.5) there is little to
+  gain by construction and the controller stays global without spending a
+  probe. The bound ignores neighbour-bin closure and per-event fixed cost, so
+  it is optimistic; it only ever prevents probes. The radiation limits are
+  matched to the current cells by ID; a cell without one (migrated from
+  another rank or new from AMR) sets none, so missing coverage can only
+  overstate the gain. Until 2026-09-24 radiation entered only as its grid-wide
+  cap (the largest relative radiation-energy change anywhere): while that was
+  below twice the smallest hydro limit every cell landed in bin 0, the bound
+  was exactly 1 and the controller never probed (the TDE: gain_bound=1 at
+  every decision). Multigroup diffusion still enters as its cap.
+  Rank 0 prints `RICH_MODE_GAIN` whenever the bound is evaluated:
+  `gain_bound`, `gain_bound_uniform_caps` (the old form, radiation as its
+  cap), `dt_cell_min`, per step its smallest limit (`limits=name:cell|cap:dt`)
+  and the cells whose limit it sets (`bound_cells`), the cells per bin
+  (`bins`) and `fallback_cells` (cells without a radiation limit).
+  The bound is evaluated after the global post-step callback, on the state the
+  next step starts from. Hydro limits need the face velocities of the mesh
+  they are evaluated on, known only for the mesh the hydro step leaves
+  (`HDSim3D` records its build generation). If that mesh was rebuilt since on
+  any rank (the callback's AMR pass or box growth, a rebalance after the hydro
+  step), the evaluation is skipped rather than formed with hydro as a cap:
+  rank 0 prints `RICH_MODE_GAIN_SKIPPED reason=stale_cell_limits` (the first
+  skip of a streak, then at `consecutive` = powers of two), the bound is
+  unknown (no veto) and the next global step retries it. In the TDE (AMR every
+  ten cycles) the retry lands on the following step; a driver that rebuilds
+  the mesh after every hydro step never gets a bound, and the controller then
+  decides by probes alone.
+- **Realised throughput.** Simulated time per wall second is accumulated in
+  the current mode over a dwell window (`dwell_min_steps`, default 64, times a
+  multiplier), excluding a ramp after each switch (12 individual events or 2
+  global steps by default; bins grow one level per activation after a switch
+  into individual mode, and the first global step rebuilds the mesh with
+  exchange). At the end of a dwell the other mode is probed with a wall-time
+  budget of `probe_fraction` (default 0.1) of the dwell's wall time and at
+  least `minimum_samples` measured steps; the probed mode is adopted when its
+  throughput exceeds the current one by `margin` (default 1.15), otherwise
+  the run reverts and doubles the next dwell (up to `dwell_backoff_cap`).
+
+Switches happen only at synchronized states. Leaving individual mode requests
+one all-active event and switches after it; entering it creates a fresh
+scheduler from the stored options with its time quantum derived from the
+global step of that moment, so cells start at `initial_bin` with the global
+step and grow from there. Physics steps see `beforeIndividualRebalance()` on
+every switch and `afterIndividualAMR()` when entering individual mode, which
+drops the topology-sized individual caches.
+
+Driver hooks for runs under the controller:
+`Simulation::AdaptiveIntegrationModeWillEnable(requested)` says, before
+anything is enabled, whether `SetAdaptiveIntegrationMode(requested, ...)` will
+turn the controller on (the environment wins when set), e.g. to start a fresh
+run on the global path. `SetGlobalPostStep(callback)` runs a collective update
+after every global step, once the cycle counter has advanced and before the
+controller acts, so a switch at the end of the step neither skips nor
+follows it: the global-path counterpart of `SetIndividualAMR` and
+`SetIndividualPostPhysics`. `SetAdaptiveDecisionsDeferred(true)` postpones
+every decision the controller would take on a global step, for as long as the
+driver has a target the global step sequence must land on (a snapshot time a
+fresh scheduler would not honour).
+
+Rank 0 reports `RICH_MODE_CONTROLLER` once, `RICH_MODE_DECISION` at every
+decision (`phase=dwell|probe`, `tau` in simulated time per wall second for
+both modes, `gain_bound`, `gain_bound_uniform_caps`, `action=probe_*|adopt_*|revert_to_*|
+stay_global_little_to_gain`) and `RICH_MODE_SWITCH` at every switch. All
+inputs are collectively reduced values, so every rank takes the same
+decision. A checkpoint written while stepping globally carries no scheduler
+group; a restart resumes globally under the controller when the driver calls
+`SetAdaptiveIntegrationMode` again. `Simulation::StateSynchronized()` is true
+at every global step boundary and at synchronized individual events, and
+`RequestSynchronizedIndividualEvent()` is a no-op in global mode, so output
+logic written for individual mode keeps working.
+
+Environment controls: `RICH_INDIVIDUAL_ADAPTIVE_MODE`,
+`RICH_ADAPTIVE_DWELL_MIN_STEPS`, `RICH_ADAPTIVE_MIN_SAMPLES`,
+`RICH_ADAPTIVE_RAMP_EVENTS`, `RICH_ADAPTIVE_RAMP_STEPS`,
+`RICH_ADAPTIVE_GATE_INTERVAL`, `RICH_ADAPTIVE_DWELL_BACKOFF_CAP`,
+`RICH_ADAPTIVE_PROBE_FRACTION`, `RICH_ADAPTIVE_MARGIN`,
+`RICH_ADAPTIVE_GAIN_MIN`. Values must agree on every MPI rank.
 
 ## Restarts
 
@@ -521,6 +852,103 @@ state after the continued event is compared to solver tolerance rather than
 bitwise because a fresh process rebuild can change tessellation and reduction
 ordering.
 
+## Runtime stdout
+
+Every accepted global step and individual event writes one rank-0, flushed
+six-line block followed by one blank line:
+
+```text
+RICH_STEP mode=individual cycle=42
+  time   | t_start=1 | t_end=1.1 | event_dt=0.1 | applied_dt_min=0.1 | applied_dt_max=0.1 | next_event_dt=0.2
+  work   | active_cells=160 | total_cells=1000 | active_bins=[bin=0,count=128,dt=0.1; bin=1,count=32,dt=0.2]
+  phases | step_s=2.100000 | hydro_s=1.000000 | gravity_s=0.000000 | radiation_s=0.900000 | amr_s=0.200000
+  mesh   | mesh_s=0.300000 | mesh_builds=2
+  source | source_s=0.400000 | source_pct=19.047619 | source_calls=2
+```
+
+The header identifies the mode and cycle. The subject lines have stable field
+order and do not repeat that identity. Simulation times and timesteps are in
+code units. Fields ending in `_s` are wall seconds with microsecond print
+precision; simulation times and timesteps use 12 significant digits to avoid
+printing binary roundoff artifacts in human-facing logs.
+
+For individual events, `active_cells` is the sum across all MPI ranks and
+`total_cells` is the MPI-summed owned-cell population at the start of the
+event, including both active and inactive cells. Thus `active_cells` is always
+less than or equal to `total_cells`. For global stepping the two counts are
+equal. `active_bins` lists every active scheduler bin as named fields inside
+brackets.
+Each count is summed across all MPI ranks. Individual `event_dt` is computed
+from the scheduler tick difference and time quantum, not by subtracting two
+floating-point event times. It is the scheduler event gap;
+`applied_dt_min` and `applied_dt_max` are the actual active-cell intervals, and
+`next_event_dt` is the next scheduler gap. Global stepping uses
+`active_bins=global`.
+
+`hydro_s`, `gravity_s`, `radiation_s`, `amr_s`, `mesh_s`, and `step_s` are MPI
+maxima.
+The named phase fields time distinct top-level `PhysicsStep` objects. When a
+gravity calculation is installed as a hydrodynamic source term, its time is
+part of `hydro_s` and the exact callback contribution is part of `source_s`;
+`gravity_s` remains zero because there is no separate gravity step.
+`source_s` is the MPI maximum of each rank's exact hydrodynamic source-callback
+wall time across both half updates; it excludes scatter, cache maintenance,
+logging, and other phase work. `source_calls` is the maximum callback count and
+`source_pct=100*source_s/step_s`. `mesh_s` measures wall time inside attempted
+tessellation-build operations during the step, including hydro, standalone
+remeshing, individual AMR, load balancing, failed attempts, and builds used for
+fallback, restart restoration, or partial-mesh verification. `mesh_builds` is
+the maximum number of those attempts on any MPI rank, rather than a sum across
+ranks. The mesh time is already contained in its owning phase and `step_s`; it
+is not an additional phase to add to the step total. A rejected candidate
+immediately writes a
+rank-0, flushed three-line block followed by one blank line:
+
+```text
+RICH_RETRY mode=individual cycle=42 physics=radiation attempt=1
+  attempt | active_cells=160 | active_bins=[bin=0,count=160,dt=0.1] | attempted_dt_min=0.1 | attempted_dt_max=0.1
+  failure | retry_s=0.300000 | reason=solver_rejected | cell=17
+```
+
+Text values are normalized to underscore-separated tokens. A missing
+representative cell prints as `cell=none`.
+
+An accepted individual AMR callback that actually adds or removes cells writes
+one separate rank-0 line after the accepted step block:
+
+```text
+RICH_AMR mode=individual cycle=42 time=1.1 cells_before=1000 added_cells=12 removed_cells=3 cells_after=1009
+```
+
+All four cell counts are totals across MPI ranks. The line is omitted when the
+AMR callback only checks its criteria and returns an empty change set. Therefore
+`amr_s` can be nonzero without a `RICH_AMR` line: `amr_s` includes time spent
+checking AMR eligibility, while `RICH_AMR` denotes an accepted topology change.
+The global `AMR3D::operator()(Simulation&)` path writes the same record with
+`mode=global` at the point where the operator is called. Its `cycle` and `time`
+are the simulation tracker values at that call site. A global AMR record is a
+standalone event and is not paired with the preceding `RICH_STEP` block; other
+application output may appear before it. Every `RICH_AMR` record is followed by
+one blank line.
+
+`RICH_RUNTIME_LOG` accepts `summary` (the default) or `detailed`. Detailed mode
+inserts `source_first_s` and `source_second_s` after `source_s`, writes
+rank-distribution diagnostics under the `RICH_STEP_DETAIL` prefix, and restores
+existing routine diagnostics with their established prefixes, including
+one representative failing rank's labeled `RICH_RADIATION_DETAIL` block. These
+selector-controlled records remain stdout-only and rank-0-only. Summary mode
+hides routine diagnostics and keeps stdout limited to the structured step and
+retry blocks plus topology-changing `RICH_AMR` lines. New runs and campaign
+parsers use only those formats, not the historical `Individual cycle`,
+`INDIVIDUAL_PERF`, or single-line `RICH_STEP` formats.
+
+`RICH_RUNTIME_COLOR` accepts `auto` (the default), `always`, or `never`.
+`auto` colors labels only when stdout is a terminal and `NO_COLOR` is unset.
+Use `never` for saved logs; use `always` only for an ANSI-aware consumer.
+Parsers strip ANSI escapes. Accepted labels use cyan, blue, magenta, and green
+by subject; retry and AMR labels use yellow, with retry failures in red. Invalid
+or MPI-inconsistent runtime log or color settings fail collectively.
+
 ## MPI behavior
 
 MPI individual mode adds these collective rules:
@@ -530,8 +958,18 @@ MPI individual mode adds these collective rules:
   collectives;
 - ranks with zero owned cells also enter grey radiation-force exchanges and
   reductions with neutral local maxima; no empty vector is dereferenced;
-- partial parallel construction suppresses routine load balancing but retains
-  required ghost exchange;
+- partial parallel construction suppresses routine load balancing and the
+  point exchange but retains required ghost exchange. Because owned points are
+  never migrated to their nominal Hilbert owner on this path, the mesh library
+  switches its ghost range-query routing to a distributed oct tree built from
+  the ranks' actual point positions at the first suppressed-exchange build
+  and refreshes it on every build. Routing by nominal Hilbert ranges is only
+  valid immediately after a real exchange; with a drifting mesh it sends
+  queries to the wrong ranks, leaves boundary cells with an incomplete
+  neighbour set, and produces phantom cross-rank faces (the
+  `INDIVIDUAL_HYDRO_INVALID_MASS` failures of September 2026). The switch is
+  reported once on rank 0 as
+  `MeshDecomposer: routing sphere-rank queries by actual point positions`;
 - distributed partial closure exchanges owner-canonical target requests to a
   fixed point; ranks with no local additions still enter every rebuild and
   closure reduction;
@@ -539,27 +977,92 @@ MPI individual mode adds these collective rules:
   and stable destination IDs;
 - grey and multigroup solvers build distributed active-only row maps and
   exchange only required remote active values;
+- wake propagation leaves active physical timestep suggestions unchanged and
+  writes signal arrivals to a separate passive wake-deadline vector.
+  Shortening a passive deadline does not change its stored timestep bin. After
+  the interrupted update, its next bin is chosen from the pre-wake bin and the
+  newly computed physical limit, preventing a one-tick wake from becoming a
+  persistent one-tick timestep. Only active cells that completed their retained
+  physical bin seed a new wake solve. A cell active because of an earlier
+  signal is a consumer of that already scheduled propagation, not a new source;
+  this prevents adjacent interrupted cells from waking each other every base
+  tick. Secondary propagation from that cell begins at its next physical-bin
+  completion. Hydrodynamic signals use the sparse distributed wake tree. Their
+  arrival path is the full separation between the source and target cell
+  centroids; no effective cell radii are subtracted. Active centroids are
+  refreshed from the current event mesh, while inactive centroids use the
+  canonical drift prediction already maintained by individual hydro and
+  gravity, so the wake solve does not force a full mesh build. Tree pruning uses
+  the minimum point-to-node distance, and the MPI rank-query radius is only the
+  distance the maximum signal speed can cover before the latest passive
+  deadline. The pair signal speed is the AREPO hydrodynamic value: both sound
+  speeds plus the positive projected closing velocity. It has no speed-of-light
+  cap and uses no opacity or radiation transport state. Each rank updates only
+  its owned passive targets. Grey and multigroup radiation
+  may still supply their own passive wake deadlines through the physics-step
+  interface, but do not enter the tree signal speed;
+- as a periodic safety backstop, elapsed integer ticks are compared with the
+  width of the globally smallest occupied bin in the committed scheduler state
+  entering the event. At the first such event where the elapsed interval reaches
+  `full_source_sweep_interval_minimum_steps` bin widths, every owned cell,
+  active or passive, is queried as a hydrodynamic signal source against all
+  passive targets. Stable cell IDs exclude self-signals. The target tree is
+  built once, and MPI source replication is split into synchronized rounds
+  whose worst-case payload is bounded per rank. Rank zero prints one
+  `RICH_FULL_SOURCE_SWEEP` record after the sweep and scheduler commit. The
+  record includes the tick, physical time, minimum bin and timestep, interval,
+  source and passive-target counts, MPI rounds and source records, peak MPI
+  payload bytes, and maximum rank time;
+- normal neighbor-bin propagation exchanges one packed snapshot containing
+  stable ID, current bin, and source bin to MPI ghosts, then performs one
+  stable-ID owner-request exchange. Requests are applied only after the face
+  scan, so traversal order cannot create a same-event cascade. A reduced target
+  records its finest pending source bin. Full fixed-point closure is reserved
+  for initialization, restart, and AMR remapping;
 - convergence, positivity, retry, and event acceptance are collective;
 - the forced-active threshold and persistent-latch selector are validated
   collectively, and a restored latch must agree on every rank before physics;
 - explicit load-balancing events migrate scheduler, predictor, acceleration,
   conserved, and radiation state.
 
-## Regression controls
+## Runtime and regression controls
 
-Production setups should use the C++ API. Several regression cases also accept
-environment variables for focused testing:
+Production setups may set the full-source sweep interval through the C++ API or
+its runtime environment override. Other environment controls include production
+logging and focused-run or regression selectors:
 
 | Variable | Values or effect |
 |---|---|
 | `RICH_INDIVIDUAL_MODE` | `full` for one adaptive synchronized bin, `full-variable` for variable bins with full meshes, or `partial` for variable bins with `AutoPartial`. |
+| `RICH_INDIVIDUAL_FULL_SOURCE_SWEEP_INTERVAL` | Positive integer overriding `full_source_sweep_interval_minimum_steps`; default `128`. Values must agree on every MPI rank. |
+| `RICH_RUNTIME_LOG` | `summary` (default) for core blocks only, or `detailed` for source halves and routine diagnostic records. |
+| `RICH_RUNTIME_COLOR` | `auto` (default), `always`, or `never`; invalid or MPI-inconsistent values fail collectively. |
+| `NO_COLOR` | Any value disables label colors when `RICH_RUNTIME_COLOR=auto`. |
 | `RICH_TEST_SPARSE_INITIAL_BIN` | Makes one initial cell faster, producing active-passive faces immediately. |
 | `RICH_TEST_SPARSE_MAX_ER_CELL` | Test-only: makes the cell owning the global radiation reference maximum the sparse active cell. |
 | `RICH_TEST_INITIAL_BIN`, `RICH_TEST_MAXIMUM_BIN` | Override the power-of-two scheduler bounds in focused and calibration runs. |
 | `RICH_TEST_TIME_QUANTUM` | Overrides the exact integer-timeline quantum. |
 | `RICH_INDIVIDUAL_FORCE_ALL_ACTIVE_MIN_BIN` | Default off. Before physics, compare this threshold with the largest actual active-cell interval, measured in scheduler ticks. A qualifying partial event promotes every owned cell without changing `maximum_bin`. |
 | `RICH_INDIVIDUAL_FORCE_ALL_ACTIVE_LATCH` | `0` by default. With value `1` and a configured minimum bin, reaching the threshold sets a monotonic collective latch. The threshold event and every later partial event use the all-active overlay; naturally all-active events need no promotion. |
-| `RICH_VERIFY_PARTIAL_BUILD` | Enables full-versus-partial geometry parity. |
+| `RICH_INDIVIDUAL_ACTIVE_HILBERT_CACHE` | Unset selects active Hilbert balancing automatically for MPI individual-timestep runs with a Hilbert load balancer and a rebalance-capable physics step. `0` disables it. `1` requires it and rejects an incompatible setup. |
+| `RICH_INDIVIDUAL_ACTIVE_HILBERT_THRESHOLD` | Maximum active-cell max/mean ratio accepted without rebuilding; default `1.25`. The mean is floored at one active cell per rank so sparse events remain attainable. |
+| `RICH_INDIVIDUAL_ACTIVE_HILBERT_MAX_OWNED_SKEW` | Reject an active-only partition when its predicted total owned-cell max/mean exceeds this memory-safety cap; default `2.0`. Candidate cuts that leave any MPI rank empty are also rejected. |
+| `RICH_INDIVIDUAL_MASS_LOSS_FRACTION` | Default `0.25`. Mass-loss timestep limit: at activation a cell's next step is bounded so that, at the mass-loss rate measured over the interval that just closed, no more than this fraction of its mass can leave in one step. Complements the CFL, which bounds wave speeds but not the fraction of content a face flux may carry. |
+| `RICH_INDIVIDUAL_THERMAL_LOSS_FRACTION` | Default `0.5`. Same rule as the mass-loss limit applied to the internal energy: bounds the next step so that, at the thermal-loss rate measured over the closed interval, no more than this fraction of the cell's thermal energy can leave in one step. |
+| `RICH_INDIVIDUAL_WAKE_CHANGE_FRACTION` | Default `0.25`. Conserved-change wake: a passive cell whose accumulated absolute mass or energy change since activation exceeds this fraction of its activation value ends its interval at the next event. Rank 0 reports both guards per event as `INDIVIDUAL_CONSERVED_GUARD`. |
+| `RICH_INDIVIDUAL_MESH_DRIFT_FRACTION` | Default `0.25` (`0` = off; `0` until 2026-09-23, `0.2` until 2026-09-24). Rank 0 prints the effective value once as `INDIVIDUAL_GUARDS mesh_drift_fraction=... mass_loss_fraction=... thermal_loss_fraction=... wake_change_fraction=...`. Mesh-deformation limit: at activation a cell's next step is bounded so that its generator closes at most this fraction of the distance to any neighbouring generator: `f * d / closing` with the closing speed `-(w_i - w_j).(x_i - x_j)/d`, only for approaching pairs (since 2026-09-24; before, the full relative speed `|w_i - w_j|` limited, so separating and sliding pairs did too). Tangential sliding is not bounded by this guard. The CFL bounds gas motion across the faces that exist when an interval opens and says nothing about the mesh redrawing itself, so a face that grows late in a long interval is still charged the whole of it. The limit is floored at one sixteenth of the cell's own CFL limit so that a degenerate generator pair cannot drive it to zero. Rank 0 reports `mesh_drift_limited` per event. Needed even with bin enforcement: a RoundCells kick held over a long interval overshoots the centroid (gain chi c dt / R) and the next kicks can drive two generators through their separation within one legal interval; on the TDE restart that aborted without it (cell 50107), 0.2 passed the abort point (early robustness gate, t >= 0.180; the run to t = 0.46 is pending) at 0.61x the events and 0.94x the step wall over the matched window t = 0.1412-0.1747 (not whole-run ratios). |
+| `RICH_INDIVIDUAL_GUARD_FLOOR` | Default `apply` (unset, `1`, `on`, `true`, `yes`, `apply`; since 2026-09-25); `report`; `off` (`0`, `off`, `false`, `no`). Must agree on every rank. The mesh-drift, mass-loss and thermal-loss limits may shorten a cell's next step no further than the floor: the smallest hydro CFL/source limit over all owned cells, each cached from the cell's latest activation (or synchronized evaluation at a box growth), i.e. the hydro part of the step a global step would take. `report` computes and counts without changing any limit. Rank 0 prints `INDIVIDUAL_GUARD_FLOOR` for every event in which some guard limit was below the floor (floor, applied, owned cells with a cached value, guard limits below the floor per guard, the deepest example with position, density and speed) and `INDIVIDUAL_GUARD_FLOOR_SYNCHRONIZED` at box growths. Why: on the TDE (restart from t = 20.82) the thermal-loss guard held near-vacuum cells just inside the central sink radius at 0.02-0.05 of the global step and the neighbour closure spread that bin, so events came every 0.06 of the global step; with the floor the individual trial ran 4.4x faster (0.62x global against 0.14x) and its state at t = 20.9015 was closer to the global run's (mass-weighted density difference 1.2e-2 against 2.7e-2). On the crash-50107 restart (t = 0.141-0.20) the drift and mass guards never fell below the floor, so the mesh-drift protection is unchanged there. Not a bound on a fine cell next to a coarse neighbour: a global step would refresh both. |
+| `RICH_INDIVIDUAL_TRACE_CELL_IDS` | Default unset (off). Comma-separated stable cell IDs, identical on every rank. At every event whose mesh holds a listed cell as owned, rank 0 prints `INDIVIDUAL_CELL_TRACE` (interval, generator, centroid, width, gas velocity, the point velocity of the interval just closed and the one installed now), one `INDIVIDUAL_CELL_TRACE_FACE` per face (neighbour ID and owner, its generator and installed velocity, separation, relative and approach speed, face area), and `INDIVIDUAL_CELL_TRACE_LIMITS` for an activating traced cell (hydro limit, drift timescale `min |r_i - r_j| / |w_i - w_j|`, mass- and thermal-loss limits, the hydro step's final limit). Diagnostic only; set it in the submitting shell, not through `sbatch --export=VAR=...` (which splits on commas). |
+| `RICH_CFL_DECISION_TRACE` | Default unset (off). Global steps only: for every `CourantFriedrichsLewy` evaluation (two per global step, before and after the point-velocity fix; the second returns the accepted step) rank 0 prints `CFL_DECISION` with the time, the returned step, the binding criterion (`raw` CFL, `force` source limit, or `cap` from the previous `SetTimeStep`), the raw winner's stable ID, rank, width, effective radius, sound speed, speed, density and largest fluid-face normal speed, the cap's value and lifecycle (`cap_armed`, `cap_reduced`, `cap_cleared`), and whether every rank returned the same step and cap (`result_agree`, `cap_agree`). Collective; must agree on every rank. Neutral on the TDE runs checked (bitwise-identical snapshots). |
+| `RICH_INDIVIDUAL_RADIATION_INCREMENT_LIMIT` | Default `0` (off; `0.15` is the value of decision D5). Grey radiation only. Bounds a cell's next step to `applied_dt x f / r`, where `r` is the larger relative change of its internal and radiation energy density over the event's radiation update (both event-start values positive and finite, else the cell is skipped). Shortens only. Rank 0 reports `INDIVIDUAL_RADIATION_INCREMENT_LIMITED` (count, tightest ratio, one example cell) for every event in which it shortened at least one cell's limit. |
+| `RICH_RUNTIME_LOG=detailed` with the guards | Adds the tightest cell's ID and ratio to every `INDIVIDUAL_CONSERVED_GUARD` line, including `step_overruns`: the count of intervals that outlasted the timestep limit in force when they opened. A nonzero `step_overruns` means a computed limit was not honoured, which no additional limit can compensate for. |
+| `RICH_INDIVIDUAL_FIRST_HALF_FROM_CACHE` | Default on. Skip the interval-start mesh build when every rank's source term can apply its first half from cached per-cell state (a conservative force with every active cell's half kick pending). `0` builds it at every event as before. |
+| `RICH_INDIVIDUAL_ADAPTIVE_MODE` and `RICH_ADAPTIVE_*` | Adaptive integration mode: let the run switch between global and individual stepping from measured throughput and the potential-gain bound of the CFL distribution. See the section above for the parameters and their defaults. |
+| `RICH_INDIVIDUAL_PARTIAL_THRESHOLD_GLOBAL` | Default off. `1` judges the partial-build closure threshold (`partial_build_fraction`) on the whole mesh, summing the target and the owned cells over all ranks, instead of per rank. Measured worse on the TDE (job 10199567 against 10199440: 366 s against 146 s over the same 24 events): a partial build whose target covers most of one rank costs that rank about as much as a full build, and every rank waits for it. Kept for comparison only. |
+| `RICH_INDIVIDUAL_PARTIAL_BUILD_FRACTION` | Unset keeps the scheduler option `partial_build_fraction` (0.5). A number in (0, 1] overrides the per-rank closure threshold, so the cost of partial builds above the default can be measured; it must be the same on every rank. With `RICH_INDIVIDUAL_PERF_TRACE=1`, rank 0 prints one `INDIVIDUAL_MESH_BUILD` record per event-mesh build: mesh (`first_half` or `event`), result (`full` or `partial`) and reason, partial attempts, the threshold, the largest per-rank target before and after closure growth, the largest fraction of a rank's owned cells with that rank, and the maximum over ranks of the wall time (whole call, partial attempts, full build). |
+| `RICH_INDIVIDUAL_RADIATION_RETRY_LIMITS_BINS` | Default on: a rejected radiation candidate lowers the next hydro bin of the cells it touched (all active cells for a collective failure), which the neighbour closure then cascades. `0` leaves the bins to the physical radiation limiter and absorbs the rejection by sub-cycling the radiation inside the event, as the global scheme sub-steps a rejected candidate inside its step; the retry cooldown in the defect accounting still carries the accepted fraction to the next event. Values must agree on every MPI rank. |
+| `RICH_INDIVIDUAL_ADJACENCY_SEED` | Default on. Keep a per-cell face-adjacency cache from each event mesh and seed the partial target with the two-cell reconstruction shell before building, so the closure check rarely rebuilds. `0` disables both; values must agree on every MPI rank. |
+| `RICH_VERIFY_PARTIAL_BUILD` | Enables full-versus-partial geometry parity. The regression drivers read it at setup; the hydro step also honours it at every partial build, so a restart whose checkpoint carries `verify_partial_build = false` can still be verified. |
 | `RICH_TEST_POINT_COUNT` | Overrides the case size. |
 | `RICH_TEST_MAX_CYCLES` | Bounds focused runs by accepted events. |
 | `RICH_TEST_COMPTON_MATRIX_SAMPLES` | Reduces Compton precomputation only in focused tests. |
@@ -574,9 +1077,31 @@ physics and is not cleared by a retry or rollback. The latch does not lower
 `maximum_bin`; an uncapped bin-40 run can therefore continue to grow on
 all-active events.
 
-Individual-timestep checkpoint format version 7 stores the monotonic latch in
-every rank piece. Versions 1--6 reconstruct it as false. A restored true latch
-remains authoritative even when the runtime selector is absent. A pre-latch
+The active Hilbert cache uses the global set of nonempty active time bins as
+its key because one event can contain cells from several bins. Passive cells
+have zero balance weight. Only Hilbert cut coordinates are cached; every reuse
+is remeasured against current active cells and current geometry. A failed
+active-balance, owned-cell skew, or nonempty-rank safety check leaves ownership
+unchanged. An
+accepted change migrates primitives, conserved state, scheduler state, and
+registered radiation and gravity buffers through the normal stable-ID path,
+then rebuilds the event context before hydro, radiation, or gravity runs. The
+cache is transient and is reconstructed after restart. The production runner
+recovers all three active-Hilbert controls when a continuation environment
+omits them and rejects any mid-campaign change.
+
+Automatic selection leaves non-Hilbert or otherwise unsupported individual
+setups on their existing load-balancing path. Explicitly setting the cache
+selector to `1` instead reports the incompatibility before the first event.
+
+Individual-timestep checkpoint format version 10 stores the effective
+all-source sweep interval and the last completed sweep tick. Older checkpoints
+start a new interval at restart. Version 9 stores each cell's pending
+neighbor-propagation bin and restores older checkpoints with no pending source
+before applying full neighbor closure. Version 8 stores the mixed defect policy
+and the monotonic latch in every rank piece. Version 7 stores the latch with the
+legacy defect policy; versions 1--6 reconstruct the latch as false. A restored
+true latch remains authoritative even when the runtime selector is absent. A pre-latch
 checkpoint contains false, so its minimum-bin and latch policy must still be
 re-exported when the run continues. The production runner records both values
 per segment, recovers them from the preceding segment when a restart environment

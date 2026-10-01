@@ -2,9 +2,9 @@
 
 ## Handoff directive
 
-Implement this plan in the main RICH development thread. Robustness has priority over a larger nominal timestep or a small benchmark gain. Do not weaken a residual, positivity, rollback, or conservation-defect check merely to avoid a retry. Preserve unrelated work, live jobs, campaign roots, and binaries. Build and run only under the authority active in the main thread and the repository `AGENTS.md` rules.
+Implement this plan in the main RICH development thread. Robustness has priority over a larger nominal timestep or a small benchmark gain. Do not weaken residual, positivity, mapping, or rollback checks. Conservation-defect thresholds are synchronization targets rather than retry conditions. Preserve unrelated work, live jobs, campaign roots, and binaries. Build and run only under the authority active in the main thread and the repository `AGENTS.md` rules.
 
-The recommended production method is an active-only implicit solve with frozen passive Dirichlet data. Passive radiation state is not immediately reconciled after the solve. The omitted equal-and-opposite interface transfer is measured as a signed, absolute, and local conservation defect. A candidate is committed only after collective solver, physical-state, mapping, and defect checks pass. Excessive defect causes rollback and a safer retry. The conservative shadow-reservoir implementation remains available only as an experimental comparison path until its row/commit inconsistency is understood.
+The recommended production method is an active-only implicit solve with frozen passive Dirichlet data. Passive radiation state is not immediately reconciled after the solve. The omitted equal-and-opposite interface transfer is measured as a signed, absolute, and local conservation defect. A finite over-target defect is committed and requests targeted passive synchronization; it does not lower every active timestep. Invalid accounting still fails closed. The conservative shadow-reservoir implementation remains available only as an experimental comparison path until its row/commit inconsistency is understood.
 
 ## Priority order
 
@@ -137,23 +137,23 @@ W_{p,g} = \sum \max(q,0),
 P_{p,g} = \sum \max(-q,0).
 \]
 
-`W` measures energy implicitly borrowed from a passive group; `P` measures omitted deposits. Signed cancellation must never hide a large absolute or local defect. Use compensated local accumulation. Reduce one packed diagnostic record collectively after candidate solution and before any commit. Ranks with zero owned rows must participate. Select a representative offender deterministically by fraction, then stable IDs, group, and rank.
+`W` measures energy implicitly borrowed from a passive group; `P` measures omitted deposits. Signed cancellation must never hide a large absolute or local defect. Use compensated local accumulation. Reduce one packed diagnostic record collectively after candidate solution and before any commit. Ranks with zero owned rows must participate. Select a representative offender deterministically by fraction, then stable IDs, group, and rank. Finite over-target values request passive synchronization; only invalid accounting rejects.
 
-Normalize the local metric with the passive positive group extent at candidate start plus a documented scale-aware roundoff floor. A zero-energy passive group may not be treated as a finite reservoir: withdrawal above the roundoff envelope must reject.
+Normalize the local metric with the passive positive group extent at candidate start plus a documented scale-aware roundoff floor. A zero-energy passive group may not be treated as a finite reservoir: withdrawal above the roundoff envelope requests synchronization of the passive endpoint.
 
 Normalize global event and cumulative metrics with a declared physical scale, not an arbitrary `1.0`. Use the maximum of the initial positive global radiation extent, the candidate-start positive global radiation extent, and a finite RHS-derived floor. Record the denominator in diagnostics so ratios are reproducible.
 
-### Initial defect limits
+### Initial defect synchronization targets
 
-Treat these as conservative engineering defaults to validate, not constants claimed by the literature:
+Treat these as engineering synchronization defaults to validate, not constants claimed by the literature:
 
-- hard local passive withdrawal: at most `1e-2` of the passive cell-group positive extent;
-- soft event absolute-defect target: at most `1e-6` of the global radiation scale;
-- hard cumulative signed defect: at most `1e-4` of the declared global scale;
-- hard cumulative absolute defect: at most `1e-3` of the declared global scale;
+- local passive-withdrawal synchronization target: `1e-2` of the passive cell-group positive extent plus the scale-aware absolute floor;
+- event absolute-defect synchronization target: `1e-6` of the global radiation scale;
+- cumulative signed diagnostic reference: `1e-4` of the declared global scale;
+- cumulative absolute diagnostic reference: `1e-3` of the declared global scale;
 - nonfinite metrics or a nonpositive normalization scale: unconditional rejection.
 
-Keep the limits in one versioned internal configuration structure and print them once. Do not make acceptance depend only on an environment variable silently present on one rank. If clean reference replays show these limits are needlessly expensive, change them only with paired comparator evidence and retain the `1e-3` cumulative scale as the initial user-approved meaning of “small.”
+Keep the targets in one versioned internal configuration structure. Do not make synchronization depend only on an environment variable silently present on one rank. Retain the cumulative references for energy auditing; they do not reject a finite candidate or poison the complete active set's future timestep.
 
 ## Candidate state machine
 
@@ -167,7 +167,7 @@ Use one collective transaction state machine for serial and distributed-active b
 6. Validate coefficient epochs and active/canonical ID bijections.
 7. Validate raw group extents, aggregate `Erad`, material energy, temperature, density, Fleck factors, diagonals, Compton state, and all existing positivity rules.
 8. Compute active-passive defect metrics from the same face coefficients and final active unknowns.
-9. Pack all local failure bits and reduce once. If any rank fails, every rank rejects.
+9. Pack all local validity bits and defect metrics and reduce once. Invalid accounting rejects collectively; finite target crossings request passive synchronization.
 10. On rejection, restore the snapshot without allocating, discard pending repair/defect accounting, clear candidate-local buffers, and enter the retry policy.
 11. On acceptance, commit active state first, commit no passive radiation state in Dirichlet mode, then atomically append repair and defect accounting. Update `Erad` from the committed group sum. Only then expose the accepted candidate to timestep feedback.
 
@@ -175,22 +175,24 @@ No exception, early return, or remote failure may bypass rollback. Add a scoped 
 
 ### Retry and fallback order
 
-For a solver, positivity, or defect rejection:
+For a solver, positivity, mapping, or invalid-accounting rejection:
 
 1. Retry the candidate with half the interval fraction using the existing exact-fraction coverage logic.
-2. Attribute a local boundary-defect failure to both stable endpoint IDs in diagnostics. Cap the responsible active cell's future radiation timestep. If the scheduler already has a safe neighbor wakeup/bin-limiter interface, also lower the passive neighbor's next bin; do not mutate scheduler state before the candidate rollback is complete.
+2. Attribute failures to stable IDs where possible and cap only responsible cells when the failure is cell-local.
 3. After eight accepted candidates, allow the existing one-bin cooldown recovery. A new rejection resets the cooldown.
-4. If halving cannot advance the candidate end time, fail with a controlled, fully attributed error. Never commit an over-budget defect to make progress.
+4. If halving cannot advance the candidate end time, fail with a controlled, fully attributed error. Finite conservation-target crossings do not enter this retry path.
 
 Do not force an arbitrary all-active radiation solve in the middle of a partially advanced hydro event. That would advance passive radiation with incompatible hydro/primitive clocks unless the whole event is rolled back and those cells are genuinely promoted to the event. The existing mapped all-active fast path remains the fallback only when global activity and its current eligibility checks are actually satisfied.
 
-An optional later improvement is deterministic event-level neighbor promotion:
+An optional later exact-conservation experiment is deterministic event-level
+neighbor promotion:
 
 - take a whole-event snapshot before hydro/geometry work;
-- on a boundary-defect rejection, restore the entire event;
+- on a finite boundary-defect target crossing, restore the entire event instead
+  of committing the soft-error candidate;
 - shorten selected passive neighbor end ticks to the current event tick;
 - rebuild `IndividualStepContext`, `ActiveMeshView`, geometry, ownership maps, and all physics for the enlarged active set;
-- repeat monotonically until the defect gate passes or activity becomes global.
+- repeat monotonically until the target is met or activity becomes global.
 
 Do not implement a radiation-only one-cell halo that commits halo radiation ahead of passive hydro. Implicit diffusion can cross the entire domain in one solve; a fixed halo is not a generally valid causal boundary.
 
@@ -248,15 +250,15 @@ Gate: the code can classify a failure as CSR, face reconstruction, or physical p
 - Reuse existing active-passive RHS assembly.
 - Bypass all passive conserved commits only in Dirichlet mode.
 - Calculate pending defect metrics before commit.
-- Add collective gates, deterministic representative diagnostics, rollback-safe accounting, and checkpoint fields.
+- Add collective validity gates, deterministic representative diagnostics, rollback-safe accounting, targeted passive synchronization, and checkpoint fields.
 - Update documentation without claiming exact conservation.
 
-Gate: focused serial tests pass; passive radiation state is unchanged; active solution and defect match analytic results; rejected candidates restore bitwise-equivalent state and accounting.
+Gate: focused serial tests pass; passive radiation state is unchanged; active solution and defect match analytic results; over-target finite defects request passive synchronization; rejected invalid candidates restore bitwise-equivalent state and accounting.
 
 ### Phase 3: distributed correctness
 
 - Test identity and permuted mappings, wide IDs, remote active-passive faces, duplicate protection, zero-owned ranks, AMR/redistribution epoch invalidation, and restart immediately before/after an accepted Dirichlet candidate.
-- Verify one packed defect reduction and collective agreement on acceptance.
+- Verify one packed defect reduction, collective agreement on validity, and owner-local passive synchronization requests.
 
 Gate: 2-rank and small multi-rank tests pass under the same MPI/compiler family used by the benchmark. No deadlock, unmatched message, rank-local mode difference, or RSS regression.
 
@@ -275,7 +277,7 @@ Run in disjoint roots:
 
 Do not jump to bin 40. With the `1e-8` quantum, bin 30 is `10.73741824`; the prior uncapped run accumulated 274 radiation rejections and 501129 positivity-repair records. A larger outer timestep is not a speed or safety result.
 
-Gate: no unclassified rejection; every retry restores cleanly; cumulative defect is within budget; comparator metrics remain acceptable; throughput includes accepted substeps, retries, repairs, I/O, and synchronization.
+Gate: no unclassified rejection; every retry restores cleanly; cumulative defect is finite and reported against its diagnostic references; comparator metrics remain acceptable; throughput includes accepted substeps, retries, repairs, I/O, and synchronization.
 
 ### Phase 5: production proof
 
@@ -313,15 +315,17 @@ Add tests for all of the following:
 
 ## Acceptance requirements
 
-### Hard safety gates
+### Run acceptance gates
 
 - Exit code zero.
 - No nonfinite primitive, conserved, matrix, RHS, solution, residual, or defect value.
 - No raw negative accepted group/material extent beyond the already documented scale-aware roundoff repair policy.
 - True residual and componentwise/backward-error gates pass for every accepted solve.
 - Passive radiation state is unchanged in Dirichlet mode.
-- Cumulative signed and absolute defect limits pass, with complete history for the final run.
-- Positivity repair and defect accounting are finite, checkpointed, and below declared limits.
+- Cumulative signed and absolute defects are finite, checkpointed, reported
+  against their diagnostic references, and have complete history for the final
+  run.
+- Positivity repair accounting is finite and below its declared hard limits.
 - Rollback/halving, Compton retry, restart, AMR, redistribution, mapping, and zero-owned-rank tests pass.
 - Initial and final HDF5/PVTU outputs are nonempty and contain exactly 128 H5 and 128 VTU pieces per endpoint.
 - Configuration, output count, stopping rule, tolerances, physics, and endpoint work are identical within each Global/AutoPartial pair.

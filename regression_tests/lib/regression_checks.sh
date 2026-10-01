@@ -412,6 +412,70 @@ check_amr_random_case() {
     return 0
 }
 
+# amr_random with RICH_TEST_INDIVIDUAL_AMR=1 RICH_TEST_PARTIAL_MESH_BEFORE_AMR=1:
+# AMR3D::ApplyIndividual on a partial mesh must rebuild from the committed
+# generators (context.generator_points), never from the cell centroids the
+# context carries as gravity sources; every surviving cell keeps its generator.
+check_amr_random_individual_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/amr_random_metrics.txt"
+    local mode moved refined removed remap conservation conservation_limit pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale amr_random_metrics.txt"
+        return 1
+    fi
+
+    mode=$(awk '$1 == "mode" { print $2 }' "$metrics_file")
+    moved=$(awk '$1 == "individual_generators_moved" { print $2 }' "$metrics_file")
+    refined=$(awk '$1 == "actual_refined" { print $2 }' "$metrics_file")
+    removed=$(awk '$1 == "actual_removed" { print $2 }' "$metrics_file")
+    remap=$(awk '$1 == "scheduler_remap_valid" { print $2 }' "$metrics_file")
+    conservation=$(awk '$1 == "max_conservation_error" { print $2 }' "$metrics_file")
+    conservation_limit=$(awk '$1 == "conservation_threshold" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$mode" || -z "$moved" || -z "$refined" || -z "$removed" || -z "$remap" ||
+          -z "$conservation" || -z "$conservation_limit" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse individual AMR random metrics"
+        return 1
+    fi
+    if [[ "$mode" != "serial-individual" && "$mode" != "mpi-individual" ]]; then
+        set_check_msg "amr_random_individual mode must be serial-individual or mpi-individual, got ${mode}"
+        return 1
+    fi
+    if [[ "$moved" != "0" ]]; then
+        set_check_msg "individual AMR moved ${moved} surviving generators (mesh rebuilt from non-generator points)"
+        return 1
+    fi
+    if [[ "$refined" == "0" || "$removed" == "0" ]]; then
+        set_check_msg "individual AMR changed no topology (refined=${refined}, removed=${removed})"
+        return 1
+    fi
+    if [[ "$remap" != "1" ]]; then
+        set_check_msg "individual AMR scheduler remap invalid"
+        return 1
+    fi
+    if ! is_finite_number "$conservation" ||
+       ! awk -v e="$conservation" -v l="$conservation_limit" 'BEGIN { exit !(e <= l) }'; then
+        set_check_msg "individual AMR conservation error ${conservation} exceeds ${conservation_limit}"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "amr_random_individual test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "individual AMR generator check passed (${mode}, refined=${refined}, removed=${removed})"
+    return 0
+}
+
 check_voronoi_volume_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
@@ -461,6 +525,91 @@ check_voronoi_volume_case() {
     fi
 
     set_check_msg "Voronoi volume check passed (rel_error=${rel_error})"
+    return 0
+}
+
+check_segmented_hilbert_ownership_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/segmented_hilbert_ownership_metrics.txt"
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale segmented_hilbert_ownership_metrics.txt"
+        return 1
+    fi
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "segmented_hilbert_ownership reported pass=${pass_flag:-missing}"
+        return 1
+    fi
+    set_check_msg "segmented_hilbert_ownership pass"
+    return 0
+}
+
+check_suppressed_exchange_ghosts_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/suppressed_exchange_ghosts_metrics.txt"
+    local pass_flag
+    local mode
+    local key
+    local value
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale suppressed_exchange_ghosts_metrics.txt"
+        return 1
+    fi
+
+    mode=$(awk '$1 == "mode" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    if [[ -z "$mode" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse suppressed exchange ghost metrics"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "suppressed_exchange_ghosts reported pass=${pass_flag}"
+        return 1
+    fi
+
+    for key in exchanged_volume_mismatches suppressed_volume_mismatches suppressed_again_volume_mismatches; do
+        value=$(awk -v k="$key" '$1 == k { print $2 }' "$metrics_file")
+        if [[ "$value" != "0" ]]; then
+            set_check_msg "suppressed_exchange_ghosts ${key}=${value} (expected 0)"
+            return 1
+        fi
+    done
+    for key in suppressed_max_volume_rel_error suppressed_again_max_volume_rel_error; do
+        value=$(awk -v k="$key" '$1 == k { print $2 }' "$metrics_file")
+        if ! is_finite_number "$value"; then
+            set_check_msg "suppressed_exchange_ghosts ${key} is not finite"
+            return 1
+        fi
+        if ! awk -v r="$value" -v t="${SUPPRESSED_EXCHANGE_MAX_VOLUME_REL_ERROR:-1e-8}" 'BEGIN { exit !(r < t) }'; then
+            set_check_msg "suppressed_exchange_ghosts ${key} exceeds threshold (${value})"
+            return 1
+        fi
+    done
+
+    # The MPI run must actually switch the ghost-query routing to the
+    # position-based agent; otherwise the case did not exercise the fix.
+    if [[ "$mode" == "mpi" ]] && ! grep -q "routing sphere-rank queries by actual point positions" "$stdout_log"; then
+        set_check_msg "suppressed_exchange_ghosts did not switch to position-based ghost routing"
+        return 1
+    fi
+
+    set_check_msg "owned cells match the serial reference after suppressed-exchange rebuilds"
     return 0
 }
 
@@ -2055,12 +2204,38 @@ check_fmm_gravity_mpi_case() {
         set_check_msg "distributed FMM individual-target evaluation failed"
         return 1
     fi
+    local resample_domain_pass resample_debt_pass
+    local resample_frozen resample_resampled resample_debt_before resample_debt_after
+    resample_domain_pass=$(awk '$1 == "resample_domain_pass" { print $2 }' "$metrics_file")
+    resample_debt_pass=$(awk '$1 == "resample_debt_pass" { print $2 }' "$metrics_file")
+    resample_frozen=$(awk '$1 == "resample_frozen_imbalance" { print $2 }' "$metrics_file")
+    resample_resampled=$(awk '$1 == "resample_resampled_imbalance" { print $2 }' "$metrics_file")
+    resample_debt_before=$(awk '$1 == "resample_debt_imbalance_before" { print $2 }' "$metrics_file")
+    resample_debt_after=$(awk '$1 == "resample_debt_imbalance_after" { print $2 }' "$metrics_file")
+    if [[ "$resample_domain_pass" != "1" ]]; then
+        set_check_msg "distributed FMM gravity-owner re-sampling after domain growth failed (frozen_imbalance=${resample_frozen}, resampled_imbalance=${resample_resampled})"
+        return 1
+    fi
+    if [[ "$resample_debt_pass" != "1" ]]; then
+        set_check_msg "distributed FMM straggler-debt re-sampling failed (imbalance ${resample_debt_before} -> ${resample_debt_after})"
+        return 1
+    fi
+    local fmm_flag fmm_flag_value
+    for fmm_flag in lattice_resample_pass weighted_sampler_pass \
+                    communicator_isolation_pass environment_rules_pass \
+                    structural_window_pass; do
+        fmm_flag_value=$(awk -v key="$fmm_flag" '$1 == key { print $2 }' "$metrics_file")
+        if [[ "$fmm_flag_value" != "1" ]]; then
+            set_check_msg "distributed FMM ${fmm_flag} failed (value '${fmm_flag_value}')"
+            return 1
+        fi
+    done
     if [[ "$pass_flag" != "1" ]]; then
         set_check_msg "distributed FMM gravity test reported pass=0"
         return 1
     fi
 
-    set_check_msg "Distributed FMM gravity reuse passed (ranks=${ranks}, scaled_error=${max_scaled_error})"
+    set_check_msg "Distributed FMM gravity reuse passed (ranks=${ranks}, scaled_error=${max_scaled_error}, resample imbalance frozen=${resample_frozen} resampled=${resample_resampled}, debt ${resample_debt_before}->${resample_debt_after})"
     return 0
 }
 
@@ -2744,5 +2919,170 @@ check_compton_marshak_wave_diffusion_no_compton_case() {
     fi
 
     set_check_msg "Marshak diffusion-without-Compton profiles passed"
+    return 0
+}
+
+check_individual_box_growth_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/individual_box_growth_metrics.txt"
+    local mode pass_flag growths min_growths growth_checks_ok reached_end
+    local events_after min_events_after noop_changed noop_not_due
+    local mass_residual mass_drift mass_drift_limit growth_lines bad_lines
+    local drift_tightened gravity
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale individual_box_growth_metrics.txt"
+        return 1
+    fi
+
+    mode=$(awk '$1 == "mode" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    growths=$(awk '$1 == "growths" { print $2 }' "$metrics_file")
+    min_growths=$(awk '$1 == "min_growths" { print $2 }' "$metrics_file")
+    growth_checks_ok=$(awk '$1 == "growth_checks_ok" { print $2 }' "$metrics_file")
+    reached_end=$(awk '$1 == "reached_end" { print $2 }' "$metrics_file")
+    events_after=$(awk '$1 == "events_after_first_growth" { print $2 }' "$metrics_file")
+    min_events_after=$(awk '$1 == "min_events_after_growth" { print $2 }' "$metrics_file")
+    noop_changed=$(awk '$1 == "noop_changed" { print $2 }' "$metrics_file")
+    noop_not_due=$(awk '$1 == "noop_checks_not_due" { print $2 }' "$metrics_file")
+    mass_residual=$(awk '$1 == "max_mass_residual" { print $2 }' "$metrics_file")
+    mass_drift=$(awk '$1 == "max_mass_drift" { print $2 }' "$metrics_file")
+    mass_drift_limit=$(awk '$1 == "mass_drift_limit" { print $2 }' "$metrics_file")
+
+    if [[ "$pass_flag" != "0" && "$pass_flag" != "1" ]]; then
+        set_check_msg "individual_box_growth pass flag missing or invalid"
+        return 1
+    fi
+    if [[ -z "$mode" || -z "$growths" || -z "$min_growths" || -z "$growth_checks_ok" ||
+          -z "$reached_end" || -z "$events_after" || -z "$min_events_after" ||
+          -z "$noop_changed" || -z "$noop_not_due" || -z "$mass_residual" ||
+          -z "$mass_drift" || -z "$mass_drift_limit" ]]; then
+        set_check_msg "failed to parse individual_box_growth metrics"
+        return 1
+    fi
+    if [[ "$mode" != "serial" && "$mode" != "mpi" ]]; then
+        set_check_msg "individual_box_growth mode must be serial or mpi"
+        return 1
+    fi
+    if ! is_finite_number "$mass_residual" || ! is_finite_number "$mass_drift"; then
+        set_check_msg "individual_box_growth conservation metric is not finite"
+        return 1
+    fi
+    if [[ "$reached_end" != "1" ]]; then
+        set_check_msg "individual_box_growth did not reach its end time"
+        return 1
+    fi
+    if (( growths < 1 || growths < min_growths )); then
+        set_check_msg "individual_box_growth grew ${growths} times (need ${min_growths})"
+        return 1
+    fi
+    if [[ "$growth_checks_ok" != "1" ]]; then
+        set_check_msg "individual_box_growth per-growth checks failed"
+        return 1
+    fi
+    if (( events_after < min_events_after )); then
+        set_check_msg "individual_box_growth ran ${events_after} events after the first growth (need ${min_events_after})"
+        return 1
+    fi
+    if (( noop_changed != 0 || noop_not_due < 1 )); then
+        set_check_msg "individual_box_growth zero-growth path failed (changed=${noop_changed}, not_due=${noop_not_due})"
+        return 1
+    fi
+    if ! awk -v r="$mass_residual" 'BEGIN { exit !(r <= 1e-10) }'; then
+        set_check_msg "individual_box_growth mass bookkeeping residual ${mass_residual} > 1e-10"
+        return 1
+    fi
+    if ! awk -v d="$mass_drift" -v l="$mass_drift_limit" 'BEGIN { exit !(d <= l) }'; then
+        set_check_msg "individual_box_growth mass drift ${mass_drift} > ${mass_drift_limit}"
+        return 1
+    fi
+    growth_lines=$(grep -c '^RICH_TEST_BOX_GROWTH index=' "$stdout_log" 2>/dev/null || true)
+    bad_lines=$(grep -E '^RICH_TEST_BOX_GROWTH index=' "$stdout_log" 2>/dev/null | grep -vc ' ok=1$' || true)
+    if [[ "${growth_lines:-0}" != "$growths" ]]; then
+        set_check_msg "individual_box_growth stdout has ${growth_lines:-0} RICH_TEST_BOX_GROWTH lines, metrics report ${growths}"
+        return 1
+    fi
+    if [[ "${bad_lines:-0}" != "0" ]] || grep -q '^RICH_TEST_BOX_GROWTH_FAILURE' "$stdout_log" 2>/dev/null; then
+        set_check_msg "individual_box_growth stdout reports a failed growth"
+        return 1
+    fi
+    # Rebuilt-mesh limits (the test's own CFL/source/drift expectation): the
+    # drift guard must have tightened some cell.
+    drift_tightened=$(awk '$1 == "total_drift_tightened" { print $2 }' "$metrics_file")
+    gravity=$(awk '$1 == "gravity" { print $2 }' "$metrics_file")
+    if [[ -n "$gravity" ]]; then
+        if [[ -z "$drift_tightened" ]] || (( drift_tightened < 1 )); then
+            set_check_msg "individual_box_growth drift guard tightened no cell after growth"
+            return 1
+        fi
+    fi
+    # Negative-control runs (stale acceleration cache) must fail.
+    if [[ "$(awk '$1 == "stale_cache_control" { print $2 }' "$metrics_file")" == "1" ]]; then
+        set_check_msg "individual_box_growth negative control run (stale cache): expected to fail"
+        return 1
+    fi
+    # Exactly one verified event after every growth: the metrics count, and one
+    # RICH_TEST_BOX_GROWTH_NEXT_EVENT line per growth, each finite; with gravity
+    # each must show a first half kicked from the refreshed cache on every rank
+    # (explicit counters) and no first-half mesh (a numeric, finite
+    # first_mesh_max below 1e-4 s in the event's INDIVIDUAL_HYDRO_PHASE_TIMING).
+    local next_reported next_cache_ok next_lines next_bad
+    next_reported=$(awk '$1 == "next_events_reported" { print $2 }' "$metrics_file")
+    next_cache_ok=$(awk '$1 == "next_events_cache_ok" { print $2 }' "$metrics_file")
+    if [[ "$next_reported" != "$growths" || "$next_cache_ok" != "1" ]]; then
+        set_check_msg "individual_box_growth next-event verification incomplete (reported=${next_reported:-missing}, growths=${growths}, cache_ok=${next_cache_ok:-missing})"
+        return 1
+    fi
+    next_lines=$(grep -c '^RICH_TEST_BOX_GROWTH_NEXT_EVENT index=' "$stdout_log" 2>/dev/null || true)
+    next_bad=$(awk -v gravity="$gravity" '
+        /^RICH_TEST_BOX_GROWTH_NEXT_EVENT index=/ {
+            delete f
+            for (i = 2; i <= NF; ++i) { n = index($i, "="); if (n > 0) f[substr($i, 1, n - 1)] = substr($i, n + 1) }
+            ok = (f["finite"] == "1")
+            if (gravity == "1")
+                ok = ok && f["cache_ok"] == "1" && f["geometry_first_half_calls"] == "0" &&
+                    f["pending_violations"] == "0" && f["cache_mismatched"] == "0" &&
+                    f["cache_matched"] ~ /^[0-9]+$/ && f["cache_matched"] + 0 > 0 &&
+                    f["cache_matched"] == f["cached_kicks"] && f["cache_unmatched"] == "0" &&
+                    f["min_rank_cache_first_half_calls"] ~ /^[0-9]+$/ &&
+                    f["min_rank_cache_first_half_calls"] + 0 >= 1
+            if (!ok) bad++
+        }
+        END { print bad + 0 }' "$stdout_log")
+    if [[ "${next_lines:-0}" != "$growths" || "${next_bad:-1}" != "0" ]]; then
+        set_check_msg "individual_box_growth next-event lines: ${next_lines:-0} for ${growths} growths, ${next_bad:-?} failing"
+        return 1
+    fi
+    if [[ "$gravity" == "1" ]]; then
+        local first_mesh
+        first_mesh=$(awk '
+            /^RICH_TEST_BOX_GROWTH index=/ { waiting = 1; next }
+            waiting && /^INDIVIDUAL_HYDRO_PHASE_TIMING/ {
+                v = ""
+                for (i = 1; i <= NF; ++i)
+                    if ($i ~ /^first_mesh_max=/) v = substr($i, index($i, "=") + 1)
+                seen++
+                if (v !~ /^[0-9]+(\.[0-9]*)?([eE][-+]?[0-9]+)?$/ || !(v + 0 < 1e-4)) bad++
+                waiting = 0
+            }
+            END { printf "%d %d\n", seen + 0, bad + 0 }' "$stdout_log")
+        if [[ "${first_mesh%% *}" != "$growths" || "${first_mesh##* }" != "0" ]]; then
+            set_check_msg "individual_box_growth gravity: first-half mesh timing after growth missing, non-numeric or nonzero (seen/bad=${first_mesh}, growths=${growths})"
+            return 1
+        fi
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "individual_box_growth test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "Individual box growth passed (${mode}, growths=${growths}, events_after_first_growth=${events_after}, mass_residual=${mass_residual})"
     return 0
 }

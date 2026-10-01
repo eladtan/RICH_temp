@@ -3680,6 +3680,20 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
                 matrix_builder.BuildMatrix(
                     tess, A, A_indeces, cells, dt, b, sub_x, time);
         }
+        // Collective: an uncertified matrix is rejected before any
+        // preconditioner divides by its diagonal.
+        if(matrix_builder.MatrixBuildRejected())
+        {
+            good_end = false;
+            total_iters = 0;
+            sub_x.resize(Nlocal);
+            sub_x_solution = sub_x;
+#ifdef RICH_MPI
+            MPI_exchange_data(tess, sub_x, true, slice);
+            MPI_exchange_data(tess, sub_x_solution, true, slice);
+#endif
+            return sub_x;
+        }
         unsigned int fixed16_block_stencil_fallback_mask = 0u;
         double fixed16_block_stencil_setup_seconds = 0.0;
         bool fixed16_block_stencil_fallback_rebuilt_csr = false;

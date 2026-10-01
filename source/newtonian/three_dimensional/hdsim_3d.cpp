@@ -9,6 +9,7 @@
 #include <MeshDecomposer3D/load_balancing/HilbertLoadBalancer.hpp>
 #endif
 #include "3D/tessellation/voronoi/exception/MadVoroException.hpp"
+#include "3D/tessellation/Voronoi3D.hpp"
 #include "newtonian/three_dimensional/simulation/ActiveMeshView.hpp"
 #include "spherical_symmetry/SphericalShellProjector3D.hpp"
 #include <algorithm>
@@ -17,6 +18,7 @@
 #include <chrono>
 #include <cmath>
 #include <cstdlib>
+#include <cstdint>
 #include <iomanip>
 #include <cstring>
 #include <limits>
@@ -449,6 +451,28 @@ namespace
 		size_t reexpansions = 0;
 		double partial_seconds = 0;
 		double full_seconds = 0;
+		// Closure bookkeeping per attempt (the closure round after build k,
+		// k = 1..4, the last slot also taking later ones), this rank's counts;
+		// summed over ranks in the record.  Slots: new targets added locally at
+		// depth 1 and 2, added at depth 1 and 2 at their owner on a remote
+		// request, added as batched supports, local and remote depth
+		// decreases of existing targets, batch calls without a valid record,
+		// batched neighbours skipped as remote, and whether this rank added any.
+		// This rank's seconds by stage, summed over the partial attempts (RICH_INDIVIDUAL_PERF_TRACE): the seven
+		// MadVoro stages of BuildPartiallyParallel (prepare, Delaunay, point tree, radii, range finder, ghost
+		// points, Voronoi), the ActiveMeshView mapping, and the ghost-point rounds.
+		static constexpr size_t madvoro_stages = 7;
+		double stage_seconds[madvoro_stages] = {};
+		double mapping_seconds = 0;
+		double ghost_rounds = 0;
+		static constexpr size_t closure_slots = 4;
+		static constexpr size_t closure_counts = 10;
+		double closure[closure_slots][closure_counts] = {};
+		double* closureRound(void)
+		{
+			size_t const slot = attempts == 0 ? 0 : std::min(attempts, closure_slots) - 1;
+			return closure[slot];
+		}
 	};
 
 	// Rank-0 record per individual event-mesh build (RICH_INDIVIDUAL_PERF_TRACE):
@@ -457,6 +481,25 @@ namespace
 	// rank's owned cells with that rank), the partial attempts, and the
 	// maximum over ranks of the wall time: whole call, partial attempts, full
 	// build.  Result, reason and attempts are decided collectively.
+	// Moves each adjacency record to the slot of the cell with its ID (records
+	// of removed cells are dropped, new cells start empty).  Local, O(cells).
+	template<class Record>
+	void RealignRecordsById(vector<Record>& records, vector<ComputationalCell3D> const& cells, size_t count)
+	{
+		std::unordered_map<size_t, Record> by_id;
+		by_id.reserve(records.size());
+		for(Record& record : records)
+			if(record.cell_id != std::numeric_limits<size_t>::max())
+				by_id.emplace(record.cell_id, std::move(record));
+		records.assign(count, Record());
+		for(size_t index = 0; index < count && index < cells.size(); ++index)
+		{
+			auto const found = by_id.find(cells[index].ID);
+			if(found != by_id.end())
+				records[index] = std::move(found->second);
+		}
+	}
+
 	void ReportIndividualMeshBuild(IndividualMeshBuildRecord const& record,
 		char const* stage, double threshold_fraction, size_t canonical_count,
 		size_t active_count, double seconds)
@@ -485,6 +528,63 @@ namespace
 		MPI_Allreduce(MPI_IN_PLACE, sums, 3, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
 		MPI_Allreduce(MPI_IN_PLACE, &hottest, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
 #endif
+		// Per-rank split of this call: MadVoro stages, the rest of the build calls, the view mapping, and the
+		// closure/exchange work between builds (the call's time minus the build calls and the mapping); maxima,
+		// sums (for means) and the split of the rank with the most MadVoro compute (Delaunay, tree, radii,
+		// Voronoi).
+		constexpr size_t split_count = IndividualMeshBuildRecord::madvoro_stages + 4;
+		double split[split_count] = {};
+		double madvoro_sum = 0;
+		for(size_t stage = 0; stage < IndividualMeshBuildRecord::madvoro_stages; ++stage)
+		{
+			split[stage] = record.stage_seconds[stage];
+			madvoro_sum += record.stage_seconds[stage];
+		}
+		// Residuals are signed (not clamped) so that an accounting error shows.  The closure residual also holds
+		// untimed full/parity-path mappings when those run (full_seconds is reported separately).
+		split[IndividualMeshBuildRecord::madvoro_stages] = record.partial_seconds - madvoro_sum;
+		split[IndividualMeshBuildRecord::madvoro_stages + 1] = record.mapping_seconds;
+		split[IndividualMeshBuildRecord::madvoro_stages + 2] =
+			seconds - record.partial_seconds - record.full_seconds - record.mapping_seconds;
+		split[IndividualMeshBuildRecord::madvoro_stages + 3] = record.ghost_rounds;
+		double split_max[split_count];
+		double split_sum[split_count];
+		std::copy(split, split + split_count, split_max);
+		std::copy(split, split + split_count, split_sum);
+		struct
+		{
+			double value;
+			int rank;
+		} busiest = {split[1] + split[2] + split[3] + split[6], 0};
+		double busiest_split[split_count];
+		std::copy(split, split + split_count, busiest_split);
+		struct
+		{
+			double value;
+			int rank;
+		} slowest = {seconds, 0};
+		double slowest_split[split_count];
+		std::copy(split, split + split_count, slowest_split);
+#ifdef RICH_MPI
+		slowest.rank = rank;
+		MPI_Allreduce(MPI_IN_PLACE, &slowest, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+		MPI_Bcast(slowest_split, static_cast<int>(split_count), MPI_DOUBLE, slowest.rank, MPI_COMM_WORLD);
+		busiest.rank = rank;
+		MPI_Allreduce(MPI_IN_PLACE, split_max, static_cast<int>(split_count), MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+		MPI_Allreduce(MPI_IN_PLACE, split_sum, static_cast<int>(split_count), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+		MPI_Allreduce(MPI_IN_PLACE, &busiest, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+		MPI_Bcast(busiest_split, static_cast<int>(split_count), MPI_DOUBLE, busiest.rank, MPI_COMM_WORLD);
+		int rank_count = 1;
+		MPI_Comm_size(MPI_COMM_WORLD, &rank_count);
+#else
+		int const rank_count = 1;
+#endif
+		double closure[IndividualMeshBuildRecord::closure_slots][IndividualMeshBuildRecord::closure_counts];
+		std::copy(&record.closure[0][0], &record.closure[0][0] + sizeof(closure) / sizeof(double), &closure[0][0]);
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, &closure[0][0], static_cast<int>(sizeof(closure) / sizeof(double)), MPI_DOUBLE,
+			MPI_SUM, MPI_COMM_WORLD);
+#endif
 		if(rank != 0)
 			return;
 		string const stage_text(stage);
@@ -509,8 +609,24 @@ namespace
 			<< " fraction_final_max_rank=" << hottest.rank
 			<< " seconds_max=" << maxima[4]
 			<< " partial_seconds_max=" << maxima[5]
-			<< " full_seconds_max=" << maxima[6]
-			<< std::endl;
+			<< " full_seconds_max=" << maxima[6];
+		// stages=name:max/mean/busiest over the call; ghost rounds summed over the attempts.
+		static char const* const split_names[split_count] = {"prepare", "delaunay", "tree", "radii", "range",
+			"ghosts", "voronoi", "build_other", "mapping", "closure", "ghost_rounds"};
+		std::cout << " busiest_rank=" << busiest.rank << " slowest_rank=" << slowest.rank
+			<< " full_seconds_max=" << maxima[6] << " stages=";
+		for(size_t item = 0; item < split_count; ++item)
+			std::cout << (item > 0 ? "," : "") << split_names[item] << ":" << split_max[item] << "/"
+				<< split_sum[item] / rank_count << "/" << busiest_split[item] << "/" << slowest_split[item];
+		// closure_a<k>=local_d1,local_d2,remote_d1,remote_d2,batch,promote_local,
+		// promote_remote,batch_invalid,batch_remote_skipped,ranks_adding
+		for(size_t slot = 0; slot < IndividualMeshBuildRecord::closure_slots && slot < record.attempts; ++slot)
+		{
+			std::cout << " closure_a" << slot + 1 << "=";
+			for(size_t count = 0; count < IndividualMeshBuildRecord::closure_counts; ++count)
+				std::cout << (count > 0 ? "," : "") << static_cast<unsigned long long>(closure[slot][count]);
+		}
+		std::cout << std::endl;
 	}
 
 	// Adaptive per-rank closure threshold.  After every event-mesh build: the
@@ -837,8 +953,11 @@ namespace
 		double volume = 0;
 		double width = 0;
 		Vector3D centroid;
-		// (neighbour identity, area, face centroid), sorted by identity then area.
-		vector<std::tuple<std::pair<int, size_t>, double, Vector3D> > faces;
+		// (neighbour identity, area, face centroid, unit normal), stably sorted by identity only; faces sharing an
+		// identity (e.g. physical boundary faces) are matched by nearest face centre in the comparison.
+		vector<std::tuple<std::pair<int, size_t>, double, Vector3D, Vector3D> > faces;
+		// Any non-finite volume, width, centroid, area, face centre, or a normal without a finite positive length.
+		bool invalid = false;
 	};
 
 	vector<IdentifiedCellGeometry> CaptureIdentifiedGeometry(Tessellation3D& tess,
@@ -861,23 +980,60 @@ namespace
 			cell.centroid = tess.GetCellCM(local);
 			tess.GetNeighbors(local, neighbors);
 			face_vec const& faces = tess.GetCellFaces(local);
+			auto finite = [](Vector3D const& v) { return std::isfinite(v.x) && std::isfinite(v.y) && std::isfinite(v.z); };
+			cell.invalid = !(std::isfinite(cell.volume) && std::isfinite(cell.width) && cell.width > 0 &&
+				finite(cell.centroid));
 			for(size_t i = 0; i < faces.size() && i < neighbors.size(); ++i)
+			{
+				// Outward from this cell: the face's own orientation follows its
+				// neighbour order, which two builds need not share.
+				Vector3D normal = tess.GetFaceNeighbors(faces[i]).first == local ?
+					tess.Normal(faces[i]) : -1.0 * tess.Normal(faces[i]);
+				// Scale before normalising so that large finite components cannot overflow the norm.
+				double const scale = std::max({std::abs(normal.x), std::abs(normal.y), std::abs(normal.z)});
+				bool normal_valid = std::isfinite(scale) && scale > 0;
+				if(normal_valid)
+				{
+					normal *= 1.0 / scale;
+					double const length = abs(normal);
+					normal_valid = std::isfinite(length) && length > 0;
+					if(normal_valid)
+						normal *= 1.0 / length;
+				}
+				double const area = tess.GetArea(faces[i]);
+				Vector3D const centre = tess.FaceCM(faces[i]);
+				cell.invalid = cell.invalid || !normal_valid || !std::isfinite(area) || !finite(centre);
 				cell.faces.emplace_back(neighbors[i] < identities.size() ? identities[neighbors[i]] :
-					std::make_pair(-1, ActiveMeshView::invalidIndex()), tess.GetArea(faces[i]), tess.FaceCM(faces[i]));
-			std::sort(cell.faces.begin(), cell.faces.end(), [](auto const& a, auto const& b)
-				{return std::get<0>(a) != std::get<0>(b) ? std::get<0>(a) < std::get<0>(b) : std::get<1>(a) < std::get<1>(b);});
+					std::make_pair(-1, ActiveMeshView::invalidIndex()), area, centre, normal);
+			}
+			std::stable_sort(cell.faces.begin(), cell.faces.end(), [](auto const& a, auto const& b)
+				{return std::get<0>(a) < std::get<0>(b);});
 			result.push_back(std::move(cell));
 		}
 		return result;
 	}
 
-	// Collective: compares the kept and the rebuilt mesh cell by cell and prints
-	// one rank-0 line; topology must match exactly, geometry is measured.
-	void ReportReexpandComparison(vector<IdentifiedCellGeometry> const& kept,
+	// Collective: compares the kept and the rebuilt mesh cell by cell, prints one
+	// rank-0 line, and returns whether every rank's cells agree.  Topology must
+	// match exactly; with w the cell width, the geometry must satisfy
+	// |dV| <= 1e-12 max(V, w^3), |dA| <= 1e-12 max(A, w^2), a centroid or face
+	// centre shift <= 1e-12 w + 64 DBL_EPSILON max(|x_a|, |x_b|) (coordinate
+	// round-off: TDE cells at |x| ~ 1e3 with w ~ 0.05 differ by ~1.5e-12 w
+	// between two builds), and a face-normal angle <= 1e-10 rad (outward
+	// normals; opposite ones fail).  Any non-finite value fails.  The line
+	// also reports the maxima against the provisional A1 opt-in limits.
+	bool CheckReexpandComparison(vector<IdentifiedCellGeometry> const& kept,
 		vector<IdentifiedCellGeometry> const& rebuilt, std::uint64_t event_tick)
 	{
-		double worst[4] = {0, 0, 0, 0}; // volume, area (relative), cell and face centroid (/width)
-		unsigned long long counts[3] = {kept.size(), 0, 0}; // cells, topology mismatches, faces
+		double worst[5] = {0, 0, 0, 0, 0}; // ratios to the tolerances: volume, area, centroid, face centre, normal
+		// The same maxima against the provisional A1 opt-in limits (astra, 2026-09-29): |dV| <= 1e-8 max(|V|, w^3),
+		// |dA| <= 1e-7 max(|A|, w^2), centroid and face-centre shifts <= 1e-8 w + 64 DBL_EPSILON max(|x_a|, |x_b|).
+		double provisional[4] = {0, 0, 0, 0};
+		// cells, topology mismatches, faces, non-finite, cells and faces over any tolerance
+		unsigned long long counts[6] = {kept.size(), 0, 0, 0, 0, 0};
+		// Worst-area face, for the conditioning diagnosis: ratio, area kept, area rebuilt, w, V, smallest face
+		// area of the cell / w^2, face count, cell centroid, |dV| / max(V, w^3), neighbour rank.
+		double worst_face[12] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
 		bool const same_cells = kept.size() == rebuilt.size();
 		for(size_t c = 0; c < kept.size(); ++c)
 		{
@@ -888,36 +1044,149 @@ namespace
 				continue;
 			}
 			IdentifiedCellGeometry const& b = rebuilt[c];
-			double const width = std::max(a.width, std::numeric_limits<double>::min());
-			worst[0] = std::max(worst[0], std::abs(a.volume - b.volume) / std::max(std::abs(a.volume), 1e-300));
-			worst[2] = std::max(worst[2], abs(a.centroid - b.centroid) / width);
-			bool topology = true;
-			for(size_t f = 0; f < a.faces.size(); ++f)
+			if(a.invalid || b.invalid)
 			{
-				if(std::get<0>(a.faces[f]) != std::get<0>(b.faces[f]))
+				++counts[3];
+				continue;
+			}
+			double const w = a.width;
+			double const volume_ratio = std::abs(a.volume - b.volume) / (1e-12 * std::max(std::abs(a.volume), w * w * w));
+			worst[0] = std::max(worst[0], volume_ratio);
+			provisional[0] = std::max(provisional[0], std::abs(a.volume - b.volume) /
+				(1e-8 * std::max({std::abs(a.volume), std::abs(b.volume), w * w * w})));
+			auto provisional_scale = [w](Vector3D const& x, Vector3D const& y)
+			{
+				return 1e-8 * w + 64 * std::numeric_limits<double>::epsilon() * std::max(abs(x), abs(y));
+			};
+			bool cell_over = volume_ratio > 1;
+			auto position_scale = [w](Vector3D const& x, Vector3D const& y)
+			{
+				return 1e-12 * w + 64 * std::numeric_limits<double>::epsilon() * std::max(abs(x), abs(y));
+			};
+			double const centroid_ratio = abs(a.centroid - b.centroid) / position_scale(a.centroid, b.centroid);
+			worst[2] = std::max(worst[2], centroid_ratio);
+			provisional[2] = std::max(provisional[2], abs(a.centroid - b.centroid) /
+				provisional_scale(a.centroid, b.centroid));
+			cell_over = cell_over || centroid_ratio > 1;
+			bool topology = true;
+			// Faces are grouped by identity (same order in both lists); within a group each kept face is paired
+			// with the nearest unused rebuilt face centre.
+			vector<size_t> partner(a.faces.size(), a.faces.size());
+			for(size_t first = 0; first < a.faces.size() && topology;)
+			{
+				size_t last = first;
+				while(last < a.faces.size() && std::get<0>(a.faces[last]) == std::get<0>(a.faces[first]))
+					++last;
+				for(size_t f = first; f < last; ++f)
+					if(std::get<0>(b.faces[f]) != std::get<0>(a.faces[first]))
+						topology = false;
+				if(topology)
 				{
-					topology = false;
-					break;
+					vector<bool> used(last - first, false);
+					for(size_t f = first; f < last; ++f)
+					{
+						size_t best = last;
+						double best_distance = std::numeric_limits<double>::infinity();
+						for(size_t g = first; g < last; ++g)
+						{
+							// Overflow-resistant distance: scale by the largest component difference.
+							Vector3D const d = std::get<2>(a.faces[f]) - std::get<2>(b.faces[g]);
+							double const scale = std::max({std::abs(d.x), std::abs(d.y), std::abs(d.z)});
+							double const distance = scale > 0 ? scale * abs(d * (1.0 / scale)) : 0;
+							if(!used[g - first] && std::isfinite(distance) && distance < best_distance)
+							{
+								best = g;
+								best_distance = distance;
+							}
+						}
+						if(best == last)
+						{
+							// No finite pairing: counted as a topology mismatch (collective rejection below).
+							topology = false;
+							break;
+						}
+						used[best - first] = true;
+						partner[f] = best;
+					}
 				}
+				first = last;
+			}
+			for(size_t f = 0; f < a.faces.size() && topology; ++f)
+			{
+				size_t const g = partner[f];
 				++counts[2];
-				double const area = std::get<1>(a.faces[f]);
-				worst[1] = std::max(worst[1], std::abs(area - std::get<1>(b.faces[f])) /
-					std::max(std::abs(area), 1e-300 + 1e-12 * width * width));
-				worst[3] = std::max(worst[3], abs(std::get<2>(a.faces[f]) - std::get<2>(b.faces[f])) / width);
+				double const area_a = std::get<1>(a.faces[f]);
+				double const area_b = std::get<1>(b.faces[g]);
+				Vector3D const& centre_a = std::get<2>(a.faces[f]);
+				Vector3D const& centre_b = std::get<2>(b.faces[g]);
+				Vector3D const& normal_a = std::get<3>(a.faces[f]);
+				Vector3D const& normal_b = std::get<3>(b.faces[g]);
+				double const area_ratio = std::abs(area_a - area_b) / (1e-12 * std::max(std::abs(area_a), w * w));
+				worst[1] = std::max(worst[1], area_ratio);
+				provisional[1] = std::max(provisional[1], std::abs(area_a - area_b) /
+					(1e-7 * std::max({std::abs(area_a), std::abs(area_b), w * w})));
+				double const centre_ratio = abs(centre_a - centre_b) / position_scale(centre_a, centre_b);
+				worst[3] = std::max(worst[3], centre_ratio);
+				provisional[3] = std::max(provisional[3], abs(centre_a - centre_b) / provisional_scale(centre_a, centre_b));
+				// Angle between the two outward unit normals; opposite normals count as a full turn.
+				double const angle = ScalarProd(normal_a, normal_b) > 0 ? abs(CrossProduct(normal_a, normal_b)) : 2.0;
+				worst[4] = std::max(worst[4], angle / 1e-10);
+				bool const face_over = area_ratio > 1 || centre_ratio > 1 || angle > 1e-10;
+				counts[5] += face_over ? 1 : 0;
+				cell_over = cell_over || face_over;
+				if(area_ratio > worst_face[0])
+				{
+					double smallest = std::numeric_limits<double>::infinity();
+					for(auto const& face : a.faces)
+						smallest = std::min(smallest, std::get<1>(face));
+					worst_face[0] = area_ratio;
+					worst_face[1] = area_a;
+					worst_face[2] = area_b;
+					worst_face[3] = w;
+					worst_face[4] = a.volume;
+					worst_face[5] = smallest / (w * w);
+					worst_face[6] = static_cast<double>(a.faces.size());
+					worst_face[7] = a.centroid.x;
+					worst_face[8] = a.centroid.y;
+					worst_face[9] = a.centroid.z;
+					worst_face[10] = volume_ratio * 1e-12;
+					worst_face[11] = static_cast<double>(std::get<0>(a.faces[f]).first);
+				}
 			}
 			if(!topology)
 				++counts[1];
+			else if(cell_over)
+				++counts[4];
 		}
 		int rank = 0;
 		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-		MPI_Allreduce(MPI_IN_PLACE, counts, 3, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
-		MPI_Allreduce(MPI_IN_PLACE, worst, 4, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+		MPI_Allreduce(MPI_IN_PLACE, counts, 6, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+		MPI_Allreduce(MPI_IN_PLACE, worst, 5, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+		MPI_Allreduce(MPI_IN_PLACE, provisional, 4, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+		struct { double value; int rank; } worst_owner = {worst_face[0], rank}, located;
+		MPI_Allreduce(&worst_owner, &located, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+		MPI_Bcast(worst_face, 12, MPI_DOUBLE, located.rank, MPI_COMM_WORLD);
+		bool const agree = counts[1] == 0 && counts[3] == 0 && worst[0] <= 1 && worst[1] <= 1 && worst[2] <= 1 &&
+			worst[3] <= 1 && worst[4] <= 1;
 		if(rank == 0)
 			std::cout << "INDIVIDUAL_REEXPAND_VERIFY event_tick=" << event_tick << " cells=" << counts[0]
-				<< " faces=" << counts[2] << " topology_mismatch_cells=" << counts[1]
-				<< std::setprecision(3) << " max_rel_volume=" << worst[0] << " max_rel_area=" << worst[1]
-				<< " max_centroid_shift_widths=" << worst[2] << " max_face_centroid_shift_widths=" << worst[3]
+				<< " faces=" << counts[2] << " topology_mismatch_cells=" << counts[1] << " non_finite=" << counts[3]
+				<< std::setprecision(3) << " ratio_volume=" << worst[0] << " ratio_area=" << worst[1]
+				<< " ratio_centroid=" << worst[2] << " ratio_face_centre=" << worst[3] << " ratio_normal=" << worst[4]
+				<< " cells_over=" << counts[4] << " faces_over=" << counts[5]
+				<< " provisional_volume=" << provisional[0] << " provisional_area=" << provisional[1]
+				<< " provisional_centroid=" << provisional[2] << " provisional_face_centre=" << provisional[3]
+				<< " result=" << (agree ? "agree" : "mismatch") << std::endl;
+		if(rank == 0 && worst_face[0] > 1)
+			std::cout << "INDIVIDUAL_REEXPAND_VERIFY_WORST event_tick=" << event_tick << std::setprecision(6)
+				<< " rank=" << located.rank << " area_ratio=" << worst_face[0] << std::setprecision(17)
+				<< " area_kept=" << worst_face[1] << " area_rebuilt=" << worst_face[2] << std::setprecision(6)
+				<< " face_area_over_w2=" << worst_face[1] / (worst_face[3] * worst_face[3])
+				<< " smallest_face_over_w2=" << worst_face[5] << " faces=" << worst_face[6] << " width=" << worst_face[3]
+				<< " volume=" << worst_face[4] << " volume_rel_diff=" << worst_face[10] << " neighbour_rank="
+				<< worst_face[11] << " centroid=" << worst_face[7] << "," << worst_face[8] << "," << worst_face[9]
 				<< std::endl;
+		return agree;
 	}
 #endif
 
@@ -983,6 +1252,53 @@ namespace
 #endif
 	}
 }
+
+#ifdef RICH_MPI
+bool IndividualClosureTestAccess::retainedMatchesFullBuild(HDSim3D& sim, std::vector<size_t> const& checked,
+	std::uint64_t tick)
+{
+	int rank = 0;
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	size_t const canonical_count = sim.individual_points_.size();
+	// Each stage can fail on one rank only; agree before the next collective stage.
+	auto all_ok = [](bool ok)
+	{
+		int flag = ok ? 1 : 0;
+		MPI_Allreduce(MPI_IN_PLACE, &flag, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+		return flag != 0;
+	};
+	vector<IdentifiedCellGeometry> kept;
+	bool ok = true;
+	try
+	{
+		ActiveMeshView const view(sim.tess_, canonical_count);
+		for(size_t global : checked)
+			ok = ok && global < canonical_count && view.containsGlobal(global);
+		if(ok)
+			kept = CaptureIdentifiedGeometry(sim.tess_, view, checked, canonical_count, rank);
+	}
+	catch(...)
+	{
+		ok = false;
+	}
+	if(!all_ok(ok))
+		return false;
+	sim.tess_.BuildParallel(sim.individual_points_, true, true);
+	vector<IdentifiedCellGeometry> rebuilt;
+	try
+	{
+		ActiveMeshView const full_view(sim.tess_, canonical_count);
+		rebuilt = CaptureIdentifiedGeometry(sim.tess_, full_view, checked, canonical_count, rank);
+	}
+	catch(...)
+	{
+		ok = false;
+	}
+	if(!all_ok(ok))
+		return false;
+	return CheckReexpandComparison(kept, rebuilt, tick);
+}
+#endif
 
 void InvalidateIndividualEventMeshReuseValidation(HDSim3D const& simulation)
 {
@@ -1473,6 +1789,94 @@ namespace
 	}
 }
 
+void HDSim3D::PrepareIndividualEntryPointVelocities(double next_time_step)
+{
+	individual_entry_point_velocities_.clear();
+	if(!pm_.MovedPoints() || !(std::isfinite(next_time_step) && next_time_step > 0))
+		return;
+	double const time = pt_.getTime();
+	// Owned primitives may have changed since the last exchange (the TDE's
+	// central sink runs after the global step); the point motion reads the
+	// neighbours'.
+#ifdef RICH_MPI
+	MPI_exchange_data(tess_, cells_, true);
+#endif
+	vector<Vector3D> velocities;
+	pm_(tess_, cells_, time, velocities);
+#ifdef RICH_MPI
+	MPI_exchange_data(tess_, velocities, true);
+#endif
+	pm_.ApplyFix(tess_, cells_, time, next_time_step, velocities);
+	// The tightest individual hydro limit on this state with these velocities
+	// (as SynchronizedTimeStepLimits before its drift guard, CFL part: the
+	// source part is in the global suggestion the anchor also takes): the
+	// anchor must not exceed it (TDE job 10233030: thermal-floored cells at
+	// 1.82e-3 against an anchor of 0.9 x the 2.09e-3 global suggestion took
+	// the bin below).  Collective.
+	individual_entry_reference_step_ = 0;
+	if(auto const* cfl = dynamic_cast<CourantFriedrichsLewy const*>(&tsc_))
+	{
+		size_t const N = tess_.GetPointNo();
+		vector<Vector3D> mesh_velocities(velocities.begin(),
+			velocities.begin() + static_cast<std::ptrdiff_t>(std::min(N, velocities.size())));
+		mesh_velocities.resize(N);
+#ifdef RICH_MPI
+		MPI_exchange_data(tess_, mesh_velocities, true);
+#endif
+		vector<Vector3D> face_velocities;
+		CalcFaceVelocities(tess_, mesh_velocities, face_velocities);
+		vector<double> limits;
+		cfl->CellTimeSteps(tess_, cells_, eos_, face_velocities, limits, false);
+		double minimum = std::numeric_limits<double>::infinity();
+		for(size_t local = 0; local < std::min(N, limits.size()); ++local)
+			if(std::isfinite(limits[local]) && limits[local] > 0)
+				minimum = std::min(minimum, limits[local]);
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, &minimum, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+#endif
+		individual_entry_reference_step_ = std::isfinite(minimum) ? minimum : 0;
+	}
+	size_t const owned = std::min(tess_.GetPointNo(), std::min(velocities.size(), cells_.size()));
+	individual_entry_point_velocities_.reserve(owned);
+	for(size_t i = 0; i < owned; ++i)
+		individual_entry_point_velocities_.emplace_back(cells_[i].ID, velocities[i]);
+}
+
+
+
+double HDSim3D::ComputeIndividualEntryIntervalBound(void)
+{
+	// After the scheduler state became owned-only: the limits a synchronized
+	// event takes (wave speed, the entry state's sources after the post-step
+	// sink/AMR callback, the drift guard for the entry velocities), so the
+	// first interval respects all of them.  Collective.  A stationary mesh
+	// (no entry velocities) takes them with generators at rest.
+	size_t const N = tess_.GetPointNo();
+	// By stable ID, as setInitialPointVelocities applies them.
+	std::unordered_map<size_t, Vector3D> by_id;
+	by_id.reserve(individual_entry_point_velocities_.size());
+	for(auto const& entry : individual_entry_point_velocities_)
+		by_id.emplace(entry.first, entry.second);
+	vector<Vector3D> velocities(N, Vector3D());
+	for(size_t i = 0; i < std::min(N, cells_.size()); ++i)
+	{
+		auto const found = by_id.find(cells_[i].ID);
+		if(found != by_id.end())
+			velocities[i] = found->second;
+	}
+	vector<double> limits(N, std::numeric_limits<double>::infinity());
+	vector<Vector3D> accelerations;
+	if(!SynchronizedTimeStepLimits(velocities, limits, accelerations))
+		return 0;
+	double minimum = std::numeric_limits<double>::infinity();
+	for(size_t i = 0; i < std::min(N, limits.size()); ++i)
+		if(std::isfinite(limits[i]) && limits[i] > 0)
+			minimum = std::min(minimum, limits[i]);
+#ifdef RICH_MPI
+	MPI_Allreduce(MPI_IN_PLACE, &minimum, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+#endif
+	return std::isfinite(minimum) ? minimum : 0;
+}
 
 void HDSim3D::timeAdvance2(void)
 {
@@ -1806,6 +2210,15 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 	bool const adjacency_cache_enabled = all_ranks(adjacency_seed_flag);
 	bool const adjacency_seed_enabled =
 		partial_requested && adjacency_cache_enabled;
+	// RICH_INDIVIDUAL_CLOSURE_BATCH_SUPPORTS (default on, 0 = off): a cell the
+	// closure check adds at depth one brings its cached local neighbours in as
+	// depth-two supports in the same batch.  Without it the next build finds
+	// them missing and rebuilds once more: late TDE partial builds took three
+	// attempts, two of them addition rebuilds (job 10222763).  The cache stays
+	// a predictor; the closure check after each build still decides.
+	static bool const batch_supports_flag =
+		ReadDefaultOnBooleanEnvironment("RICH_INDIVIDUAL_CLOSURE_BATCH_SUPPORTS");
+	bool const batch_supports = adjacency_seed_enabled && all_ranks(batch_supports_flag);
 	vector<size_t> seed;
 	vector<size_t> seed_depth_two;
 	vector<size_t> warm_target;
@@ -1896,6 +2309,9 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 		// are resolved by stable ID; remote ones are requested from their
 		// owner, one sparse exchange per depth.  The cache is a predictor
 		// only: the closure check after the build still decides.
+		if(individual_adjacency_realign_pending_)
+			RealignRecordsById(individual_adjacency_, cells_, canonical_count);
+		individual_adjacency_realign_pending_ = false;
 		if(individual_adjacency_.size() != canonical_count)
 			individual_adjacency_.assign(canonical_count,
 				IndividualAdjacencyRecord());
@@ -2155,11 +2571,22 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 		if(exceeds_threshold(target.size()))
 			return full_build("closure threshold");
 
+		std::unordered_map<size_t, size_t> support_index_by_id;
+		// One collectively agreed decision whether the partial/full parity check runs (the settings are rank-local),
+		// used by both closure exits below.  Collective.
+		// The setting is parsed without throwing and validated collectively, so an invalid value on one rank
+		// stops every rank at the same point.
+		static StrictBooleanEnvironment const parity_setting = ReadStrictBooleanEnvironment("RICH_VERIFY_PARTIAL_BUILD");
+		if(any_rank(!parity_setting.valid))
+			throw std::invalid_argument("RICH_VERIFY_PARTIAL_BUILD must be a strict boolean on every rank");
+		bool const parity_requested = any_rank(context.verify_partial_build || parity_setting.value);
 		for(;;)
 		{
 			bool partial_build_failed = false;
 			string partial_build_error;
 			++mesh_record.attempts;
+			// The re-expansion check applies to this attempt's closure only.
+			size_t const reexpansions_at_attempt = mesh_record.reexpansions;
 			double const partial_start = mesh_timing ? IndividualHydroWallTime() : 0;
 			try
 			{
@@ -2174,6 +2601,15 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 				}
 				auto const finish = get_time();
 				DisplayTime(start, finish, "Individual partial Voronoi build ");
+#ifdef RICH_MPI
+				if(Voronoi3D const* const voronoi = dynamic_cast<Voronoi3D const*>(&tess_))
+				{
+					auto const& stages = voronoi->engine().GetPartialBuildStageSeconds();
+					for(size_t stage = 0; stage < IndividualMeshBuildRecord::madvoro_stages; ++stage)
+						mesh_record.stage_seconds[stage] += stages[stage];
+					mesh_record.ghost_rounds += static_cast<double>(voronoi->engine().GetLastGhostIterations());
+				}
+#endif
 			}
 			catch(MadVoro::Exception::MadVoroException const& error)
 			{
@@ -2218,6 +2654,7 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 
 			std::unique_ptr<ActiveMeshView> view_ptr;
 			bool mapping_failed = false;
+			double const mapping_start = IndividualHydroWallTime();
 			try
 			{
 				view_ptr.reset(new ActiveMeshView(tess_, canonical_count));
@@ -2226,12 +2663,52 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 			{
 				mapping_failed = true;
 			}
+			mesh_record.mapping_seconds += IndividualHydroWallTime() - mapping_start;
 			if(any_rank(mapping_failed))
 				return full_build("partial mapping invariant");
 			ActiveMeshView& view = *view_ptr;
 			vector<size_t> additions;
 			vector<size_t> neighbors;
 			bool closure_changed = false;
+			// The cached local neighbours of a new depth-one cell, as depth-two
+			// supports (RICH_INDIVIDUAL_CLOSURE_BATCH_SUPPORTS).  The ID lookup
+			// (declared before the attempt loop) is built on first use.
+			auto add_cached_supports = [&](size_t global)
+			{
+				if(!batch_supports || global >= individual_adjacency_.size())
+					return;
+				IndividualAdjacencyRecord const& record = individual_adjacency_[global];
+				if(record.cell_id != cells_[global].ID || record.neighbor_ids.size() != record.neighbor_owners.size())
+				{
+					++mesh_record.closureRound()[7];
+					return;
+				}
+				if(support_index_by_id.empty())
+				{
+					support_index_by_id.reserve(canonical_count);
+					for(size_t index = 0; index < canonical_count; ++index)
+						support_index_by_id.emplace(cells_[index].ID, index);
+				}
+				int local_rank = 0;
+#ifdef RICH_MPI
+				MPI_Comm_rank(MPI_COMM_WORLD, &local_rank);
+#endif
+				for(size_t entry = 0; entry < record.neighbor_ids.size(); ++entry)
+				{
+					if(record.neighbor_owners[entry] != local_rank)
+					{
+						++mesh_record.closureRound()[8];
+						continue;
+					}
+					auto const found = support_index_by_id.find(record.neighbor_ids[entry]);
+					if(found == support_index_by_id.end() || included[found->second])
+						continue;
+					included[found->second] = 1;
+					depth[found->second] = 2;
+					additions.push_back(found->second);
+					++mesh_record.closureRound()[4];
+				}
+			};
 #ifdef RICH_MPI
 			// Map each remote ghost to the canonical index on its owning rank.
 			// A newly appearing cross-rank face must make that endpoint a target
@@ -2292,7 +2769,8 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 					frontier.push_back(global);
 			vector<unsigned char> expanded_depth(canonical_count, 255);
 #ifdef RICH_MPI
-			bool const closure_reexpand =
+			bool const closure_reexpand = individual_closure_probe_ != nullptr &&
+				individual_closure_probe_->closure_reexpand >= 0 ? individual_closure_probe_->closure_reexpand != 0 :
 				AgreedIndividualExperimentSettings().closure_reexpand;
 #endif
 			// Expansion rounds on this mesh.  A depth decrease requested by
@@ -2315,6 +2793,9 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 				   !view.containsGlobal(global))
 					continue;
 				expanded_depth[global] = depth[global];
+				if(individual_closure_probe_ != nullptr)
+					individual_closure_probe_->expansions.push_back({mesh_record.attempts, mesh_record.reexpansions,
+						global, static_cast<size_t>(depth[global])});
 				size_t const local = view.globalToLocal(global);
 				if(local >= tess_.GetPointNo())
 					continue;
@@ -2349,9 +2830,13 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 						included[neighbor_global] = 1;
 						depth[neighbor_global] = neighbor_depth;
 						additions.push_back(neighbor_global);
+						++mesh_record.closureRound()[neighbor_depth < 2 ? 0 : 1];
+						if(neighbor_depth < 2)
+							add_cached_supports(neighbor_global);
 					}
 					else if(neighbor_depth < depth[neighbor_global])
 					{
+						++mesh_record.closureRound()[5];
 						depth[neighbor_global] = neighbor_depth;
 						if(neighbor_depth < 2 && view.containsGlobal(neighbor_global))
 							frontier.push_back(neighbor_global);
@@ -2388,9 +2873,15 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 						depth[global] = new_depth;
 						additions.push_back(global);
 						closure_changed = true;
+						++mesh_record.closureRound()[new_depth < 2 ? 2 : 3];
+						if(new_depth < 2)
+							add_cached_supports(global);
 					}
 					else if(new_depth < depth[global])
 					{
+						++mesh_record.closureRound()[6];
+						if(individual_closure_probe_ != nullptr)
+							++individual_closure_probe_->remote_promotions;
 						depth[global] = new_depth;
 						closure_changed = true;
 						remote_depth_frontier.push_back(global);
@@ -2403,6 +2894,8 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 			   any_rank(!remote_depth_frontier.empty()))
 			{
 				++mesh_record.reexpansions;
+				if(individual_closure_probe_ != nullptr)
+					individual_closure_probe_->promoted_at_continue.push_back(remote_depth_frontier);
 				for(size_t global : remote_depth_frontier)
 					if(depth[global] < 2 && view.containsGlobal(global))
 						frontier.push_back(global);
@@ -2416,6 +2909,8 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 			break;
 			}
 			closure_changed = closure_changed || !additions.empty();
+			if(!additions.empty())
+				mesh_record.closureRound()[9] = 1;
 
 			if(!any_rank(closure_changed))
 			{
@@ -2467,8 +2962,19 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 						break;
 				}
 				bool const globally_closed = all_ranks(closed);
+				if(globally_closed && individual_closure_probe_ != nullptr)
+				{
+					individual_closure_probe_->final_depth = depth;
+					individual_closure_probe_->final_target = target;
+				}
 #ifdef RICH_MPI
-				if(globally_closed && mesh_record.reexpansions > 0 && ReexpandVerifyRequested())
+				// The verify setting is read only when re-expansion happened (its first read is collective).
+				auto const reexpand_verify = [this]()
+				{
+					return individual_closure_probe_ != nullptr && individual_closure_probe_->reexpand_verify >= 0 ?
+						individual_closure_probe_->reexpand_verify != 0 : ReexpandVerifyRequested();
+				};
+				if(globally_closed && mesh_record.reexpansions > reexpansions_at_attempt && reexpand_verify())
 				{
 					vector<size_t> checked;
 					for(size_t global = 0; global < canonical_count; ++global)
@@ -2508,18 +3014,25 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 						return full_build("re-expansion check lost a checked cell");
 					vector<IdentifiedCellGeometry> const rebuilt =
 						CaptureIdentifiedGeometry(tess_, *rebuilt_view, checked, canonical_count, rank);
-					ReportReexpandComparison(kept, rebuilt, context.event_tick);
-					cached_target = target;
-					remember_partial_target(target);
-					mesh_record.result = "partial";
-					mesh_record.reason = "closed after re-expansion check";
-					return std::move(*rebuilt_view);
+					// A mismatch on any rank rejects the kept mesh collectively.
+					if(!CheckReexpandComparison(kept, rebuilt, context.event_tick))
+						return full_build("re-expansion check mismatch");
+					// Continue on the rebuilt mesh; the ordinary partial/full parity
+					// check below still runs when it is requested.
+					view_ptr = std::move(rebuilt_view);
+					if(!parity_requested)
+					{
+						cached_target = target;
+						remember_partial_target(target);
+						mesh_record.result = "partial";
+						mesh_record.reason = "closed after re-expansion check";
+						return std::move(*view_ptr);
+					}
 				}
 #endif
 				if(globally_closed)
 				{
-						if(!context.verify_partial_build &&
-						   !VerifyPartialBuildRequested())
+						if(!parity_requested)
 						{
 							cached_target = target;
 							remember_partial_target(target);
@@ -2535,7 +3048,7 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 						if(included[global] && depth[global] < 2)
 							reconstruction_cells.push_back(global);
 					vector<IndividualCellGeometry> const partial_geometry =
-						CaptureSelectedGeometry(tess_, view, reconstruction_cells,
+						CaptureSelectedGeometry(tess_, *view_ptr, reconstruction_cells,
 							canonical_count);
 					double const reference_wall_start =
 						mesh_timing ? IndividualHydroWallTime() : 0;
@@ -2641,6 +3154,8 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 
 			bool const rebuild_for_additions =
 				mesh_trace && any_rank(!additions.empty());
+			if(individual_closure_probe_ != nullptr)
+				individual_closure_probe_->rebuild_local_additions.push_back(additions.size());
 			target.insert(target.end(), additions.begin(), additions.end());
 			mesh_record.final_target = target.size();
 			if(exceeds_threshold(target.size()))
@@ -2672,6 +3187,22 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 				canonical_count, partial_build_fraction, context.event_tick);
 		return view;
 	};
+
+	// Closure test seam (IndividualClosureTestProbe): build only the event
+	// mesh from the probe's seeds and report; every rank has a probe attached.
+	if(individual_closure_probe_ != nullptr)
+	{
+		IndividualClosureTestProbe& probe = *individual_closure_probe_;
+		probe.clearOutputs();
+		vector<size_t> probe_cached_target;
+		(void)build_event_mesh(all_points, probe.depth_one_seed, probe.depth_two_seed, probe_cached_target,
+			"individual closure test", false);
+		probe.attempts = mesh_record.attempts;
+		probe.reexpansions = mesh_record.reexpansions;
+		probe.result = mesh_record.result == nullptr ? "" : mesh_record.result;
+		probe.reason = mesh_record.reason == nullptr ? "" : mesh_record.reason;
+		return;
+	}
 
 	StrictBooleanEnvironment const selected_flag =
 		ReadStrictBooleanEnvironment("RICH_INDIVIDUAL_REUSE_EVENT_MESH");
@@ -3005,6 +3536,9 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 		// by stable ID.  Local supports map through the view; remote ghosts
 		// carry their owner's ID in the synced primitive copy.  A full build
 		// refreshes every cell; a partial one refreshes its targets.
+		if(individual_adjacency_realign_pending_)
+			RealignRecordsById(individual_adjacency_, cells_, canonical_count);
+		individual_adjacency_realign_pending_ = false;
 		if(individual_adjacency_.size() != canonical_count)
 			individual_adjacency_.assign(canonical_count,
 				IndividualAdjacencyRecord());

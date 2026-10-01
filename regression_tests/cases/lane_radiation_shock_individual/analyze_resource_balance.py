@@ -13,9 +13,16 @@ from collections import Counter
 from pathlib import Path
 
 
-PERF_PREFIX = "INDIVIDUAL_PERF "
-FIELD_RE = re.compile(r"([A-Za-z0-9_-]+)=([^ ]+)")
-CYCLE_RE = re.compile(r"Individual cycle ([0-9]+) from time")
+STEP_PREFIX = "RICH_STEP "
+TIME_PREFIX = "  time   | "
+WORK_PREFIX = "  work   | "
+PHASES_PREFIX = "  phases | "
+MESH_PREFIX = "  mesh   | "
+SOURCE_PREFIX = "  source | "
+AMR_PREFIX = "RICH_AMR "
+DETAIL_PREFIX = "RICH_STEP_DETAIL "
+ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+FIELD_RE = re.compile(r"([A-Za-z0-9_-]+)=(\[[^]]*\]|[^ ]+)")
 DEFAULT_WORK_RELATIVE_TOLERANCE = 1.0e-4
 EXPECTED_PERF_UNITS = {
     "event-wall": "seconds",
@@ -23,6 +30,30 @@ EXPECTED_PERF_UNITS = {
     "peak-rss": "KiB",
 }
 REQUIRED_STATISTICS = ("min", "median", "mean", "p95", "max")
+STEP_FIELDS = (("mode", "cycle"),)
+TIME_FIELDS = ((
+    "t_start", "t_end", "event_dt", "applied_dt_min", "applied_dt_max",
+    "next_event_dt",
+),)
+WORK_FIELDS = (
+    ("active_cells", "total_cells", "active_bins"),
+    ("active_cells", "active_bins"),
+)
+PHASE_FIELDS = ((
+    "step_s", "hydro_s", "gravity_s", "radiation_s", "amr_s",
+),)
+MESH_FIELDS = (("mesh_s", "mesh_builds"),)
+SOURCE_FIELDS = (
+    ("source_s", "source_pct", "source_calls"),
+    (
+        "source_s", "source_first_s", "source_second_s", "source_pct",
+        "source_calls",
+    ),
+)
+AMR_FIELDS = ((
+    "mode", "cycle", "time", "cells_before", "added_cells",
+    "removed_cells", "cells_after",
+),)
 
 
 def percentile(values: list[float], fraction: float) -> float:
@@ -54,6 +85,74 @@ def fields_after(line: str, marker: str) -> dict[str, str] | None:
     if offset < 0:
         return None
     return dict(FIELD_RE.findall(line[offset + len(marker) :]))
+
+
+def ordered_fields(
+    path: Path,
+    line: str,
+    prefix: str,
+    separator: str,
+    expected_orders: tuple[tuple[str, ...], ...],
+    subject: str,
+) -> dict[str, str]:
+    payload = line[len(prefix) :].rstrip()
+    pieces = payload.split(separator)
+    matches = [FIELD_RE.fullmatch(piece) for piece in pieces]
+    if any(match is None for match in matches):
+        raise ValueError(f"malformed {subject} line in {path}: {line.rstrip()}")
+    items = [match.groups() for match in matches if match is not None]
+    if tuple(name for name, _ in items) not in expected_orders:
+        raise ValueError(f"malformed {subject} line in {path}: {line.rstrip()}")
+    return dict(items)
+
+
+def valid_active_bins(value: str, mode: str, active_cells: int) -> bool:
+    if mode == "global":
+        return value == "global"
+    if len(value) < 2 or value[0] != "[" or value[-1] != "]":
+        return False
+    entries = value[1:-1].split("; ")
+    if not entries or any(not entry for entry in entries):
+        return False
+    previous_bin = -1
+    count_sum = 0
+    for entry in entries:
+        pieces = entry.split(",")
+        matches = [FIELD_RE.fullmatch(piece) for piece in pieces]
+        if any(match is None for match in matches):
+            return False
+        items = [match.groups() for match in matches if match is not None]
+        if tuple(name for name, _ in items) != ("bin", "count", "dt"):
+            return False
+        fields = dict(items)
+        bin_number = parse_int(fields, "bin")
+        count = parse_int(fields, "count")
+        timestep = parse_float(fields, "dt")
+        if (
+            bin_number is None
+            or not previous_bin < bin_number < 63
+            or count is None
+            or count <= 0
+            or timestep is None
+            or timestep <= 0
+        ):
+            return False
+        count_sum += count
+        previous_bin = bin_number
+    return count_sum == active_cells
+
+
+def require_finite_fields(
+    path: Path,
+    line: str,
+    fields: dict[str, str],
+    names: tuple[str, ...],
+    subject: str,
+) -> dict[str, float]:
+    values = {name: parse_float(fields, name) for name in names}
+    if any(value is None for value in values.values()):
+        raise ValueError(f"malformed {subject} line in {path}: {line.rstrip()}")
+    return {name: value for name, value in values.items() if value is not None}
 
 
 def parse_float(fields: dict[str, str], name: str) -> float | None:
@@ -103,32 +202,310 @@ def validate_performance_statistics(
 def parse_log(path: Path) -> dict[str, object]:
     records: dict[int, dict[str, dict[str, float]]] = {}
     events: dict[int, dict[str, float | int]] = {}
+    amr_events: list[dict[str, float | int | str]] = []
     endpoint: dict[str, object] = {"complete": False, "source": None}
     benchmark: dict[str, str] = {}
-    current_cycle: int | None = None
+    runtime_cycle: int | None = None
+    runtime_mode: str | None = None
+    runtime_subject = 0
     seen_event_cycles: set[int] = set()
+    seen_amr_cycles: set[int] = set()
+    amr_eligible_cycle: int | None = None
+    amr_terminator_cycle: int | None = None
+    pending_event: dict[str, float | int] = {}
 
     with path.open("r", encoding="utf-8", errors="replace") as handle:
-        for line in handle:
-            cycle_match = CYCLE_RE.search(line)
-            if cycle_match is not None:
-                current_cycle = int(cycle_match.group(1))
-                if current_cycle in seen_event_cycles:
-                    raise ValueError(
-                        f"duplicate Individual cycle {current_cycle} in {path}"
-                    )
-                seen_event_cycles.add(current_cycle)
-                events.setdefault(current_cycle, {"cycle": current_cycle})
+        for raw_line in handle:
+            line = ANSI_ESCAPE_RE.sub("", raw_line)
 
-            fields = fields_after(line, PERF_PREFIX)
+            if amr_terminator_cycle is not None:
+                if line.rstrip("\r\n") != "":
+                    raise ValueError(
+                        f"missing blank line after RICH_AMR cycle="
+                        f"{amr_terminator_cycle} in {path}"
+                    )
+                amr_terminator_cycle = None
+                continue
+
+            if (
+                amr_eligible_cycle is not None
+                and not line.startswith(AMR_PREFIX)
+            ):
+                amr_eligible_cycle = None
+
+            if runtime_cycle is not None:
+                expected_prefixes = (
+                    TIME_PREFIX, WORK_PREFIX, PHASES_PREFIX, MESH_PREFIX,
+                    SOURCE_PREFIX,
+                )
+                if runtime_subject == len(expected_prefixes):
+                    if line.rstrip("\r\n") != "":
+                        raise ValueError(
+                            f"missing blank line after RICH_STEP cycle="
+                            f"{runtime_cycle} in {path}"
+                        )
+                    amr_eligible_cycle = (
+                        runtime_cycle if runtime_mode == "individual" else None
+                    )
+                    runtime_cycle = None
+                    runtime_mode = None
+                    runtime_subject = 0
+                    continue
+                if (
+                    not line.startswith(expected_prefixes[runtime_subject])
+                    and not line.startswith(expected_prefixes)
+                ):
+                    raise ValueError(
+                        f"interleaved RICH_STEP block cycle={runtime_cycle} "
+                        f"in {path}: {line.rstrip()}"
+                    )
+
+            if line.startswith(STEP_PREFIX):
+                if runtime_cycle is not None:
+                    raise ValueError(
+                        f"incomplete RICH_STEP block cycle={runtime_cycle} in {path}"
+                    )
+                fields = ordered_fields(
+                    path, line, STEP_PREFIX, " ", STEP_FIELDS,
+                    "RICH_STEP header",
+                )
+                mode = fields.get("mode")
+                cycle = parse_int(fields, "cycle")
+                if (
+                    mode not in {"global", "individual"}
+                    or cycle is None
+                    or cycle < 0
+                ):
+                    raise ValueError(
+                        f"malformed RICH_STEP header in {path}: {line.rstrip()}"
+                    )
+                runtime_mode = mode
+                runtime_cycle = cycle
+                runtime_subject = 0
+                if mode == "individual":
+                    if cycle in seen_event_cycles:
+                        raise ValueError(
+                            f"duplicate RICH_STEP cycle={cycle} in {path}"
+                        )
+                    seen_event_cycles.add(cycle)
+                    event = events.setdefault(cycle, {"cycle": cycle})
+                    event.update(pending_event)
+                    pending_event.clear()
+
+            if line.startswith(TIME_PREFIX):
+                if runtime_cycle is None or runtime_subject != 0:
+                    raise ValueError(
+                        f"unexpected time line in {path}: {line.rstrip()}"
+                    )
+                fields = ordered_fields(
+                    path, line, TIME_PREFIX, " | ", TIME_FIELDS, "time",
+                )
+                time_values = require_finite_fields(
+                    path, line, fields, TIME_FIELDS[0], "time",
+                )
+                if any(
+                    time_values[name] < 0
+                    for name in (
+                        "event_dt", "applied_dt_min", "applied_dt_max",
+                        "next_event_dt",
+                    )
+                ):
+                    raise ValueError(
+                        f"malformed time line in {path}: {line.rstrip()}"
+                    )
+                if runtime_mode == "individual":
+                    events.setdefault(
+                        runtime_cycle, {"cycle": runtime_cycle}
+                    )["event_time"] = time_values["t_end"]
+                runtime_subject = 1
+
+            if line.startswith(WORK_PREFIX):
+                if runtime_cycle is None or runtime_subject != 1:
+                    raise ValueError(
+                        f"unexpected work line in {path}: {line.rstrip()}"
+                    )
+                fields = ordered_fields(
+                    path, line, WORK_PREFIX, " | ", WORK_FIELDS, "work",
+                )
+                active_cells = parse_int(fields, "active_cells")
+                total_cells = (
+                    parse_int(fields, "total_cells")
+                    if "total_cells" in fields
+                    else None
+                )
+                if (
+                    active_cells is None
+                    or active_cells < 0
+                    or (
+                        total_cells is not None
+                        and (total_cells < 0 or total_cells < active_cells)
+                    )
+                    or runtime_mode is None
+                    or not valid_active_bins(
+                        fields["active_bins"], runtime_mode, active_cells
+                    )
+                ):
+                    raise ValueError(
+                        f"malformed work line in {path}: {line.rstrip()}"
+                    )
+                if runtime_mode == "individual":
+                    event = events.setdefault(
+                        runtime_cycle, {"cycle": runtime_cycle}
+                    )
+                    event["active_cells"] = active_cells
+                    if total_cells is not None:
+                        event["total_cells"] = total_cells
+                        event.setdefault("amr", 0)
+                runtime_subject = 2
+
+            if line.startswith(PHASES_PREFIX):
+                if runtime_cycle is None or runtime_subject != 2:
+                    raise ValueError(
+                        f"unexpected phases line in {path}: {line.rstrip()}"
+                    )
+                fields = ordered_fields(
+                    path, line, PHASES_PREFIX, " | ", PHASE_FIELDS, "phases",
+                )
+                phase_values = require_finite_fields(
+                    path, line, fields, PHASE_FIELDS[0], "phases",
+                )
+                if any(value < 0 for value in phase_values.values()):
+                    raise ValueError(
+                        f"malformed phases line in {path}: {line.rstrip()}"
+                    )
+                runtime_subject = 3
+
+            if line.startswith(MESH_PREFIX):
+                if runtime_cycle is None or runtime_subject != 3:
+                    raise ValueError(
+                        f"unexpected mesh line in {path}: {line.rstrip()}"
+                    )
+                fields = ordered_fields(
+                    path, line, MESH_PREFIX, " | ", MESH_FIELDS, "mesh",
+                )
+                mesh_s = require_finite_fields(
+                    path, line, fields, ("mesh_s",), "mesh",
+                )["mesh_s"]
+                mesh_builds = parse_int(fields, "mesh_builds")
+                if mesh_s < 0 or mesh_builds is None or mesh_builds < 0:
+                    raise ValueError(
+                        f"malformed mesh line in {path}: {line.rstrip()}"
+                    )
+                if runtime_mode == "individual":
+                    event = events.setdefault(
+                        runtime_cycle, {"cycle": runtime_cycle}
+                    )
+                    event["mesh_s"] = mesh_s
+                    event["mesh_builds"] = mesh_builds
+                runtime_subject = 4
+
+            if line.startswith(SOURCE_PREFIX):
+                if runtime_cycle is None or runtime_subject not in {3, 4}:
+                    raise ValueError(
+                        f"unexpected source line in {path}: {line.rstrip()}"
+                    )
+                fields = ordered_fields(
+                    path, line, SOURCE_PREFIX, " | ", SOURCE_FIELDS, "source",
+                )
+                source_names = tuple(fields)
+                source_values = require_finite_fields(
+                    path, line, fields, source_names[:-1], "source",
+                )
+                source_calls = parse_int(fields, "source_calls")
+                if (
+                    any(value < 0 for value in source_values.values())
+                    or source_calls is None
+                    or source_calls < 0
+                ):
+                    raise ValueError(
+                        f"malformed source line in {path}: {line.rstrip()}"
+                    )
+                runtime_subject = 5
+
+            if line.startswith(AMR_PREFIX):
+                fields = ordered_fields(
+                    path, line, AMR_PREFIX, " ", AMR_FIELDS, "RICH_AMR",
+                )
+                mode = fields.get("mode")
+                cycle = parse_int(fields, "cycle")
+                event_time = parse_float(fields, "time")
+                cells_before = parse_int(fields, "cells_before")
+                added_cells = parse_int(fields, "added_cells")
+                removed_cells = parse_int(fields, "removed_cells")
+                cells_after = parse_int(fields, "cells_after")
+                counts = (
+                    cells_before, added_cells, removed_cells, cells_after,
+                )
+                if (
+                    mode not in {"global", "individual"}
+                    or cycle is None
+                    or cycle < 0
+                    or event_time is None
+                    or any(value is None or value < 0 for value in counts)
+                ):
+                    raise ValueError(
+                        f"malformed RICH_AMR line in {path}: {line.rstrip()}"
+                    )
+                if (
+                    cells_before + added_cells < removed_cells
+                    or cells_after != cells_before + added_cells - removed_cells
+                ):
+                    raise ValueError(
+                        f"malformed RICH_AMR line in {path}: {line.rstrip()}"
+                    )
+                if mode == "individual":
+                    if amr_eligible_cycle is None:
+                        if cycle in seen_amr_cycles:
+                            raise ValueError(
+                                f"duplicate RICH_AMR cycle={cycle} in {path}"
+                            )
+                        raise ValueError(
+                            f"orphan RICH_AMR line in {path}: {line.rstrip()}"
+                        )
+                    if cycle != amr_eligible_cycle:
+                        raise ValueError(
+                            f"malformed RICH_AMR line in {path}: {line.rstrip()}"
+                        )
+                    event = events[cycle]
+                    if (
+                        event.get("event_time") != event_time
+                        or (
+                            "total_cells" in event
+                            and event["total_cells"] != cells_before
+                        )
+                    ):
+                        raise ValueError(
+                            f"RICH_AMR does not match RICH_STEP cycle={cycle} "
+                            f"in {path}: {line.rstrip()}"
+                        )
+                    event["amr"] = 1
+                    event["amr_added_cells"] = added_cells
+                    event["amr_removed_cells"] = removed_cells
+                    event["amr_cells_after"] = cells_after
+                    seen_amr_cycles.add(cycle)
+                amr_events.append({
+                    "mode": mode,
+                    "cycle": cycle,
+                    "time": event_time,
+                    "cells_before": cells_before,
+                    "added_cells": added_cells,
+                    "removed_cells": removed_cells,
+                    "cells_after": cells_after,
+                })
+                amr_eligible_cycle = None
+                amr_terminator_cycle = cycle
+                continue
+
+            fields = fields_after(line, DETAIL_PREFIX)
             if fields is not None:
                 try:
                     cycle = int(fields.pop("cycle"))
                     phase = fields.pop("phase")
                 except (KeyError, ValueError) as error:
                     raise ValueError(
-                        f"malformed INDIVIDUAL_PERF line in {path}: {line.rstrip()}"
+                        f"malformed RICH_STEP_DETAIL line in {path}: {line.rstrip()}"
                     ) from error
+                fields.pop("mode", None)
                 unit = fields.pop("unit", None)
                 numeric: dict[str, float] = {}
                 for key, value in fields.items():
@@ -140,29 +517,36 @@ def parse_log(path: Path) -> dict[str, object]:
                 cycle_records = records.setdefault(cycle, {})
                 if phase in cycle_records:
                     raise ValueError(
-                        f"duplicate INDIVIDUAL_PERF cycle={cycle} phase={phase} "
+                        f"duplicate performance cycle={cycle} phase={phase} "
                         f"in {path}"
                     )
                 cycle_records[phase] = numeric
 
             fields = fields_after(line, "MG_TIMESTEP_LIMIT mode=individual")
-            if fields is not None and current_cycle is not None:
+            if fields is not None:
                 event_time = parse_float(fields, "event_time")
                 active_cells = parse_int(fields, "active_cells")
+                event = (
+                    events.setdefault(runtime_cycle, {"cycle": runtime_cycle})
+                    if runtime_mode == "individual" and
+                    runtime_cycle is not None
+                    else pending_event
+                )
                 if event_time is not None:
-                    events.setdefault(current_cycle, {"cycle": current_cycle})[
-                        "event_time"
-                    ] = event_time
+                    event["event_time"] = event_time
                 if active_cells is not None:
-                    events.setdefault(current_cycle, {"cycle": current_cycle})[
-                        "active_cells"
-                    ] = active_cells
+                    event["active_cells"] = active_cells
 
             fields = fields_after(line, "INDIVIDUAL_HYDRO_PHASE_TIMING")
-            if fields is not None and current_cycle is not None:
+            if fields is not None:
                 active_cells = parse_float(fields, "active_cells_global")
                 canonical_cells = parse_float(fields, "canonical_cells_global")
-                event = events.setdefault(current_cycle, {"cycle": current_cycle})
+                event = (
+                    events.setdefault(runtime_cycle, {"cycle": runtime_cycle})
+                    if runtime_mode == "individual" and
+                    runtime_cycle is not None
+                    else pending_event
+                )
                 if active_cells is not None and "active_cells" not in event:
                     event["active_cells"] = active_cells
                 if canonical_cells is not None:
@@ -207,8 +591,22 @@ def parse_log(path: Path) -> dict[str, object]:
             if fields is not None:
                 benchmark = fields
 
+    if runtime_cycle is not None:
+        if runtime_subject == 4:
+            raise ValueError(
+                f"missing blank line after RICH_STEP cycle={runtime_cycle} "
+                f"in {path}"
+            )
+        raise ValueError(
+            f"incomplete RICH_STEP block cycle={runtime_cycle} in {path}"
+        )
+    if amr_terminator_cycle is not None:
+        raise ValueError(
+            f"missing blank line after RICH_AMR cycle={amr_terminator_cycle} "
+            f"in {path}"
+        )
     if not records:
-        raise ValueError(f"no INDIVIDUAL_PERF records in {path}")
+        raise ValueError(f"no RICH_STEP_DETAIL records in {path}")
 
     if endpoint.get("final_time") is None:
         endpoint["final_time"] = parse_float(benchmark, "final_time")
@@ -226,7 +624,12 @@ def parse_log(path: Path) -> dict[str, object]:
         and evolution_wall_seconds is not None
         and float(evolution_wall_seconds) > 0.0
     )
-    return {"records": records, "events": events, "endpoint": endpoint}
+    return {
+        "records": records,
+        "events": events,
+        "amr_events": amr_events,
+        "endpoint": endpoint,
+    }
 
 
 def usable_cycles(

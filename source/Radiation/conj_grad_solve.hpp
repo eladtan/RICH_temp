@@ -2324,6 +2324,12 @@ namespace CG
         virtual void BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells,
             double const dt, std::vector<double>& b, std::vector<double>& x0, double const current_time) const = 0;
 
+        /*! \brief Collective: whether the matrix just built must be rejected before preconditioning and solving.
+         *
+         * Every rank calls it after BuildMatrix; true on every rank makes BiCGSTAB return good_end = false at once.
+         */
+        virtual bool MatrixBuildRejected() const {return false;}
+
         /*! \brief Whether this builder can assemble directly into flat CSR. */
         virtual bool SupportsDirectCSR() const noexcept {return false;}
 

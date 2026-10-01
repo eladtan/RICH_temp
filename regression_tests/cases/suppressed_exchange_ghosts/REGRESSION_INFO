@@ -1,0 +1,16 @@
+# Distributed Voronoi ghost search after builds with the point exchange suppressed.
+# Points are exchanged once, then rigidly shifted by several rank-domain widths and
+# rebuilt with suppressRebalancing=suppressExchange=true (the individual-timestep
+# build mode). Every owned cell must match a serial reference tessellation.
+TEST_ID="suppressed_exchange_ghosts"
+TAGS="mpi"
+CATEGORY="code_correctness"
+BUILD_TEST_NAME="regression_tests/cases/suppressed_exchange_ghosts"
+RUN_DIR_REL="regression_tests/cases/suppressed_exchange_ghosts"
+RUN_COMMAND="mpirun -np ${SLURM_NTASKS} \"${RICH_BIN}\""
+CHECK_FUNCTION="check_suppressed_exchange_ghosts_case"
+RUN_MODE="slurm"
+SLURM_NTASKS="64"
+SLURM_PARTITION="bigrun"
+SLURM_EXCLUSIVE="1"
+SLURM_TIME_LIMIT="01:00:00"

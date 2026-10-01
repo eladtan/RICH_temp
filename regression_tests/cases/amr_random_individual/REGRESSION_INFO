@@ -1,0 +1,17 @@
+# amr_random (same build) in its individual-AMR mode on a partial mesh: AMR3D::ApplyIndividual must rebuild from
+# the committed generators, not from the cell centroids the context carries as gravity sources (2026-09-25; the
+# centroid rebuild relocated every generator and caused refinement bursts after individual TDE stretches).
+TEST_ID="amr_random_individual"
+TAGS="serial mpi"
+CATEGORY="code_correctness"
+BUILD_TEST_NAME="regression_tests/cases/amr_random"
+RUN_DIR_REL="regression_tests/cases/amr_random_individual"
+CHECK_FUNCTION="check_amr_random_individual_case"
+RUN_COMMAND_SERIAL='export RICH_TEST_INDIVIDUAL_AMR=1 RICH_TEST_PARTIAL_MESH_BEFORE_AMR=1 RICH_TEST_AMR_ROUNDS=3 RICH_TEST_POINT_COUNT=10000 && "${RICH_BIN}"'
+RUN_MODE_SERIAL="direct"
+RUN_COMMAND_MPI='export RICH_TEST_INDIVIDUAL_AMR=1 RICH_TEST_PARTIAL_MESH_BEFORE_AMR=1 RICH_TEST_AMR_ROUNDS=3 RICH_TEST_POINT_COUNT=200000 && mpirun -np ${SLURM_NTASKS} "${RICH_BIN}"'
+RUN_MODE_MPI="slurm"
+SLURM_NTASKS_MPI="64"
+SLURM_PARTITION_MPI="bigrun"
+SLURM_EXCLUSIVE_MPI="1"
+SLURM_TIME_LIMIT="00:30:00"

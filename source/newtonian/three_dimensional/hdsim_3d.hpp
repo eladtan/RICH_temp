@@ -1,7 +1,10 @@
 #ifndef HDSIM_3D_HPP
 #define HDSIM_3D_HPP 1
 
+#include <array>
 #include <cassert>
+#include <string>
+#include <vector>
 #include <chrono>
 #include <limits>
 #include <memory>
@@ -33,6 +36,49 @@
 
 class SphericalShellProjector3D;
 class SphericalShellGeometry3D;
+
+// Test seam for the individual partial-mesh closure loop: attached through
+// IndividualClosureTestAccess by unit tests only (null in production, where
+// every hook is a pointer test and no collective is added).  With a probe
+// attached, timeAdvanceIndividual builds only the event mesh from the probe's
+// seeds (the context's active cells at depth zero, depth_one_seed at one,
+// depth_two_seed at two) and returns, recording what the closure did.
+struct IndividualClosureTestProbe
+{
+    std::vector<size_t> depth_one_seed;
+    std::vector<size_t> depth_two_seed;
+    // -1: the environment settings; 0 or 1 overrides them (same value on every rank).
+    int closure_reexpand = -1;
+    int reexpand_verify = -1;
+    // Outputs, rank-local.
+    size_t attempts = 0;
+    size_t reexpansions = 0;
+    size_t remote_promotions = 0;
+    std::string result;
+    std::string reason;
+    // Every expansion of a cell: attempt, re-expansions so far, canonical index, depth.
+    std::vector<std::array<size_t, 4> > expansions;
+    // The remote depth promotions at each re-expansion continuation.
+    std::vector<std::vector<size_t> > promoted_at_continue;
+    // Local additions at each rebuild decision.
+    std::vector<size_t> rebuild_local_additions;
+    // Depths and target set when the closure closed globally.
+    std::vector<unsigned char> final_depth;
+    std::vector<size_t> final_target;
+    void clearOutputs(void)
+    {
+        attempts = reexpansions = remote_promotions = 0;
+        result.clear();
+        reason.clear();
+        expansions.clear();
+        promoted_at_continue.clear();
+        rebuild_local_additions.clear();
+        final_depth.clear();
+        final_target.clear();
+    }
+};
+
+struct IndividualClosureTestAccess;
 
 //! \brief Three dimensional simulation
 class HDSim3D
@@ -219,6 +265,27 @@ public:
     the last global step took, so the first event (before the first suggestion
     refreshes it) scales per-step drivers by its own interval.
   */
+  // Global -> individual switch: the generator velocities a global step
+  // would take next (point motion, ghost exchange, the motion fix with
+  // next_time_step), kept by stable ID for the first individual intervals.
+  // Without them every generator stood still through its first interval
+  // while the gas moved (TDE: a thin outflow cell at |v| 33 went from
+  // 5.7e-13 to 2.1e-12 in density and from 2.5e4 to 1.2e7 K in one interval,
+  // and its radiation limit put the cadence 8 x below the global step).
+  // Collective under MPI.
+  void PrepareIndividualEntryPointVelocities(double next_time_step);
+  double IndividualEntryReferenceStep(void) const {return individual_entry_reference_step_;}
+  double ComputeIndividualEntryIntervalBound(void);
+
+  bool TakeIndividualEntryPointVelocities(std::vector<std::pair<size_t, Vector3D> >& velocities)
+  {
+    if(individual_entry_point_velocities_.empty())
+      return false;
+    velocities.swap(individual_entry_point_velocities_);
+    individual_entry_point_velocities_.clear();
+    return true;
+  }
+
   void SetIndividualGlobalStepReference(double reference)
   {individual_global_step_reference_ = std::isfinite(reference) && reference > 0 ? reference : 0;}
 
@@ -233,7 +300,12 @@ public:
     individual_conserved_change_.clear();
     individual_limit_at_activation_.clear();
     individual_mesh_target_ids_.clear();
-    individual_adjacency_.clear();
+    // The adjacency cache is keyed by stable ID: after AMR it is realigned to
+    // the new cell order at its next use instead of being dropped.  Clearing
+    // it here left every partial event after a full AMR pass unseeded (TDE
+    // job 10225873: ~4900 depth-one closure additions per event, all without
+    // a record, and three builds per partial mesh).
+    individual_adjacency_realign_pending_ = true;
     individual_mesh_restore_pending_ = false;
     individual_event_mesh_reusable_ = false;
   }
@@ -263,6 +335,7 @@ public:
       face_values_scratch_);
     vector<size_t>().swap(individual_mesh_target_ids_);
     vector<IndividualAdjacencyRecord>().swap(individual_adjacency_);
+    individual_adjacency_realign_pending_ = false;
     // Indexed by owned cell: an ownership change misaligns it even when the
     // count survives.
     std::vector<unsigned char>().swap(individual_limit_reason_);
@@ -399,6 +472,9 @@ private:
 	    vector<int> neighbor_owners;
 	  };
 	  vector<IndividualAdjacencyRecord> individual_adjacency_;
+	  // Set when cell order may have changed (ResetIndividualMeshState): the
+	  // cache is realigned by ID before its next use.
+	  bool individual_adjacency_realign_pending_ = false;
 	  vector<Vector3D> oldpoints_scratch_;
   vector<Vector3D> tessellation_points_scratch_;
   vector<Conserved3D> fluxes_scratch_;
@@ -415,6 +491,26 @@ private:
   #ifdef RICH_MPI
     ExchangeChain exchange_chain_;
   #endif // RICH_MPI
+  vector<std::pair<size_t, Vector3D> > individual_entry_point_velocities_;
+  // Smallest individual hydro (CFL) limit over the owned cells on the switch
+  // state with the entry velocities (MPI minimum; 0 when unavailable).
+  double individual_entry_reference_step_ = 0;
+  friend struct IndividualClosureTestAccess;
+  IndividualClosureTestProbe* individual_closure_probe_ = nullptr;
+};
+
+struct IndividualClosureTestAccess
+{
+    static void attach(HDSim3D& sim, IndividualClosureTestProbe* probe)
+    {
+        sim.individual_closure_probe_ = probe;
+    }
+#ifdef RICH_MPI
+    // Collective: compares the current mesh's geometry of `checked` (canonical
+    // indices) with a full parallel build of the canonical points, with the
+    // re-expansion verifier's tolerances; true when every rank agrees.
+    static bool retainedMatchesFullBuild(HDSim3D& sim, std::vector<size_t> const& checked, std::uint64_t tick);
+#endif
 };
 
 #endif // HDSIM_3D_HPP

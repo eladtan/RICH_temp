@@ -362,6 +362,7 @@ int main()
         size_t migrated_cells_global = 0;
         size_t actual_refined_local = 0;
         size_t actual_removed_local = 0;
+        size_t generators_moved_local = 0;
         for(size_t round = 0; round < amr_rounds; ++round) {
             std::unordered_map<size_t, double> old_volumes;
             old_volumes.reserve(tess.GetPointNo());
@@ -393,10 +394,20 @@ int main()
                 for(CellTimeState const& state : scheduler.states())
                     old_states.emplace(state.cell_id, state);
 
+                // As the hydro step and Simulation fill it: committed
+                // generators for AMR, cell centroids as gravity sources.  Every
+                // cell that survives the pass must keep its generator exactly.
+                std::vector<Vector3D> canonical_points = tess.getMeshPoints();
+                canonical_points.resize(cell_count);
+                context.generator_points = canonical_points;
+                context.gravity_source_points.resize(cell_count);
+                std::unordered_map<size_t, Vector3D> generator_before;
+                generator_before.reserve(cell_count);
+                for(size_t i = 0; i < cell_count; ++i) {
+                    context.gravity_source_points[i] = tess.GetCellCM(i);
+                    generator_before.emplace(simulation.getCells()[i].ID, canonical_points[i]);
+                }
                 if(partial_before_amr) {
-                    std::vector<Vector3D> canonical_points = tess.getMeshPoints();
-                    canonical_points.resize(cell_count);
-                    context.gravity_source_points = canonical_points;
 #ifdef RICH_MPI
                     tess.BuildPartiallyParallel(canonical_points,
                         std::vector<double>(canonical_points.size(), 1.0),
@@ -407,6 +418,17 @@ int main()
                 }
 
                 IndividualAMRChangeSet const changes = amr.ApplyIndividual(simulation, context);
+                {
+                    size_t const survivors = std::min(tess.GetPointNo(), simulation.getCells().size());
+                    for(size_t i = 0; i < survivors; ++i) {
+                        auto const before = generator_before.find(simulation.getCells()[i].ID);
+                        Vector3D const& now = tess.GetMeshPoint(i);
+                        if(before != generator_before.end() &&
+                           !(now.x == before->second.x && now.y == before->second.y &&
+                             now.z == before->second.z))
+                            ++generators_moved_local;
+                    }
+                }
                 actual_refined_local += changes.child_parent_ids.size();
                 actual_removed_local += changes.removed_cell_ids.size();
                 for(size_t id : changes.removed_cell_ids)
@@ -584,6 +606,10 @@ int main()
         MPI_Allreduce(MPI_IN_PLACE, &total_refined_global, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(MPI_IN_PLACE, &total_removed_global, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
 #endif
+        size_t generators_moved_global = generators_moved_local;
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &generators_moved_global, 1, MPI_UNSIGNED_LONG, MPI_SUM, MPI_COMM_WORLD);
+#endif
         if(rank == 0) {
             std::cout << std::endl
                       << "Total points refined: " << total_refined_global
@@ -601,7 +627,7 @@ int main()
         const double conservation_threshold = 1e-10;
         const bool individual_gate_passed = !individual_amr ||
             (scheduler_remap_valid && total_refined_global > 0 &&
-             total_removed_global > 0 &&
+             total_removed_global > 0 && generators_moved_global == 0 &&
              max_conservation_error <= conservation_threshold &&
              load_balance_migration_valid);
         const int passed = (max_drift <= threshold &&
@@ -631,6 +657,7 @@ int main()
             out << "worst_conservation_component " << worst_conservation_component << "\n";
             out << "conservation_threshold " << conservation_threshold << "\n";
             out << "scheduler_remap_valid " << scheduler_remap_valid << "\n";
+            out << "individual_generators_moved " << generators_moved_global << "\n";
             out << "load_balance_migration_valid "
                 << load_balance_migration_valid << "\n";
             out << "migrated_cells " << migrated_cells_global << "\n";

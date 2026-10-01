@@ -8,6 +8,7 @@
 #include "newtonian/three_dimensional/simulation/ProgressTracker.hpp"
 #include "newtonian/three_dimensional/CostCalculator3D.hpp"
 #include "PhysicsStep.hpp"
+#include <tuple>
 #ifdef RICH_MPI
     #include <mpi.h>
     #include "mpi/mpi_commands.hpp"

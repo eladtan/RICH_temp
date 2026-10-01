@@ -1,4 +1,5 @@
 #include "RadiationStep.hpp"
+#include "Radiation/Diffusion.hpp"
 #include "misc/memory_debug.hpp"
 #include "misc/universal_error.hpp"
 #include "newtonian/three_dimensional/simulation/ActiveMeshView.hpp"
@@ -331,6 +332,98 @@ bool identityOwnedMoveRequested()
 // than the global dt that the same physics ran at (jobs 10199442 vs
 // 10199059).  Default keeps the historical behaviour; values must agree on
 // every MPI rank.
+// RICH_INDIVIDUAL_RADIATION_ANCHOR_SUBCYCLE (default on): a gray relative-
+// change limit in [0.5, 1) x the anchor interval lets the next hydro interval
+// reach the anchor bin and caps the radiation candidate fraction at the cell's
+// next activation, instead of halving the bin (TDE, job 10232945: a limit 4 %
+// below the anchor put one cell, and through closure its neighbours, a whole
+// bin finer).  Agreed across ranks.
+bool radiationAnchorSubcycle()
+{
+    static bool const enabled = []()
+    {
+        char const* const value = std::getenv("RICH_INDIVIDUAL_RADIATION_ANCHOR_SUBCYCLE");
+        int local = 1;
+        if(value != nullptr && value[0] != '\0')
+            local = std::strcmp(value, "0") == 0 ? 0 : (std::strcmp(value, "1") == 0 ? 1 : -1);
+        int extrema[2] = {local, -local};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, extrema, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        if(extrema[0] < 0 || extrema[0] != -extrema[1])
+            throw std::invalid_argument(
+                "RICH_INDIVIDUAL_RADIATION_ANCHOR_SUBCYCLE must be 0 or 1 on every rank");
+        return extrema[0] != 0;
+    }();
+    return enabled;
+}
+
+// Lower edge of the anchor-crossing subcycling band as a fraction of the
+// anchor interval (RICH_INDIVIDUAL_RADIATION_ANCHOR_BAND, default 0.5; e.g.
+// 0.25 allows up to four radiation pieces per anchor interval).  Agreed.
+double anchorSubcycleBandLow()
+{
+    static double const low = []()
+    {
+        char const* const text = std::getenv("RICH_INDIVIDUAL_RADIATION_ANCHOR_BAND");
+        double value = 0.5;
+        if(text != nullptr && text[0] != '\0')
+        {
+            char* end = nullptr;
+            value = std::strtod(text, &end);
+            if(end == text || *end != '\0' || !(value > 0 && value < 1))
+                value = -1;
+        }
+        double extrema[2] = {value, -value};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, extrema, 2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        if(extrema[0] < 0 || extrema[0] != -extrema[1])
+            throw std::invalid_argument(
+                "RICH_INDIVIDUAL_RADIATION_ANCHOR_BAND must be one number in (0, 1) on every rank");
+        return extrema[0];
+    }();
+    return low;
+}
+
+// RICH_INDIVIDUAL_RADIATION_ENTRY_PROBE (default off): allow an earned recovery
+// probe as an event's *first* radiation candidate.  The in-event probe can only
+// fire when the doubled fraction still fits in the remaining event fraction, so
+// a persisted ceiling of 1/2 traps the controller: the two accepted halves fill
+// the event exactly, no probe is ever scheduled, and every later event keeps
+// paying two solves even once the measured success threshold is met.  The global
+// path escapes this only because it re-initializes the ceiling every step.
+// Agreed across ranks.
+//
+// Enabling it also makes the persisted retry controller collective and strictly
+// earned: the restored ceiling and backoff counters are reduced to one common
+// triple at event entry (so the attempted fraction and the probe classification
+// are identical on every rank, probe or not, and every rank persists that same
+// triple), and a probe raises only the attempted interval -- the committed
+// ceiling is promoted when the probe candidate is accepted, never before.  The
+// second part covers the in-event probe as well, so a rejected probe can no
+// longer keep a promotion that no candidate earned.
+bool radiationEntryProbe()
+{
+    static bool const enabled = []()
+    {
+        char const* const value =
+            std::getenv("RICH_INDIVIDUAL_RADIATION_ENTRY_PROBE");
+        int local = 0;
+        if(value != nullptr && value[0] != '\0')
+            local = std::strcmp(value, "0") == 0 ? 0 : (std::strcmp(value, "1") == 0 ? 1 : -1);
+        int extrema[2] = {local, -local};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, extrema, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        if(extrema[0] < 0 || extrema[0] != -extrema[1])
+            throw std::invalid_argument(
+                "RICH_INDIVIDUAL_RADIATION_ENTRY_PROBE must be 0 or 1 on every rank");
+        return extrema[0] != 0;
+    }();
+    return enabled;
+}
+
 bool radiationRetryLimitsBins()
 {
     static bool const enabled = []()
@@ -723,8 +816,15 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
         context.radiation_defect_accounting;
     double candidate_fraction_ceiling = 1;
     RetryProbeBackoff retry_probe_backoff;
+    // First use is collective: every rank reads the flag here, before any
+    // state-dependent branch.
+    bool const entry_probe = radiationEntryProbe();
+    // With the entry probe the controller state is a collective object: every
+    // rank restores and persists it, so the unified state below stays common
+    // instead of a rank without retry history silently vetoing recovery.
     if(defect_accounting != nullptr &&
-       (defect_accounting->accepted_dirichlet_candidates > 0 ||
+       (entry_probe ||
+        defect_accounting->accepted_dirichlet_candidates > 0 ||
         defect_accounting->defect_rejections > 0)) {
         candidate_fraction_ceiling =
             defect_accounting->cooldown_fraction_ceiling;
@@ -732,7 +832,31 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
             defect_accounting->cooldown_accepted_candidates,
             defect_accounting->cooldown_required_candidates);
     }
-    double candidate_fraction = candidate_fraction_ceiling;
+    // Anchor-crossing accuracy ceiling (RICH_INDIVIDUAL_RADIATION_ANCHOR_SUBCYCLE):
+    // the tightest pending limit / elapsed interval over the active cells,
+    // collectively (the limits live in the scheduler state, so they follow
+    // migration, AMR and restarts).  Kept apart from the retry ceiling the
+    // defect accounting persists.
+    double accuracy_ceiling = 1;
+    bool const anchor_subcycle = radiationAnchorSubcycle() &&
+        context.radiation_accuracy_limits.size() == canonical_owned_size;
+    if(radiationAnchorSubcycle())
+    {
+        // First use is collective: every rank reads the band here.
+        static_cast<void>(anchorSubcycleBandLow());
+        if(anchor_subcycle)
+            for(std::size_t local : local_context.active_indices)
+            {
+                double const limit = context.radiation_accuracy_limits.at(mesh_view.localToGlobal(local));
+                double const interval = local_context.cellTimeStep(local);
+                if(limit > 0 && interval > 0)
+                    accuracy_ceiling = std::min(accuracy_ceiling, std::max(1e-6, limit / interval));
+            }
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &accuracy_ceiling, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+#endif
+    }
+    double candidate_fraction = std::min(candidate_fraction_ceiling, accuracy_ceiling);
     std::uint64_t observed_defect_rejections =
         defect_accounting == nullptr ? 0 :
         defect_accounting->defect_rejections;
@@ -749,6 +873,59 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
     std::map<std::size_t, double> cell_retry_fractions;
     bool retry_limiter_requires_all_active = false;
     int maximum_iterations = 0;
+    std::size_t entry_retry_probes = 0;
+    if(entry_probe) {
+        // Earned recovery probe at event entry.  The in-event probe below is
+        // bounded by the remaining event fraction, so a persisted ceiling of
+        // 1/2 can never be tested again (see radiationEntryProbe()).  The first
+        // candidate is the one candidate that is not bounded by an
+        // already-completed fraction, so schedule the probe here instead --
+        // keeping the measured-success backoff, the accuracy ceiling and the
+        // existing acceptance gates exactly as they are.
+        //
+        // Step 1: make the persisted controller state common.  The restored
+        // ceiling and backoff counters are per-rank data, so reduce them to the
+        // most restrictive consistent triple (smallest ceiling, fewest measured
+        // successes, longest cooldown).  Every rank then evaluates the same
+        // predicate below, so the attempted fraction and the probe
+        // classification are identical on every rank -- for the probe and for
+        // the no-probe case alike -- and the unified triple is what gets
+        // persisted, so ranks cannot drift apart across events.
+        double unified[3] = {
+            candidate_fraction_ceiling,
+            static_cast<double>(retry_probe_backoff.successfulCandidates()),
+            -static_cast<double>(retry_probe_backoff.cooldown())};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, unified, 3, MPI_DOUBLE, MPI_MIN,
+                      MPI_COMM_WORLD);
+#endif
+        candidate_fraction_ceiling = unified[0];
+        retry_probe_backoff.restore(
+            static_cast<std::uint64_t>(unified[1]),
+            static_cast<std::uint64_t>(-unified[2]));
+        maximum_retry_probe_cooldown = retry_probe_backoff.cooldown();
+        candidate_fraction = std::min(candidate_fraction_ceiling,
+                                      accuracy_ceiling);
+        // Step 2: the probe itself raises only the attempted interval.  The
+        // committed ceiling stays where it is until this candidate is actually
+        // accepted (see the acceptance path), so a solver rejection cannot persist a
+        // promotion that no candidate earned.  A rejection additionally halves the fraction and
+        // doubles the probe cooldown through the ordinary failure path.
+        if(candidate_fraction_ceiling < 1 &&
+           retry_probe_backoff.readyToProbe()) {
+            double const probe_fraction = std::min(
+                std::min(1.0, 2 * candidate_fraction_ceiling), accuracy_ceiling);
+            if(probe_fraction > candidate_fraction) {
+                candidate_fraction = probe_fraction;
+                retry_probe_backoff.recordProbeScheduled();
+                candidate_is_retry_probe = true;
+                ++entry_retry_probes;
+                maximum_retry_probe_cooldown = std::max(
+                    maximum_retry_probe_cooldown,
+                    retry_probe_backoff.cooldown());
+            }
+        }
+    }
     phase_start = std::chrono::steady_clock::now();
     matrix_builder.beginIndividualPassiveWakeTracking(canonical_owned_size);
     matrix_builder.prestepIndividual(tess, local_cells, local_context);
@@ -807,17 +984,28 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
                 tess.SyncPartialBuildData(local_extensives, all_extensives);
             }
             retry_probe_backoff.recordAcceptance(candidate_is_retry_probe);
+            if(entry_probe && candidate_is_retry_probe)
+                // Deferred promotion: the probe interval just proved itself, so
+                // commit the ceiling now.  Nothing was promoted speculatively,
+                // so a rejected probe cannot leave an unaccepted
+                // promotion behind.
+                candidate_fraction_ceiling = std::max(
+                    candidate_fraction_ceiling, candidate_fraction);
             candidate_is_retry_probe = false;
             double const old_ceiling = candidate_fraction_ceiling;
             double next_ceiling = old_ceiling;
             if(retry_probe_backoff.readyToProbe() && old_ceiling < 1)
                 next_ceiling = std::min(1.0, 2 * old_ceiling);
-            double const next_fraction = std::min(
+            double const next_fraction = std::min(std::min(
                 1 - completed_fraction,
                 std::min(2 * candidate_fraction,
-                         next_ceiling));
+                         next_ceiling)), accuracy_ceiling);
             if(next_fraction > old_ceiling) {
-                candidate_fraction_ceiling = next_ceiling;
+                if(!entry_probe)
+                    // Legacy behaviour: promote to what the next candidate
+                    // tests.  With the entry probe the promotion is deferred
+                    // to that candidate's acceptance instead.
+                    candidate_fraction_ceiling = next_fraction;
                 retry_probe_backoff.recordProbeScheduled();
                 candidate_is_retry_probe = true;
             }
@@ -904,6 +1092,32 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
         local_context, tess, local_cells, local_suggested_dt,
         use_identity_owned_move ? &all_cells : &cells,
         &mesh_view.localToGlobalMapping());
+    // Gray relative-change limits just below the anchor interval: the next
+    // hydro interval may reach the anchor bin and the limit is kept in the
+    // cell's state for its next activation (above); every other active cell's
+    // pending limit is consumed.  Only the gray estimator (MG adds its force
+    // limit to the same vector) and without the optional increment limiter,
+    // which the same vector also carries; below half the anchor unchanged.
+    if(anchor_subcycle)
+    {
+        double const anchor = context.anchor_time_step;
+        char const* const increment = std::getenv("RICH_INDIVIDUAL_RADIATION_INCREMENT_LIMIT");
+        bool const increment_limiter = increment != nullptr && increment[0] != '\0' &&
+            std::strtod(increment, nullptr) > 0;
+        bool const relax = anchor > 0 && !increment_limiter &&
+            dynamic_cast<Diffusion const*>(&matrix_builder) != nullptr;
+        for(std::size_t local : local_context.active_indices)
+        {
+            double& pending = context.radiation_accuracy_limits.at(mesh_view.localToGlobal(local));
+            pending = 0;
+            double& limit = local_suggested_dt.at(local);
+            if(relax && limit >= anchorSubcycleBandLow() * anchor && limit < anchor)
+            {
+                pending = limit;
+                limit = anchor;
+            }
+        }
+    }
     // With the switch off, a rejected candidate has already been absorbed by
     // sub-cycling above; the physical limiter (calculateIndividualTimeSteps)
     // alone shapes the next bin, and the retry cooldown remembered in the
@@ -1013,7 +1227,11 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
                     passive_reference_time_steps[global]);
         }
 
-    if(rejected_candidates > 0 && trace_performance && rank == 0) {
+    // Entry probes are rare (one per cooldown worth of accepted candidates) but
+    // are the only record that the persisted ceiling recovered, so they get a
+    // summary even when the event had no rejection at all.
+    if((rejected_candidates > 0 || entry_retry_probes > 0) &&
+       trace_performance && rank == 0) {
         std::ostream& trace_stream = RuntimeTraceStream();
         trace_stream << "Individual radiation retries: "
                      << rejected_candidates;
@@ -1031,6 +1249,8 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
                      << ", minimum fraction "
                      << event_minimum_candidate_fraction
                      << ", failed recovery probes " << rejected_retry_probes
+                     << ", entry recovery probes " << entry_retry_probes
+                     << ", persisted ceiling " << candidate_fraction_ceiling
                      << ", maximum probe cooldown "
                      << maximum_retry_probe_cooldown
                      << std::endl;
@@ -1039,7 +1259,8 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
         last_individual_performance["radiation-limit-update"] =
             elapsedSeconds(phase_start);
     if(defect_accounting != nullptr &&
-       (defect_accounting->accepted_dirichlet_candidates > 0 ||
+       (entry_probe ||
+        defect_accounting->accepted_dirichlet_candidates > 0 ||
         defect_accounting->defect_rejections > 0)) {
         defect_accounting->cooldown_accepted_candidates =
             retry_probe_backoff.successfulCandidates();

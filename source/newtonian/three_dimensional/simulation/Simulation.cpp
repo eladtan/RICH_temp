@@ -325,6 +325,14 @@ struct IndividualFullSourceSweepReport
     double prepare_seconds = 0;
     double sources_seconds = 0;
     double tree_seconds = 0;
+    // Parts of tree_seconds: the local signal tree with its node summaries,
+    // and the distributed routing tree when it is rebuilt.
+    double tree_local_seconds = 0;
+    double tree_distributed_seconds = 0;
+    // The reuse test (every own source against the cached regions) and the
+    // MPI_MAX of its escape, which also absorbs waiting for the slowest rank.
+    double tree_reuse_check_seconds = 0;
+    double tree_reuse_reduce_seconds = 0;
     // Wake routing tree built afresh / reused this call.
     std::uint64_t routing_rebuilds = 0;
     std::uint64_t routing_reuses = 0;
@@ -1019,6 +1027,8 @@ IndividualFullSourceSweepReport limitIndividualTreeWakeTimeSteps(
     buildIndividualWakeNodeSummaries(
         local_tree.getRoot(), sources, remaining_sleep,
         local_wake_node_summaries);
+    report.tree_local_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - wake_phase_start).count();
 
 #ifdef RICH_MPI
     int rank_count = 1;
@@ -1068,6 +1078,7 @@ IndividualFullSourceSweepReport limitIndividualTreeWakeTimeSteps(
     double const escape_limit = 0.25 * minimum_query_radius;
     // Local escape: the largest distance of an own source from the own
     // cached regions (infinite without a tree or with reuse off).
+    auto const reuse_check_start = std::chrono::steady_clock::now();
     double escape = routing_reuse_enabled != 0 && routing_tree != nullptr &&
         !routing_regions.empty() ? 0.0 : std::numeric_limits<double>::infinity();
     if(std::isfinite(escape))
@@ -1111,8 +1122,13 @@ IndividualFullSourceSweepReport limitIndividualTreeWakeTimeSteps(
     }
     // Squared distances above; the margin is a distance.
     escape = std::sqrt(escape);
+    auto const reuse_reduce_start = std::chrono::steady_clock::now();
+    report.tree_reuse_check_seconds = std::chrono::duration<double>(
+        reuse_reduce_start - reuse_check_start).count();
     MPI_Allreduce(MPI_IN_PLACE, &escape, 1, MPI_DOUBLE, MPI_MAX,
                   MPI_COMM_WORLD);
+    report.tree_reuse_reduce_seconds = std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - reuse_reduce_start).count();
     double routing_margin = 0;
     if(escape <= escape_limit)
     {
@@ -1121,10 +1137,13 @@ IndividualFullSourceSweepReport limitIndividualTreeWakeTimeSteps(
     }
     else
     {
+        auto const distributed_start = std::chrono::steady_clock::now();
         delete routing_tree;
         routing_tree = new DistributedOctTree<IndividualSignalTreePoint>(
             &local_tree, false, MPI_COMM_WORLD);
         routing_regions = routing_tree->getMyBoundingBoxes();
+        report.tree_distributed_seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - distributed_start).count();
         ++report.routing_rebuilds;
     }
     DistributedOctTree<IndividualSignalTreePoint> const& distributed_tree =
@@ -1292,6 +1311,96 @@ bool parseEnvironmentToggle(char const* const name, bool const fallback,
     return fallback;
 }
 
+// RICH_INDIVIDUAL_STATE_HASH=1 (diagnostic, default off): after every event,
+// rank 0 prints order-independent 64-bit hashes, so two runs from one restart
+// can be checked for bitwise agreement event by event: of every owned cell's
+// stable ID with the bits of its primitive, extensive and scheduler state and
+// its committed generator; of the event's active ID set; and of the
+// (stable ID, owning rank) pairs, the ownership.  Agreed across ranks (the
+// hashes are reductions).
+bool individualStateHashEnabled()
+{
+    static bool const enabled = []()
+    {
+        bool valid = true;
+        int const value = parseEnvironmentToggle("RICH_INDIVIDUAL_STATE_HASH", false, valid) ? 1 : 0;
+        int agreement[3] = {value, -value, valid ? 0 : 1};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, agreement, 3, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        if(agreement[2] != 0 || agreement[0] != -agreement[1])
+            throw std::invalid_argument("RICH_INDIVIDUAL_STATE_HASH must be one boolean on every rank");
+        return agreement[0] != 0;
+    }();
+    return enabled;
+}
+
+// splitmix64 finalizer: summing it over cells gives an order-independent hash.
+std::uint64_t MixStateHash(std::uint64_t x)
+{
+    x += 0x9e3779b97f4a7c15ULL;
+    x = (x ^ (x >> 30)) * 0xbf58476d1ce4e5b9ULL;
+    x = (x ^ (x >> 27)) * 0x94d049bb133111ebULL;
+    return x ^ (x >> 31);
+}
+
+std::uint64_t CombineStateHash(std::uint64_t hash, double value)
+{
+    std::uint64_t bits = 0;
+    std::memcpy(&bits, &value, sizeof(bits));
+    return MixStateHash(hash ^ bits);
+}
+
+std::uint64_t CombineStateHash(std::uint64_t hash, Vector3D const& value)
+{
+    return CombineStateHash(CombineStateHash(CombineStateHash(hash, value.x), value.y), value.z);
+}
+
+// Every stored field that evolves or feeds the evolution; tracers and stickers
+// up to the registered names (the rest are not initialized).
+std::uint64_t CellStateHash(ComputationalCell3D const& cell, Conserved3D const* extensive,
+                            CellTimeState const* state, Vector3D const* generator)
+{
+    std::uint64_t hash = MixStateHash(static_cast<std::uint64_t>(cell.ID));
+    for(double value : {cell.density, cell.pressure, cell.internal_energy, cell.temperature, cell.dt, cell.Erad,
+                        cell.Erad_dt, cell.Erad_dt_dt, cell.cs})
+        hash = CombineStateHash(hash, value);
+    hash = CombineStateHash(hash, cell.velocity);
+    for(double value : cell.Eg)
+        hash = CombineStateHash(hash, value);
+    std::size_t const tracers = std::min(ComputationalCell3D::tracerNames.size(), cell.tracers.size());
+    for(std::size_t i = 0; i < tracers; ++i)
+        hash = CombineStateHash(hash, cell.tracers[i]);
+    std::size_t const stickers = std::min(ComputationalCell3D::stickerNames.size(), cell.stickers.size());
+    for(std::size_t i = 0; i < stickers; ++i)
+        hash = MixStateHash(hash ^ (cell.stickers[i] ? 1u : 2u));
+    if(extensive != nullptr)
+    {
+        for(double value : {extensive->mass, extensive->energy, extensive->internal_energy, extensive->Erad,
+                            extensive->Erad_dt, extensive->Erad_dt_dt})
+            hash = CombineStateHash(hash, value);
+        hash = CombineStateHash(hash, extensive->momentum);
+        for(double value : extensive->Eg)
+            hash = CombineStateHash(hash, value);
+        for(std::size_t i = 0; i < std::min(tracers, extensive->tracers.size()); ++i)
+            hash = CombineStateHash(hash, extensive->tracers[i]);
+    }
+    if(state != nullptr)
+    {
+        for(std::uint64_t value : {static_cast<std::uint64_t>(state->cell_id), state->begin_tick, state->end_tick,
+                                   state->last_primitive_tick, static_cast<std::uint64_t>(state->time_bin),
+                                   static_cast<std::uint64_t>(state->pending_neighbor_bin),
+                                   static_cast<std::uint64_t>(state->gravity_half_kick_pending ? 1 : 0),
+                                   static_cast<std::uint64_t>(state->change_wake_pending)})
+            hash = MixStateHash(hash ^ value);
+        hash = CombineStateHash(CombineStateHash(CombineStateHash(hash, state->point_velocity),
+                                                 state->cached_acceleration), state->change_wake_ratio);
+    }
+    if(generator != nullptr)
+        hash = CombineStateHash(hash, *generator);
+    return hash;
+}
+
 // Numeric environment parsers, shared by the MPI runtime options and the
 // adaptive integration options (which serial builds also compile).
 double parseEnvironmentDouble(char const* const name, double const fallback,
@@ -1397,6 +1506,12 @@ struct IndividualActiveHilbertRuntimeOptions
     // cell on average (AREPO's doubling weight), so busy regions are cut
     // into finer pieces that the round-robin spreads.
     double segment_work = 0;
+    // RICH_INDIVIDUAL_ACTIVE_HILBERT_SEGMENT_REVERT (default on): the probe
+    // ledger may revert segmented ownership to positional.  The ledger judges
+    // measured wall time, so the revert is the one ownership decision that
+    // differs between otherwise identical runs; off makes ownership a function
+    // of the state alone, for bitwise replay of A/B comparisons.
+    bool segment_revert = true;
 };
 
 struct IndividualForceAllActiveRuntimeOptions
@@ -1551,6 +1666,8 @@ individualActiveHilbertRuntimeOptions()
             std::min<std::size_t>(std::max<std::size_t>(segments, 1), 64));
         result.segment_bins = parseEnvironmentToggle(
             "RICH_INDIVIDUAL_ACTIVE_HILBERT_SEGMENT_BINS", false, locally_valid);
+        result.segment_revert = parseEnvironmentToggle(
+            "RICH_INDIVIDUAL_ACTIVE_HILBERT_SEGMENT_REVERT", true, locally_valid);
         result.segment_work = parseEnvironmentDouble(
             "RICH_INDIVIDUAL_ACTIVE_HILBERT_SEGMENT_WORK", 0.0, 0.0,
             locally_valid);
@@ -1562,7 +1679,8 @@ individualActiveHilbertRuntimeOptions()
             (result.trace ? 2 : 0) |
             (result.explicitly_configured ? 4 : 0) |
             (result.bound_check ? 8 : 0) |
-            (result.segment_bins ? 16 : 0);
+            (result.segment_bins ? 16 : 0) |
+            (result.segment_revert ? 32 : 0);
         int minimum_mask = local_mask;
         int maximum_mask = local_mask;
         double minimum_values[4] = {result.active_threshold,
@@ -2625,6 +2743,8 @@ void Simulation::NotifyDomainChanged(void)
     a.simMeasured = 0;
     if(!a.probing)
         a.wallTotalInMode = 0;
+    // A new workload is measured afresh, not under an inherited backoff.
+    a.dwellMultiplier = 1;
     if(a.enabled && this->rank == 0)
         std::cout << std::setprecision(12)
                   << "RICH_MODE_DOMAIN_CHANGE cycle=" << this->tracker.getCycle()
@@ -2632,6 +2752,9 @@ void Simulation::NotifyDomainChanged(void)
                   << " mode=" << (this->timeIntegrationMode ==
                       TimeIntegrationMode::Individual ? "individual" : "global")
                   << " probing=" << (a.probing ? 1 : 0)
+                  << " wall_s=" << a.wallTotalInMode
+                  << " probe_wall_budget_s=" << a.probeWallBudget
+                  << " dwell_multiplier=" << a.dwellMultiplier
                   << " epoch=" << a.domainEpoch << std::endl;
 }
 
@@ -3024,7 +3147,25 @@ struct AdaptiveIntegrationRuntimeOptions
     double probe_fraction = 0.1;
     double margin = 1.15;
     double gain_minimum = 1.5;
+    double dwell_wall_max_seconds = 1800;
 };
+
+bool adaptiveStayIndividual()
+{
+    static bool const enabled = []()
+    {
+        bool valid = true;
+        int const value = parseEnvironmentToggle("RICH_ADAPTIVE_STAY_INDIVIDUAL", false, valid) ? 1 : 0;
+        int agreement[3] = {value, -value, valid ? 0 : 1};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, agreement, 3, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        if(agreement[2] != 0 || agreement[0] != -agreement[1])
+            throw std::invalid_argument("RICH_ADAPTIVE_STAY_INDIVIDUAL must be one boolean on every rank");
+        return agreement[0] != 0;
+    }();
+    return enabled;
+}
 
 AdaptiveIntegrationRuntimeOptions const& adaptiveIntegrationRuntimeOptions()
 {
@@ -3055,21 +3196,23 @@ AdaptiveIntegrationRuntimeOptions const& adaptiveIntegrationRuntimeOptions()
             "RICH_ADAPTIVE_MARGIN", 1.15, 1.0, locally_valid);
         result.gain_minimum = parseEnvironmentDouble(
             "RICH_ADAPTIVE_GAIN_MIN", 1.5, 1.0, locally_valid);
+        result.dwell_wall_max_seconds = parseEnvironmentDouble(
+            "RICH_ADAPTIVE_DWELL_WALL_MAX", 1800, 0.0, locally_valid);
         int mask = (result.configured ? 1 : 0) | (result.enabled ? 2 : 0) |
             (locally_valid ? 0 : 4);
         unsigned long long sizes[6] = {
             result.dwell_min_steps, result.minimum_samples,
             result.ramp_individual_events, result.ramp_global_steps,
             result.gate_interval_steps, result.dwell_backoff_cap};
-        double values[3] = {result.probe_fraction, result.margin,
-                            result.gain_minimum};
+        double values[4] = {result.probe_fraction, result.margin,
+                            result.gain_minimum, result.dwell_wall_max_seconds};
 #ifdef RICH_MPI
         int minimum_mask = mask;
         int maximum_mask = mask;
         unsigned long long minimum_sizes[6];
         unsigned long long maximum_sizes[6];
-        double minimum_values[3];
-        double maximum_values[3];
+        double minimum_values[4];
+        double maximum_values[4];
         std::copy(std::begin(sizes), std::end(sizes), minimum_sizes);
         std::copy(std::begin(sizes), std::end(sizes), maximum_sizes);
         std::copy(std::begin(values), std::end(values), minimum_values);
@@ -3082,9 +3225,9 @@ AdaptiveIntegrationRuntimeOptions const& adaptiveIntegrationRuntimeOptions()
                       MPI_MIN, MPI_COMM_WORLD);
         MPI_Allreduce(MPI_IN_PLACE, maximum_sizes, 6, MPI_UNSIGNED_LONG_LONG,
                       MPI_MAX, MPI_COMM_WORLD);
-        MPI_Allreduce(MPI_IN_PLACE, minimum_values, 3, MPI_DOUBLE, MPI_MIN,
+        MPI_Allreduce(MPI_IN_PLACE, minimum_values, 4, MPI_DOUBLE, MPI_MIN,
                       MPI_COMM_WORLD);
-        MPI_Allreduce(MPI_IN_PLACE, maximum_values, 3, MPI_DOUBLE, MPI_MAX,
+        MPI_Allreduce(MPI_IN_PLACE, maximum_values, 4, MPI_DOUBLE, MPI_MAX,
                       MPI_COMM_WORLD);
         bool const consistent = minimum_mask == maximum_mask &&
             std::equal(std::begin(minimum_sizes), std::end(minimum_sizes),
@@ -3354,6 +3497,10 @@ void Simulation::adaptiveEnterIndividual(std::string const& reason)
     this->adaptiveLogSwitchState("before", "global_to_individual",
         this->tess.GetPointNo(), this->tsc->GetTimeStep(),
         std::numeric_limits<double>::quiet_NaN());
+    // On the global state, before the owned-only resize: the generator
+    // velocities of the first individual intervals.
+    for(const std::shared_ptr<PhysicsStep> &physicsStep : this->physics)
+        physicsStep->prepareIndividualEntry(this->tsc->GetTimeStep());
     for(const std::shared_ptr<PhysicsStep> &physicsStep : this->physics)
     {
         physicsStep->beforeIndividualRebalance();
@@ -3553,7 +3700,19 @@ double Simulation::adaptiveGainBound(void)
     // CFL/source suggestion under an anchor margin (as initialization), else
     // the smallest limit.  Bins may fall below initial_bin (radiation-limited
     // cells); update counts are normalized against the combined limit.
-    double const anchor_reference = this->adaptiveMode.anchorReferenceStep;
+    // Initialization caps the suggestion by the tightest hydro limit on the
+    // switch state; here the hydro steps' current minimum stands in for it (the
+    // one of the last switch is stale and would gate the probe that refreshes it).
+    double hydro_reference = 0;
+    for(std::size_t index = 0; index < count; ++index)
+        if(this->physics[index]->contributesIndividualHydrodynamicSignal() &&
+           std::isfinite(smallest[2 + index]) && smallest[2 + index] > 0)
+            hydro_reference = hydro_reference > 0 ?
+                std::min(hydro_reference, smallest[2 + index]) : smallest[2 + index];
+    double const anchor_suggestion = this->adaptiveMode.anchorReferenceStep;
+    double const anchor_reference = anchor_suggestion > 0 && hydro_reference > 0 ?
+        std::min(anchor_suggestion, hydro_reference) :
+        (anchor_suggestion > 0 ? anchor_suggestion : hydro_reference);
     double const dt_grid = IndividualBinAnchorMargin() > 0 && anchor_reference > 0 ?
         IndividualBinAnchorMargin() * anchor_reference : dt_global;
     double const anchor_scale = dt_grid / dt_global;
@@ -3578,14 +3737,8 @@ double Simulation::adaptiveGainBound(void)
         return bin > -60 ? static_cast<int>(bin) : -60;
     };
     // Under the bin-spread cap (IndividualTimeStepScheduler::maximumBinSpread)
-    // no bin exceeds the finest bin over all ranks by more than K.
-    int finest_bin = bin_span;
-    for(std::size_t cell = 0; cell < cell_count; ++cell)
-        if(limits[cell] > 0)
-            finest_bin = std::min(finest_bin, bin_of(limits[cell], dt_grid));
-#ifdef RICH_MPI
-    MPI_Allreduce(MPI_IN_PLACE, &finest_bin, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
-#endif
+    // no bin exceeds the anchor bin, bin 0 of this grid, by more than K.
+    int const finest_bin = 0;
     int const spread = IndividualTimeStepScheduler::maximumBinSpread();
     for(std::size_t cell = 0; cell < cell_count; ++cell)
     {
@@ -3756,6 +3909,10 @@ void Simulation::adaptiveAfterStep(TimeIntegrationMode mode)
         // re-measures before the next probe.
         if(tau_other > 0 && tau_other_epoch != a.domainEpoch)
         {
+            // A fresh measurement of the baseline, not an inherited long dwell
+            // (a backoff of 16 held a 3x-slower individual phase for 1036
+            // events on the TDE, job 10222326).
+            a.dwellMultiplier = 1;
             this->adaptiveLogDecision(mode,
                 (std::string("revert_to_") + IntegrationModeName(other) +
                  "_stale_baseline").c_str(), tau);
@@ -3767,6 +3924,8 @@ void Simulation::adaptiveAfterStep(TimeIntegrationMode mode)
         if(!(tau_other > 0) || tau >= tau_other * o.margin)
         {
             a.dwellMultiplier = 1;
+            if(individual)
+                a.individualAdopted = true;
             this->adaptiveLogDecision(mode,
                 (std::string("adopt_") + IntegrationModeName(mode)).c_str(),
                 tau);
@@ -3784,11 +3943,27 @@ void Simulation::adaptiveAfterStep(TimeIntegrationMode mode)
         return;
     }
 
-    if(a.stepsInMode < ramp + o.dwell_min_steps * a.dwellMultiplier)
+    // The dwell also ends after RICH_ADAPTIVE_DWELL_WALL_MAX seconds in the
+    // mode (0 disables), once the ramp and the minimum samples are behind it,
+    // so a backed-off dwell cannot hold a mode that became slow.
+    bool const dwell_wall_elapsed = o.dwell_wall_max_seconds > 0 &&
+        a.wallTotalInMode >= o.dwell_wall_max_seconds &&
+        a.stepsInMode > ramp + o.minimum_samples;
+    if(a.stepsInMode < ramp + o.dwell_min_steps * a.dwellMultiplier && !dwell_wall_elapsed)
         return;
     tau_here = tau;
     tau_here_epoch = a.domainEpoch;
     ++a.decisions;
+    // RICH_ADAPTIVE_STAY_INDIVIDUAL=1: after an individual probe was adopted,
+    // completed dwells in individual mode start no performance probe of the
+    // global mode (their wall time counts against the individual run); the
+    // stale-baseline and synchronization paths above are unchanged.
+    if(individual && a.individualAdopted && adaptiveStayIndividual())
+    {
+        this->adaptiveLogDecision(mode, "stay_individual", tau);
+        this->adaptiveResetWindow();
+        return;
+    }
     if(!individual && std::isfinite(a.gainBound) &&
        a.gainBound < o.gain_minimum)
     {
@@ -3804,6 +3979,31 @@ void Simulation::adaptiveAfterStep(TimeIntegrationMode mode)
         (std::string("probe_") + IntegrationModeName(other)).c_str(), tau);
     this->adaptiveRequestSwitch(other,
         std::string("dwell complete, probing ") + IntegrationModeName(other));
+}
+
+// The tightest individual per-cell limit on the switch state, from the
+// physics steps (0 when none reports one); the same on every rank.
+double Simulation::individualEntryReference(void) const
+{
+    double reference = 0;
+    for(const std::shared_ptr<PhysicsStep> &physicsStep : this->physics)
+    {
+        double const candidate = physicsStep->individualEntryReferenceStep();
+        if(candidate > 0)
+            reference = reference > 0 ? std::min(reference, candidate) : candidate;
+    }
+    return reference;
+}
+
+// The anchor reference: the last global step's CFL/source suggestion, capped
+// by the tightest individual per-cell limit on the switch state.
+double Simulation::individualAnchorReference(void) const
+{
+    double const global = this->adaptiveMode.anchorReferenceStep;
+    double const entry = this->individualEntryReference();
+    if(global > 0 && entry > 0)
+        return std::min(global, entry);
+    return global > 0 ? global : entry;
 }
 
 double Simulation::GetTime(void) const
@@ -4878,23 +5078,33 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
 
         // The current cut's segments at the current positions bound every
         // active-only rebuild (individualActiveCutOwnedLowerBound) and measure a
-        // cached cut that equals the current one.
-        std::vector<unsigned long long> const current_segments =
-            countIndividualHilbertSegments(*current_load_balance, points,
-                                           context.active_mask, this->size);
-        IndividualHilbertPartitionLoad const current_position_load =
-            individualHilbertLoadFromSegments(current_segments, this->size);
-        // The passive-run bound needs the current cut to be one curve range
-        // per rank, in rank order.
-        if(current_positional)
-            cut_bound = individualActiveCutOwnedLowerBound(current_segments,
-                                                           this->size);
-        cut_bound_max_mean = current_position_load.owned_cells > 0 ?
-            static_cast<double>(cut_bound.cells) /
-                (static_cast<double>(current_position_load.owned_cells) /
-                 this->size) : 0;
-        bool const rebuild_exceeds_owned_skew =
-            cut_bound_max_mean > options.maximum_owned_cell_skew;
+        // cached cut that equals the current one.  Only the single-range path
+        // uses them: segmented ownership decides from its event ledger and
+        // counts a fresh proposal itself, so there the recount (a getOwner per
+        // generator, ~0.13 s per late TDE event) is skipped and the bound is
+        // logged as unmeasured (-1).  segments_per_rank is agreed on every rank.
+        IndividualHilbertPartitionLoad current_position_load;
+        bool rebuild_exceeds_owned_skew = false;
+        cut_bound_max_mean = -1;
+        if(options.segments_per_rank <= 1)
+        {
+            std::vector<unsigned long long> const current_segments =
+                countIndividualHilbertSegments(*current_load_balance, points,
+                                               context.active_mask, this->size);
+            current_position_load =
+                individualHilbertLoadFromSegments(current_segments, this->size);
+            // The passive-run bound needs the current cut to be one curve range
+            // per rank, in rank order.
+            if(current_positional)
+                cut_bound = individualActiveCutOwnedLowerBound(current_segments,
+                                                               this->size);
+            cut_bound_max_mean = current_position_load.owned_cells > 0 ?
+                static_cast<double>(cut_bound.cells) /
+                    (static_cast<double>(current_position_load.owned_cells) /
+                     this->size) : 0;
+            rebuild_exceeds_owned_skew =
+                cut_bound_max_mean > options.maximum_owned_cell_skew;
+        }
 
         bool rebuild_boundaries = !cache_hit;
         if(options.segments_per_rank > 1)
@@ -4929,9 +5139,11 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                 occupancy.skew(this->size, options.active_threshold);
             std::uint64_t const cooldown = static_cast<std::uint64_t>(
                 std::max<std::size_t>(balance_options.cooldown_events, 1));
-            // Events above half active are full builds whatever the
-            // partition (the closure threshold): they stay out of the ledger.
-            int const ledger_classes = IndividualSegmentDecisionState::classes - 1;
+            // Every activity class is in the ledger, all-active events too:
+            // their full builds also depend on the partition (TDE, job
+            // 10232900: 1.1 s per full build positional, 3.9 s on a segmented
+            // plan 300 events old).
+            int const ledger_classes = IndividualSegmentDecisionState::classes;
             std::uint64_t positional_samples = 0;
             for(int c = 0; c < ledger_classes; ++c)
                 positional_samples += decision.positional_count[static_cast<std::size_t>(c)];
@@ -4968,8 +5180,31 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                     ++decision.positional_count[static_cast<std::size_t>(measured_class)];
                     ++positional_samples;
                 }
+                // A probe is adopted only with a reference for every class
+                // that carries a quarter or more of the positional seconds,
+                // and for every class a measuring revert returned for (until
+                // its deadline): otherwise the probe's dominant class cannot
+                // be credited and the probe can never be judged (job
+                // 10232900: 607 unreferenced 0.1-1 % events kept a losing
+                // segmented plan for 2 time units).
+                double positional_seconds = 0;
+                for(int c = 0; c < ledger_classes; ++c)
+                    positional_seconds += decision.positional_sum[static_cast<std::size_t>(c)];
+                bool references_ready = true;
+                for(int c = 0; c < ledger_classes; ++c)
+                {
+                    std::size_t const k = static_cast<std::size_t>(c);
+                    bool const dominant = 4 * decision.positional_sum[k] >= positional_seconds &&
+                        decision.positional_sum[k] > 0;
+                    bool const measuring = (decision.measure_mask >> c & 1u) != 0 &&
+                        decision.event_counter < decision.measure_deadline_event;
+                    if((dominant || measuring) && decision.positional_count[k] < 2)
+                        references_ready = false;
+                }
+                // The gate reads measured seconds: off with the reverts
+                // (RICH_INDIVIDUAL_ACTIVE_HILBERT_SEGMENT_REVERT=0, replay).
                 replan = decision.event_counter >= decision.cooldown_until_event &&
-                    positional_samples >= cooldown &&
+                    positional_samples >= cooldown && (references_ready || !options.segment_revert) &&
                     current_bin_skew > options.active_threshold;
                 replan_reason = "positional-bin-skew";
             }
@@ -4999,6 +5234,17 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                     // in the ledger above but not in the baseline.
                     if(decision.events_since_migration >= 2)
                     {
+                        // Same-class aging baseline (first four events of the
+                        // class after the migration), then the excess over it.
+                        std::size_t const k = static_cast<std::size_t>(measured_class);
+                        if(decision.age_base_count[k] < 4)
+                        {
+                            decision.age_base_sum[k] += last_event_mesh;
+                            ++decision.age_base_count[k];
+                        }
+                        else
+                            decision.age_debt += std::max(0.0, last_event_mesh -
+                                decision.age_base_sum[k] / static_cast<double>(decision.age_base_count[k]));
                         if(decision.baseline_pending)
                         {
                             decision.baseline_mesh = last_event_mesh;
@@ -5011,6 +5257,9 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                 }
                 ++decision.window_events;
                 bool revert = false;
+                bool measure_revert = false;
+                bool unjudgeable_revert = false;
+                unsigned measure_classes = 0;
                 if(decision.window_events >= cooldown)
                 {
                     // A window counts as losing only when at least half of
@@ -5040,7 +5289,37 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                            decision.class_seconds[static_cast<std::size_t>(c)] > 0 &&
                            decision.positional_count[static_cast<std::size_t>(c)] < 2)
                             dominant_classes_referenced = false;
-                    revert = decision.credited_events >= cooldown &&
+                    // A dominant class without a reference: return to
+                    // positional ownership to measure it, once per class and
+                    // without the revert backoff, instead of keeping an
+                    // unjudgeable probe for good.
+                    unsigned missing_mask = 0;
+                    for(int c = 0; c < ledger_classes; ++c)
+                        if(4 * decision.class_seconds[static_cast<std::size_t>(c)] >=
+                               decision.measured_seconds &&
+                           decision.class_seconds[static_cast<std::size_t>(c)] > 0 &&
+                           decision.positional_count[static_cast<std::size_t>(c)] < 2)
+                            missing_mask |= 1u << c;
+                    // Only a probe showing aging is measured: in a regime where
+                    // segmented ownership wins, a positional stretch costs
+                    // (TDE job 10232945: positional partial events 3.7 s
+                    // against 2.2 s on a fresh segmented plan).
+                    measure_revert = options.segment_revert && missing_mask != 0 &&
+                        (missing_mask & ~decision.measure_mask) != 0 &&
+                        decision.probe_events >= 3 * cooldown &&
+                        decision.age_debt > 0.5 * balance_options.amortization_factor *
+                            decision.last_migration_seconds;
+                    if(measure_revert)
+                        measure_classes = missing_mask;
+                    // Measured once and still unreferenced (the positional
+                    // stretch never produced two samples before its
+                    // deadline): the probe cannot be judged, so it ends as an
+                    // ordinary revert with its backoff.
+                    unjudgeable_revert = options.segment_revert && missing_mask != 0 &&
+                        (missing_mask & decision.measure_mask) != 0 &&
+                        !measure_revert && decision.probe_events >= 3 * cooldown;
+                    revert = options.segment_revert &&
+                        decision.credited_events >= cooldown &&
                         dominant_classes_referenced &&
                         2 * decision.credited_events >= decision.measured_events &&
                         2 * decision.credited_seconds >= decision.measured_seconds &&
@@ -5048,14 +5327,23 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                          (decision.probe_events >= 3 * cooldown &&
                           decision.net_benefit < 0));
                 }
-                if(revert)
+                if(revert || unjudgeable_revert)
                 {
                     revert_to_positional = true;
                     proposal_source = "positional";
-                    action = "revert-segmented";
+                    action = revert ? "revert-segmented" : "revert-unjudgeable";
                     decision.cooldown_until_event = decision.event_counter +
                         (3 * cooldown << std::min(decision.reverts, 10));
                     ++decision.reverts;
+                }
+                else if(measure_revert)
+                {
+                    revert_to_positional = true;
+                    proposal_source = "positional";
+                    action = "revert-measure";
+                    decision.cooldown_until_event = decision.event_counter + cooldown;
+                    decision.measure_mask |= measure_classes;
+                    decision.measure_deadline_event = decision.event_counter + 8 * cooldown;
                 }
                 else if(!current_owned_safe || !current_load.ownsEveryRank())
                 {
@@ -5074,6 +5362,20 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                 {
                     replan = true;
                     replan_reason = "segmented-debt";
+                }
+                else if(!options.segment_bins &&
+                        decision.event_counter >= decision.cooldown_until_event &&
+                        decision.last_migration_seconds > 0 &&
+                        decision.age_debt > balance_options.amortization_factor *
+                            decision.last_migration_seconds)
+                {
+                    // The plan aged (each rank's pieces spread as the gas
+                    // flows; job 10232900: partial events 1.0 -> 4.2 s over
+                    // 300 events at a constant cell balance): a fresh plan from
+                    // the current positions once the same-class excess has
+                    // paid for a migration.
+                    replan = true;
+                    replan_reason = "segmented-aging";
                 }
                 else
                 {
@@ -5346,6 +5648,13 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
         fresh.event_counter = decision.event_counter;
         fresh.reverts = decision.reverts;
         fresh.pending_class = decision.pending_class;
+        // Only a measuring revert keeps its classes: any other revert starts
+        // a reference period in which every class may be measured again.
+        if(action == "revert-measure")
+        {
+            fresh.measure_mask = decision.measure_mask;
+            fresh.measure_deadline_event = decision.measure_deadline_event;
+        }
         decision = fresh;
         bool const all_active_event =
             current_load.active_cells == current_load.owned_cells;
@@ -5408,6 +5717,13 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                 decision.events_since_migration = 0;
                 decision.baseline_mesh = 0;
                 decision.baseline_pending = true;
+                decision.age_base_sum.fill(0);
+                decision.age_base_count.fill(0);
+                decision.age_debt = 0;
+                // The fresh plan is judged for at least one cooldown.
+                decision.cooldown_until_event = std::max(decision.cooldown_until_event,
+                    decision.event_counter + static_cast<std::uint64_t>(
+                        std::max<std::size_t>(individualRebalanceRuntimeOptions().cooldown_events, 1)));
                 decision.debt = 0;
             }
             context = this->individualScheduler->prepareEvent(
@@ -5512,16 +5828,37 @@ void Simulation::stepIndividual(void)
         // takes the same branch.
         // An explicitly configured quantum fixes the grid itself, so it keeps it.
         double const anchor_margin = IndividualBinAnchorMargin();
-        double const anchor_reference = this->adaptiveMode.anchorReferenceStep;
+        double const anchor_reference = this->individualAnchorReference();
         double const anchor_dt = anchor_margin > 0 && std::isfinite(anchor_reference) &&
             anchor_reference > 0 && !(this->individualScheduler->options().time_quantum > 0) ?
             anchor_margin * anchor_reference : 0;
+        // The first interval stays within every synchronized per-cell limit of
+        // the switch state (wave speed, sources, drift); the anchor keeps the
+        // pre-drift reference above.
+        double entry_bound = 0;
+        for(const std::shared_ptr<PhysicsStep> &physicsStep : this->physics)
+        {
+            double const candidate = physicsStep->individualEntryIntervalBound();
+            if(candidate > 0)
+                entry_bound = entry_bound > 0 ? std::min(entry_bound, candidate) : candidate;
+        }
+        double const entry_reference = this->individualEntryReference();
+        if(entry_reference > 0)
+            entry_bound = entry_bound > 0 ? std::min(entry_bound, entry_reference) : entry_reference;
+        double const first_step = entry_bound > 0 ?
+            std::min(this->tsc->GetTimeStep(), entry_bound) : this->tsc->GetTimeStep();
         this->individualScheduler->initialize(this->cells,
                                               this->tracker.getTime(),
-                                              this->tsc->GetTimeStep(),
+                                              first_step,
                                               anchor_dt);
         for(const std::shared_ptr<PhysicsStep> &physicsStep : this->physics)
             physicsStep->onIndividualSchedulerStart(this->tsc->GetTimeStep());
+        for(const std::shared_ptr<PhysicsStep> &physicsStep : this->physics)
+        {
+            std::vector<std::pair<std::size_t, Vector3D> > entry_velocities;
+            if(physicsStep->takeIndividualEntryPointVelocities(entry_velocities))
+                this->individualScheduler->setInitialPointVelocities(entry_velocities);
+        }
         if(this->rank == 0 && anchor_margin > 0)
             std::cout << std::setprecision(12)
                       << "RICH_INDIVIDUAL_BIN_ANCHOR time=" << this->tracker.getTime()
@@ -5529,6 +5866,7 @@ void Simulation::stepIndividual(void)
                       << " anchor_margin=" << anchor_margin
                       << " anchor_reference=" << anchor_reference
                       << " anchor_dt=" << (anchor_dt > 0 ? anchor_dt : this->tsc->GetTimeStep())
+                      << " entry_bound=" << entry_bound
                       << " first_interval=" << this->individualScheduler->nextEventTimeStep() << std::endl;
         this->individualScheduler->enforceNeighborBinClosure(
             this->tess, this->cells);
@@ -5778,9 +6116,16 @@ void Simulation::stepIndividual(void)
 
     std::uint64_t const local_active_cells =
         static_cast<std::uint64_t>(context.active_indices.size());
-    std::array<std::uint64_t, 2> global_cell_counts{{
+    // Active stable-ID set hash (RICH_INDIVIDUAL_STATE_HASH), reduced with the counts.
+    std::uint64_t local_active_hash = 0;
+    if(individualStateHashEnabled())
+        for(std::size_t const active_index : context.active_indices)
+            if(active_index < this->cells.size())
+                local_active_hash += MixStateHash(static_cast<std::uint64_t>(this->cells[active_index].ID));
+    std::array<std::uint64_t, 3> global_cell_counts{{
         local_active_cells,
-        static_cast<std::uint64_t>(this->cells.size())}};
+        static_cast<std::uint64_t>(this->cells.size()),
+        local_active_hash}};
 #ifdef RICH_MPI
     {
         auto const sync_start = std::chrono::high_resolution_clock::now();
@@ -5982,6 +6327,14 @@ void Simulation::stepIndividual(void)
         full_source_sweep.sources_seconds;
     this->lastLocalPhysicsTimes["individual-wake-tree"] =
         full_source_sweep.tree_seconds;
+    this->lastLocalPhysicsTimes["individual-wake-tree-local"] =
+        full_source_sweep.tree_local_seconds;
+    this->lastLocalPhysicsTimes["individual-wake-tree-distributed"] =
+        full_source_sweep.tree_distributed_seconds;
+    this->lastLocalPhysicsTimes["individual-wake-tree-reuse-check"] =
+        full_source_sweep.tree_reuse_check_seconds;
+    this->lastLocalPhysicsTimes["individual-wake-tree-reuse-reduce"] =
+        full_source_sweep.tree_reuse_reduce_seconds;
     this->lastLocalPhysicsTimes["individual-wake-local-route"] =
         full_source_sweep.local_route_seconds;
     this->lastLocalPhysicsTimes["individual-wake-local-eval"] =
@@ -6219,9 +6572,24 @@ void Simulation::stepIndividual(void)
             changes.child_parent_ids.size());
         local_amr_removed_cells = static_cast<std::uint64_t>(
             changes.removed_cell_ids.size());
-        this->individualScheduler->applyAMRChangeSet(this->cells, changes,
-                                                      &this->tess);
-        individual_amr_applied = !changes.empty();
+        // "AMR happened" is collective: a rank with no local changes still
+        // remaps when another rank changed (remote merges, closure), and the
+        // rebalance below enters collectives.  When no rank changed anything,
+        // cell IDs and order are unchanged, so the remap (maps and a copy of
+        // every scheduler state, ~0.16 s per late TDE event) reduces to its
+        // final neighbour-bin closure.
+        int any_individual_amr_applied = changes.empty() ? 0 : 1;
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &any_individual_amr_applied, 1, MPI_INT,
+                      MPI_MAX, MPI_COMM_WORLD);
+#endif
+        individual_amr_applied = any_individual_amr_applied != 0;
+        if(individual_amr_applied)
+            this->individualScheduler->applyAMRChangeSet(this->cells, changes,
+                                                          &this->tess);
+        else
+            this->individualScheduler->enforceNeighborBinClosure(this->tess,
+                                                                 this->cells);
         const double elapsed = std::chrono::duration<double>(
             std::chrono::high_resolution_clock::now() - amr_start).count();
         this->lastPhysicsTimes["individual-amr"] = elapsed;
@@ -6231,17 +6599,6 @@ void Simulation::stepIndividual(void)
         if(detailed_runtime_log && this->rank == 0)
             std::cout << "Individual AMR time: " << elapsed << std::endl;
     }
-#ifdef RICH_MPI
-    // AMR change sets are rank-local, but the rebalance decision below enters
-    // collectives.  Make the "AMR happened" predicate collective first so a
-    // rank with no local changes cannot skip a rebalance requested by another
-    // rank and deadlock the job.
-    int any_individual_amr_applied = individual_amr_applied ? 1 : 0;
-    MPI_Allreduce(MPI_IN_PLACE, &any_individual_amr_applied, 1, MPI_INT,
-                  MPI_MAX, MPI_COMM_WORLD);
-    individual_amr_applied = any_individual_amr_applied != 0;
-
-#endif
 
     if(individual_amr_applied)
     {
@@ -6565,6 +6922,62 @@ void Simulation::stepIndividual(void)
             local_amr_cells_before, local_amr_added_cells,
             local_amr_removed_cells,
             static_cast<std::uint64_t>(this->cells.size()));
+    if(individualStateHashEnabled())
+    {
+        // Collective (CommittedGeneratorPoints and the reduction).
+        std::vector<Vector3D> const generators = this->CommittedGeneratorPoints();
+        std::vector<CellTimeState> const& time_states = this->individualScheduler->states();
+        std::array<std::uint64_t, 2> hashes{{0, 0}}; // state, ownership
+        std::uint64_t const rank_hash = MixStateHash(static_cast<std::uint64_t>(this->rank) + 1);
+        for(std::size_t i = 0; i < this->cells.size(); ++i)
+        {
+            hashes[0] += CellStateHash(this->cells[i], i < this->extensives.size() ? &this->extensives[i] : nullptr,
+                i < time_states.size() ? &time_states[i] : nullptr, i < generators.size() ? &generators[i] : nullptr);
+            hashes[1] += MixStateHash(static_cast<std::uint64_t>(this->cells[i].ID) ^ rank_hash);
+        }
+        // Canonical conserved totals (gate 5 budgets): mass, momentum, total, internal and radiation energy,
+        // and the radiation group energies.  Local sums in index order, then MPI_SUM: reproducible for a fixed
+        // layout, which the replay settings keep.
+        std::size_t const group_count = this->extensives.empty() ? 0 : this->extensives.front().Eg.size();
+        std::vector<double> totals(7 + group_count, 0.0);
+        for(Conserved3D const& extensive : this->extensives)
+        {
+            totals[0] += extensive.mass;
+            totals[1] += extensive.momentum.x;
+            totals[2] += extensive.momentum.y;
+            totals[3] += extensive.momentum.z;
+            totals[4] += extensive.energy;
+            totals[5] += extensive.internal_energy;
+            totals[6] += extensive.Erad;
+            for(std::size_t g = 0; g < std::min(group_count, extensive.Eg.size()); ++g)
+                totals[7 + g] += extensive.Eg[g];
+        }
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, hashes.data(), 2, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+        {
+            // Every rank must reduce the same length: agree on the group count first.
+            unsigned long long groups = group_count;
+            MPI_Allreduce(MPI_IN_PLACE, &groups, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+            totals.resize(7 + static_cast<std::size_t>(groups), 0.0);
+            MPI_Allreduce(MPI_IN_PLACE, totals.data(), static_cast<int>(totals.size()), MPI_DOUBLE, MPI_SUM,
+                          MPI_COMM_WORLD);
+        }
+#endif
+        if(this->rank == 0)
+        {
+            std::streamsize const saved_precision = std::cout.precision();
+            std::cout << "INDIVIDUAL_STATE_HASH cycle=" << step_cycle << " event_tick=" << context.event_tick
+                      << " active=" << global_active_cells << " total=" << global_total_cells << " active_hash="
+                      << std::hex << global_cell_counts[2] << " state_hash=" << hashes[0] << " ownership_hash="
+                      << hashes[1] << std::dec << std::setprecision(17) << " mass=" << totals[0] << " momentum="
+                      << totals[1] << "," << totals[2] << "," << totals[3] << " energy=" << totals[4]
+                      << " internal_energy=" << totals[5] << " erad=" << totals[6] << " eg=";
+            for(std::size_t g = 7; g < totals.size(); ++g)
+                std::cout << (g > 7 ? "," : "") << totals[g];
+            std::cout << std::endl;
+            std::cout.precision(saved_precision);
+        }
+    }
     this->tracker.updateCycle();
     this->lastStepAdvance = output.event_dt;
     this->lastStepSecondsMax = output.step_seconds;

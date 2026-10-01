@@ -22,6 +22,7 @@ def event_lines(
     event_time: float,
     *,
     active_cells: int = 100,
+    total_cells: int | None = None,
     canonical_cells: int | None = 100,
     amr: int | None = 0,
     ownership_epoch: int | None = 0,
@@ -32,17 +33,19 @@ def event_lines(
     rss_unit: str = "KiB",
     physical_metadata: bool = True,
 ) -> list[str]:
+    if total_cells is None:
+        total_cells = active_cells
     lines = [
-        f"INDIVIDUAL_PERF cycle={cycle} phase=event-wall unit={wall_unit} "
+        f"RICH_STEP_DETAIL mode=individual cycle={cycle} phase=event-wall unit={wall_unit} "
         f"min={wall_seconds} median={wall_seconds} mean={wall_seconds} "
         f"p95={wall_seconds} max={wall_seconds}",
-        f"INDIVIDUAL_PERF cycle={cycle} phase=current-rss unit={rss_unit} "
+        f"RICH_STEP_DETAIL mode=individual cycle={cycle} phase=current-rss unit={rss_unit} "
         f"min={0.9 * rss_mean_kib} median={rss_mean_kib} mean={rss_mean_kib} "
         f"p95={1.05 * rss_mean_kib} max={1.1 * rss_mean_kib}",
     ]
     if lifetime_peak_kib is not None:
         lines.append(
-            f"INDIVIDUAL_PERF cycle={cycle} phase=peak-rss unit={rss_unit} "
+            f"RICH_STEP_DETAIL mode=individual cycle={cycle} phase=peak-rss unit={rss_unit} "
             f"min={0.8 * lifetime_peak_kib} median={0.9 * lifetime_peak_kib} "
             f"mean={0.9 * lifetime_peak_kib} p95={lifetime_peak_kib} "
             f"max={lifetime_peak_kib}"
@@ -60,12 +63,32 @@ def event_lines(
         if ownership_epoch is not None:
             balance_fields += f" ownership_epoch={ownership_epoch}"
         lines[:0] = [
-            f"Individual cycle {cycle} from time 0 to {event_time} with 1 active cells",
             "MG_TIMESTEP_LIMIT mode=individual "
             f"event_time={event_time:.17g} active_cells={active_cells}",
             hydro_fields,
             balance_fields,
         ]
+        lines.extend(
+            [
+                f"RICH_STEP mode=individual cycle={cycle}",
+                "  time   | t_start=0 "
+                f"| t_end={event_time:.17g} | event_dt={event_time:.17g} "
+                f"| applied_dt_min={event_time:.17g} "
+                f"| applied_dt_max={event_time:.17g} "
+                f"| next_event_dt={event_time:.17g}",
+                f"  work   | active_cells={active_cells} "
+                f"| total_cells={total_cells} "
+                f"| active_bins=[bin=0,count={active_cells},"
+                f"dt={event_time:.17g}]",
+                f"  phases | step_s={wall_seconds} | hydro_s=0.1 "
+                "| gravity_s=0 | radiation_s=0.2 | amr_s=0",
+                "  mesh   | mesh_s=0.03 | mesh_builds=2",
+                "  source | source_s=0.01 "
+                f"| source_pct={100.0 * 0.01 / wall_seconds:.17g} "
+                "| source_calls=2",
+                "",
+            ]
+        )
     return lines
 
 
@@ -284,19 +307,275 @@ class AnalyzeResourceBalanceTest(unittest.TestCase):
 
     def test_duplicate_cycle_occurrences_are_rejected(self) -> None:
         path = self.root / "duplicate-cycle.log"
-        write_log(
-            path,
-            [
-                {"cycle": 0, "event_time": 1.0},
-                {"cycle": 0, "event_time": 2.0},
-            ],
-            final_time=2.0,
-            final_tick=200,
-            final_cells=100,
-            evolution_wall_seconds=2.0,
+        path.write_text(
+            "\n".join(
+                event_lines(0, 1.0) + ["RICH_STEP mode=individual cycle=0"]
+            ),
+            encoding="utf-8",
         )
 
-        with self.assertRaisesRegex(ValueError, "duplicate Individual cycle 0"):
+        with self.assertRaisesRegex(ValueError, "duplicate RICH_STEP cycle=0"):
+            ANALYZER.parse_log(path)
+
+    def test_out_of_order_work_line_is_rejected(self) -> None:
+        path = self.root / "duplicate-work.log"
+        path.write_text(
+            "RICH_STEP mode=individual cycle=0\n"
+            "  time   | t_start=0 | t_end=1 | event_dt=1 "
+            "| applied_dt_min=1 | applied_dt_max=1 | next_event_dt=1\n"
+            "  work   | active_cells=4 "
+            "| active_bins=[bin=0,count=4,dt=1]\n"
+            "  work   | active_cells=4 "
+            "| active_bins=[bin=0,count=4,dt=1]\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "unexpected work line"):
+            ANALYZER.parse_log(path)
+
+    def test_colored_pretty_block_is_accepted(self) -> None:
+        path = self.root / "colored.log"
+        lines = event_lines(3, 2.0, active_cells=9)
+        color_by_label = {
+            "RICH_STEP": "\x1b[1;36mRICH_STEP\x1b[0m",
+            "  time  ": "  \x1b[36mtime  \x1b[0m",
+            "  work  ": "  \x1b[34mwork  \x1b[0m",
+            "  phases": "  \x1b[35mphases\x1b[0m",
+            "  mesh  ": "  \x1b[33mmesh  \x1b[0m",
+            "  source": "  \x1b[32msource\x1b[0m",
+        }
+        for index, line in enumerate(lines):
+            for label, colored in color_by_label.items():
+                if line.startswith(label):
+                    lines[index] = colored + line[len(label):]
+                    break
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        parsed = ANALYZER.parse_log(path)
+        self.assertEqual(parsed["events"][3]["event_time"], 2.0)
+        self.assertEqual(parsed["events"][3]["active_cells"], 9)
+        self.assertEqual(parsed["events"][3]["total_cells"], 9)
+        self.assertEqual(parsed["events"][3]["mesh_s"], 0.03)
+        self.assertEqual(parsed["events"][3]["mesh_builds"], 2)
+
+    def test_pre_mesh_pretty_block_is_accepted(self) -> None:
+        path = self.root / "pre-mesh.log"
+        lines = [
+            line for line in event_lines(3, 2.0)
+            if not line.startswith("  mesh   | ")
+        ]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        event = ANALYZER.parse_log(path)["events"][3]
+        self.assertNotIn("mesh_s", event)
+        self.assertNotIn("mesh_builds", event)
+
+    def test_old_monolithic_step_is_rejected(self) -> None:
+        path = self.root / "old-monolithic.log"
+        path.write_text(
+            "RICH_STEP mode=individual cycle=0 t_start=0 t_end=1 "
+            "event_dt=1 applied_dt_min=1 applied_dt_max=1 next_event_dt=1 "
+            "active_cells=4 active_bins=0:4:1 step_s=1\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "malformed RICH_STEP header"):
+            ANALYZER.parse_log(path)
+
+    def test_missing_phase_fields_are_rejected(self) -> None:
+        path = self.root / "missing-phases.log"
+        path.write_text(
+            "RICH_STEP mode=individual cycle=0\n"
+            "  time   | t_start=0 | t_end=1 | event_dt=1 "
+            "| applied_dt_min=1 | applied_dt_max=1 | next_event_dt=1\n"
+            "  work   | active_cells=4 "
+            "| active_bins=[bin=0,count=4,dt=1]\n"
+            "  phases | step_s=1\n"
+            "  source | source_s=0 | source_pct=0 | source_calls=0\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "malformed phases line"):
+            ANALYZER.parse_log(path)
+
+    def test_incomplete_pretty_block_is_rejected(self) -> None:
+        path = self.root / "incomplete-pretty.log"
+        lines = event_lines(0, 1.0)
+        source_index = next(
+            index for index, line in enumerate(lines)
+            if line.startswith("  source | ")
+        )
+        path.write_text("\n".join(lines[:source_index]), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "incomplete RICH_STEP block"):
+            ANALYZER.parse_log(path)
+
+    def test_active_bin_count_mismatch_is_rejected(self) -> None:
+        path = self.root / "bin-count-mismatch.log"
+        lines = event_lines(0, 1.0, active_cells=4)
+        lines = [
+            line.replace("count=4", "count=3")
+            if line.startswith("  work   | ") else line
+            for line in lines
+        ]
+        path.write_text("\n".join(lines), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "malformed work line"):
+            ANALYZER.parse_log(path)
+
+    def test_total_cells_below_active_cells_is_rejected(self) -> None:
+        path = self.root / "total-cell-count-mismatch.log"
+        lines = event_lines(0, 1.0, active_cells=4, total_cells=3)
+        path.write_text("\n".join(lines), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "malformed work line"):
+            ANALYZER.parse_log(path)
+
+    def test_amr_line_records_global_cell_changes(self) -> None:
+        path = self.root / "amr-event.log"
+        lines = event_lines(0, 1.0, active_cells=4, total_cells=10, amr=0)
+        lines.extend([
+            "RICH_AMR mode=individual cycle=0 time=1 cells_before=10 "
+            "added_cells=3 removed_cells=1 cells_after=12",
+            "",
+        ])
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        event = ANALYZER.parse_log(path)["events"][0]
+        self.assertEqual(event["amr"], 1)
+        self.assertEqual(event["amr_added_cells"], 3)
+        self.assertEqual(event["amr_removed_cells"], 1)
+        self.assertEqual(event["amr_cells_after"], 12)
+
+    def test_standalone_global_amr_line_is_accepted(self) -> None:
+        path = self.root / "global-amr-event.log"
+        lines = event_lines(0, 1.0, active_cells=4, total_cells=10, amr=0)
+        lines.extend([
+            "Doing AMR",
+            "RICH_AMR mode=global cycle=1 time=1 cells_before=10 "
+            "added_cells=3 removed_cells=1 cells_after=12",
+            "",
+        ])
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        parsed = ANALYZER.parse_log(path)
+        self.assertEqual(parsed["events"][0]["amr"], 0)
+        self.assertEqual(parsed["amr_events"], [{
+            "mode": "global",
+            "cycle": 1,
+            "time": 1.0,
+            "cells_before": 10,
+            "added_cells": 3,
+            "removed_cells": 1,
+            "cells_after": 12,
+        }])
+
+    def test_inconsistent_amr_cell_counts_are_rejected(self) -> None:
+        path = self.root / "bad-amr-event.log"
+        lines = event_lines(0, 1.0, active_cells=4, total_cells=10)
+        lines.append(
+            "RICH_AMR mode=individual cycle=0 time=1 cells_before=10 "
+            "added_cells=3 removed_cells=1 cells_after=11"
+        )
+        path.write_text("\n".join(lines), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "malformed RICH_AMR line"):
+            ANALYZER.parse_log(path)
+
+    def test_orphan_amr_line_is_rejected(self) -> None:
+        path = self.root / "orphan-amr-event.log"
+        path.write_text(
+            "RICH_AMR mode=individual cycle=0 time=1 cells_before=10 "
+            "added_cells=1 removed_cells=0 cells_after=11\n\n",
+            encoding="utf-8",
+        )
+
+        with self.assertRaisesRegex(ValueError, "orphan RICH_AMR"):
+            ANALYZER.parse_log(path)
+
+    def test_amr_cycle_must_match_preceding_step(self) -> None:
+        path = self.root / "wrong-cycle-amr-event.log"
+        lines = event_lines(0, 1.0, active_cells=4, total_cells=10)
+        lines.extend([
+            "RICH_AMR mode=individual cycle=1 time=1 cells_before=10 "
+            "added_cells=1 removed_cells=0 cells_after=11",
+            "",
+        ])
+        path.write_text("\n".join(lines), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "malformed RICH_AMR line"):
+            ANALYZER.parse_log(path)
+
+    def test_amr_time_must_match_preceding_step(self) -> None:
+        path = self.root / "wrong-time-amr-event.log"
+        lines = event_lines(0, 1.0, active_cells=4, total_cells=10)
+        lines.extend([
+            "RICH_AMR mode=individual cycle=0 time=2 cells_before=10 "
+            "added_cells=1 removed_cells=0 cells_after=11",
+            "",
+        ])
+        path.write_text("\n".join(lines), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "does not match RICH_STEP"):
+            ANALYZER.parse_log(path)
+
+    def test_amr_cells_before_must_match_preceding_step(self) -> None:
+        path = self.root / "wrong-before-amr-event.log"
+        lines = event_lines(0, 1.0, active_cells=4, total_cells=10)
+        lines.extend([
+            "RICH_AMR mode=individual cycle=0 time=1 cells_before=9 "
+            "added_cells=1 removed_cells=0 cells_after=10",
+            "",
+        ])
+        path.write_text("\n".join(lines), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "does not match RICH_STEP"):
+            ANALYZER.parse_log(path)
+
+    def test_duplicate_amr_line_is_rejected(self) -> None:
+        path = self.root / "duplicate-amr-event.log"
+        amr_line = (
+            "RICH_AMR mode=individual cycle=0 time=1 cells_before=10 "
+            "added_cells=1 removed_cells=0 cells_after=11"
+        )
+        lines = event_lines(0, 1.0, active_cells=4, total_cells=10)
+        lines.extend([amr_line, "", amr_line, ""])
+        path.write_text("\n".join(lines), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "duplicate RICH_AMR cycle=0"):
+            ANALYZER.parse_log(path)
+
+    def test_amr_line_requires_blank_terminator(self) -> None:
+        path = self.root / "missing-amr-blank.log"
+        lines = event_lines(0, 1.0, active_cells=4, total_cells=10)
+        lines.append(
+            "RICH_AMR mode=individual cycle=0 time=1 cells_before=10 "
+            "added_cells=1 removed_cells=0 cells_after=11"
+        )
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "missing blank line after RICH_AMR"):
+            ANALYZER.parse_log(path)
+
+    def test_interleaved_pretty_block_is_rejected(self) -> None:
+        path = self.root / "interleaved-pretty.log"
+        lines = event_lines(0, 1.0)
+        time_index = next(
+            index for index, line in enumerate(lines)
+            if line.startswith("  time   | ")
+        )
+        lines.insert(time_index + 1, "UNRELATED_DIAGNOSTIC value=1")
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "interleaved RICH_STEP block"):
+            ANALYZER.parse_log(path)
+
+    def test_missing_blank_step_terminator_is_rejected(self) -> None:
+        path = self.root / "missing-step-blank.log"
+        lines = event_lines(0, 1.0)
+        path.write_text("\n".join(lines[:-1]) + "\n", encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "missing blank line after RICH_STEP"):
             ANALYZER.parse_log(path)
 
     def test_asymmetric_missing_work_signature_is_excluded(self) -> None:
@@ -316,7 +595,7 @@ class AnalyzeResourceBalanceTest(unittest.TestCase):
         matched = result["matched"]
         self.assertEqual(matched["accepted_event_count"], 0)
         self.assertEqual(matched["excluded_by_reason"]["missing_canonical_cells"], 1)
-        self.assertEqual(matched["excluded_by_reason"]["missing_amr"], 1)
+        self.assertNotIn("missing_amr", matched["excluded_by_reason"])
         self.assertEqual(matched["excluded_by_reason"]["missing_ownership_epoch"], 1)
 
     def test_missing_final_tick_fails_comparability(self) -> None:

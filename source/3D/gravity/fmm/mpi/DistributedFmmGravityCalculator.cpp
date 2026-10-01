@@ -1703,10 +1703,17 @@ void DistributedFmmGravityCalculator::solveRedistributed(
             stats_.localTraversalSeconds + stats_.letM2LSeconds +
             stats_.letM2PSeconds + stats_.letP2PSeconds +
             stats_.downwardSeconds;
-        const double localMaxima[2] = {busy, stats_.topologyRebuildSeconds};
-        double globalMaxima[2] = {0.0, 0.0};
+        // A mask that selects every particle on every rank (an all-active
+        // individual event) leaves the busy time to the source ownership, as
+        // an unmasked solve does: third entry 1 if some rank's mask is partial.
+        const bool localPartialMask = targetMask != nullptr &&
+            std::any_of(targetMask->begin(), targetMask->end(),
+                        [](unsigned char target) { return target == 0; });
+        const double localMaxima[3] = {busy, stats_.topologyRebuildSeconds,
+                                       localPartialMask ? 1.0 : 0.0};
+        double globalMaxima[3] = {0.0, 0.0, 0.0};
         double busySum = 0.0;
-        MPI_Allreduce(localMaxima, globalMaxima, 2, MPI_DOUBLE, MPI_MAX, comm_);
+        MPI_Allreduce(localMaxima, globalMaxima, 3, MPI_DOUBLE, MPI_MAX, comm_);
         MPI_Allreduce(&busy, &busySum, 1, MPI_DOUBLE, MPI_SUM, comm_);
         if(stats_.processTopologyRebuilt)
             gravityRebuildCostSeconds_ = globalMaxima[1];
@@ -1714,8 +1721,13 @@ void DistributedFmmGravityCalculator::solveRedistributed(
             globalMaxima[0] - busySum / static_cast<double>(size_));
         // A pruned solve's busy time follows its targets, not the source
         // ownership the splitters balance, so it neither sets the baseline
-        // nor adds debt (targetMask is agreed on every rank).
-        if(!stats_.letTopologyRebuilt && targetMask == nullptr)
+        // nor adds debt (targetMask is agreed on every rank).  A full mask
+        // does both (without it, individual stepping never re-samples: the
+        // TDE's gravity owner grew from 36k to 103k particles, mean 36k, and
+        // the full-solve straggler excess from 0.05 to 0.7 s over 0.64 time
+        // units, job 10232755).
+        const bool fullTargets = targetMask == nullptr || globalMaxima[2] == 0.0;
+        if(!stats_.letTopologyRebuilt && fullTargets)
         {
             if(gravityBaselinePending_)
             {

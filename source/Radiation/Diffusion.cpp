@@ -6,7 +6,10 @@
 #include <boost/math/special_functions.hpp>
 #include <algorithm>
 #include <cmath>
+#include <cerrno>
+#include <cfenv>
 #include <cstdlib>
+#include <exception>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -419,6 +422,51 @@ namespace
 		}();
 		return value;
 	}
+
+	// RICH_RADIATION_MOMENTUM_POSITIVITY caps: the largest fraction of a cell's
+	// available radiation energy the radiation force's kinetic-energy gain, and
+	// of its gas internal energy the relativistic exchange, may take in one
+	// update (the analogue of RICH_INDIVIDUAL_THERMAL_LOSS_FRACTION).  Default
+	// 0.5; RICH_RADIATION_MOMENTUM_KINETIC_LOSS_FRACTION in (0, 1).  First call
+	// is collective (PostCG start on every rank) and requires one value on all ranks.
+	double RadiationMomentumKineticLossFraction()
+	{
+		static double const value = []()
+		{
+			char const* const text = std::getenv("RICH_RADIATION_MOMENTUM_KINETIC_LOSS_FRACTION");
+			double parsed = 0.5;
+			int invalid = 0;
+			if(text != nullptr && text[0] != '\0')
+			{
+				int const traps = fegetexcept();
+				fedisableexcept(FE_ALL_EXCEPT);
+				char* end = nullptr;
+				errno = 0;
+				parsed = std::strtod(text, &end);
+				bool const range_error = errno == ERANGE;
+				feclearexcept(FE_ALL_EXCEPT);
+				feenableexcept(traps);
+				if(end == text || *end != '\0' || range_error || !std::isfinite(parsed) || !(parsed > 0) ||
+				   !(parsed < 1))
+				{
+					invalid = 1;
+					parsed = 0.5;
+				}
+			}
+			bool agreed = true;
+#ifdef RICH_MPI
+			double extrema[2] = {parsed, -parsed};
+			MPI_Allreduce(MPI_IN_PLACE, extrema, 2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+			MPI_Allreduce(MPI_IN_PLACE, &invalid, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+			agreed = extrema[0] == -extrema[1];
+#endif
+			if(invalid != 0 || !agreed)
+				throw std::invalid_argument(
+					"RICH_RADIATION_MOMENTUM_KINETIC_LOSS_FRACTION must be one number in (0, 1) on every rank");
+			return parsed;
+		}();
+		return value;
+	}
 }
 
 void Diffusion::calculateIndividualTimeSteps(
@@ -516,8 +564,12 @@ void Diffusion::calculateIndividualTimeSteps(
 		++active_cells;
 
         double const new_Er_cell = cells[i].Erad * cells[i].density;
-        double const radiation_temperature =
-            std::pow(std::max(new_Er_cell, 0.0) / CG::radiation_constant, 0.25);
+        // In cgs, as the global rule's new_Er: the radiation constant is cgs
+        // and cells hold code units (without the conversion the radiation
+        // temperature came out ~1e4 x too low on the TDE, so equilibrated
+        // cells lost the 0.05 equilibrium factor: a 20 x shorter limit).
+        double const radiation_temperature = std::pow(std::max(new_Er_cell, 0.0) *
+            mass_scale_ / (time_scale_ * time_scale_ * length_scale_) / CG::radiation_constant, 0.25);
         double const equilibrium_factor =
             std::abs(cells[i].temperature - radiation_temperature) <
                     0.02 * cells[i].temperature
@@ -647,6 +699,23 @@ void Diffusion::calculateIndividualTimeSteps(
 	}
 }
 
+bool Diffusion::MatrixBuildRejected() const
+{
+    if(!MomentumPositivityEnabled() || !hydro_on_)
+        return false;
+    int rejected = momentum_positivity_reject_ ? 1 : 0;
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &rejected, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+    if(rejected == 0)
+        return false;
+    if(momentum_positivity_reject_)
+        setStepFailure(momentum_positivity_reason_, momentum_positivity_reject_cell_);
+    else
+        setStepFailure("momentum positivity certificate failed on another rank");
+    return true;
+}
+
 bool Diffusion::step(double const tolerance, 
                      int& total_iters, 
                      Tessellation3D const& tess, 
@@ -667,6 +736,9 @@ bool Diffusion::step(double const tolerance,
 
     std::size_t const N = tess.GetPointNo();
     bool good_end = false;
+    // RICH_RADIATION_MOMENTUM_POSITIVITY: an uncertified matrix makes BiCGSTAB
+    // return good_end = false before preconditioning (MatrixBuildRejected);
+    // the caller halves and retries as for any rejected radiation step.
     new_Er = CG::BiCGSTAB(tolerance, total_iters, tess, cells, dt, *this, time, new_Er_full, good_end, cg_workspace_);
     MEMORY_DEBUG_PRINT("diffusion: after BiCGSTAB");
     if(not good_end) {
@@ -762,6 +834,24 @@ bool Diffusion::step(double const tolerance,
 
     commitResidualCorrectionAccounting(cg_workspace_.historical_correction);
     return true;
+}
+
+bool Diffusion::MomentumPositivityEnabled()
+{
+    static bool const enabled = []()
+    {
+        char const* const text = std::getenv("RICH_RADIATION_MOMENTUM_POSITIVITY");
+        int value = text != nullptr && std::string(text) == "1" ? 1 : 0;
+        int invalid = text != nullptr && text[0] != '\0' && std::string(text) != "0" && std::string(text) != "1" ? 1 : 0;
+        int extrema[3] = {value, -value, invalid};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, extrema, 3, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        if(extrema[2] != 0 || extrema[0] != -extrema[1])
+            throw std::invalid_argument("RICH_RADIATION_MOMENTUM_POSITIVITY must be 0 or 1 on every rank");
+        return extrema[0] != 0;
+    }();
+    return enabled;
 }
 
 void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells,
@@ -1015,6 +1105,30 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     Vector3D dummy_v;
     std::vector<Vector3D> gradE(Nlocal);
     std::vector<double> max_neighbor_R(Nlocal, 0);
+    // RICH_RADIATION_MOMENTUM_POSITIVITY state of this build (see the header).
+    bool const momentum_positivity = MomentumPositivityEnabled() && hydro_on_;
+    momentum_positivity_reject_ = false;
+    momentum_positivity_reason_.clear();
+    momentum_positivity_reject_cell_ = std::numeric_limits<std::size_t>::max();
+    momentum_face_weight_.assign(momentum_positivity ? Nlocal : 0, std::vector<double>());
+    momentum_v_ratio_.assign(momentum_positivity ? Nlocal : 0, 0.0);
+    momentum_row_boundary_.assign(momentum_positivity ? Nlocal : 0, 0);
+    momentum_face_term_.assign(momentum_positivity ? Nlocal : 0, std::vector<double>());
+    momentum_face_excess_.assign(momentum_positivity ? Nlocal : 0, std::vector<double>());
+    momentum_minimum_verification_rhs_ = std::numeric_limits<double>::infinity();
+    // rows changed, faces lumped, rejected rows (unexplained positive
+    // couplings), row-sum or diagonal violations, lumped faces with alpha > 1,
+    // rows with boundary faces, rows with a positive diffusion coupling,
+    // row-sum or diagonal violations in (uncertified) boundary rows
+    double momentum_counts[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    double momentum_maxima[2] = {0, 0}; // max w, max lumped excess / diagonal
+    double momentum_minima[1] = {std::numeric_limits<double>::infinity()}; // min row sum / diagonal
+    // With RICH_RADIATION_MOMENTUM_POSITIVITY a rank-local exception in either
+    // assembly loop (neither contains a collective) becomes the build's
+    // rejection state, so every rank reaches the same collectives: the aggregate
+    // below, then MatrixBuildRejected (global) or collectiveAllTrue (individual).
+    try
+    {
     for(size_t i = 0; i < Nlocal; ++i)
     {
         if(!individualCellActive(i))
@@ -1136,10 +1250,22 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         cell_flux_limiter[i] = flux_limiter;
         Vector3D const CM = tess.GetCellCM(i);
         double const v_ratio = std::min(1.0, 0.05 * CG::speed_of_light / (fastabs(cells_cgs[i].velocity) + 1e-2));
+        // Velocity coefficient T_ij of each interior face (0 on boundary faces).
+        std::vector<double> face_momentum_term(momentum_positivity ? Nneigh : 0, 0.0);
+        bool row_has_boundary = false;
+        // Before this row's velocity terms are added, its off-diagonal slots hold
+        // only diffusion couplings, each of which must be non-positive.
+        bool diffusion_positive = false;
+        if(momentum_positivity)
+            for(size_t slot = 1; slot < A[i].size(); ++slot)
+                if(A[i][slot] > 0)
+                    diffusion_positive = true;
         for(size_t j = 0; j < Nneigh; ++j)
         {
             size_t const neighbor_j = neighbors[j];
             double const dt_face = individualFaceTimeStep(i, neighbor_j, dt);
+            if(tess.IsPointOutsideBox(neighbor_j))
+                row_has_boundary = true;
             if(!tess.IsPointOutsideBox(neighbor_j))
             {
                 Vector3D r_ij = point - tess.GetMeshPoint(neighbor_j);
@@ -1165,6 +1291,8 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
                 double const momentum_relativity_term = -0.5 * dt_face * flux_limiter * tess.GetArea(faces[j]) * (v_ratio * fleck_factor[i] * 2 * 3 * sigma_planck[i] * mid_D / CG::speed_of_light - 1) * length_scale_ * length_scale_ * time_scale_
                     * ScalarProd(cells_cgs[i].velocity, r_ij) / 3;
                 A[i][0] += momentum_relativity_term;
+                if(momentum_positivity)
+                    face_momentum_term[j] = momentum_relativity_term;
                 auto it = std::find(A_indeces[i].begin(), A_indeces[i].end(), neighbor_j);
                 if(it == A_indeces[i].end())
                     throw UniversalError("Key not equal in diffusion");
@@ -1180,6 +1308,180 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         }
         R2[i] = flux_limiter_ ? flux_limiter / 3 + boost::math::pow<2>(flux_limiter * abs(gradE[i]) * Dcell / (CG::speed_of_light * Er)) : 1.0 / 3.0;
         A[i][0] -= volume * fleck_factor[i] * dt_cell * 0.5 * (3 - R2[i]) * sigma_planck[i] * std::min(0.01 * CG::speed_of_light * CG::speed_of_light, ScalarProd(cells_cgs[i].velocity, cells_cgs[i].velocity)) * time_scale_ / CG::speed_of_light;
+        if(momentum_positivity)
+        {
+            // Minimal lumping (design section 2): per interior neighbour column,
+            // the positive part e of the aggregate assembled coupling moves to
+            // the diagonal, at most the column's positive velocity coefficients
+            // P; the faces carrying them get w = e / P.  A positive coupling the
+            // velocity term does not explain, a non-positive diagonal or a
+            // non-positive row sum rejects the candidate.
+            std::vector<double>& weights = momentum_face_weight_[i];
+            weights.assign(Nneigh, 0.0);
+            momentum_v_ratio_[i] = v_ratio;
+            momentum_row_boundary_[i] = row_has_boundary ? 1 : 0;
+            momentum_face_term_[i] = face_momentum_term;
+            momentum_face_excess_[i].assign(Nneigh, 0.0);
+            double const alpha = 6 * fleck_factor[i] * v_ratio * sigma_planck[i] * Dcell / CG::speed_of_light;
+            bool row_changed = false;
+            bool row_rejected = diffusion_positive;
+            for(size_t j = 0; j < Nneigh; ++j)
+            {
+                size_t const column = neighbors[j];
+                if(tess.IsPointOutsideBox(column))
+                    continue;
+                bool first_face_of_column = true;
+                for(size_t k = 0; k < j; ++k)
+                    if(neighbors[k] == column && !tess.IsPointOutsideBox(neighbors[k]))
+                        first_face_of_column = false;
+                if(!first_face_of_column)
+                    continue;
+                double assembled = 0;
+                double assembled_abs = 0;
+                size_t first_slot = 0;
+                for(size_t slot = 1; slot < A_indeces[i].size() && slot < A[i].size(); ++slot)
+                    if(A_indeces[i][slot] == column)
+                    {
+                        assembled += A[i][slot];
+                        assembled_abs += std::abs(A[i][slot]);
+                        if(first_slot == 0)
+                            first_slot = slot;
+                    }
+                double positive_velocity = 0;
+                double velocity_abs = 0;
+                for(size_t k = 0; k < Nneigh; ++k)
+                    if(neighbors[k] == column)
+                    {
+                        velocity_abs += std::abs(face_momentum_term[k]);
+                        if(face_momentum_term[k] > 0)
+                            positive_velocity += face_momentum_term[k];
+                    }
+                if(!(assembled > 0) || first_slot == 0)
+                    continue;
+                // With non-positive diffusion (checked above) the positive
+                // aggregate cannot exceed the positive velocity terms except by
+                // the summation's roundoff; beyond 1e-12 of the magnitudes, reject.
+                // Within it, w = assembled / P may exceed 1 by that roundoff, so
+                // the exchange represents the lumped amount exactly.
+                double const tolerance = 1e-12 * (assembled_abs + velocity_abs);
+                if(assembled > positive_velocity + tolerance || !(positive_velocity > 0))
+                {
+                    row_rejected = true;
+                    continue;
+                }
+                // Lump the whole positive aggregate: the column becomes exactly 0.
+                for(size_t slot = 1; slot < A_indeces[i].size() && slot < A[i].size(); ++slot)
+                    if(A_indeces[i][slot] == column)
+                        A[i][slot] = 0;
+                A[i][0] += assembled;
+                momentum_face_excess_[i][j] = assembled;
+                row_changed = true;
+                double const w = assembled / positive_velocity;
+                for(size_t k = 0; k < Nneigh; ++k)
+                    if(neighbors[k] == column && face_momentum_term[k] > 0)
+                    {
+                        weights[k] = w;
+                        momentum_counts[1] += 1;
+                        if(alpha > 1)
+                            momentum_counts[4] += 1;
+                    }
+                momentum_maxima[0] = std::max(momentum_maxima[0], w);
+                if(A[i][0] > 0)
+                    momentum_maxima[1] = std::max(momentum_maxima[1], assembled / A[i][0]);
+            }
+            // Final sign check of every aggregated interior column.
+            for(size_t j = 0; j < Nneigh && !row_rejected; ++j)
+            {
+                size_t const column = neighbors[j];
+                if(tess.IsPointOutsideBox(column))
+                    continue;
+                double final_value = 0;
+                for(size_t slot = 1; slot < A_indeces[i].size() && slot < A[i].size(); ++slot)
+                    if(A_indeces[i][slot] == column)
+                        final_value += A[i][slot];
+                if(final_value > 0)
+                    row_rejected = true;
+            }
+            if(row_rejected)
+                momentum_counts[2] += 1;
+            if(diffusion_positive)
+                momentum_counts[6] += 1;
+            double row_sum = A[i][0];
+            for(size_t slot = 1; slot < A[i].size(); ++slot)
+                row_sum += A[i][slot];
+            // Rows with boundary faces are outside the certificate (design
+            // section 1): counted, never rejected, as for the RHS gate.
+            bool const row_violation = !(A[i][0] > 0) || !(row_sum > 0) || !std::isfinite(row_sum);
+            bool const certificate_violated = row_violation && !row_has_boundary;
+            if(certificate_violated)
+                momentum_counts[3] += 1;
+            else if(row_violation)
+                momentum_counts[7] += 1;
+            else
+                momentum_minima[0] = std::min(momentum_minima[0], row_sum / A[i][0]);
+            if(row_changed)
+                momentum_counts[0] += 1;
+            if(row_has_boundary)
+                momentum_counts[5] += 1;
+            if((row_rejected || certificate_violated) && !momentum_positivity_reject_)
+            {
+                momentum_positivity_reject_ = true;
+                momentum_positivity_reason_ = diffusion_positive ?
+                    "momentum positivity: positive diffusion coupling" : row_rejected ?
+                    "momentum positivity: positive coupling not explained by the velocity term" :
+                    "momentum positivity: non-positive diagonal or row sum";
+                momentum_positivity_reject_cell_ = cells[i].ID;
+            }
+        }
+    }
+    }
+    catch(UniversalError const& error)
+    {
+        if(!momentum_positivity)
+            throw;
+        momentum_positivity_reject_ = true;
+        momentum_positivity_reason_ = std::string("momentum positivity: matrix assembly failed: ") + error.getErrorMessage();
+        momentum_positivity_reject_cell_ = std::numeric_limits<std::size_t>::max();
+    }
+    catch(std::exception const& error)
+    {
+        if(!momentum_positivity)
+            throw;
+        momentum_positivity_reject_ = true;
+        momentum_positivity_reason_ = std::string("momentum positivity: matrix assembly failed: ") + error.what();
+        momentum_positivity_reject_cell_ = std::numeric_limits<std::size_t>::max();
+    }
+    catch(...)
+    {
+        if(!momentum_positivity)
+            throw;
+        momentum_positivity_reject_ = true;
+        momentum_positivity_reason_ = "momentum positivity: matrix assembly failed";
+        momentum_positivity_reject_cell_ = std::numeric_limits<std::size_t>::max();
+    }
+    if(momentum_positivity)
+    {
+        // One rank-0 aggregate per build (design section 5, matrix part).
+        double counts[8];
+        double maxima[2];
+        double minima[1];
+#ifdef RICH_MPI
+        MPI_Allreduce(momentum_counts, counts, 8, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(momentum_maxima, maxima, 2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        MPI_Allreduce(momentum_minima, minima, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+#else
+        std::copy(momentum_counts, momentum_counts + 8, counts);
+        std::copy(momentum_maxima, momentum_maxima + 2, maxima);
+        std::copy(momentum_minima, momentum_minima + 1, minima);
+#endif
+        if(rank == 0)
+            std::cout << std::setprecision(4) << "RICH_RADIATION_MOMENTUM_POSITIVITY stage=matrix time=" << current_time
+                      << " rows_changed=" << counts[0] << " faces_lumped=" << counts[1]
+                      << " unexplained_positive_rows=" << counts[2] << " positive_diffusion_rows=" << counts[6]
+                      << " certificate_violations=" << counts[3] << " boundary_row_violations=" << counts[7]
+                      << " lumped_faces_alpha_gt_1=" << counts[4] << " rows_with_boundary_faces=" << counts[5]
+                      << " max_w=" << maxima[0] << " max_excess_over_diagonal=" << maxima[1]
+                      << " min_row_margin=" << minima[0] << std::endl;
     }
     for(size_t i = 0; i < Nlocal; ++i)
     {
@@ -1248,6 +1550,27 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
     };
     static_assert(sizeof(D5Record) == 12 * sizeof(double), "D5Record must be 12 doubles");
     D5Record d5{};
+    // RICH_RADIATION_MOMENTUM_POSITIVITY exchange sums for the rank-0 record:
+    // signed and absolute lumping energy sum e(E_i - E_j), interior pressure
+    // work, relativity exchange to the gas, kinetic-energy change.
+    bool const momentum_positivity_post = MomentumPositivityEnabled() && hydro_on_;
+    int rank_postcg = 0;
+#ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank_postcg);
+#endif
+    // Collective first use, before the cell loop (zero-active ranks included).
+    double const loss_fraction = momentum_positivity_post ? RadiationMomentumKineticLossFraction() : 0.5;
+    // signed and absolute lumping energy delta Q, interior pressure work,
+    // relativity to gas, kinetic change, capped cells, impulse dropped, impulse
+    // total, kinetic energy kept in radiation by the cap, |(v_primitive -
+    // v_conserved).dP_interior|, cells with no radiation energy available,
+    // thermal-capped cells, energy the thermal cap moved from radiation to gas,
+    // sum |coefficient closure|, boundary returned work, boundary relativity to
+    // gas, sum |reservoir closure| (interior-only rows)
+    double momentum_exchange_sums[17] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    double momentum_minimum_scale = 1;
+    double momentum_maximum_closure = 0; // max per-row |coefficient closure| / its scale
+    double momentum_maximum_reservoir_closure = 0; // max per-row |reservoir closure| / cell energy
     for(size_t i = 0; i < N; ++i)
     {
         if(!individualCellActive(i))
@@ -1355,6 +1678,34 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         double total_relativity = 0;
         double etherm_mid = extensives[i].internal_energy;
         double const v_ratio = std::min(1.0, 0.05 * CG::speed_of_light / (fastabs(cells[i].velocity) * length_scale_ / time_scale_ + 1e-2));
+        // RICH_RADIATION_MOMENTUM_POSITIVITY (design section 3): interior faces
+        // use the lumped face value E'_f and the assembled face timestep for
+        // both the relativity exchange and the radiation-force impulse; their
+        // pressure work W'_i is returned to the radiation explicitly below.
+        // Boundary faces keep today's form (gradE_boundary, dt_cell).
+        bool const momentum_exchange = momentum_positivity_post && i < momentum_face_weight_.size();
+        std::vector<double> const* const face_weights = momentum_exchange ? &momentum_face_weight_[i] : nullptr;
+        // The matrix's v_ratio, so the relativity exchange carries the matrix's alpha exactly.
+        double const matrix_v_ratio = momentum_exchange && i < momentum_v_ratio_.size() ? momentum_v_ratio_[i] : v_ratio;
+        double const matrix_alpha = 6 * fleck_factor[i] * matrix_v_ratio * sigma_planck[i] * Dcell / CG::speed_of_light;
+        std::vector<double> const* const face_terms = momentum_exchange && i < momentum_face_term_.size() ?
+            &momentum_face_term_[i] : nullptr;
+        std::vector<double> const* const face_excess = momentum_exchange && i < momentum_face_excess_.size() ?
+            &momentum_face_excess_[i] : nullptr;
+        // Reservoir totals at the start of the velocity exchange (radiation as solved,
+        // gas after absorption/emission), for the reservoir closure below.
+        double const reservoir_start = momentum_exchange ? extensives[i].Erad + extensives[i].internal_energy +
+            0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass : 0.0;
+        double matrix_action_total = 0;
+        Vector3D gradE_boundary(0, 0, 0);
+        Vector3D dP_interior(0, 0, 0);
+        double work_interior = 0;
+        // Coefficient closure: the assembled matrix's velocity action on the
+        // solution, sum T_f (E_i + E_j) + e_f (E_i - E_j) with the stored
+        // coefficients and lumped excesses (erg, converted to code energy), minus
+        // the exchange's (1 - alpha) W'; it checks the weights and alpha.
+        double closure = 0, closure_scale = 0, boundary_relativity = 0;
+        double const code_energy = time_scale_ * time_scale_ / (mass_scale_ * length_scale_ * length_scale_);
         for(size_t j = 0; j < Nneigh; ++j)
         {
             size_t const neighbor_j = neighbors[j];
@@ -1362,22 +1713,186 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
             double const r_ij_size = abs(r_ij);
             r_ij *= 1.0 / r_ij_size;
             double Er_j = 0;
-            if(tess.IsPointOutsideBox(neighbor_j))
+            bool const boundary_face = tess.IsPointOutsideBox(neighbor_j);
+            if(boundary_face)
                 boundary_calc_.GetOutSideValues(tess, cells, i, neighbor_j, full_CG_result, Er_j, dummy_v);
             else
                 Er_j = full_CG_result[neighbor_j];
   
 
             gradE += (0.5 * tess.GetArea(faces[j]) * (Er_j + full_CG_result[i])) * r_ij * length_scale_ * length_scale_;
+            if(momentum_exchange && !boundary_face)
+            {
+                double const w = face_weights != nullptr && j < face_weights->size() ? (*face_weights)[j] : 0.0;
+                double const E_face = 0.5 * ((1 + w) * full_CG_result[i] + (1 - w) * Er_j);
+                double const dt_face = individualFaceTimeStep(i, neighbor_j, dt);
+                double const momentum_term = (dt_face * cell_flux_limiter[i] * tess.GetArea(faces[j]) * ScalarProd(cells[i].velocity, r_ij) * E_face / 3) * (time_scale_ * time_scale_ * length_scale_ / mass_scale_);
+                double const central_term = (dt_face * cell_flux_limiter[i] * tess.GetArea(faces[j]) * ScalarProd(cells[i].velocity, r_ij) * 0.5 * (Er_j + full_CG_result[i]) / 3) * (time_scale_ * time_scale_ * length_scale_ / mass_scale_);
+                double const relativity_term = -matrix_v_ratio * momentum_term * 2 * 3 * sigma_planck[i] * Dcell / CG::speed_of_light;
+                extensives[i].energy += fleck_factor[i] * relativity_term;
+                extensives[i].internal_energy += fleck_factor[i] * relativity_term;
+                total_relativity += fleck_factor[i] * relativity_term;
+                work_interior += momentum_term;
+                dP_interior += ((cell_flux_limiter[i] * dt_face * time_scale_ / 3) * tess.GetArea(faces[j]) * E_face * length_scale_ * length_scale_) * r_ij * (time_scale_ / (length_scale_ * mass_scale_));
+                // delta Q = (1 - alpha) (W' - W): the radiation energy the lumping moved.
+                double const lumping_energy = (1 - matrix_alpha) * (momentum_term - central_term);
+                double const T_face = face_terms != nullptr && j < face_terms->size() ? (*face_terms)[j] : 0.0;
+                double const e_face = face_excess != nullptr && j < face_excess->size() ? (*face_excess)[j] : 0.0;
+                double const matrix_action = (T_face * (full_CG_result[i] + Er_j) + e_face * (full_CG_result[i] - Er_j)) *
+                    code_energy;
+                matrix_action_total += matrix_action;
+                closure += matrix_action - (1 - matrix_alpha) * momentum_term;
+                closure_scale += std::abs(matrix_action) + std::abs(momentum_term);
+                momentum_exchange_sums[0] += lumping_energy;
+                momentum_exchange_sums[1] += std::abs(lumping_energy);
+                momentum_exchange_sums[3] += fleck_factor[i] * relativity_term;
+                continue;
+            }
+            if(momentum_exchange)
+                gradE_boundary += (0.5 * tess.GetArea(faces[j]) * (Er_j + full_CG_result[i])) * r_ij * length_scale_ * length_scale_;
             double const momentum_term = (0.5 * dt_cell * cell_flux_limiter[i] * tess.GetArea(faces[j]) * ScalarProd(cells[i].velocity, r_ij) * (Er_j + full_CG_result[i]) / 3) * (time_scale_ * time_scale_ * length_scale_ / mass_scale_);
             double const relativity_term = -v_ratio * momentum_term * 2 * 3 * sigma_planck[i] * Dcell / CG::speed_of_light;
             extensives[i].energy += /*momentum_term + */fleck_factor[i] * relativity_term;
             extensives[i].internal_energy += fleck_factor[i] * relativity_term;
             total_relativity += fleck_factor[i] * relativity_term;
+            if(momentum_exchange)
+                boundary_relativity += fleck_factor[i] * relativity_term;
+        }
+        if(momentum_exchange)
+        {
+            momentum_exchange_sums[13] += std::abs(closure);
+            momentum_exchange_sums[15] += boundary_relativity;
+            if(closure_scale > 0)
+                momentum_maximum_closure = std::max(momentum_maximum_closure, std::abs(closure) / closure_scale);
+            // Thermal cap (energy-conserving): the relativistic exchange may take
+            // at most the loss fraction of the gas internal energy the cell has
+            // after absorption and emission (etherm_mid).  In near-vacuum cells
+            // the stiff exchange (fleck*dt saturated) can otherwise exceed it at
+            // any timestep; the excess is paid by the cell's radiation instead.
+            double const floor_energy = (1 - loss_fraction) * etherm_mid;
+            if(etherm_mid > 0 && extensives[i].internal_energy < floor_energy)
+            {
+                double const shift = floor_energy - extensives[i].internal_energy;
+                extensives[i].internal_energy = floor_energy;
+                extensives[i].energy += shift;
+                extensives[i].Erad -= shift;
+                momentum_exchange_sums[11] += 1;
+                momentum_exchange_sums[12] += shift;
+            }
         }
         Vector3D dP;
         double Erad_dE = 0;
-        if(hydro_on_)
+        double cap_available = 0, cap_linear = 0, cap_quadratic = 0, cap_scale = 1; // failure trace only
+        if(hydro_on_ && momentum_exchange)
+        {
+            // Exact exchange (design section 3): radiation gets back the interior
+            // pressure work W'_i and the boundary work v.dP_boundary, and pays the
+            // actual kinetic-energy change; no uncompensated undo.
+            double const mass = extensives[i].mass;
+            double const old_Ek = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / mass;
+            Vector3D const dP_boundary = (cell_flux_limiter[i] * dt_cell * time_scale_ / 3) * gradE_boundary * (time_scale_ / (length_scale_ * mass_scale_));
+            dP = dP_interior + dP_boundary;
+            double const boundary_work = ScalarProd(dP_boundary, extensives[i].momentum) / mass;
+            Erad_dE = work_interior + boundary_work;
+            // Kinetic cap (energy-conserving): the kinetic change of an impulse
+            // s*dP is s*linear + s^2*quadratic.  When the full impulse would take
+            // more than the loss fraction of the radiation energy the cell has
+            // (after the returned work), the impulse is scaled to the largest s
+            // that takes exactly that fraction.  Energy stays exact for any s;
+            // the dropped impulse is momentum the gas does not receive.
+            double const linear = ScalarProd(dP, extensives[i].momentum) / mass;
+            double const quadratic = 0.5 * ScalarProd(dP, dP) / mass;
+            double const available = extensives[i].Erad + Erad_dE;
+            double scale = 1;
+            bool cap_valid = std::isfinite(linear) && std::isfinite(quadratic) && std::isfinite(available) &&
+                quadratic >= 0;
+            double cap_magnitude = 0; // scale of the cap's coefficients (0: not evaluated)
+            double scaled_withheld = 0; // kinetic energy kept in radiation / cap_magnitude
+            if(cap_valid && available > 0)
+            {
+                // Everything is evaluated with the coefficients divided by their
+                // largest magnitude m (one of a, |b|, c is then 1), so no sum,
+                // product or quotient below can overflow or divide 0/0 (the entry
+                // point traps FP overflow and invalid operations).
+                double const budget = loss_fraction * available;
+                cap_magnitude = std::max(std::max(std::abs(linear), quadratic), budget);
+                // m = 0 only with no impulse work and a budget that underflowed: nothing to cap.
+                double const a = cap_magnitude > 0 ? quadratic / cap_magnitude : 0.0;
+                double const b = cap_magnitude > 0 ? linear / cap_magnitude : 0.0;
+                double const c = cap_magnitude > 0 ? budget / cap_magnitude : 0.0;
+                if(a + b > c)
+                {
+                    // Largest s in [0, 1] with a s^2 + b s = c, cancellation-free for
+                    // each sign of b.  b < 0: a > c - b > 0, so a = 1 after scaling
+                    // and (D - b) / (2a) is safe for any c >= 0.  b >= 0: if c
+                    // underflowed below the smallest normal number, the root is below
+                    // max(c / b, sqrt(c / a)) < 1.5e-154 (one of a, b is 1) and s = 0
+                    // is used, keeping energy exact; otherwise b + D > 0.
+                    double root = 0;
+                    if(b < 0 || c >= std::numeric_limits<double>::min())
+                    {
+                        double const discriminant = std::hypot(b, 2 * std::sqrt(a * c));
+                        root = b >= 0 ? 2 * c / (b + discriminant) : (discriminant - b) / (2 * a);
+                    }
+                    if(std::isfinite(root) && root >= 0)
+                    {
+                        scale = std::min(1.0, root);
+                        scaled_withheld = (1 - scale) * b + (1 - scale * scale) * a;
+                    }
+                    else
+                        cap_valid = false;
+                }
+            }
+            else if(cap_valid)
+                momentum_exchange_sums[10] += 1;
+            if(!cap_valid)
+            {
+                setCellLocalStepFailure("momentum positivity: invalid kinetic cap", cells[i].ID);
+                good_end = 0;
+                break;
+            }
+            if(scale < 1)
+            {
+                momentum_exchange_sums[5] += 1;
+                momentum_exchange_sums[6] += (1 - scale) * fastabs(dP);
+                // Ledger only; skipped for coefficients too large to multiply back safely.
+                if(cap_magnitude < 1e300)
+                    momentum_exchange_sums[8] += scaled_withheld * cap_magnitude;
+                momentum_minimum_scale = std::min(momentum_minimum_scale, scale);
+            }
+            momentum_exchange_sums[7] += fastabs(dP);
+            cap_available = available;
+            cap_linear = linear;
+            cap_quadratic = quadratic;
+            cap_scale = scale;
+            momentum_exchange_sums[9] += std::abs(work_interior - ScalarProd(dP_interior, extensives[i].momentum) / mass);
+            dP *= scale;
+            extensives[i].momentum += dP;
+            // Radiation pays the rounded kinetic change of the updated momentum
+            // (exact bookkeeping); if rounding exhausts the budget, the final
+            // Erad > 0 check below rejects the candidate.
+            double const new_Ek = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / mass;
+            double const dE = -new_Ek + old_Ek + Erad_dE;
+            extensives[i].Erad += dE;
+            extensives[i].energy = extensives[i].internal_energy +  ScalarProd(extensives[i].momentum, extensives[i].momentum) / (2 * mass);
+            momentum_exchange_sums[2] += work_interior;
+            momentum_exchange_sums[4] += new_Ek - old_Ek;
+            momentum_exchange_sums[14] += boundary_work;
+            // Reservoir closure (interior-only rows): the actual change of
+            // radiation + internal + kinetic energy through the velocity exchange,
+            // thermal and kinetic caps included, must equal the matrix action.
+            if(i < momentum_row_boundary_.size() && momentum_row_boundary_[i] == 0)
+            {
+                double const reservoir_end = extensives[i].Erad + extensives[i].internal_energy + new_Ek;
+                double const reservoir_closure = reservoir_end - reservoir_start - matrix_action_total;
+                double const reservoir_scale = std::abs(reservoir_start) + std::abs(matrix_action_total);
+                momentum_exchange_sums[16] += std::abs(reservoir_closure);
+                if(reservoir_scale > 0)
+                    momentum_maximum_reservoir_closure = std::max(momentum_maximum_reservoir_closure,
+                        std::abs(reservoir_closure) / reservoir_scale);
+            }
+        }
+        else if(hydro_on_)
         {
             double const old_Ek = 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass;
             dP = (cell_flux_limiter[i] * dt_cell * time_scale_ / 3) * gradE * (time_scale_ / (length_scale_ * mass_scale_));
@@ -1475,6 +1990,18 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
                     old_e_therm, Erad0, extensives[i].internal_energy - old_e_therm,
                     extensives[i].Erad - Erad0, Erad_dE};
             }
+            // RICH_INDIVIDUAL_D5_TRACE with RICH_RADIATION_MOMENTUM_POSITIVITY: one
+            // rank-local line per failing rank with the terms of the final energies.
+            if(d5_trace && momentum_exchange)
+                std::cout << std::setprecision(6) << "RICH_RADIATION_MOMENTUM_FAILURE rank=" << rank_postcg
+                          << " cell_id=" << cells[i].ID << " Erad=" << extensives[i].Erad
+                          << " internal_energy=" << extensives[i].internal_energy << " Erad0=" << Erad0
+                          << " e_int0=" << old_e_therm << " cell_Erad=" << cells[i].Erad << " mass=" << extensives[i].mass
+                          << " Erad_dE=" << Erad_dE << " total_relativity=" << total_relativity
+                          << " e_absorb=" << e_absorb << " e_emitt=" << e_emitt << " e_v2=" << e_v2
+                          << " cap_available=" << cap_available << " cap_linear=" << cap_linear
+                          << " cap_quadratic=" << cap_quadratic << " cap_scale=" << cap_scale
+                          << " fleck=" << fleck_factor[i] << " dt_cell=" << dt_cell << std::endl;
             setCellLocalStepFailure(
                 "negative or invalid energy after radiation update",
                 cells[i].ID);
@@ -1529,6 +2056,42 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Allreduce(MPI_IN_PLACE, &good_end, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
 #endif
+    if(momentum_positivity_post)
+    {
+        // One rank-0 aggregate per candidate (design section 5, exchange part).
+        double sums[17];
+        double minima[2] = {momentum_minimum_scale, momentum_minimum_verification_rhs_};
+        double maxima[2] = {momentum_maximum_closure, momentum_maximum_reservoir_closure};
+#ifdef RICH_MPI
+        MPI_Allreduce(momentum_exchange_sums, sums, 17, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, minima, 2, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, maxima, 2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#else
+        std::copy(momentum_exchange_sums, momentum_exchange_sums + 17, sums);
+#endif
+        double const minimum_scale = minima[0];
+        // stage_success: this PostCG stage only; later candidate gates may still reject.
+        if(rank == 0)
+        {
+            std::cout << std::setprecision(6) << "RICH_RADIATION_MOMENTUM_POSITIVITY stage=exchange stage_success="
+                      << good_end << " lumping_energy=" << sums[0] << " lumping_energy_abs=" << sums[1]
+                      << " interior_pressure_work=" << sums[2] << " relativity_to_gas=" << sums[3]
+                      << " kinetic_change=" << sums[4] << " kinetic_capped_cells=" << sums[5]
+                      << " impulse_dropped=" << sums[6] << " impulse_total=" << sums[7]
+                      << " kinetic_kept_in_radiation=" << sums[8] << " min_impulse_scale=" << minimum_scale
+                      << " velocity_mismatch_work=" << sums[9] << " no_radiation_available_cells=" << sums[10]
+                      << " thermal_capped_cells=" << sums[11] << " thermal_cap_energy=" << sums[12]
+                      << " coefficient_closure_abs=" << sums[13] << " max_row_coefficient_closure=" << maxima[0]
+                      << " reservoir_closure_abs=" << sums[16] << " max_row_reservoir_closure=" << maxima[1]
+                      << " boundary_work=" << sums[14] << " boundary_relativity_to_gas=" << sums[15]
+                      << " min_verification_rhs=";
+            if(std::isfinite(minima[1]))
+                std::cout << minima[1];
+            else
+                std::cout << "none";
+            std::cout << std::endl;
+        }
+    }
     if((RuntimeLogDetailed() || d5_trace) && good_end == 0)
     {
         int world_size = 1;

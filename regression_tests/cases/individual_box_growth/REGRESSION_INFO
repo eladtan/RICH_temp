@@ -1,0 +1,16 @@
+# THUNDER regression metadata: box growth (UpdateBoxSynchronized/BoxGrowthDue)
+# during individual time stepping of a Sedov blast; see test.cpp.
+TEST_ID="individual_box_growth"
+TAGS="serial mpi"
+CATEGORY="code_correctness"
+BUILD_TEST_NAME="regression_tests/cases/individual_box_growth"
+RUN_DIR_REL="regression_tests/cases/individual_box_growth"
+CHECK_FUNCTION="check_individual_box_growth_case"
+RUN_COMMAND_SERIAL="\"${RICH_BIN}\""
+RUN_MODE_SERIAL="direct"
+RUN_COMMAND_MPI="mpirun -np ${SLURM_NTASKS} \"${RICH_BIN}\""
+RUN_MODE_MPI="slurm"
+SLURM_NTASKS_MPI="16"
+SLURM_PARTITION_MPI="bigrun"
+SLURM_EXCLUSIVE_MPI="1"
+SLURM_TIME_LIMIT="01:00:00"

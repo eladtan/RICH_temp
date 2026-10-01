@@ -367,6 +367,18 @@ protected:
         return true;
     }
 
+    // Local check of the reduced system's physical right-hand side (after
+    // frozen-column elimination), one entry per active unknown; the caller
+    // agrees the result across ranks.  Sets the step failure when false.
+    virtual bool validateIndividualVerificationRhs(
+        std::vector<std::size_t> const&,
+        std::size_t,
+        std::vector<double> const&,
+        std::vector<ComputationalCell3D> const&) const
+    {
+        return true;
+    }
+
     // A derived solver may compare the states immediately before and after the
     // final residual correction, replace a nonphysical local source block, and
     // ask for a rebuild before any candidate state is committed.

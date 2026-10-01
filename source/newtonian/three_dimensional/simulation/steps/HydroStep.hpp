@@ -37,6 +37,19 @@ public:
     void onIndividualSchedulerStart(double global_time_step) override
     {this->sim.SetIndividualGlobalStepReference(global_time_step);}
 
+    void prepareIndividualEntry(double next_time_step) override
+    {this->sim.PrepareIndividualEntryPointVelocities(next_time_step);}
+
+    double individualEntryReferenceStep(void) const override
+    {return this->sim.IndividualEntryReferenceStep();}
+
+    double individualEntryIntervalBound(void) override
+    {return this->sim.ComputeIndividualEntryIntervalBound();}
+
+    bool takeIndividualEntryPointVelocities(
+        std::vector<std::pair<std::size_t, Vector3D> >& velocities) override
+    {return this->sim.TakeIndividualEntryPointVelocities(velocities);}
+
     bool getIndividualGeneratorPoints(
         std::vector<Vector3D>& points) const override;
 

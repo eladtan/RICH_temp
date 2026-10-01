@@ -45,7 +45,7 @@ if [[ "${status}" -ne 0 ]]; then
   exit "${status}"
 fi
 
-adverse_pattern='MG_BICGSTAB_(CONVERGENCE|RESULT|TIMING).*outcome=(rejected|breakdown|not_converged|nonfinite)|MG_MPI_FATAL|Reducing dt|INDIVIDUAL_RADIATION_REJECTION'
+adverse_pattern='MG_BICGSTAB_(CONVERGENCE|RESULT|TIMING).*outcome=(rejected|breakdown|not_converged|nonfinite)|MG_MPI_FATAL|Reducing dt|INDIVIDUAL_RADIATION_REJECTION|RICH_RETRY'
 if grep -Eq "${adverse_pattern}" "${THUNDER_ARTIFACT_DIR}/run.log"; then
   grep -En "${adverse_pattern}" "${THUNDER_ARTIFACT_DIR}/run.log" \
     > "${gate_root}/adverse_events.txt"

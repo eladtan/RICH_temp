@@ -1,7 +1,12 @@
+#include <chrono>
 #include "3D/tessellation/Voronoi3D.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
+#include "source/3D/GeometryCommon/UpdateBox.hpp"
+#include <iomanip>
+#include <functional>
 #include "source/newtonian/three_dimensional/hdsim_3d.hpp"
 #include "source/newtonian/three_dimensional/simulation/Simulation.hpp"
+#include "source/newtonian/three_dimensional/simulation/RuntimeLog.hpp"
 #include "source/newtonian/three_dimensional/simulation/ActiveMeshView.hpp"
 #include "source/newtonian/three_dimensional/simulation/steps/HydroStep.hpp"
 #include "source/newtonian/three_dimensional/simulation/steps/RadiationStep.hpp"
@@ -22,15 +27,19 @@
 #include "source/3D/output/read3D.hpp"
 #include "source/newtonian/three_dimensional/AMR3D.hpp"
 #include "source/newtonian/three_dimensional/FastMultipoleAcceleration3D.hpp"
-#include "source/Radiation/MultigroupDiffusion.hpp"
+#include "source/Radiation/Diffusion.hpp"
+#include "source/Radiation/STAgreyOpacity.hpp"
 #include "source/misc/int2str.hpp"
 #include <boost/numeric/odeint.hpp>
 #include <boost/math/tools/roots.hpp>
 #include <algorithm>
+#include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <fenv.h>
 #include <filesystem>
 namespace fs = std::filesystem;
+#include <fstream>
 #include <sstream>
 #include "source/newtonian/three_dimensional/Dissipation.hpp"
 #include <memory>
@@ -42,6 +51,80 @@ typedef std::array<double, 4> state_type;
 #define smooth_factor 0.5
 namespace
 {
+	void WriteIntegerControlFileAtomically(int value, std::string const& filename)
+	{
+		fs::path const destination(filename);
+		fs::path temporary(destination);
+		temporary += ".tmp";
+		std::ofstream output(temporary, std::ios::trunc);
+		if(!output)
+			throw std::runtime_error("Could not open control-file temporary: " +
+				temporary.string());
+		output << value << '\n';
+		output.close();
+		if(!output)
+			throw std::runtime_error("Could not write control-file temporary: " +
+				temporary.string());
+		fs::rename(temporary, destination);
+	}
+
+	int ReadIntegerControlFile(std::string const& filename)
+	{
+		std::ifstream input(filename);
+		int value = 0;
+		if(!(input >> value))
+			throw std::runtime_error("Could not read integer control file: " + filename);
+		input >> std::ws;
+		if(!input.eof())
+			throw std::runtime_error("Invalid trailing data in integer control file: " +
+				filename);
+		return value;
+	}
+
+	bool IsNumberedSnapshotArtifact(fs::path const& path)
+	{
+		std::string stem = path.filename().string();
+		for(std::string const& extension : {std::string(".h5"),
+			std::string(".vtu"), std::string(".pvtu")})
+		{
+			if(stem.size() > extension.size() &&
+				stem.compare(stem.size() - extension.size(), extension.size(), extension) == 0)
+			{
+				stem.resize(stem.size() - extension.size());
+				break;
+			}
+		}
+		std::string const prefix = stem.rfind("snap_full_", 0) == 0 ?
+			"snap_full_" : "snap_";
+		if(stem.rfind(prefix, 0) != 0 || stem.size() == prefix.size())
+			return false;
+		return std::all_of(stem.begin() + prefix.size(), stem.end(),
+			[](char character) { return character >= '0' && character <= '9'; });
+	}
+
+	bool IsOldRunArtifact(fs::path const& path)
+	{
+		std::string const name = path.filename().string();
+		return IsNumberedSnapshotArtifact(path) ||
+			name == "initial" || name == "initial.h5" ||
+			name == "initial.vtu" || name == "initial.pvtu" ||
+			name == "restart" || name == "restart.h5" ||
+			name == "restart.vtu" || name == "restart.pvtu" ||
+			name == "individual_restart" ||
+			name == "individual_restart.h5" ||
+			name == "individual_full_restart" ||
+			name == "individual_full_restart.h5";
+	}
+
+	void RemoveOldRunArtifacts(std::string const& run_directory)
+	{
+		for(fs::directory_entry const& entry : fs::directory_iterator(run_directory))
+		{
+			if(IsOldRunArtifact(entry.path()))
+				fs::remove_all(entry.path());
+		}
+	}
+
 	void RequireOnEveryRank(bool valid, std::string const& message)
 	{
 #ifdef RICH_MPI
@@ -52,6 +135,193 @@ namespace
 #endif
 		if(!valid)
 			throw std::logic_error(message);
+	}
+
+	// RICH_TDE_WRITE_VTU=0 skips the per-rank ParaView files (snap_N/*.vtu and
+	// snap_N.pvtu, about 2.5x the size of the HDF5 snapshot) written next to
+	// every snapshot; unset, empty or 1 keeps them.  Parsed collectively on the first
+	// call, which main makes at start-up.
+	bool TdeWriteVtu(void)
+	{
+		static int state = -1;
+		if(state < 0)
+		{
+			char const* const configured = std::getenv("RICH_TDE_WRITE_VTU");
+			std::string const value = configured == nullptr ? std::string() :
+				std::string(configured);
+			RequireOnEveryRank(value.empty() || value == "0" || value == "1",
+				"RICH_TDE_WRITE_VTU must be 0 or 1");
+			int lowest = value == "0" ? 0 : 1;
+			int highest = lowest;
+#ifdef RICH_MPI
+			MPI_Allreduce(MPI_IN_PLACE, &lowest, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+			MPI_Allreduce(MPI_IN_PLACE, &highest, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+			RequireOnEveryRank(lowest == highest,
+				"RICH_TDE_WRITE_VTU differs across MPI ranks");
+			state = lowest;
+		}
+		return state == 1;
+	}
+
+	// A strict 0/1 run switch (unset or empty = 0) that must agree on every rank.
+	// Collective.
+	bool TdeSwitch(char const* name)
+	{
+		char const* const configured = std::getenv(name);
+		std::string const value = configured == nullptr ? std::string() :
+			std::string(configured);
+		RequireOnEveryRank(value.empty() || value == "0" || value == "1",
+			std::string(name) + " must be 0 or 1");
+		int lowest = value == "1" ? 1 : 0;
+		int highest = lowest;
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, &lowest, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+		MPI_Allreduce(MPI_IN_PLACE, &highest, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+		RequireOnEveryRank(lowest == highest,
+			std::string(name) + " differs across MPI ranks");
+		return highest == 1;
+	}
+
+	// Mesh quality of near-vacuum cells (plan 2026-09-28, step 0c): for owned cells within 10x of the lowest
+	// density (floor cells, whose CFL limit is set by geometry and mesh motion), rank-0 percentiles of
+	// q = V / (Amax x width), of the CFL effective radius min(width, V / Amax) and of the generator-centroid
+	// offset / width, in bands of distance from the origin.  Values outside a histogram's range are counted as
+	// censored tails (below/above) and a percentile falling in a tail is printed as "<lo" / ">hi".  Collective;
+	// skipped unless every rank's mesh holds all of its owned cells.
+	void ReportFloorMeshQuality(HDSim3D const& sim, char const* label)
+	{
+		Tessellation3D const& tess = sim.getTessellation();
+		vector<ComputationalCell3D> const& cells = sim.getCells();
+		size_t const owned = sim.getExtensives().size();
+		int complete = tess.GetPointNo() == owned && cells.size() >= owned ? 1 : 0;
+		double lowest = std::numeric_limits<double>::infinity();
+		if(complete != 0)
+			for(size_t i = 0; i < owned; ++i)
+				lowest = std::min(lowest, cells[i].density);
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, &complete, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+		MPI_Allreduce(MPI_IN_PLACE, &lowest, 1, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+		int rank = 0;
+		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#else
+		int const rank = 0;
+#endif
+		if(complete == 0)
+		{
+			if(rank == 0)
+				std::cout << "RICH_TDE_MESH_QUALITY label=" << label << " time=" << sim.getTime()
+					<< " skipped=partial_mesh" << std::endl;
+			return;
+		}
+		// Per band and metric: bins + 2 tail slots (below, above).  log10 ranges: q [-4, 1], effective radius
+		// [-4, 2], offset/width [-6, 0].
+		constexpr int bands = 4;
+		constexpr int metrics = 3;
+		constexpr int bins = 100;
+		constexpr int slots = bins + 2;
+		double const band_edges[bands + 1] = {0, 2, 5, 20, std::numeric_limits<double>::infinity()};
+		double const range_lo[metrics] = {-4, -4, -6};
+		double const range_hi[metrics] = {1, 2, 0};
+		vector<double> histogram(static_cast<size_t>(bands * metrics * slots + bands), 0.0);
+		auto add = [&](int band, int metric, double value)
+		{
+			size_t const base = static_cast<size_t>((band * metrics + metric) * slots);
+			double const x = value > 0 ? std::log10(value) : -std::numeric_limits<double>::infinity();
+			if(x < range_lo[metric])
+				histogram[base + bins] += 1;
+			else if(x >= range_hi[metric])
+				histogram[base + bins + 1] += 1;
+			else
+				histogram[base + static_cast<size_t>((x - range_lo[metric]) / (range_hi[metric] - range_lo[metric]) *
+					bins)] += 1;
+		};
+		for(size_t i = 0; i < owned; ++i)
+		{
+			if(!(cells[i].density <= 10 * lowest))
+				continue;
+			double amax = 0;
+			for(size_t const face : tess.GetCellFaces(i))
+				amax = std::max(amax, tess.GetArea(face));
+			double const width = tess.GetWidth(i);
+			double const volume = tess.GetVolume(i);
+			if(!(amax > 0 && width > 0 && volume > 0))
+				continue;
+			double const r = abs(tess.GetMeshPoint(i));
+			int band = 0;
+			while(band < bands - 1 && r >= band_edges[band + 1])
+				++band;
+			add(band, 0, volume / (amax * width));
+			add(band, 1, std::min(width, volume / amax));
+			add(band, 2, abs(tess.GetCellCM(i) - tess.GetMeshPoint(i)) / width);
+			histogram[static_cast<size_t>(bands * metrics * slots + band)] += 1;
+		}
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, histogram.data(), static_cast<int>(histogram.size()), MPI_DOUBLE, MPI_SUM,
+			MPI_COMM_WORLD);
+#endif
+		if(rank != 0)
+			return;
+		auto percentile = [&](int band, int metric, double fraction) -> std::string
+		{
+			size_t const base = static_cast<size_t>((band * metrics + metric) * slots);
+			double total = 0;
+			for(int b = 0; b < slots; ++b)
+				total += histogram[base + static_cast<size_t>(b)];
+			if(!(total > 0))
+				return "nan";
+			double running = histogram[base + bins];
+			std::ostringstream text;
+			text << std::setprecision(4);
+			if(running >= fraction * total)
+			{
+				text << "<" << std::pow(10.0, range_lo[metric]);
+				return text.str();
+			}
+			double const width_dex = (range_hi[metric] - range_lo[metric]) / bins;
+			for(int b = 0; b < bins; ++b)
+			{
+				running += histogram[base + static_cast<size_t>(b)];
+				if(running >= fraction * total)
+				{
+					text << std::pow(10.0, range_lo[metric] + (b + 0.5) * width_dex);
+					return text.str();
+				}
+			}
+			text << ">" << std::pow(10.0, range_hi[metric]);
+			return text.str();
+		};
+		std::ostringstream line;
+		line << std::setprecision(4) << "RICH_TDE_MESH_QUALITY label=" << label << " time=" << sim.getTime()
+			<< " floor_density=" << lowest;
+		for(int band = 0; band < bands; ++band)
+		{
+			line << " band" << band << "_r=" << band_edges[band] << "-" << band_edges[band + 1]
+				<< ",n=" << histogram[static_cast<size_t>(bands * metrics * slots + band)];
+			char const* const names[metrics] = {"q", "eff", "offset"};
+			for(int metric = 0; metric < metrics; ++metric)
+			{
+				size_t const base = static_cast<size_t>((band * metrics + metric) * slots);
+				line << "," << names[metric] << "_p1=" << percentile(band, metric, 0.01)
+					<< "," << names[metric] << "_p5=" << percentile(band, metric, 0.05)
+					<< "," << names[metric] << "_p50=" << percentile(band, metric, 0.5)
+					<< "," << names[metric] << "_below=" << histogram[base + bins]
+					<< "," << names[metric] << "_above=" << histogram[base + bins + 1];
+			}
+		}
+		std::cout << line.str() << std::endl;
+	}
+
+	void WriteTdeSnapshot(HDSim3D const& sim, std::string const& name,
+		vector<DiagnosticAppendix3D*> const& appendices)
+	{
+		ReportFloorMeshQuality(sim, "snapshot");
+#ifdef RICH_MPI
+		WriteSnapshot3D(sim, name, appendices, true, TdeWriteVtu());
+#else
+		WriteSnapshot3D(sim, name, appendices, TdeWriteVtu());
+#endif
 	}
 
 	std::unique_ptr<ActiveMeshView> MakeActiveMeshView(
@@ -78,6 +348,14 @@ namespace
 		MeshAlignedStateGuard(HDSim3D& sim, Simulation const& simulation):
 			sim_(sim)
 		{
+			if(simulation.GetTimeIntegrationMode() != TimeIntegrationMode::Individual)
+			{
+				// Global stepping keeps the primitives mesh-aligned (owned cells
+				// followed by ghost copies on the full mesh); nothing to realign.
+				RequireOnEveryRank(simulation.StateSynchronized(),
+					"Snapshot requires a synchronized state");
+				return;
+			}
 			if(!simulation.IndividualStateSynchronized())
 				throw std::logic_error(
 					"Legacy snapshot requires one synchronized individual state");
@@ -104,10 +382,13 @@ namespace
 			extensives.swap(aligned_extensives);
 			canonical_cells_.swap(aligned_cells);
 			canonical_extensives_.swap(aligned_extensives);
+			realigned_ = true;
 		}
 
 		~MeshAlignedStateGuard()
 		{
+			if(!realigned_)
+				return;
 			sim_.getCells().swap(canonical_cells_);
 			sim_.getExtensives().swap(canonical_extensives_);
 		}
@@ -117,6 +398,7 @@ namespace
 
 	private:
 		HDSim3D& sim_;
+		bool realigned_ = false;
 		std::vector<ComputationalCell3D> canonical_cells_;
 		std::vector<Conserved3D> canonical_extensives_;
 	};
@@ -124,15 +406,41 @@ namespace
 	class RemoveCenter
 	{
 	public:
+		// `masked(cell)`: whether the gravity evaluates this cell's acceleration
+		// to exactly zero (TDEGravity::MasksAcceleration on the current box).
 		RemoveCenter(HDSim3D& sim, EquationOfState const& eos,
-			double MBH, double Mstar, double Rstar, double beta, bool enabled):
-			sim_(sim), eos_(eos), enabled_(enabled),
+			double MBH, double Mstar, double Rstar, double beta, bool enabled,
+			std::function<bool(ComputationalCell3D const&)> masked):
+			sim_(sim), eos_(eos), enabled_(enabled), masked_(std::move(masked)),
 			rt_(Rstar * std::pow(MBH / Mstar, 0.333333333) / beta),
 			rsmooth_(std::max(rt_ * 0.4,
 				std::min(rt_ - Rstar * 15, rt_ * smooth_factor))),
 			sticker_index_(binary_index_find(ComputationalCell3D::stickerNames,
 				std::string("InsideRemoveCenter")))
 		{}
+
+		// Global stepping (adaptive controller) advances every owned cell on
+		// the same step, so the sink sweeps the owned range, as in
+		// runs/BaseTDEComptonGlobal; there is no per-event acceleration cache.
+		void Apply(void)
+		{
+			// A global step makes the individual global-step reference stale:
+			// the first sink application after re-entering individual mode
+			// falls back to the legacy per-event factors until the next
+			// time-step suggestion refreshes it.
+			sim_.ResetIndividualGlobalStepReference();
+			if(!enabled_)
+				return;
+			Tessellation3D const& tess = sim_.getTessellation();
+			std::vector<ComputationalCell3D>& cells = sim_.getCells();
+			std::vector<Conserved3D>& extensives = sim_.getExtensives();
+			std::size_t const N = tess.GetPointNo();
+			RequireOnEveryRank(cells.size() >= N && extensives.size() >= N,
+				"Center sink has inconsistent committed arrays");
+			for(std::size_t i = 0; i < N; ++i)
+				applyCell(cells[i], extensives[i], tess.GetCellCM(i),
+					tess.GetVolume(i));
+		}
 
 		void Apply(IndividualStepContext const& context)
 		{
@@ -150,41 +458,157 @@ namespace
 			std::unique_ptr<ActiveMeshView> view = MakeActiveMeshView(
 				tess, cells.size(),
 				"Cannot map center-sink targets onto the individual event mesh");
-			bool mass_changed = false;
+			// The acceleration cache survives the sink (user's choice,
+			// 2026-09-24).  A cell's own mass does not enter its own
+			// acceleration, so the cells the sink changes keep valid caches.
+			// Every cache is set by its cell's second-half evaluation at the end
+			// of an interval and used by the first half of the next interval at
+			// that same time, so the only mass that kick's acceleration misses
+			// is what this event's sink removes after that evaluation: at most
+			// G dM / d^2 from one event's dM (logged below; d the distance to
+			// the nearest changed cell; FMM approximation error aside).  The
+			// same cache also predicts passive cells at later face times
+			// (ConditionActionFlux1), which can span several sink events; that
+			// prediction error is not bounded by one event.  A cell taken below
+			// the gravity mask would evaluate to exactly zero, so its cache
+			// becomes zero.  An AMR pass refreshes the caches of the cells whose
+			// interval opens now (Simulation::refreshCurrentAccelerationCaches),
+			// which also absorbs this event's removal for them.  Flushing every
+			// cache instead forced a full first-half gravity solve in 119 of
+			// 126 events (job 10205130).
+			unsigned long long counts[3] = {0, 0, 0};  // changed, zeroed, applied
+			double masses[2] = {0, 0};  // removed, total before
+			// Replicated: the guard floor's global-step reference (zero before
+			// the first suggestion, then the sink acts once per event as before).
+			double const reference_dt = sim_.GetIndividualGlobalStepReference();
+			double exponents[2] = {std::numeric_limits<double>::infinity(), 0};
+			std::size_t example_id = 0;
+			double example_removed = 0;
 			for(std::size_t local = 0; local < view->localSize(); ++local)
 			{
 				std::size_t const global = view->localToGlobal(local);
-				if(context.isActive(global))
-					mass_changed = applyCell(cells[global], extensives[global],
-						tess.GetCellCM(local), tess.GetVolume(local)) || mass_changed;
+				if(!context.isActive(global))
+					continue;
+				double const old_mass = extensives[global].mass;
+				// Per unit time: the factors act for this cell's closed interval
+				// in units of the step a global step would take (see applyCell).
+				// Not clipped (velocity damping has no floor, so a clip would
+				// make it depend on the split); the division cannot overflow.
+				// A huge exponent only underflows the factors to zero, which the
+				// density and temperature floors absorb (underflow does not trap).
+				double exponent = 1.0;
+				double const interval = context.cellTimeStep(global);
+				if(reference_dt > 0 && std::isfinite(interval) && interval >= 0)
+					exponent = reference_dt > interval /
+						std::numeric_limits<double>::max() ?
+						interval / reference_dt : std::numeric_limits<double>::max();
+				bool touched = false;
+				bool const mass_changed = applyCell(cells[global], extensives[global],
+					tess.GetCellCM(local), tess.GetVolume(local), exponent, &touched);
+				if(touched)
+				{
+					++counts[2];
+					exponents[0] = std::min(exponents[0], exponent);
+					exponents[1] = std::max(exponents[1], exponent);
+				}
+				if(!mass_changed)
+					continue;
+				++counts[0];
+				double const removed = old_mass - extensives[global].mass;
+				masses[0] += removed;
+				if(removed > example_removed)
+				{
+					example_removed = removed;
+					example_id = cells[global].ID;
+				}
+				if(masked_ && masked_(cells[global]))
+				{
+					context.cached_accelerations[global] = Vector3D();
+					++counts[1];
+				}
 			}
+			// Total before the removal, for the removed fraction.
+			for(Conserved3D const& extensive : extensives)
+				masses[1] += extensive.mass;
+			masses[1] += masses[0];
+			unsigned long long example_cell = static_cast<unsigned long long>(example_id);
 #ifdef RICH_MPI
-			int mass_changed_on_any_rank = mass_changed ? 1 : 0;
-			MPI_Allreduce(MPI_IN_PLACE, &mass_changed_on_any_rank, 1, MPI_INT,
-				MPI_MAX, MPI_COMM_WORLD);
-			mass_changed = mass_changed_on_any_rank != 0;
+			MPI_Allreduce(MPI_IN_PLACE, counts, 3, MPI_UNSIGNED_LONG_LONG,
+				MPI_SUM, MPI_COMM_WORLD);
+			MPI_Allreduce(MPI_IN_PLACE, masses, 2, MPI_DOUBLE, MPI_SUM,
+				MPI_COMM_WORLD);
+			double exponent_extrema[2] = {-exponents[0], exponents[1]};
+			MPI_Allreduce(MPI_IN_PLACE, exponent_extrema, 2, MPI_DOUBLE, MPI_MAX,
+				MPI_COMM_WORLD);
+			exponents[0] = -exponent_extrema[0];
+			exponents[1] = exponent_extrema[1];
+			struct { double value; int rank; } local_example = {example_removed, 0}, largest = {0, 0};
+			MPI_Comm_rank(MPI_COMM_WORLD, &local_example.rank);
+			MPI_Allreduce(&local_example, &largest, 1, MPI_DOUBLE_INT, MPI_MAXLOC,
+				MPI_COMM_WORLD);
+			example_removed = largest.value;
+			MPI_Bcast(&example_cell, 1, MPI_UNSIGNED_LONG_LONG, largest.rank,
+				MPI_COMM_WORLD);
 #endif
-			if(mass_changed)
-			{
-				std::fill(context.cached_accelerations.begin(),
-					context.cached_accelerations.end(), Vector3D());
-				std::fill(context.gravity_half_kick_pending.begin(),
-					context.gravity_half_kick_pending.end(), 0);
-			}
+			cumulative_removed_mass_ += masses[0];
+			int rank = 0;
+#ifdef RICH_MPI
+			MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+			if((counts[0] > 0 || counts[2] > 0) && rank == 0)
+				std::cout << std::setprecision(6) << "TDE_SINK event_tick=" << context.event_tick
+					<< " changed_cells=" << counts[0] << " applied_cells=" << counts[2]
+					<< " zeroed_caches=" << counts[1]
+					<< " removed_mass=" << masses[0]
+					<< " removed_fraction=" << (masses[1] > 0 ? masses[0] / masses[1] : 0.0)
+					<< " cumulative_individual_removed_mass=" << cumulative_removed_mass_
+					<< " example_id=" << example_cell
+					<< " example_removed=" << example_removed
+					<< " reference_dt=" << reference_dt
+					<< " exponent_min=" << exponents[0]
+					<< " exponent_max=" << exponents[1] << std::endl;
 		}
 	private:
+		// One application of the sink.  `exponent` scales it to a duration:
+		// 1 on a global step (the legacy per-step factors); on an individual
+		// event the cell's closed interval over the step a global step would
+		// take, so a cell in a fine bin loses the same fraction per unit time as
+		// one in a coarse bin (applied per event, the removal rate grew with
+		// the activation rate: sink cells drained faster, got finer bins and
+		// drained faster still; TDE trial job 10208596).  The density, the
+		// temperature and the velocity damping factors are raised to it; the
+		// floors and clamps are unchanged.
 		bool applyCell(ComputationalCell3D& cell, Conserved3D& extensive,
-			Vector3D const& centroid, double volume) const
+			Vector3D const& centroid, double volume, double exponent = 1.0,
+			bool* touched = nullptr) const
 		{
+			// Exactly the legacy factor at exponent 1 (std::pow(f, 1.0) is
+			// not always f in the Intel math library), so a global step is
+			// unchanged bit for bit.
+			auto const scaled = [exponent](double factor)
+			{
+				return exponent == 1.0 ? factor : std::pow(factor, exponent);
+			};
 			double const radius = fastabs(centroid);
 			if(radius < rsmooth_)
 			{
 				cell.stickers[sticker_index_] = true;
 				double const old_density = cell.density;
-				double const new_density = std::max(1e-20, old_density * 0.8);
+				double const new_density = std::max(1e-20,
+					old_density * scaled(0.8));
 				double const density_ratio = old_density / new_density;
-				double const new_temperature =
-					std::min(1e7, std::max(1e4, cell.temperature * 0.8));
+				if(touched != nullptr)
+					*touched = true;
+				// Legacy (exponent 1): min(1e7, max(1e4, 0.8 T)).  Otherwise
+				// max(1e4, min(1e7 x 0.8^(x - 1), T x 0.8^x)): equal to the
+				// legacy map at x = 1 and composing exactly under any split of
+				// the interval, fractional ones included (two applications at
+				// x = 0.5 equal one at x = 1); the floor is applied last, so the
+				// decaying cap cannot undercut it.
+				double const new_temperature = exponent == 1.0 ?
+					std::min(1e7, std::max(1e4, cell.temperature * 0.8)) :
+					std::max(1e4, std::min(1e7 * std::pow(0.8, exponent - 1.0),
+						cell.temperature * scaled(0.8)));
 				cell.tracers[2] *= old_density;
 				cell.tracers[2] += old_density - new_density;
 				cell.density = new_density;
@@ -193,7 +617,7 @@ namespace
 				double const smoothing_fraction =
 					std::min(1.0, radius / rsmooth_);
 				cell.velocity *=
-					1.0 - 0.1 * smoothing_fraction * smoothing_fraction;
+					scaled(1.0 - 0.1 * smoothing_fraction * smoothing_fraction);
 				cell.internal_energy = eos_.dT2e(new_density, new_temperature,
 					cell.tracers, ComputationalCell3D::tracerNames);
 				cell.pressure = eos_.de2p(new_density, cell.internal_energy,
@@ -201,8 +625,6 @@ namespace
 				cell.tracers[0] = eos_.dp2s(new_density, cell.pressure,
 					cell.tracers, ComputationalCell3D::tracerNames);
 				cell.Erad *= density_ratio;
-				for(std::size_t group = 0; group < ENERGY_GROUPS_NUM; ++group)
-					cell.Eg[group] *= density_ratio;
 				cell.Erad_dt *= density_ratio;
 				cell.Erad_dt_dt *= density_ratio;
 				PrimitiveToConserved(cell, volume, extensive);
@@ -213,7 +635,21 @@ namespace
 			if(radius < std::min(rt_ * 0.8, rsmooth_ * 1.5) &&
 				cell.temperature > 1e9)
 			{
-				cell.temperature *= 0.8;
+				if(touched != nullptr)
+					*touched = true;
+				// Legacy: x0.8 per application while above 1e9, so it stops at
+				// the first value <= 1e9; an exponent covers at most as many
+				// applications as reach it: the whole part of the exponent runs
+				// as legacy steps (the same multiplications, stopping where they
+				// stop), the fractional part as one partial step if still above
+				// the cutoff.  For a fractional exponent the result depends on the
+				// split (no map that stops at a threshold can match the legacy
+				// step at 1 and compose exactly).
+				double const whole = std::floor(exponent);
+				for(double step = 0; step < whole && cell.temperature > 1e9; ++step)
+					cell.temperature *= 0.8;
+				if(exponent > whole && cell.temperature > 1e9)
+					cell.temperature *= std::pow(0.8, exponent - whole);
 				cell.internal_energy = eos_.dT2e(cell.density, cell.temperature,
 					cell.tracers, ComputationalCell3D::tracerNames);
 				cell.pressure = eos_.de2p(cell.density, cell.internal_energy,
@@ -228,6 +664,10 @@ namespace
 		HDSim3D& sim_;
 		EquationOfState const& eos_;
 		bool enabled_;
+		std::function<bool(ComputationalCell3D const&)> masked_;
+		// Mass removed on individual events since this process started (not
+		// persisted across restarts; global steps not included).
+		double cumulative_removed_mass_ = 0;
 		double const rt_;
 		double const rsmooth_;
 		std::size_t const sticker_index_;
@@ -438,6 +878,55 @@ namespace
 		std::vector<Conserved3D>& canonical_extensives = sim.getExtensives();
 		std::vector<ComputationalCell3D>& canonical_cells = sim.getCells();
 		std::size_t const N = tess.GetPointNo();
+		std::pair<Vector3D, Vector3D> box_points = tess.GetBoxCoordinates();
+		double const reference_density = 1e-8 * Mstar / ((box_points.second.x - box_points.first.x) * (box_points.second.y - box_points.first.y) * (box_points.second.z - box_points.first.z));
+		// Shift the owned cells [0, N), the points and the box, then rebuild.
+		auto shift = [&](std::vector<ComputationalCell3D>& cells, std::vector<Conserved3D>& extensives)
+		{
+			for(size_t i = 0; i < N; ++i)
+			{
+				points[i].x += x0[0];
+				points[i].y += x0[1];
+				if(cells[i].density > reference_density)
+				{
+					cells[i].velocity.x += x0[2];
+					cells[i].velocity.y += x0[3];
+				}
+				else
+					cells[i].velocity = Vector3D();
+				extensives[i].momentum = extensives[i].mass * cells[i].velocity;
+				extensives[i].energy = extensives[i].internal_energy + 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass;
+			}
+			box_points.first.x += x0[0];
+			box_points.first.y += x0[1];
+			box_points.second.x += x0[0];
+			box_points.second.y += x0[1];
+			tess.SetBox(box_points.first, box_points.second);
+#ifdef RICH_MPI
+			tess.BuildParallel(points);
+			MPI_exchange_data(tess, extensives, false);
+			MPI_exchange_data(tess, cells, false);
+#else
+			tess.Build(points);
+#endif
+		};
+		// Stepping globally (the adaptive controller) the state is the global
+		// path's: owned cells followed by ghost copies, shifted in place exactly
+		// as runs/BaseTDEComptonGlobal does.
+		if(simulation.GetTimeIntegrationMode() != TimeIntegrationMode::Individual)
+		{
+			RequireOnEveryRank(
+				points.size() >= N && canonical_cells.size() >= N &&
+				canonical_extensives.size() >= N,
+				"Reference-frame change requires one full mesh");
+			points.resize(N);
+			shift(canonical_cells, canonical_extensives);
+			RequireOnEveryRank(
+				canonical_cells.size() >= tess.GetPointNo() &&
+				canonical_extensives.size() >= tess.GetPointNo(),
+				"Reference-frame rebuild produced misaligned committed state");
+			return;
+		}
 		RequireOnEveryRank(
 			points.size() >= N && canonical_cells.size() == N &&
 			canonical_extensives.size() == N,
@@ -451,34 +940,7 @@ namespace
 		std::vector<Conserved3D> extensives;
 		view->gatherOwnedInto(canonical_cells, cells);
 		view->gatherOwnedInto(canonical_extensives, extensives);
-		std::pair<Vector3D, Vector3D> box_points = tess.GetBoxCoordinates();
-		double const reference_density = 1e-8 * Mstar / ((box_points.second.x - box_points.first.x) * (box_points.second.y - box_points.first.y) * (box_points.second.z - box_points.first.z));
-		for(size_t i = 0; i < N; ++i)
-		{
-			points[i].x += x0[0];
-			points[i].y += x0[1];
-			if(cells[i].density > reference_density)
-			{
-				cells[i].velocity.x += x0[2];
-				cells[i].velocity.y += x0[3];
-			}
-			else
-				cells[i].velocity = Vector3D();
-			extensives[i].momentum = extensives[i].mass * cells[i].velocity;
-			extensives[i].energy = extensives[i].internal_energy + 0.5 * ScalarProd(extensives[i].momentum, extensives[i].momentum) / extensives[i].mass;
-		}
-		box_points.first.x += x0[0];
-		box_points.first.y += x0[1];
-		box_points.second.x += x0[0];
-		box_points.second.y += x0[1];
-		tess.SetBox(box_points.first, box_points.second);
-#ifdef RICH_MPI
-		tess.BuildParallel(points);
-		MPI_exchange_data(tess, extensives, false);
-		MPI_exchange_data(tess, cells, false);
-#else
-		tess.Build(points);
-#endif
+		shift(cells, extensives);
 		RequireOnEveryRank(
 			cells.size() == tess.GetPointNo() && extensives.size() == cells.size(),
 			"Reference-frame rebuild produced misaligned committed state");
@@ -573,22 +1035,35 @@ namespace
 			std::vector<ComputationalCell3D> const& cells = sim.getCells();
 			IndividualTimeStepScheduler* scheduler =
 				simulation.GetIndividualTimeStepScheduler();
-			int scheduler_ready = scheduler != nullptr && scheduler->initialized();
+			// Under the adaptive controller the run may be stepping globally;
+			// every owned cell is then current and there is no scheduler.
+			bool const individual_mode =
+				simulation.GetTimeIntegrationMode() == TimeIntegrationMode::Individual;
+			int scheduler_ready = !individual_mode ||
+				(scheduler != nullptr && scheduler->initialized());
 #ifdef RICH_MPI
 			MPI_Allreduce(MPI_IN_PLACE, &scheduler_ready, 1, MPI_INT, MPI_MIN,
 				MPI_COMM_WORLD);
 #endif
-			if(scheduler_ready == 0)
-				throw std::logic_error(
-					"Gravity reference-frame change requires initialized individual scheduling");
-			std::vector<CellTimeState> const& states = scheduler->states();
-			RequireOnEveryRank(states.size() == cells.size(),
+			// The adaptive controller switched into individual mode at this step
+			// boundary: the new scheduler initializes at its first event.  The
+			// state is the completed global step's, so it is scanned as a global
+			// state; a trigger is latched (reference_frame_change_pending) and
+			// the transition itself waits for that first event.
+			bool const scheduler_uninitialized = scheduler_ready == 0;
+			bool const scan_individual = individual_mode && !scheduler_uninitialized;
+			std::vector<CellTimeState> const* states =
+				scan_individual ? &scheduler->states() : nullptr;
+			RequireOnEveryRank(states == nullptr || states->size() == cells.size(),
 				"Gravity reference-frame scan has inconsistent scheduler state");
-			std::uint64_t const current_tick = scheduler->currentTick();
+			std::uint64_t const current_tick =
+				scan_individual ? scheduler->currentTick() : 0;
 			int need_update = 0;
-			for(size_t i = 0; i < cells.size(); ++i)
+			std::size_t const owned_cells = scan_individual ?
+				cells.size() : sim.getTessellation().GetPointNo();
+			for(size_t i = 0; i < owned_cells && i < cells.size(); ++i)
 			{
-				if(states[i].last_primitive_tick != current_tick)
+				if(states != nullptr && (*states)[i].last_primitive_tick != current_tick)
 					continue;
 				if(cells[i].density > 1e-14 && (cells[i].velocity.x + x0[2]) > 0 && (cells[i].velocity.y + x0[3]) < 0 && x0[0] < -2 * Rt)
 				{
@@ -599,14 +1074,25 @@ namespace
 #ifdef RICH_MPI
 			MPI_Allreduce(MPI_IN_PLACE, &need_update, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
 #endif
-			if(rank == 0)
+			if(rank == 0 && RuntimeLogDetailed())
 				std::cout<<x0[0]<<","<<x0[1]<<std::endl;
 			bool const transition_requested =
 				reference_frame_change_pending ||
 				(x0[1] > 0.1 && x0[2] > 0.1) || need_update == 1;
+			if(scheduler_uninitialized)
+			{
+				if(transition_requested)
+				{
+					reference_frame_change_pending = true;
+					if(rank == 0)
+						std::cout << "Gravity reference-frame change latched; it waits for "
+							"the first event of the new individual scheduler" << std::endl;
+				}
+				return;
+			}
 			if(transition_requested)
 			{
-				if(!simulation.IndividualStateSynchronized())
+				if(!simulation.StateSynchronized())
 				{
 					simulation.RequestSynchronizedIndividualEvent();
 					reference_frame_change_pending = true;
@@ -615,24 +1101,54 @@ namespace
 							"a synchronized individual event" << std::endl;
 					return;
 				}
+				bool gravity_transition_marked = true;
+				if(rank == 0)
+				{
+					try
+					{
+						WriteIntegerControlFileAtomically(-1, gravity_name);
+					}
+					catch(std::exception const& error)
+					{
+						gravity_transition_marked = false;
+						std::cerr << error.what() << std::endl;
+					}
+				}
+				RequireOnEveryRank(gravity_transition_marked,
+					"Could not mark the gravity transition in progress");
 
 				UpdateReferenceFrame(sim, Rstar, Mstar, MBH, beta, simulation);
-				ResetIndividualSchedulerAfterReferenceFrameChange(simulation);
+				if(simulation.GetTimeIntegrationMode() == TimeIntegrationMode::Individual)
+					ResetIndividualSchedulerAfterReferenceFrameChange(simulation);
 #ifdef RICH_MPI
 				MPI_Barrier(MPI_COMM_WORLD);
-				std::cout<<"Point number "<<sim.getTessellation().GetPointNo()<<std::endl;
+				if(rank == 0 && RuntimeLogDetailed())
+					std::cout<<"Point number "<<sim.getTessellation().GetPointNo()<<std::endl;
 #endif
 				vector<DiagnosticAppendix3D *> appendices;
 				{
 					MeshAlignedStateGuard aligned_state(sim, simulation);
-					WriteSnapshot3D(sim, restart_name, appendices, true);
+					WriteTdeSnapshot(sim, restart_name, appendices);
 				}
 				WriteSimulation(simulation, individual_restart_name);
 #ifdef RICH_MPI
 				MPI_Barrier(MPI_COMM_WORLD);
-				if(rank == 0)
 #endif
-					write_number(1, gravity_name);
+				bool gravity_marker_written = true;
+				if(rank == 0)
+				{
+					try
+					{
+						WriteIntegerControlFileAtomically(1, gravity_name);
+					}
+					catch(std::exception const& error)
+					{
+						gravity_marker_written = false;
+						std::cerr << error.what() << std::endl;
+					}
+				}
+				RequireOnEveryRank(gravity_marker_written,
+					"Could not commit the full-gravity control file");
 #ifdef RICH_MPI
 				if(rank == 0)
 					std::cout<<"Done Gravity change"<<std::endl;
@@ -642,146 +1158,6 @@ namespace
 			}
 		}
 	}
-
-	class STAMGopacity: public OpacityCalculator
-	{
-	private:
-		std::vector<double> rho_, T_;
-		std::vector<std::vector<std::vector<double>>> rossland_, planck_, scatter_;
-	public:
-		STAMGopacity(std::string file_directory)
-		{
-			energy_groups_boundary = read_vector(file_directory + "frequency_edges.txt");
-			for(double& Egb : energy_groups_boundary)
-			    Egb *= 11604.5 * CG::boltzmann_constant;
-			energy_groups_center.resize(energy_groups_boundary.size() - 1, std::numeric_limits<double>::quiet_NaN());
-			for(size_t i = 0; i < energy_groups_boundary.size() - 1; ++i)
-				energy_groups_center[i] = std::sqrt(energy_groups_boundary[i] * energy_groups_boundary[i + 1]);
-			size_t const Ng = energy_groups_boundary.size() - 1;
-			T_ = read_vector(file_directory +"T.txt");
-			// Convert from ev to kelvin
-			for(size_t i = 0; i < T_.size(); ++i)
-			{
-				T_[i] *= 11604.5;
-				T_[i] = std::log(T_[i]);
-			}
-			size_t const Nt = T_.size();
-			rho_ = read_vector(file_directory +"rho.txt");
-			size_t const Nrho = rho_.size();
-			for(size_t i = 0; i < Nrho; ++i)
-				rho_[i] = std::log(rho_[i]);
-			rossland_.resize(Ng);
-			planck_.resize(Ng);
-			scatter_.resize(Ng);
-			for(size_t i = 0; i < Ng; ++i)
-			{
-				auto temp_ross = read_vector(file_directory +"sigma_rossland_" + std::to_string(i + 1) + ".txt");
-				auto temp_ross_abs = read_vector(file_directory +"sigma_absorption_rossland_" + std::to_string(i + 1) + ".txt");
-				auto temp_scattering = read_vector(file_directory +"sigma_scattering_planck_" + std::to_string(i + 1) + ".txt");
-				rossland_[i].resize(Nrho);
-				planck_[i].resize(Nrho);
-				scatter_[i].resize(Nrho);
-				for(size_t j = 0; j < Nrho; ++j)
-				{
-					rossland_[i][j].resize(Nt);
-					planck_[i][j].resize(Nt);
-					scatter_[i][j].resize(Nt);
-					for(size_t k = 0; k < Nt; ++k)
-					{
-						rossland_[i][j][k] = std::log(temp_ross[j * Nt + k]) + rho_[j];
-						planck_[i][j][k] = std::log(temp_ross_abs[j * Nt + k]) + rho_[j];
-						scatter_[i][j][k] = std::log(temp_scattering[j * Nt + k]) + rho_[j];
-					}
-				}
-			}
-		}
-
-		double CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const override
-		{
-			std::size_t const group = findGroup(energy);
-			double T = std::log(cell.temperature);
-			double d = std::log(cell.density);
-			double d_ratio = 1;
-			if(T < T_[0])
-				T = T_[0];
-			if(T > T_.back())
-				T = T_.back();
-			if(d < rho_[0])
-			{
-				d_ratio = cell.density / std::exp(rho_[0]);
-				d = rho_[0];
-				double const scattering = CalcScatteringOpacity(cell, energy);
-				double const sig = std::exp(BiLinearInterpolation(rho_, T_, rossland_[group], d, T)) * d_ratio;
-				return CG::speed_of_light / (3 * std::max(sig, scattering));
-			}
-			if(d > rho_.back())
-			{
-				d_ratio = cell.density / std::exp(rho_.back());
-				d = rho_.back();
-			}
-			double const sig = std::exp(BiLinearInterpolation(rho_, T_, rossland_[group], d, T)) * d_ratio;
-			return CG::speed_of_light / (3 * sig);
-		}
-
-		double CalcAbsorptionOpacity(ComputationalCell3D const& cell, double energy) const override
-		{
-			std::size_t const group = findGroup(energy);
-			double T = std::log(cell.temperature);
-			double d = std::log(cell.density);
-			double d_ratio = 1;
-			double d_slope = 2;
-			double T_ratio = 1;
-			if(d < rho_[0])
-			{
-				if(T > T_[0] && T < T_.back())
-				{
-					auto it = std::lower_bound(T_.begin(), T_.end(), T);
-					auto idx = std::distance(T_.begin(), it);
-					d_slope = (planck_[group][idx][10] - planck_[group][idx][0]) / (rho_[10] - rho_[0]);
-				}
-				d_ratio = cell.density / std::exp(rho_[0]);
-				d = rho_[0];
-			}
-			if(d > rho_.back())
-			{
-				d_ratio = cell.density / std::exp(rho_.back());
-				d = rho_.back();
-			}
-			if(T < T_[0])
-				T = T_[0];
-			if(T > T_.back())
-			{
-				T_ratio = std::pow(cell.temperature / std::exp(T_.back()), -1.5);
-			    T = T_.back();
-			}
-			double const sig = std::exp(BiLinearInterpolation(rho_, T_, planck_[group], d, T)) * d_ratio * T_ratio;
-			return sig;
-		}
-
-		double CalcScatteringOpacity(ComputationalCell3D const& cell, double energy) const override
-		{
-			std::size_t const group = findGroup(energy);
-			double T = std::log(cell.temperature);
-			double d = std::log(cell.density);
-			double d_ratio = 1;
-			if(d < rho_[0])
-			{
-				d_ratio = cell.density / std::exp(rho_[0]);
-				d = rho_[0];
-			}
-			if(d > rho_.back())
-			{
-				d_ratio = cell.density / std::exp(rho_.back());
-				d = rho_.back();
-			}
-			if(T < T_[0])
-				T = T_[0];
-			if(T > T_.back())
-			    T = T_.back();
-			double const sig = std::exp(BiLinearInterpolation(rho_, T_, scatter_[group], d, T)) * d_ratio;
-			return sig;
-		}
-	};
 
 	class MassRefine : public CellsToRefine3D
 	{
@@ -1031,7 +1407,7 @@ namespace
 		}
 	};
 
-	ComputationalCell3D GetReferenceCell(OndrejEOS const &eos, Tessellation3D const &tess, double time, std::vector<double> const& energy_groups_boundary)
+	ComputationalCell3D GetReferenceCell(OndrejEOS const &eos, Tessellation3D const &tess, double time)
 	{
 		double M = 1;
 		ComputationalCell3D reference;
@@ -1042,10 +1418,6 @@ namespace
 		reference.density = mindensity;
 		double const Tref = 500;
 		double const Tgas = 1e7;
-		size_t const Ng = energy_groups_boundary.size() - 1;
-		double const Erad_factor = boost::math::pow<4>(Tref / Tgas) / Ng;
-		for(size_t g = 0; g < Ng; ++g)
-			reference.Eg[g] = Erad_factor * planck_integral::planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], Tgas) * 1603 * 1603 * 7e10 / (2e33 * reference.density);
 		reference.Erad = 7.5657e-15 * Tref * Tref * Tref * Tref * 1603 * 1603 * 7e10 / (2e33 * reference.density);
 		reference.pressure = eos.dT2p(reference.density, Tgas, reference.tracers);
 		reference.velocity = Vector3D();
@@ -1057,7 +1429,7 @@ namespace
 		return reference;
 	}
 
-	vector<ComputationalCell3D> GetCells(Tessellation3D const &tess, double M, double R, OndrejEOS const &eos, double const Punits, double const n, std::vector<double> const& energy_groups_boundary)
+	vector<ComputationalCell3D> GetCells(Tessellation3D const &tess, double M, double R, OndrejEOS const &eos, double const Punits, double const n)
 	{
 		double endfactor = 0;
 		vector<double> xsi;
@@ -1082,7 +1454,7 @@ namespace
 
 		size_t N = tess.GetPointNo();
 		vector<ComputationalCell3D> res(N);
-		ComputationalCell3D reference = GetReferenceCell(eos, tess, 0, energy_groups_boundary);
+		ComputationalCell3D reference = GetReferenceCell(eos, tess, 0);
 		for (size_t i = 0; i < N; ++i)
 		{
 			Vector3D const &point = tess.GetMeshPoint(i);
@@ -1105,9 +1477,6 @@ namespace
 				res[i].tracers[4] = 0;
 				res[i].pressure = eos.de2p(res[i].density, res[i].internal_energy);
 				res[i].Erad = 7.5657e-15 * T * T * T * T * 1603 * 1603 * 7e10 / (2e33 * res[i].density);
-				size_t const Ng = energy_groups_boundary.size() - 1;
-				for(size_t g = 0; g < Ng; ++g)
-					res[i].Eg[g] = planck_integral::planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], T) * 1603 * 1603 * 7e10 / (2e33 * res[i].density);
 				res[i].temperature = T;
 			}
 			else
@@ -1210,6 +1579,14 @@ namespace
 		}
 
 	public:
+		// The rule both evaluation paths apply: no acceleration for a cell
+		// below the density floor or without enough stellar material.
+		bool MasksAcceleration(ComputationalCell3D const& cell,
+			std::pair<Vector3D, Vector3D> const& bounds) const
+		{
+			return cell.density < MinimumDensity(bounds) || cell.tracers[1] < 0.1;
+		}
+
 		const bool tide_on_;
 
 		TDEGravity(double Mbh, double M, double R, double beta, Acceleration3D const &sg, bool tide) : selfgravity_(sg), Mbh_(Mbh), M_(M), R_(R), beta_(beta), tide_on_(tide) {}
@@ -1267,21 +1644,44 @@ namespace
 
 }
 
-int main(void)
+int main(int argc, char* argv[])
 {
 	int rank = 0;
 	int ws = 1;
 #ifdef RICH_MPI
-	MPI_Init(NULL, NULL);
+	MPI_Init(&argc, &argv);
 	double last_start = MPI_Wtime();
 	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 	MPI_Comm_size(MPI_COMM_WORLD, &ws);
 #endif
+	bool start_fresh = false;
+	bool arguments_valid = true;
+	std::string invalid_argument;
+	for(int argument = 1; argument < argc; ++argument)
+	{
+		if(std::string(argv[argument]) == "--fresh")
+			start_fresh = true;
+		else
+		{
+			arguments_valid = false;
+			invalid_argument = argv[argument];
+		}
+	}
+	if(!arguments_valid)
+	{
+		if(rank == 0)
+			std::cerr << "Unknown argument '" << invalid_argument
+				<< "'; supported argument: --fresh" << std::endl;
+#ifdef RICH_MPI
+		MPI_Finalize();
+#endif
+		return 2;
+	}
 	feenableexcept(FE_DIVBYZERO | FE_INVALID | FE_OVERFLOW);
 	char const* configured_run_directory = std::getenv("RICH_TDE_RUN_DIRECTORY");
 	std::string run_directory =
 		configured_run_directory != nullptr && configured_run_directory[0] != '\0'
-		? configured_run_directory : ".";
+		? configured_run_directory : "/data/users/elads/TDE_individual_dt";
 	if(run_directory.back() != '/')
 		run_directory += '/';
 	double const R = read_number("Rstar.txt");
@@ -1300,28 +1700,67 @@ int main(void)
 	double const Rp = Rt / beta;
 	double const apocenter = Rt * std::pow(Mbh / M, 0.333333);
 	std::string file_name = run_directory + "snap_";
+	std::string const initial_snapshot_name = run_directory + "initial.h5";
 	std::string restart_name = run_directory + "restart.h5";
 	std::string const normal_individual_restart_name = run_directory + "individual_restart.h5";
 	std::string const full_individual_restart_name = run_directory + "individual_full_restart.h5";
 	std::string counter_name = run_directory + "counter.txt";
+	std::string gravity_name = run_directory + "gravity.txt";
+	if(start_fresh)
+	{
+		// Mark the new generation incomplete until its first snapshot and scheduler
+		// checkpoint have both been written.  This prevents a later ordinary launch
+		// from accidentally resuming an older snap_0 after an early fresh-run crash.
+		bool fresh_directory_ready = true;
+		if(rank == 0)
+		{
+			try
+			{
+				WriteIntegerControlFileAtomically(-1, counter_name);
+				WriteIntegerControlFileAtomically(0, gravity_name);
+				RemoveOldRunArtifacts(run_directory);
+			}
+			catch(std::exception const& error)
+			{
+				fresh_directory_ready = false;
+				std::cerr << error.what() << std::endl;
+			}
+		}
+		RequireOnEveryRank(fresh_directory_ready,
+			"Could not prepare the fresh-run output directory");
+	}
 	int counter = 0;
 	// check if this is a restart run
-	bool const restart = fs::exists(counter_name);
+	bool const restart = !start_fresh && fs::exists(counter_name);
+	if(rank == 0)
+		std::cout << "start_fresh " << start_fresh << std::endl;
 	if(rank == 0)
 		std::cout<<"restart "<<restart<<std::endl;
 	if(restart)
 	{
-		counter = read_int(counter_name);
+		counter = ReadIntegerControlFile(counter_name);
+		if(counter < 0)
+			throw UniversalError(
+				"Previous --fresh run ended before its first complete checkpoint; rerun with --fresh");
 		std::filesystem::last_write_time(counter_name, std::filesystem::file_time_type::clock::now());
 	}
-	std::string gravity_name = run_directory + "gravity.txt";
 	std::string eos_location("../../data/EOS/");
-	bool const full_gravity = fs::exists(gravity_name);
+	int const gravity_state = !start_fresh && fs::exists(gravity_name) ?
+		ReadIntegerControlFile(gravity_name) : 0;
+	if(gravity_state == -1)
+		throw UniversalError(
+			"Previous gravity transition ended before its checkpoint was committed; rerun with --fresh");
+	if(gravity_state != 0 && gravity_state != 1)
+		throw UniversalError("Invalid gravity control value in " + gravity_name);
+	bool const full_gravity = gravity_state == 1;
 	if(full_gravity)
 		std::filesystem::last_write_time(gravity_name, std::filesystem::file_time_type::clock::now());
 	std::string const individual_restart_name = full_gravity ?
 		full_individual_restart_name : normal_individual_restart_name;
-	if(restart && !fs::exists(individual_restart_name))
+	// RICH_TDE_RESTART_FROM_SNAPSHOT=1 (see the switch notes below): a restart reads
+	// only the snapshot, so no scheduler/global checkpoint is required.
+	bool const restart_from_snapshot = TdeSwitch("RICH_TDE_RESTART_FROM_SNAPSHOT");
+	if(restart && !restart_from_snapshot && !fs::exists(individual_restart_name))
 		throw UniversalError("Missing individual-timestep restart checkpoint: " + individual_restart_name);
 	if(restart && full_gravity && (not fs::exists(file_name + int2str(counter) + ".h5")))
 	{
@@ -1340,7 +1779,7 @@ int main(void)
 	if (rank == 0)
 		std::cout << "end eos" << std::endl;
 	//Radiation
-	STAMGopacity opacity("/home/elads/RICH/data/STA/MG/");
+	STAgreyOpacity opacity("/home/elads/RICH/data/STA/");
 	if (rank == 0)
 		std::cout << "end sta" << std::endl;
 
@@ -1349,7 +1788,12 @@ int main(void)
 	Voronoi3D tess(ll, ur);
 
 	vector<ComputationalCell3D> cells;
-	double tstart = 0, t_restart = -100;
+	double const startfactor = 3;
+	double const fstart = -acos(2 * Rp / (startfactor * Rt) - 1);
+	double const tstart = 0.3333333 * sqrt(2 * Rp * Rp * Rp / Mbh) *
+		tan(0.5 * fstart) *
+		(3 + tan(0.5 * fstart) * tan(0.5 * fstart));
+	double t_restart = -100;
 	Snapshot3D snap;
 	if (restart)
 	{
@@ -1439,9 +1883,6 @@ int main(void)
 	}
 	else
 	{
-		double startfactor = 3;
-		double fstart = -acos(2 * Rp / (startfactor * Rt) - 1);
-		tstart = 0.3333333 * sqrt(2 * Rp * Rp * Rp / Mbh) * tan(0.5 * fstart) * (3 + tan(0.5 * fstart) * tan(0.5 * fstart));
 		size_t const np = std::max(1e6, std::min(1e7, 1e6 * std::sqrt(Mbh / 1e4)));
 		vector<Vector3D> ptemp;
 		if(rank == 0)
@@ -1467,7 +1908,7 @@ int main(void)
 #endif
 			if (rank == 0)
 				std::cout << "Finished build" << std::endl;
-			cells = GetCells(tess, M, R, eos, tscale * tscale * lscale / mscale, n, opacity.energy_groups_boundary);
+			cells = GetCells(tess, M, R, eos, tscale * tscale * lscale / mscale, n);
 		}
 		catch (UniversalError const &eo)
 		{
@@ -1492,14 +1933,13 @@ int main(void)
 	Lagrangian3D bpm;
 	RoundCells3D pm(bpm, eos, 1.75, 0.005, false, 1.25, 0.01, std::vector<std::string>(), 150);
 
-	MultigroupDiffusionOpenBoundary D_boundary;
 	bool const hydro_on = true;
 	bool const compton_on = true;
 	bool const flux_limit = true;
-	bool const doppler_on = true;
-	bool const protection_on = true;
 	std::vector<std::string> rad_zero_cells({"InsideRemoveCenter"});
-	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, rad_zero_cells, flux_limit, hydro_on, compton_on, doppler_on, 2000, protection_on, true);
+	DiffusionOpenBoundary d_boundary;
+	Diffusion matrix_builder(opacity, d_boundary, eos, rad_zero_cells,
+		flux_limit, hydro_on, compton_on);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
@@ -1527,7 +1967,29 @@ int main(void)
 	std::vector<std::shared_ptr<SourceTerm3D>> forces;
 	forces.push_back(gravity_force);
 	SeveralSources3D force(forces);
-	auto tsf = std::make_shared<CourantFriedrichsLewy>(0.4, 1, force, std::vector<std::string> (), false);
+	// RICH_TDE_CFL_DEBUG=1 (diagnostic, default 0): CourantFriedrichsLewy's
+	// verbose dump of the raw-CFL winning cell and its faces whenever an
+	// evaluation falls below 0.9999 of the previous one; that cell need not set
+	// the accepted step (RICH_CFL_DECISION_TRACE records which criterion does).
+	bool cfl_debug = false;
+	{
+		char const* const configured = std::getenv("RICH_TDE_CFL_DEBUG");
+		std::string const value = configured == nullptr ? std::string() :
+			std::string(configured);
+		RequireOnEveryRank(value.empty() || value == "0" || value == "1",
+			"RICH_TDE_CFL_DEBUG must be 0 or 1");
+		cfl_debug = value == "1";
+		int debug_min = cfl_debug ? 1 : 0;
+		int debug_max = debug_min;
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, &debug_min, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+		MPI_Allreduce(MPI_IN_PLACE, &debug_max, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+		RequireOnEveryRank(debug_min == debug_max,
+			"RICH_TDE_CFL_DEBUG differs across MPI ranks");
+	}
+	auto tsf = std::make_shared<CourantFriedrichsLewy>(0.4, 1, force,
+		std::vector<std::string> (), cfl_debug);
 
 	Simulation simulation(tess, cells, eos, !restart);
 	simulation.SetTimeStepFunction(tsf);
@@ -1550,7 +2012,11 @@ int main(void)
 		hydroStep->getCost(),
 #endif
 		matrix_builder, false);
-	RemoveCenter center_sink(*sim, eos, Mbh, M, R, beta, full_gravity);
+	RemoveCenter center_sink(*sim, eos, Mbh, M, R, beta, full_gravity,
+		[&acc, &tess](ComputationalCell3D const& cell)
+		{
+			return acc.MasksAcceleration(cell, tess.GetBoxCoordinates());
+		});
 	simulation.addPhysics(hydroStep);
 	simulation.addPhysics(radStep);
 	simulation.SetIndividualPostPhysics(
@@ -1560,25 +2026,156 @@ int main(void)
 		});
 	double init_dt = 1e-4;
 	simulation.SetTimeStep(init_dt);
-	if(restart)
+	IndividualTimeStepOptions individual_options;
+	individual_options.initial_bin = 30;
+	individual_options.maximum_bin = 40;
+	individual_options.maximum_neighbor_bin_difference = 1;
+	individual_options.mesh_build_policy = IndividualMeshBuildPolicy::AutoPartial;
+	// RICH_TDE_INDIVIDUAL_SCHEME (diagnostic): "partial" (default) variable bins on
+	// AutoPartial meshes; "full-variable" variable bins on full meshes; "full"
+	// one shared, adaptively selected bin on full meshes (the synchronized oracle
+	// of the regression drivers' RICH_INDIVIDUAL_MODE).
+	{
+		char const* const configured = std::getenv("RICH_TDE_INDIVIDUAL_SCHEME");
+		std::string const scheme = configured == nullptr ? std::string() :
+			std::string(configured);
+		RequireOnEveryRank(scheme.empty() || scheme == "partial" ||
+			scheme == "full-variable" || scheme == "full",
+			"RICH_TDE_INDIVIDUAL_SCHEME must be partial, full-variable or full");
+		int const code = scheme == "full" ? 2 : (scheme == "full-variable" ? 1 : 0);
+		int code_min = code;
+		int code_max = code;
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, &code_min, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+		MPI_Allreduce(MPI_IN_PLACE, &code_max, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+		RequireOnEveryRank(code_min == code_max,
+			"RICH_TDE_INDIVIDUAL_SCHEME differs across MPI ranks");
+		if(code > 0)
+		{
+			individual_options.mesh_build_policy = IndividualMeshBuildPolicy::FullReference;
+			individual_options.force_synchronized = code == 2;
+			if(rank == 0)
+				std::cout << "RICH_TDE_INDIVIDUAL_SCHEME=" << scheme << std::endl;
+		}
+	}
+	// RICH_TDE_START_MODE: how a fresh run starts.  "individual" enables the
+	// scheduler here; "global" starts on the global path, as a restart from a
+	// global-mode checkpoint does, and the adaptive controller enters
+	// individual stepping only on its own criteria.  Unset: global when the
+	// controller is on (a 77-event individual start of the TDE left a faster,
+	// hotter surface layer that cost 2.07x the global steps to t=-1.20, jobs
+	// 10204483 and 10204569 arm B4; started global the controller logged the
+	// global driver's step sequence, arm B3), individual when it is off.
+	// A restart takes its mode from the checkpoint.  With this problem's
+	// parameters no restart precedes the early snapshot: the fresh run's counter
+	// stays -1 until its first numbered output, and the first regular target
+	// (tstart + 0.265) lies after the early one (tstart + 0.05).
+	if(!TdeWriteVtu() && rank == 0)
+		std::cout << "RICH_TDE_WRITE_VTU=0: snapshots without ParaView files" << std::endl;
+	// RICH_TDE_UPDATE_BOX=1: grow the box with the legacy driver's UpdateBox
+	// (runs/BaseTDECompton: every 7 cycles, speed threshold 0.5, new cells at
+	// volume fraction 1e-5 in the reference state).  The fixed +-5 box with
+	// rigid walls lets the debris pile into the corners from t ~ 0.6, where
+	// slivers of width ~1e-4 pin the step near 3e-5 (jobs 10204588/10204589).
+	// UpdateBox rebuilds the mesh and recomputes every extensive from the
+	// primitives, so in individual mode it runs only at a synchronized event
+	// (UpdateBoxSynchronized, see the main loop).  RICH_TDE_RESTART_FROM_SNAPSHOT=1: a restart reads only
+	// snap_<counter> (or a newer restart.h5), as runs/BaseTDEComptonGlobal does,
+	// and steps globally from init_dt instead of loading the scheduler/global
+	// checkpoint, which exists only for the newest output.
+	bool const update_box = TdeSwitch("RICH_TDE_UPDATE_BOX");
+	if(rank == 0 && (update_box || restart_from_snapshot))
+		std::cout << "RICH_TDE_UPDATE_BOX=" << (update_box ? 1 : 0)
+			<< " RICH_TDE_RESTART_FROM_SNAPSHOT=" << (restart_from_snapshot ? 1 : 0)
+			<< std::endl;
+	bool const adaptive_requested = true;
+	bool start_global = false;
+	bool start_mode_explicit = false;
+	{
+		char const* const configured_start_mode = std::getenv("RICH_TDE_START_MODE");
+		std::string const start_mode = configured_start_mode == nullptr ?
+			std::string() : std::string(configured_start_mode);
+		RequireOnEveryRank(start_mode.empty() || start_mode == "individual" ||
+			start_mode == "global",
+			"RICH_TDE_START_MODE must be individual or global");
+		bool const adaptive_on =
+			Simulation::AdaptiveIntegrationModeWillEnable(adaptive_requested);
+		start_mode_explicit = !start_mode.empty();
+		start_global = start_mode_explicit ? start_mode == "global" : adaptive_on;
+		int start_global_min = start_global ? 1 : 0;
+		int start_global_max = start_global_min;
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, &start_global_min, 1, MPI_INT, MPI_MIN,
+			MPI_COMM_WORLD);
+		MPI_Allreduce(MPI_IN_PLACE, &start_global_max, 1, MPI_INT, MPI_MAX,
+			MPI_COMM_WORLD);
+#endif
+		RequireOnEveryRank(start_global_min == start_global_max,
+			"RICH_TDE_START_MODE differs across MPI ranks");
+	}
+	if(restart && restart_from_snapshot)
+	{
+		// The snapshot already set time and cycle; no checkpoint is read, so the
+		// run steps globally from init_dt under the adaptive controller.
+		if(rank == 0)
+			std::cout << "Restart from the snapshot only (RICH_TDE_RESTART_FROM_SNAPSHOT=1): "
+				"global stepping from t=" << simulation.GetTime() << std::endl;
+		t_restart = simulation.GetTime();
+	}
+	else if(restart)
 	{
 		ReadSimulation(individual_restart_name, simulation);
-		if(simulation.GetTimeIntegrationMode() != TimeIntegrationMode::Individual)
-			throw UniversalError("Restart checkpoint has no individual-timestep state: " + individual_restart_name);
+		// A checkpoint written while the adaptive controller was stepping
+		// globally carries no scheduler state; the controller re-enters
+		// individual mode from the global step when it pays.
+		if(simulation.GetTimeIntegrationMode() != TimeIntegrationMode::Individual &&
+			rank == 0)
+			std::cout << "Restart checkpoint was written in global mode; "
+				"resuming global stepping under the adaptive controller"
+				<< std::endl;
+		if(start_mode_explicit && rank == 0)
+			std::cout << "RICH_TDE_START_MODE ignored on restart: the checkpoint "
+				"sets the integration mode" << std::endl;
 		t_restart = simulation.GetTime();
 	}
 	else
 	{
-		IndividualTimeStepOptions individual_options;
-		individual_options.initial_bin = 30;
-		individual_options.maximum_bin = 40;
-		individual_options.maximum_neighbor_bin_difference = 2;
-		individual_options.mesh_build_policy = IndividualMeshBuildPolicy::AutoPartial;
-		simulation.EnableIndividualTimeSteps(individual_options);
+		if(rank == 0)
+			std::cout << "Fresh run starts on the "
+				<< (start_global ? "global" : "individual") << " path ("
+				<< (start_mode_explicit ? "RICH_TDE_START_MODE" :
+					"default for the adaptive controller's state") << ")" << std::endl;
+		if(!start_global)
+			simulation.EnableIndividualTimeSteps(individual_options);
 	}
+	// Let the run choose between global and individual stepping from measured
+	// throughput and the potential gain of the current timestep distribution.
+	simulation.SetAdaptiveIntegrationMode(adaptive_requested, individual_options);
 	if (rank == 0)
 		std::cout << "Restart time " << simulation.GetTime() << std::endl;
+	ReportFloorMeshQuality(*sim, "start");
 	double tf = 6 * std::sqrt(apocenter * apocenter * apocenter / Mbh);
+	// RICH_TDE_FINAL_TIME overrides the stopping time so a probe ends on the
+	// "Done sim" marker at a chosen t instead of on the job time limit (same
+	// override as runs/BaseTDEComptonGlobal/test.cpp).  Unset: full-orbit tf.
+	{
+		char const* const configured_final_time =
+			std::getenv("RICH_TDE_FINAL_TIME");
+		if(configured_final_time != nullptr && configured_final_time[0] != '\0')
+		{
+			char* end = nullptr;
+			double const parsed = std::strtod(configured_final_time, &end);
+			bool const valid = end != configured_final_time &&
+				*end == '\0' && std::isfinite(parsed);
+			RequireOnEveryRank(valid,
+				"RICH_TDE_FINAL_TIME must be a finite number");
+			tf = parsed;
+			if(rank == 0)
+				std::cout << "Final time overridden by RICH_TDE_FINAL_TIME: "
+					<< tf << std::endl;
+		}
+	}
 	double mindt = 0.001;
 	double nextT = 0;
 	nextT = (t_restart < -20) ? simulation.GetTime() : t_restart;
@@ -1592,16 +2189,94 @@ int main(void)
 	double newvol2 = (box2.second.x - box2.first.x) * (box2.second.y - box2.first.y) * (box2.second.z - box2.first.z);
 	refine.SetSize(newvol2);
 	remove.SetSize(newvol2);
-	// Legacy UpdateBox rebuilds conserved state outside the individual scheduler;
-	// keep this run's domain fixed until box growth has a conservative remap.
+	// Full AMR passes in individual mode.  The every-10th-event pass sees only
+	// that event's active cells, and the all-active events can alias with it
+	// (TDE job 10222679, t=35.32-35.77: 68 all-active events, none on the
+	// gate), so cells went unrefined and above all unremoved: 8% more cells
+	// than the global run and ~290k-cell catch-up bursts in every global probe.
+	// A full pass is therefore also due, at the first all-active event, once
+	// RICH_TDE_FULL_AMR_INTERVAL_BINS (default 10, as the global cadence of 10
+	// steps; 0 = off) finest-bin intervals have passed since the last full pass
+	// in either mode.  Parsed once and agreed across ranks.
+	double full_amr_interval_bins = 10;
+	{
+		char const* const configured = std::getenv("RICH_TDE_FULL_AMR_INTERVAL_BINS");
+		bool valid = true;
+		if(configured != nullptr && configured[0] != '\0')
+		{
+			char* end = nullptr;
+			full_amr_interval_bins = std::strtod(configured, &end);
+			valid = end != configured && *end == '\0' && std::isfinite(full_amr_interval_bins) &&
+				full_amr_interval_bins >= 0;
+		}
+		// Unconditional: RequireOnEveryRank is collective, and ranks may differ in whether it is set.
+		RequireOnEveryRank(valid, "RICH_TDE_FULL_AMR_INTERVAL_BINS must be a finite number >= 0");
+		double extremes[2] = {full_amr_interval_bins, -full_amr_interval_bins};
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, extremes, 2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+		RequireOnEveryRank(extremes[0] == -extremes[1], "RICH_TDE_FULL_AMR_INTERVAL_BINS differs across MPI ranks");
+	}
+	// Time of the last AMR pass over every cell (global, or all-active
+	// individual), whether or not it changed the mesh.  Replicated.
+	double last_full_amr_time = simulation.GetTime();
 	simulation.SetIndividualAMR(
 		[&](IndividualStepContext const& context)
 		{
-			if(!full_gravity || (simulation.GetCycle() + 1) % 10 != 0)
+			if(!full_gravity)
 				return IndividualAMRChangeSet();
-			if(rank == 0)
+			IndividualTimeStepScheduler const* const scheduler = simulation.GetIndividualTimeStepScheduler();
+			// Due and overdue are replicated (time, quantum and finest bin are
+			// the same on every rank), so the collective all-active test below
+			// is too.  With full passes on, the every-10th-event active-only
+			// pass is redundant for cadence (every cell, the finest-bin ones
+			// included, is evaluated every ~10 finest intervals, ~10 global
+			// steps) and cost ~0.3 s per late partial event (a full canonical
+			// build from partial geometry); it remains only as a fallback once
+			// no full pass has run for twice the interval (all-active events
+			// sparse).  Interval 0 keeps the old gate alone.
+			double const since_full = simulation.GetTime() - last_full_amr_time;
+			double const full_interval = scheduler != nullptr && scheduler->initialized() ? full_amr_interval_bins *
+				std::ldexp(scheduler->timeQuantum(), static_cast<int>(scheduler->minimumOccupiedBin())) : 0;
+			bool const old_gate = (simulation.GetCycle() + 1) % 10 == 0;
+			bool const due = full_amr_interval_bins > 0 && full_interval > 0 && since_full >= full_interval;
+			bool const gate = full_amr_interval_bins > 0 ? old_gate && due && since_full >= 2 * full_interval : old_gate;
+			int all_active = 0;
+			if(gate || due)
+			{
+				all_active = scheduler != nullptr &&
+					context.active_indices.size() == scheduler->states().size() ? 1 : 0;
+#ifdef RICH_MPI
+				MPI_Allreduce(MPI_IN_PLACE, &all_active, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+#endif
+			}
+			if(!gate && !(due && all_active != 0))
+				return IndividualAMRChangeSet();
+			if(rank == 0 && RuntimeLogDetailed())
 				std::cout << "Doing individual AMR" << std::endl;
+			if(rank == 0 && full_amr_interval_bins > 0)
+				std::cout << std::setprecision(12) << "RICH_TDE_FULL_AMR cycle=" << simulation.GetCycle()
+					<< " time=" << simulation.GetTime() << " since_last=" << since_full
+					<< " interval=" << full_interval << " pass=" << (all_active != 0 ? "full" : "overdue_active_only")
+					<< std::endl;
+			if(all_active != 0)
+				last_full_amr_time = simulation.GetTime();
 			return amr.ApplyIndividual(simulation, context);
+		});
+	// The same operations on a global step (adaptive controller), with the
+	// cadence of runs/BaseTDEComptonGlobal: AMR every 10 cycles once full
+	// gravity is on, the center sink after every step.
+	simulation.SetGlobalPostStep(
+		[&]()
+		{
+			if(full_gravity && simulation.GetCycle() % 10 == 0)
+			{
+				if(rank == 0 && RuntimeLogDetailed())
+					std::cout << "Doing AMR" << std::endl;
+				amr(simulation);
+				last_full_amr_time = simulation.GetTime();
+			}
+			center_sink.Apply();
 		});
 	vector<DiagnosticAppendix3D *> appendices;
 	GradDiag diag00(0, 0, interp);
@@ -1628,44 +2303,190 @@ int main(void)
 	appendices.push_back(&diag3);
 	appendices.push_back(&DissDiag);
 
-	double old_t = simulation.GetTime();
-	double old_dt = init_dt;
 	bool reference_frame_change_pending = false;
+	// An individual box growth waiting for a synchronized state (process-wide
+	// the same value on every rank; not persisted: a restart re-evaluates it).
+	bool box_growth_pending = false;
 	bool regular_output_pending = false;
+	bool early_output_pending = false;
+	// One extra numbered snapshot, 0.05 code-time units after the original start.
+	// RICH_TDE_TERMINAL_OUTPUT_TIME=<t> moves it to t: a synchronized snapshot
+	// at t in either stepping mode, after which the run stops, to compare runs
+	// from one restart.  On the individual timeline t is rounded to the nearest
+	// tick of the current timeline (always from the requested value), so arms
+	// that step differently land within one tick quantum of each other.  Unlike
+	// the early snapshot it holds the adaptive controller on the global path
+	// only within four global steps of t (see SetAdaptiveDecisionsDeferred
+	// below).  Presence and value are agreed across ranks; t must lie after the
+	// restart time and before the final time.
+	double early_output_time = tstart + 0.05;
+	bool terminal_output_configured = false;
+	double requested_terminal_time = 0;
+	// The written snapshot must lie within this of the requested time: exact
+	// landing on the global path, one tick quantum on the individual timeline.
+	double terminal_output_tolerance = 0;
+	{
+		char const* const configured = std::getenv("RICH_TDE_TERMINAL_OUTPUT_TIME");
+		bool const present = configured != nullptr && configured[0] != '\0';
+		double parsed = 0;
+		bool valid = true;
+		if(present)
+		{
+			char* end = nullptr;
+			parsed = std::strtod(configured, &end);
+			valid = end != configured && *end == '\0' && std::isfinite(parsed);
+			if(!valid)
+				parsed = 0;
+		}
+		// Startup agreement, unconditional like TdeSwitch/TdeWriteVtu; the final
+		// time joins it because the range check below depends on it.
+		double extrema[8] = {present ? 1.0 : 0.0, valid ? 1.0 : 0.0, parsed, tf,
+			present ? -1.0 : -0.0, valid ? -1.0 : -0.0, -parsed, -tf};
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, extrema, 8, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+		if(extrema[3] != -extrema[7])
+			throw std::invalid_argument("RICH_TDE_FINAL_TIME differs across MPI ranks");
+		if(extrema[0] != -extrema[4] || extrema[1] != -extrema[5] ||
+		   extrema[2] != -extrema[6])
+			throw std::invalid_argument(
+				"RICH_TDE_TERMINAL_OUTPUT_TIME differs across MPI ranks");
+		if(extrema[0] > 0)
+		{
+			if(!(extrema[1] > 0))
+				throw std::invalid_argument(
+					"RICH_TDE_TERMINAL_OUTPUT_TIME must be a finite number");
+			if(!(extrema[2] > simulation.GetTime()) || !(extrema[2] < tf))
+				throw std::invalid_argument(
+					"RICH_TDE_TERMINAL_OUTPUT_TIME must lie after the restart time and before the final time");
+			requested_terminal_time = extrema[2];
+			early_output_time = requested_terminal_time;
+			terminal_output_configured = true;
+			terminal_output_tolerance = 64 * std::numeric_limits<double>::epsilon() *
+				std::max(1.0, std::abs(requested_terminal_time));
+		}
+	}
+	bool early_output_written = simulation.GetTime() >= early_output_time;
 #ifdef RICH_MPI
 	bool restart_output_pending = false;
 #endif
-	double step_time = 0;
 	double const restart_wtime = 10000;
 	double const min_dt_output = 0.025 * std::sqrt(std::pow(R, 3.0) * Mbh / M);
 	auto write_synchronized_snapshot = [&](std::string const& output_name)
 	{
 		MeshAlignedStateGuard aligned_state(*sim, simulation);
 		interp(tess, sim->getCells(), 0, dissipation.face_values);
-		WriteSnapshot3D(*sim, output_name, appendices, true);
+		WriteTdeSnapshot(*sim, output_name, appendices);
 	};
-	while (simulation.GetTime() < tf)
+	// A global start writes no initial file, as runs/BaseTDEComptonGlobal does:
+	// the reconstruction below fills the interpolator's slope cache, and a
+	// global start must follow that driver's step sequence to compare with it.
+	if(!restart && !start_global)
 	{
-		if (simulation.GetCycle() % 1 == 0)
+		if(rank == 0)
+			std::cout << "Starting writing initial file " << initial_snapshot_name
+				<< std::endl;
 		{
-			int ntotal = tess.GetPointNo();
-#ifdef RICH_MPI
-			MPI_Barrier(MPI_COMM_WORLD);
-			MPI_Allreduce(MPI_IN_PLACE, &ntotal, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
-#endif
-			if (rank == 0)
+			// Reconstruction needs current primitive values for MPI ghost cells;
+			// keep the synchronized copy only for this initial output.
+			std::vector<ComputationalCell3D> snapshot_cells = sim->getCells();
+			std::vector<ComputationalCell3D> exchange_cells = sim->getCells();
+			tess.SyncPartialBuildData(snapshot_cells, exchange_cells);
+			interp(tess, snapshot_cells, 0, dissipation.face_values);
+		}
+		WriteTdeSnapshot(*sim, initial_snapshot_name, appendices);
+		dissipation.face_values.clear();
+		dissipation.face_values.shrink_to_fit();
+	}
+	// A pending configured terminal snapshot is written even at or after tf.
+	while (simulation.GetTime() < tf ||
+		(terminal_output_configured && !early_output_written))
+	{
+		if(!early_output_written && simulation.GetTime() < early_output_time)
+		{
+			IndividualTimeStepScheduler* const scheduler =
+				simulation.GetIndividualTimeStepScheduler();
+			double const target_tolerance = 64 * std::numeric_limits<double>::epsilon() *
+				std::max(1.0, std::abs(early_output_time));
+			if(scheduler == nullptr)
 			{
-				std::cout<<std::endl;
-				std::cout << "Point num " << ntotal << " dt " << old_dt << " run time " << step_time << std::endl;
-				std::cout << "Cycle " << simulation.GetCycle() << " Time " << simulation.GetTime() << std::endl;
+				if(simulation.GetTimeIntegrationMode() != TimeIntegrationMode::Global)
+					throw std::logic_error(
+						"Early snapshot requires an individual scheduler");
+				// Global stepping: land the next step on the snapshot time.
+				double const remaining = early_output_time - simulation.GetTime();
+				if(remaining > 0)
+					simulation.SetTimeStep(
+						std::min(simulation.GetTimeStep(), remaining));
+			}
+			else if(!scheduler->initialized())
+			{
+				// A configured terminal snapshot before the scheduler starts:
+				// land the next step on it, a global step (the controller is held
+				// near the target below) or the first individual event, whose
+				// length is this time step and which synchronizes every cell.
+				if(terminal_output_configured)
+				{
+					double const remaining = early_output_time - simulation.GetTime();
+					if(remaining > 0)
+						simulation.SetTimeStep(
+							std::min(simulation.GetTimeStep(), remaining));
+				}
+				else
+				{
+					double const first_event_time = simulation.GetTime() +
+						simulation.GetTimeStep();
+					if(first_event_time >= early_output_time - target_tolerance)
+						throw std::logic_error(
+							"Initial individual event would cross the early snapshot time");
+				}
+			}
+			else
+			{
+				long double const target_tick_coordinate =
+					(static_cast<long double>(terminal_output_configured ?
+						requested_terminal_time : early_output_time) -
+					 static_cast<long double>(scheduler->timeOrigin())) /
+					static_cast<long double>(scheduler->timeQuantum());
+				// Scheduler state is the same on every rank, so is this check.
+				if(!(target_tick_coordinate >= 0) ||
+				   !(target_tick_coordinate < 4.0e18L))
+					throw std::logic_error(
+						"Early snapshot time is outside the individual timeline");
+				std::uint64_t const target_tick = static_cast<std::uint64_t>(
+					std::llround(target_tick_coordinate));
+				double const represented_target_time = scheduler->timeOrigin() +
+					scheduler->timeQuantum() * static_cast<double>(target_tick);
+				if(terminal_output_configured)
+				{
+					early_output_time = represented_target_time;
+					terminal_output_tolerance = std::max(terminal_output_tolerance,
+						scheduler->timeQuantum());
+				}
+				else if(std::abs(represented_target_time - early_output_time) > target_tolerance)
+					throw std::logic_error(
+						"Early snapshot time is not representable on the individual timeline");
+				if(target_tick > scheduler->currentTick())
+					scheduler->clampToTerminalTick(target_tick);
 			}
 		}
+		bool const early_output_due = !early_output_written &&
+			(early_output_pending || simulation.GetTime() >= early_output_time);
+		bool const regular_output_due = regular_output_pending ||
+			simulation.GetTime() > nextT;
 		if(!reference_frame_change_pending &&
-			(regular_output_pending || simulation.GetTime() > nextT))
+			(early_output_due || regular_output_due))
 		{
-			regular_output_pending = true;
-			if(!simulation.IndividualStateSynchronized())
+			early_output_pending = early_output_due;
+			regular_output_pending = regular_output_due;
+			if(!simulation.StateSynchronized())
 			{
+				// A configured terminal snapshot that missed its tick (its time
+				// rounded to the current one) waits for the next synchronized
+				// event instead; RICH_OUTPUT reports the time it was written at.
+				if(early_output_pending && !terminal_output_configured)
+					throw std::logic_error(
+						"Early snapshot terminal event is not synchronized");
 				simulation.RequestSynchronizedIndividualEvent();
 				if(rank == 0)
 					std::cout << "Deferring output until a synchronized individual event"
@@ -1677,17 +2498,69 @@ int main(void)
 					file_name + int2str(counter) + ".h5";
 				if(rank == 0)
 					std::cout << "Starting writing file " << output_name << std::endl;
+				auto const output_start = std::chrono::steady_clock::now();
 				write_synchronized_snapshot(output_name);
+				auto const snapshot_end = std::chrono::steady_clock::now();
 				WriteSimulation(simulation, individual_restart_name);
+				auto const checkpoint_end = std::chrono::steady_clock::now();
 				if(rank == 0)
-					write_int(counter, counter_name);
-				nextT = simulation.GetTime() + std::min(min_dt_output,
-					mindt + 0.2 * std::pow(std::abs(simulation.GetTime()), 0.666666));
+					std::cout << "RICH_OUTPUT file=" << output_name
+						<< " time=" << simulation.GetTime()
+						<< " snapshot_s=" << std::chrono::duration<double>(
+							snapshot_end - output_start).count()
+						<< " checkpoint_s=" << std::chrono::duration<double>(
+							checkpoint_end - snapshot_end).count()
+						<< " vtu=" << (TdeWriteVtu() ? 1 : 0)
+						<< " (rank-0 wall)" << std::endl;
+				bool counter_written = true;
+				if(rank == 0)
+				{
+					try
+					{
+						WriteIntegerControlFileAtomically(counter, counter_name);
+					}
+					catch(std::exception const& error)
+					{
+						counter_written = false;
+						std::cerr << error.what() << std::endl;
+					}
+				}
+				RequireOnEveryRank(counter_written,
+					"Could not commit the restart counter");
+				if(early_output_pending)
+				{
+					early_output_written = true;
+					early_output_pending = false;
+				}
+				else
+				{
+					nextT = simulation.GetTime() + std::min(min_dt_output,
+						mindt + 0.2 * std::pow(std::abs(simulation.GetTime()), 0.666666));
+					regular_output_pending = false;
+				}
 				++counter;
-				regular_output_pending = false;
 				dissipation.face_values.clear();
 				dissipation.face_values.shrink_to_fit();
 			}
+		}
+		// A configured terminal snapshot ends the run once written (the same
+		// decision on every rank: time and flags are replicated).  Written away
+		// from the requested time (a missed tick served at a later synchronized
+		// event), the run fails after the snapshot so the comparison is not
+		// silently misaligned.
+		if(terminal_output_configured && early_output_written)
+		{
+			double const error = std::abs(simulation.GetTime() - requested_terminal_time);
+			bool const aligned = error <= terminal_output_tolerance;
+			if(rank == 0)
+				std::cout << "RICH_TDE_TERMINAL_OUTPUT time=" << std::setprecision(17)
+					<< simulation.GetTime() << " requested=" << requested_terminal_time
+					<< " error=" << error << " tolerance=" << terminal_output_tolerance
+					<< " aligned=" << (aligned ? 1 : 0) << std::endl;
+			if(!aligned)
+				throw std::logic_error(
+					"Terminal snapshot written away from RICH_TDE_TERMINAL_OUTPUT_TIME");
+			break;
 		}
 		try
 		{
@@ -1703,7 +2576,7 @@ int main(void)
 				restart_output_pending = true;
 			if(!reference_frame_change_pending && restart_output_pending)
 			{
-				if(!simulation.IndividualStateSynchronized())
+				if(!simulation.StateSynchronized())
 				{
 					simulation.RequestSynchronizedIndividualEvent();
 					if(rank == 0)
@@ -1723,21 +2596,121 @@ int main(void)
 					last_start = MPI_Wtime();
 				}
 			}
-			double step_tstart = MPI_Wtime();
 #endif
-#ifdef RICH_MPI
-			MPI_Barrier(MPI_COMM_WORLD);
-			#endif
+			// No controller decision on a global step while the early snapshot is
+			// pending: entering individual mode there would give the snapshot
+			// time to a fresh scheduler that cannot land on it.  A configured
+			// terminal snapshot is rounded to the scheduler's tick instead and
+			// holds the controller only within four global steps of its time,
+			// so no first individual event (one global step long) reaches it.
+			bool const terminal_output_near = terminal_output_configured &&
+				!early_output_written && simulation.GetTime() +
+				4 * simulation.GetTimeStep() >= requested_terminal_time;
+			simulation.SetAdaptiveDecisionsDeferred(!early_output_written &&
+				(!terminal_output_configured || terminal_output_near));
+			bool const stepped_globally =
+				simulation.GetTimeIntegrationMode() == TimeIntegrationMode::Global;
 				simulation.step();
-				old_dt = simulation.GetTime() - old_t;
-			old_t = simulation.GetTime();
 			if(not full_gravity)
 				CheckIfFullGravityIsNeeded(*sim, gravity_name, R, M, Mbh, beta, restart_name,
 					full_individual_restart_name, simulation,
 					reference_frame_change_pending);
+			// Box growth, after the step and outside it, as in the legacy driver:
+			// the controller has already decided on this step's consistent state.
+			// Global stepping checks every 7 cycles (runs/BaseTDECompton), skipped
+			// when the step was individual or the controller has just entered
+			// individual mode.  Individual stepping checks the committed state
+			// after every event and grows only at a synchronized event: the exact
+			// check runs at every one, and a due growth requests one.  A request
+			// the controller answers by switching to global is served on that
+			// global boundary.  Individual growth waits while a frame change is
+			// pending (the change shifts every position at the next event).
+			if(update_box)
+			{
+				bool const individual_now =
+					simulation.GetTimeIntegrationMode() == TimeIntegrationMode::Individual;
+				bool grow_now = false;
+				if(individual_now && reference_frame_change_pending)
+					grow_now = false;
+				else if(individual_now)
+				{
+					if(simulation.IndividualStateSynchronized())
+						grow_now = true;
+					else if(box_growth_pending || BoxGrowthDue(simulation, 0.5))
+					{
+						if(!box_growth_pending && rank == 0)
+							std::cout << "RICH_UPDATE_BOX_REQUEST cycle=" << simulation.GetCycle()
+								<< " time=" << simulation.GetTime()
+								<< " (requesting a synchronized individual event)" << std::endl;
+						box_growth_pending = true;
+						simulation.RequestSynchronizedIndividualEvent();
+					}
+				}
+				else
+					grow_now = box_growth_pending ||
+						(stepped_globally && simulation.GetCycle() % 7 == 0);
+				if(grow_now)
+				{
+					ComputationalCell3D const reference_cell =
+						GetReferenceCell(eos, tess, simulation.GetTime());
+					unsigned long long cells_counts[2] = {
+						static_cast<unsigned long long>(tess.GetPointNo()), 0};
+					auto const resize_start = std::chrono::steady_clock::now();
+					Simulation::DomainGrowthReport growth;
+					bool const grew = UpdateBoxSynchronized(tess, simulation, 0.5, 1e-5,
+						reference_cell, &growth);
+					double const resize_seconds = std::chrono::duration<double>(
+						std::chrono::steady_clock::now() - resize_start).count();
+					box_growth_pending = false;
+					if(grew)
+					{
+						std::pair<Vector3D, Vector3D> const box = tess.GetBoxCoordinates();
+						double const newvol = (box.second.x - box.first.x) *
+							(box.second.y - box.first.y) * (box.second.z - box.first.z);
+						refine.SetSize(newvol);
+						remove.SetSize(newvol);
+						// The individual growth has told the controller already.
+						if(!individual_now)
+							simulation.NotifyDomainChanged();
+						// Resizes run outside Simulation::step, so their cost is
+						// reported here and is missing from RICH_STEP step_s.
+						cells_counts[1] = static_cast<unsigned long long>(tess.GetPointNo());
 #ifdef RICH_MPI
-			step_time = MPI_Wtime() - step_tstart;
+						MPI_Allreduce(MPI_IN_PLACE, cells_counts, 2, MPI_UNSIGNED_LONG_LONG,
+							MPI_SUM, MPI_COMM_WORLD);
 #endif
+						if(rank == 0)
+						{
+							std::cout << "RICH_UPDATE_BOX cycle=" << simulation.GetCycle()
+								<< " time=" << simulation.GetTime()
+								<< " seconds=" << resize_seconds << " (rank-0 wall)"
+								<< " cells_before=" << cells_counts[0]
+								<< " cells_after=" << cells_counts[1]
+								<< " box_ll=" << box.first.x << "," << box.first.y << "," << box.first.z
+								<< " box_ur=" << box.second.x << "," << box.second.y << "," << box.second.z
+								<< " mode=" << (individual_now ? "individual" : "global");
+							if(individual_now)
+								std::cout << std::setprecision(12)
+									<< " growth_seconds_max=" << growth.seconds
+									<< " added_cells=" << growth.added_cells
+									<< " reseeded_cells=" << growth.reseeded_cells
+									<< " shortened_cells=" << growth.shortened_cells
+									<< " seed_bin=" << growth.seed_bin
+									<< " smallest_limit=" << growth.smallest_limit
+									<< " accelerations_refreshed=" << (growth.accelerations_refreshed ? 1 : 0)
+									<< " full_builds=" << growth.mesh_build_timing.full_builds
+									<< " build_seconds_rank0=" << growth.mesh_build_timing.seconds
+									<< " mass_before=" << growth.mass_before
+									<< " mass_after=" << growth.mass_after
+									<< " inserted_mass=" << growth.inserted_mass
+									<< " energy_before=" << growth.energy_before
+									<< " energy_after=" << growth.energy_after
+									<< " inserted_energy=" << growth.inserted_energy;
+							std::cout << std::endl;
+						}
+					}
+				}
+			}
 		}
 		catch (UniversalError const &eo)
 		{
