@@ -20,9 +20,9 @@
 #include "source/3D/output/Snapshot3D.hpp"
 #include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "source/3D/monte/MonteCarloManager3D.hpp"
+#include "PostProcessCommunication.hpp"
 #ifdef RICH_MPI
 #include "source/monte/manager/communication/RDMACommunicationEngine.hpp"
-#include "PostProcessCommunication.hpp"
 #endif // RICH_MPI
 #include "source/3D/radiation/RadiationIMC.hpp"
 #include "source/3D/radiation/SphericalObserver.hpp"
