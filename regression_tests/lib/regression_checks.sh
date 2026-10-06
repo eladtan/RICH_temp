@@ -2808,3 +2808,41 @@ check_opacity_temperature_case() {
     set_check_msg "explicit-temperature opacity formulas, tables, callbacks and cell preservation passed"
     return 0
 }
+
+check_imc_ddmc_review_fixes_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/imc_ddmc_review_fixes_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale imc_ddmc_review_fixes_metrics.txt"
+        return 1
+    fi
+
+    local estimator kept expected deviation internal invariant pass_flag
+    estimator=$(awk '$1 == "estimator_max_rel" { print $2 }' "$metrics_file")
+    kept=$(awk '$1 == "admission_kept_fraction" { print $2 }' "$metrics_file")
+    expected=$(awk '$1 == "admission_expected" { print $2 }' "$metrics_file")
+    deviation=$(awk '$1 == "admission_deviation_sigma" { print $2 }' "$metrics_file")
+    internal=$(awk '$1 == "force_internal_rel_change" { print $2 }' "$metrics_file")
+    invariant=$(awk '$1 == "force_invariant_rel_error" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$estimator" || -z "$kept" || -z "$expected" || -z "$deviation" ||
+          -z "$internal" || -z "$invariant" || -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse imc_ddmc_review_fixes metrics"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "imc_ddmc_review_fixes reported pass=0 (estimator=${estimator}, kept=${kept} vs ${expected}, ${deviation} sigma, internal=${internal}, invariant=${invariant})"
+        return 1
+    fi
+
+    set_check_msg "Doppler path-length estimator, DDMC thermal admission and DDMC force invariant hold (estimator=${estimator}, kept=${kept} vs ${expected}, internal=${internal}, invariant=${invariant})"
+    return 0
+}

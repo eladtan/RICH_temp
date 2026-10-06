@@ -546,6 +546,11 @@ public:
         return this->impl_.getDDMCStepCount();
     }
 
+    // Direct access to the STORM transport object, for regression tests that
+    // need its diagnostics or must force a particular transport path.
+    Impl &implementation() { return this->impl_; }
+    const Impl &implementation() const { return this->impl_; }
+
     std::size_t getDDMCLeakCount() const override
     {
         return this->impl_.getDDMCLeakCount();
