@@ -395,6 +395,8 @@ public:
             oldRecord.weight = record.weight;
             oldRecord.frequency = record.frequency;
             oldRecord.sourceCellID = record.sourceCellID;
+            oldRecord.initialWeight = record.initialWeight;
+            oldRecord.steps = record.steps;
 #ifdef MONTECARLO_POLARIZATION
             oldRecord.stokesQ = record.stokesQ;
             oldRecord.stokesU = record.stokesU;

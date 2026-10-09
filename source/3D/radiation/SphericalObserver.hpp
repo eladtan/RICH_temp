@@ -10,6 +10,9 @@
 #include <vector>
 #include "3D/elementary/Vector3D.hpp"
 
+class HDF5Writer;
+class HDF5Reader;
+
 // Stokes convention: weight = Stokes I (packet energy).
 // stokesQ/stokesU are fractional (q = Q/I, u = U/I), so
 // absolute Stokes Q = weight * stokesQ.
@@ -20,6 +23,10 @@ struct ObserverCrossingRecord
     double weight = 0.0;
     double frequency = 0.0;
     size_t sourceCellID = std::numeric_limits<size_t>::max();
+    // Emission weight of the packet (0 when unknown) and its transport steps,
+    // for the heavy-packet diagnostics.
+    double initialWeight = 0.0;
+    size_t steps = 0;
 #ifdef MONTECARLO_POLARIZATION
     double stokesQ = 0.0;
     double stokesU = 0.0;
@@ -262,10 +269,24 @@ public:
     ObserverGroupQualitySnapshot getObserverGroupQualitySnapshot() const;
     void setGenerationSourceCellGroupStatsEnabled(bool enabled);
     void resetTallies();
+    // Heavy-packet report of the current generation's tallies: how much of
+    // the crossing energy came from packets whose weight grew since emission,
+    // and the observer/group bins most dominated by a single packet, with that
+    // packet's emission weight, source cell and steps. Collective (call before
+    // mpiReduceToRank0); rank 0 prints.
+    void printHeavyPacketReport(std::string const& label, size_t generation,
+                                size_t topBins) const;
     void clearGenerationStatistics();
     void accumulateCurrentTalliesForStatistics(double sourceDt);
     void loadStatisticalMeanTallies();
     size_t getStatisticsSamples() const;
+    // Exact copy of the running generation statistics (sample count, sums,
+    // sums of squares, weight-squared sums, crossing counts and maxima) under
+    // `prefix`, so a later run can continue adding generations to them.
+    void writeStatisticsState(HDF5Writer& writer, std::string const& prefix) const;
+    // Replaces the running statistics with the ones stored under `prefix`.
+    // Throws if the stored shapes do not match this observer.
+    void readStatisticsState(HDF5Reader const& reader, std::string const& prefix);
     double getTotalLuminosityStderrGen(double sourceDt) const;
     double getTotalLuminosityRelErrGen(double sourceDt) const;
 
@@ -334,6 +355,23 @@ private:
     std::vector<std::vector<double>> groupEnergy_;
     std::vector<std::vector<double>> groupEnergyWeightSq_;
     std::vector<std::vector<size_t>> groupCrossingCount_;
+    // Heaviest local crossing of each observer/group bin this generation.
+    struct HeavyCrossing
+    {
+        double weight = 0.0;
+        double initialWeight = 0.0;
+        double frequency = 0.0;
+        size_t sourceCellID = std::numeric_limits<size_t>::max();
+        size_t steps = 0;
+    };
+    std::vector<HeavyCrossing> heavyCrossingByBin_;
+    // Crossings binned by weight growth w/w0: unknown w0, <=1.01, (1.01,10],
+    // (10,1e3], >1e3.
+    static constexpr size_t kGrowthBins = 5;
+    std::array<double, kGrowthBins> growthBinEnergy_{};
+    std::array<double, kGrowthBins> growthBinCount_{};
+    double maxWeightGrowth_ = 0.0;
+    void recordHeavyCrossing(size_t obs, size_t group, ::ObserverCrossingRecord const& rec);
     PhotosphereData photosphereData_;
 #ifdef MONTECARLO_POLARIZATION
     bool polarizationOutputEnabled_ = false;

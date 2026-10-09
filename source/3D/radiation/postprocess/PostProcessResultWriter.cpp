@@ -9,6 +9,7 @@
 #include <H5Opublic.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <sstream>
@@ -208,8 +209,44 @@ void PromoteFile(std::string const& source, std::string const& destination)
             destination);
 }
 
+std::string RestartSegmentPath(size_t index)
+{
+    char name[32];
+    std::snprintf(name, sizeof(name), "segment_%04zu", index);
+    return std::string("/restart/history/") + name;
+}
+
+// Copies the run segments of the file being continued and returns how many
+// there were (0 for a fresh run).
+size_t CopyRestartHistory(hid_t dst, std::string const& restartFrom)
+{
+    CreateGroup(dst, "/restart/history");
+    if (restartFrom.empty())
+        return 0;
+    try {
+        H5::H5File source(restartFrom, H5F_ACC_RDONLY);
+        hid_t const src = source.getId();
+        if (!LinkExists(src, "/restart/segment_count"))
+            throw UniversalError("Restart file " + restartFrom + " has no run history");
+        unsigned long long stored = 0;
+        source.openDataSet("/restart/segment_count").read(&stored, H5::PredType::NATIVE_ULLONG);
+        size_t const segments = static_cast<size_t>(stored);
+        for (size_t k = 0; k < segments; ++k) {
+            if (!LinkExists(src, RestartSegmentPath(k)))
+                throw UniversalError("Restart file history is missing " + RestartSegmentPath(k));
+            CopyIfPresent(src, RestartSegmentPath(k), dst, RestartSegmentPath(k));
+        }
+        return segments;
+    } catch (H5::Exception const& e) {
+        // HDF5's C++ exceptions do not derive from std::exception.
+        throw UniversalError("Could not copy the run history of " + restartFrom +
+                             ": " + e.getFuncName() + ": " + e.getDetailMsg());
+    }
+}
+
 void MergeHdf5(
     Config const& config,
+    std::string const& finalOutputPath,
     PostProcessIMC::PostProcessConfig const& effectiveConfig,
     std::string const& scenarioName,
     PostprocessRuntime const& runtime,
@@ -217,6 +254,7 @@ void MergeHdf5(
     ForwardPostprocessResult const& grey)
 {
     std::string const scratchPath = GreyHdf5ScratchPath(config);
+    size_t previousSegments = 0;
     {
         H5::H5File destination(config.outputPath, H5F_ACC_RDWR);
         H5::H5File source(scratchPath, H5F_ACC_RDONLY);
@@ -225,15 +263,13 @@ void MergeHdf5(
         CreateGroup(dst, "/passes/forward");
         CreateGroup(dst, "/passes/grey");
         CreateGroup(dst, "/photosphere");
-        CopyIfPresent(dst, "/tally", dst, "/passes/forward/tally");
-        CopyIfPresent(dst, "/adaptive", dst, "/passes/forward/adaptive");
-        CopyIfPresent(dst, "/diagnostics", dst, "/passes/forward/diagnostics");
-        CopyIfPresent(src, "/tally", dst, "/passes/grey/tally");
-        CopyIfPresent(src, "/adaptive", dst, "/passes/grey/adaptive");
-        CopyIfPresent(src, "/diagnostics", dst, "/passes/grey/diagnostics");
-        DeleteIfPresent(dst, "/tally");
-        DeleteIfPresent(dst, "/adaptive");
-        DeleteIfPresent(dst, "/diagnostics");
+        for (char const* group : {"/tally", "/adaptive", "/diagnostics",
+                                  "/statistics_state", "/learned_state", "/load_balance"}) {
+            CopyIfPresent(dst, group, dst, std::string("/passes/forward") + group);
+            CopyIfPresent(src, group, dst, std::string("/passes/grey") + group);
+            DeleteIfPresent(dst, group);
+        }
+        previousSegments = CopyRestartHistory(dst, config.restartFrom);
     }
 
     HDF5Writer writer(config.outputPath, false);
@@ -253,6 +289,26 @@ void MergeHdf5(
 #else
     writer.WriteElement("/metadata/build/ddmc", 0);
 #endif
+    writer.WriteElement("/metadata/build/energy_groups", static_cast<int>(ENERGY_GROUPS_NUM));
+
+    // This run's segment of the result history.
+    std::ostringstream configText;
+    for (auto const& entry : PostProcessIMC::EffectiveConfigEntries(effectiveConfig))
+        configText << entry.first << " = " << entry.second << "\n";
+    char const* jobID = std::getenv("SLURM_JOB_ID");
+    std::string const segment = RestartSegmentPath(previousSegments);
+    writer.WriteElement(segment + "/job_id", std::string(jobID != nullptr ? jobID : "none"));
+    writer.WriteElement(segment + "/mpi_size", runtime.mpiSize);
+    writer.WriteElement(segment + "/restart_from", config.restartFrom);
+    writer.WriteElement(segment + "/output", finalOutputPath);
+    writer.WriteElement(segment + "/build_time", std::string(__DATE__ " " __TIME__));
+    writer.WriteElement(segment + "/forward_generations_added", forward.finalGenerationsAdded);
+    writer.WriteElement(segment + "/forward_generations_total", forward.finalGenerationsTotal);
+    writer.WriteElement(segment + "/grey_generations_added", grey.finalGenerationsAdded);
+    writer.WriteElement(segment + "/grey_generations_total", grey.finalGenerationsTotal);
+    writer.WriteElement(segment + "/effective_config", configText.str());
+    writer.WriteElement("/restart/schema_version", kRestartSchemaVersion);
+    writer.WriteElement("/restart/segment_count", previousSegments + 1);
     std::vector<std::pair<std::string, std::string>> const entries =
         PostProcessIMC::EffectiveConfigEntries(effectiveConfig);
     for (auto const& entry : entries)
@@ -267,6 +323,12 @@ void MergeHdf5(
     writer.WriteElement("/comparison/source_surface/injected_luminosity", runtime.fluxSourceInjectedLuminosity);
     writer.WriteElement("/comparison/source_surface/net_luminosity", runtime.fluxSourceNetLuminosity);
     writer.WriteElement("/comparison/source_surface/inward_luminosity", runtime.fluxSourceInwardLuminosity);
+    writer.WriteElement("/comparison/source_surface/smoothed_directions",
+                        runtime.fluxSourceSmoothedDirections.size());
+    writer.WriteElement("/comparison/source_surface/enclosed_cells_removed",
+                        runtime.fluxSourceEnclosedCellIDs.size());
+    writer.WriteElement("/comparison/source_surface/enclosed_wall_luminosity_removed",
+                        runtime.fluxSourceEnclosedLuminosity);
     writer.WriteElement("/comparison/forward_crossing_luminosity", forward.crossingLuminosity);
     writer.WriteElement("/comparison/grey_crossing_luminosity", grey.crossingLuminosity);
     writer.WriteElement("/comparison/forward_emitted_luminosity", forward.emittedLuminosity);
@@ -308,9 +370,11 @@ Config MakePassOutputConfig(Config const& finalConfig)
 void WriteGreyPassScratch(
     Config const& config,
     SphericalObserver const& observer,
-    SphericalObserver::Diagnostics const& diagnostics)
+    SphericalObserver::Diagnostics const& diagnostics,
+    PassRestartState const& restartState)
 {
     observer.writeHDF5(GreyHdf5ScratchPath(config), diagnostics);
+    WritePassRestartState(GreyHdf5ScratchPath(config), restartState, observer);
 }
 
 void FinalizeResultBundle(
@@ -325,7 +389,8 @@ void FinalizeResultBundle(
     if (runtime.rank != 0)
         return;
     MergeHdf5(
-        passConfig, effectiveConfig, scenarioName, runtime, forward, grey);
+        passConfig, finalConfig.outputPath, effectiveConfig, scenarioName,
+        runtime, forward, grey);
     MergeVtk(passConfig);
     PromoteFile(passConfig.outputPath, finalConfig.outputPath);
     std::string const passVtk = BaseVtkOutputPath(passConfig);

@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -51,6 +52,17 @@ struct PostProcessConfig
         bool writeVtk = true;
     } output;
 
+    // Continue an earlier result: load its generation statistics, learned
+    // allocation state and load-balance costs, skip the burn-in and probe
+    // generations, and add transport.generations more final generations to
+    // each pass. The physics settings must match the file.
+    struct Restart
+    {
+        std::string from;
+        // Allow output.stem to name the file being continued.
+        bool inPlace = false;
+    } restart;
+
     struct Observer
     {
         Vector3D center = Vector3D(0.0, 0.0, 0.0);
@@ -71,6 +83,15 @@ struct PostProcessConfig
         // a few; 15 is very conservative and leaves mid-depth cells to
         // explicit random walks.
         double ddmcMinCellOpticalDepth = 15.0;
+        // Moving-interface weight correction on IMC -> DDMC entry (STORM's
+        // ddmcUseMovingInterfaceCorrection). Only acts with cell velocities.
+        bool ddmcMovingInterfaceCorrection = true;
+        // Advection of DDMC radiation with the gas (STORM's ddmcAdvection).
+        // Only acts with cell velocities.
+        bool ddmcAdvection = true;
+        // Cells whose advection Peclet number |v| (L/2) / D exceeds this stay
+        // in IMC (STORM's ddmcMaxCellAdvectionPeclet); infinity disables it.
+        double ddmcMaxCellAdvectionPeclet = std::numeric_limits<double>::infinity();
         bool useCellVelocities = true;
         MonteCarloCommunication communication = MonteCarloCommunication::Auto;
 
@@ -102,6 +123,16 @@ struct PostProcessConfig
         size_t constructionRays = 0;
         double ddmcFaceOpticalDepth = 5.0;
         FluxSourceSurfaceMode surfaceMode = FluxSourceSurfaceMode::Grey;
+        // Make inside any outside region not connected, through outside cells,
+        // to the exterior beyond the outermost surface radius. Such a region
+        // is walled in by thermalizing faces on every side and traps packets.
+        bool removeEnclosedOutside = true;
+        // Raise any direction's surface radius to at least this fraction of
+        // the median radius of its 8 nearest resolved directions, so a single
+        // direction cannot dip far below its neighbours. 0 disables it. A
+        // raised direction no longer sits at thermalizationTau, and the run
+        // warns when that happens.
+        double smoothingFloor = 0.5;
     } fluxSource;
 
     // Thermal emission from every cell outside the flux-source surface at its
@@ -240,6 +271,13 @@ struct PostProcessConfig
         double imbalanceThreshold = 2.0;
         size_t cooldownGenerations = 2;
         size_t maxRebalances = 6;
+        // Cap a cell's measured cost at clampFactor times the mean cost of the
+        // cells that did work (true) or of all cells (false). With the work in
+        // ~2% of the cells, the all-cell cap hid ~30x of the hot cells' cost
+        // and left a 34x rank imbalance on snap_109.
+        bool clampToActiveMean = true;
+        // 0 keeps the built-in factor (30).
+        double clampFactor = 0.0;
     } loadBalance;
 
     struct Diagnostics

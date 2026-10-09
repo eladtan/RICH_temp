@@ -30,6 +30,11 @@ struct Parameters {
     double multigroupZeroStepInflation = 5.0;
     double maxCellImbalance = 2.5;
     bool useMedianClamp = true;
+    // Cap a cell's cost at medianClampFactor times the mean cost of the cells
+    // that did work (steps or source packets) instead of the mean over every
+    // cell. When the work sits in a few percent of the cells, the all-cell
+    // mean is tiny and the cap hides most of their cost from the partition.
+    bool clampToActiveMean = false;
 };
 
 struct LocalCellMeasurement {

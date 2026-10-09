@@ -6,6 +6,7 @@
 #include "IMCPostProcess.hpp"
 #include "PostProcessConfig.hpp"
 #include "PostProcessRuntime.hpp"
+#include "PostProcessRestart.hpp"
 
 namespace imc_postprocess_tde
 {
@@ -15,7 +16,8 @@ Config MakePassOutputConfig(Config const& finalConfig);
 void WriteGreyPassScratch(
     Config const& config,
     SphericalObserver const& observer,
-    SphericalObserver::Diagnostics const& diagnostics);
+    SphericalObserver::Diagnostics const& diagnostics,
+    PassRestartState const& restartState);
 
 void FinalizeResultBundle(
     Config const& finalConfig,

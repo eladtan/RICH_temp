@@ -298,6 +298,17 @@ public:
     double fluxSourceInwardLuminosity = 0.0;
     uint64_t fluxSourceBoundaryFaceCount = 0;
     uint64_t fluxSourceEmittingFaceCount = 0;
+    // Outside cells removed because they were enclosed by the surface (cell
+    // IDs, the same on every rank), and the positive face luminosity their
+    // walls would have injected. Computed once; later decompositions reuse it.
+    // Surface radii before smoothing, the directions smoothing raised, and the
+    // per-run diagnostic file holding both (written by rank 0 at setup).
+    std::vector<double> fluxSourceRawRadius;
+    std::vector<size_t> fluxSourceSmoothedDirections;
+    std::string fluxSourceSurfaceFile;
+    bool fluxSourceEnclosedComputed = false;
+    std::unordered_set<size_t> fluxSourceEnclosedCellIDs;
+    double fluxSourceEnclosedLuminosity = 0.0;
     // Global IDs of the cells that own emitting faces (all ranks hold the
     // full set; ~1e5 entries at most). Used to tell face cells from volume
     // cells in the learned allocation.
@@ -324,6 +335,10 @@ using PostprocessRuntime = PostProcessSession;
 struct ForwardPostprocessResult
 {
     bool ran = false;
+    // Final generations run this segment, and in the statistics overall
+    // (they differ on a restart).
+    size_t finalGenerationsAdded = 0;
+    size_t finalGenerationsTotal = 0;
     bool usesVelocity = false;
     bool usesDDMC = false;
     bool usesPolarization = false;

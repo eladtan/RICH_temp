@@ -66,6 +66,49 @@ RankStepImbalance ComputeRankStepImbalance(
                   << " max_over_mean=" << out.maxOverMean
                   << std::endl;
     }
+
+    // Whether the busiest rank is busy because of one indivisible cell or
+    // because it holds many costly cells.
+    double localMaxCellSteps = 0.0;
+    double localActiveCells = 0.0;
+    for (size_t s : localSteps) {
+        localMaxCellSteps = std::max(localMaxCellSteps, static_cast<double>(s));
+        if (s > 0)
+            localActiveCells += 1.0;
+    }
+    double globalMaxCellSteps = localMaxCellSteps;
+    double busiestDetail[4] = {0.0, 0.0, 0.0, 0.0};
+#ifdef RICH_MPI
+    struct { double value; int rank; } localLoad{static_cast<double>(out.localSteps), rank}, busiest{0.0, 0};
+    MPI_Allreduce(&localLoad, &busiest, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+    MPI_Reduce(rank == 0 ? MPI_IN_PLACE : &globalMaxCellSteps, &globalMaxCellSteps, 1,
+               MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    if (rank == busiest.rank) {
+        busiestDetail[0] = static_cast<double>(localSteps.size());
+        busiestDetail[1] = localActiveCells;
+        busiestDetail[2] = localMaxCellSteps;
+        busiestDetail[3] = static_cast<double>(busiest.rank);
+    }
+    MPI_Reduce(rank == 0 ? MPI_IN_PLACE : busiestDetail, busiestDetail, 4,
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+#else
+    busiestDetail[0] = static_cast<double>(localSteps.size());
+    busiestDetail[1] = localActiveCells;
+    busiestDetail[2] = localMaxCellSteps;
+#endif
+    if (rank == 0) {
+        std::cout << label << " RANK_STEP_DETAIL gen=" << (gen + 1)
+                  << " busiest_rank=" << static_cast<long long>(busiestDetail[3])
+                  << " busiest_cells=" << busiestDetail[0]
+                  << " busiest_active_cells=" << busiestDetail[1]
+                  << " busiest_max_cell_steps=" << busiestDetail[2]
+                  << " busiest_max_cell_share="
+                  << (out.maxRankSteps > 0.0 ? busiestDetail[2] / out.maxRankSteps : 0.0)
+                  << " global_max_cell_steps=" << globalMaxCellSteps
+                  << " global_max_cell_over_mean_rank="
+                  << (out.meanRankSteps > 0.0 ? globalMaxCellSteps / out.meanRankSteps : 0.0)
+                  << std::endl;
+    }
     return out;
 }
 

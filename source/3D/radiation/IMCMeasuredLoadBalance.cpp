@@ -1,4 +1,6 @@
 #include "IMCMeasuredLoadBalance.hpp"
+
+#include <unordered_set>
 #include "misc/universal_error.hpp"
 
 namespace imc_measured_lb {
@@ -91,10 +93,78 @@ double CellCountFloor(double meanCost, Parameters const& params)
 // mean then lets the Hilbert partition pack the cheap cells onto a run of
 // consecutive ranks (33M of 70M cells on one node, 336 GB). Re-apply the
 // floor against the mean that includes the particle costs.
+//
+// The same holds whenever the cap lets costs far above the all-cell mean
+// through (clampToActiveMean): the final mean then exceeds the one the floor
+// was taken against. The floor is therefore solved to its fixed point,
+// floor = mean(max(cost, floor)) / maxCellImbalance, which is what bounds a
+// rank to maxCellImbalance times the mean cell count; a single pass leaves it
+// below that (2.9x observed on snap_109 with the all-cell cap).
 bool NeedsPostParticleCellFloor(Parameters const& params)
 {
-    return params.particleCostAfterClamp && params.particleWeight > 0.0 &&
-           params.maxCellImbalance > 0.0 && std::isfinite(params.maxCellImbalance);
+    bool const finiteImbalance =
+        params.maxCellImbalance > 0.0 && std::isfinite(params.maxCellImbalance);
+    bool const postClampParticles =
+        params.particleCostAfterClamp && params.particleWeight > 0.0;
+    return finiteImbalance && (postClampParticles || params.clampToActiveMean);
+}
+
+// Raw-cost sum and count over the cells that did work.
+void ActiveCostSums(std::vector<LocalCellMeasurement> const& measurements,
+                    std::unordered_map<size_t, double> const& costByID,
+                    double& sum, uint64_t& count)
+{
+    std::unordered_set<size_t> active;
+    for (auto const& m : measurements)
+        if (m.stepCount > 0 || m.particleCount > 0)
+            active.insert(m.globalCellID);
+    sum = 0.0;
+    count = 0;
+    for (size_t id : active) {
+        auto const it = costByID.find(id);
+        if (it == costByID.end())
+            continue;
+        sum += it->second;
+        ++count;
+    }
+}
+
+// Fixed point of the cell-count floor (see NeedsPostParticleCellFloor).
+// `reduce` turns local (sum, count) into global ones. Returns the floor and
+// sets the final mean, the iterations and the number of cells raised (local).
+template <typename Reduce>
+double SolveCellCountFloor(std::unordered_map<size_t, double>& costByID,
+                           Parameters const& params, Reduce const& reduce,
+                           double& finalMean, int& iterations, uint64_t& raised)
+{
+    double floor = 0.0;
+    finalMean = 0.0;
+    iterations = 0;
+    raised = 0;
+    for (int it = 0; it < 200; ++it) {
+        double sum = 0.0;
+        uint64_t count = 0;
+        for (auto const& kv : costByID) {
+            sum += kv.second;
+            ++count;
+        }
+        reduce(sum, count);
+        if (count == 0)
+            break;
+        finalMean = sum / static_cast<double>(count);
+        double const next = CellCountFloor(finalMean, params);
+        iterations = it + 1;
+        if (next <= floor * (1.0 + 1e-6))
+            break;
+        floor = next;
+        for (auto& kv : costByID) {
+            if (kv.second < floor) {
+                kv.second = floor;
+                ++raised;
+            }
+        }
+    }
+    return floor;
 }
 
 } // anonymous namespace
@@ -111,23 +181,29 @@ std::unordered_map<size_t, double> BuildMeasuredCosts(
         for (auto const& kv : costByID)
             localSum += kv.second;
         double localMean = localSum / static_cast<double>(costByID.size());
+        double reference = localMean;
+        if (params.clampToActiveMean) {
+            double activeSum = 0.0;
+            uint64_t activeCount = 0;
+            ActiveCostSums(measurements, costByID, activeSum, activeCount);
+            if (activeCount > 0)
+                reference = activeSum / static_cast<double>(activeCount);
+        }
         double minCost = CellCountFloor(localMean, params);
         double maxCost = std::numeric_limits<double>::infinity();
         if (params.useMedianClamp) {
-            maxCost = params.medianClampFactor * std::max(localMean, params.floorCost);
+            maxCost = params.medianClampFactor * std::max(reference, params.floorCost);
             minCost = std::max(minCost, localMean / params.medianClampFactor);
         }
         ClampCosts(costByID, minCost, maxCost);
     }
     AddPostClampParticleCosts(costByID, measurements, params);
     if (NeedsPostParticleCellFloor(params) && !costByID.empty()) {
-        double localSum = 0.0;
-        for (auto const& kv : costByID)
-            localSum += kv.second;
-        double const cellFloor = CellCountFloor(
-            localSum / static_cast<double>(costByID.size()), params);
-        for (auto& kv : costByID)
-            kv.second = std::max(kv.second, cellFloor);
+        double finalMean = 0.0;
+        int iterations = 0;
+        uint64_t raised = 0;
+        SolveCellCountFloor(costByID, params, [](double&, uint64_t&) {},
+                            finalMean, iterations, raised);
     }
 
     return costByID;
@@ -159,18 +235,53 @@ std::unordered_map<size_t, double> BuildMeasuredCosts(
             ? globalSum / static_cast<double>(globalCount)
             : params.floorCost;
 
+        double activeSum = 0.0;
+        uint64_t activeCount = 0;
+        ActiveCostSums(measurements, costByID, activeSum, activeCount);
+        MPI_Allreduce(MPI_IN_PLACE, &activeSum, 1, MPI_DOUBLE, MPI_SUM, comm);
+        MPI_Allreduce(MPI_IN_PLACE, &activeCount, 1, MPI_UINT64_T, MPI_SUM, comm);
+        double const activeMean = activeCount > 0
+            ? activeSum / static_cast<double>(activeCount) : globalMean;
+        double const reference = params.clampToActiveMean ? activeMean : globalMean;
+
         double maxCost = std::numeric_limits<double>::infinity();
         double minCost = CellCountFloor(globalMean, params);
         if (params.useMedianClamp) {
-            maxCost = params.medianClampFactor * std::max(globalMean, params.floorCost);
+            maxCost = params.medianClampFactor * std::max(reference, params.floorCost);
             minCost = std::max(minCost, globalMean / params.medianClampFactor);
         }
+
+        // How much measured cost the ceiling discards: the cells above it
+        // are balanced as if they cost the ceiling.
+        double rawMax = 0.0;
+        double aboveCeilingCount = 0.0;
+        double aboveCeilingExcess = 0.0;
+        for (auto const& kv : costByID) {
+            rawMax = std::max(rawMax, kv.second);
+            if (kv.second > maxCost) {
+                aboveCeilingCount += 1.0;
+                aboveCeilingExcess += kv.second - maxCost;
+            }
+        }
+        MPI_Allreduce(MPI_IN_PLACE, &rawMax, 1, MPI_DOUBLE, MPI_MAX, comm);
+        MPI_Allreduce(MPI_IN_PLACE, &aboveCeilingCount, 1, MPI_DOUBLE, MPI_SUM, comm);
+        MPI_Allreduce(MPI_IN_PLACE, &aboveCeilingExcess, 1, MPI_DOUBLE, MPI_SUM, comm);
 
         int rank = 0;
         MPI_Comm_rank(comm, &rank);
         if (rank == 0) {
+            std::cerr << "MEASURED_LB_CEILING_LOSS"
+                      << " raw_max_cell_cost=" << rawMax
+                      << " raw_max_over_ceiling=" << (maxCost > 0.0 ? rawMax / maxCost : 0.0)
+                      << " cells_above_ceiling=" << aboveCeilingCount
+                      << " cost_discarded=" << aboveCeilingExcess
+                      << " cost_discarded_frac=" << (globalSum > 0.0 ? aboveCeilingExcess / globalSum : 0.0)
+                      << "\n";
             std::cerr << "MEASURED_LB_CLAMP"
                       << " global_mean_cost=" << globalMean
+                      << " active_mean_cost=" << activeMean
+                      << " active_cells=" << activeCount
+                      << " clamp_reference=" << (params.clampToActiveMean ? "active" : "all")
                       << " clamp_factor=" << params.medianClampFactor
                       << " clamp_ceiling=" << maxCost
                       << " clamp_floor=" << minCost
@@ -185,38 +296,38 @@ std::unordered_map<size_t, double> BuildMeasuredCosts(
     }
     AddPostClampParticleCosts(costByID, measurements, params);
     if (NeedsPostParticleCellFloor(params)) {
-        double localSum = 0.0;
-        uint64_t localCount = 0;
-        for (auto const& kv : costByID) {
-            localSum += kv.second;
-            ++localCount;
-        }
-        double globalSum = 0.0;
-        uint64_t globalCount = 0;
-        MPI_Allreduce(&localSum, &globalSum, 1, MPI_DOUBLE, MPI_SUM, comm);
-        MPI_Allreduce(&localCount, &globalCount, 1, MPI_UINT64_T, MPI_SUM, comm);
-        if (globalCount > 0) {
-            double const globalMean = globalSum / static_cast<double>(globalCount);
-            double const cellFloor = CellCountFloor(globalMean, params);
-            uint64_t localRaised = 0;
-            for (auto& kv : costByID) {
-                if (kv.second < cellFloor) {
-                    kv.second = cellFloor;
-                    ++localRaised;
-                }
-            }
-            uint64_t globalRaised = 0;
-            MPI_Allreduce(&localRaised, &globalRaised, 1, MPI_UINT64_T, MPI_SUM, comm);
-            int rank = 0;
-            MPI_Comm_rank(comm, &rank);
-            if (rank == 0) {
-                std::cerr << "MEASURED_LB_POST_PARTICLE_FLOOR"
-                          << " global_mean_cost=" << globalMean
-                          << " cell_floor=" << cellFloor
-                          << " cells_raised=" << globalRaised
-                          << " global_cells=" << globalCount
-                          << "\n";
-            }
+        double finalMean = 0.0;
+        int iterations = 0;
+        uint64_t localRaised = 0;
+        double sumBeforeFloor = 0.0;
+        for (auto const& kv : costByID)
+            sumBeforeFloor += kv.second;
+        double const cellFloor = SolveCellCountFloor(
+            costByID, params,
+            [comm](double& sum, uint64_t& count) {
+                MPI_Allreduce(MPI_IN_PLACE, &sum, 1, MPI_DOUBLE, MPI_SUM, comm);
+                MPI_Allreduce(MPI_IN_PLACE, &count, 1, MPI_UINT64_T, MPI_SUM, comm);
+            },
+            finalMean, iterations, localRaised);
+        uint64_t globalRaised = 0;
+        MPI_Allreduce(&localRaised, &globalRaised, 1, MPI_UINT64_T, MPI_SUM, comm);
+        // Share of the balanced weight that is the floor itself rather than
+        // measured work.
+        double sums[2] = {sumBeforeFloor, 0.0};
+        for (auto const& kv : costByID)
+            sums[1] += kv.second;
+        MPI_Allreduce(MPI_IN_PLACE, sums, 2, MPI_DOUBLE, MPI_SUM, comm);
+        int rank = 0;
+        MPI_Comm_rank(comm, &rank);
+        if (rank == 0) {
+            std::cerr << "MEASURED_LB_POST_PARTICLE_FLOOR"
+                      << " final_mean_cost=" << finalMean
+                      << " cell_floor=" << cellFloor
+                      << " iterations=" << iterations
+                      << " cell_raises=" << globalRaised
+                      << " floor_added_weight_frac=" << (sums[1] > 0.0 ? (sums[1] - sums[0]) / sums[1] : 0.0)
+                      << " max_cells_per_rank_bound=" << params.maxCellImbalance
+                      << "x_mean\n";
         }
     }
 

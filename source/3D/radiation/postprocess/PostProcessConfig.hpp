@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -31,6 +32,10 @@ struct Config
     std::string opacityDir;
     std::string greyOpacityDir;
     std::string eosDir;
+    // Result file to continue (empty: fresh run) and whether the output may
+    // replace it.
+    std::string restartFrom;
+    bool restartInPlace = false;
     double radius = 5e14;
     size_t nObservers = 256;
     double sourceDt = 1.0;
@@ -44,6 +49,9 @@ struct Config
     bool ddmc = true;
     bool randomWalk = true;
     double ddmcMinCellOpticalDepth = 15.0;
+    bool ddmcMovingInterfaceCorrection = true;
+    bool ddmcAdvection = true;
+    double ddmcMaxCellAdvectionPeclet = std::numeric_limits<double>::infinity();
     bool useCellVelocities = true;
     CommunicationMode communication = CommunicationMode::Auto;
     bool polarization = true;
@@ -53,6 +61,8 @@ struct Config
     size_t fluxSourceRays = 0; // 0 means use nObservers (backward compatible)
     double fluxSourceDDMCFaceOpticalDepth = 5.0;
     FluxSourceSurfaceMode fluxSourceSurfaceMode = FluxSourceSurfaceMode::Grey;
+    bool fluxSourceRemoveEnclosedOutside = true;
+    double fluxSourceSmoothingFloor = 0.5;
     bool volumeEmissionEnabled = false;
     double volumeEmissionCutoffFraction = 1e-10;
     size_t volumeEmissionBurninPacketsTarget = 2000000;
@@ -97,6 +107,8 @@ struct Config
     double adaptiveLBImbalanceThreshold = 2.0;
     size_t adaptiveLBCooldownGenerations = 2;
     size_t adaptiveLBMaxRebalances = 6;
+    bool measuredLBClampToActiveMean = true;
+    double measuredLBClampFactor = 0.0;   // 0 = built-in
 
     bool adaptiveGroupQuality = false;
     bool adaptiveGroupSourceCells = false;

@@ -27,6 +27,7 @@
 
 #include "AdaptiveStatistics.hpp"
 #include "FluxSourceCalculation.hpp"
+#include "PostProcessRestart.hpp"
 #include "source/3D/radiation/IMCMeasuredLoadBalance.hpp"
 #include "source/3D/radiation/IMCStepCounterCostCalculator.hpp"
 
@@ -77,6 +78,9 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
             measuredLBParams.multigroupZeroStepInflation = 5.0;
             measuredLBParams.maxCellImbalance = MEASURED_LB_MAX_CELL_IMBALANCE;
             measuredLBParams.useMedianClamp = true;
+            measuredLBParams.clampToActiveMean = cfg.measuredLBClampToActiveMean;
+            if (cfg.measuredLBClampFactor > 0.0)
+                measuredLBParams.medianClampFactor = cfg.measuredLBClampFactor;
             double const measuredLBWeightCompression = EffectiveMeasuredLBWeightCompression(cfg);
 
             AdaptiveSourceState mgAdaptive;
@@ -91,6 +95,28 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
             size_t mgIncludedFinalGenerations = 0;
             size_t mgDiscardedBurninGenerations = 0;
 
+            // A restart continues the statistics and learned state of the file
+            // and never reruns the burn-in or the learned-only probe.
+            bool const restarting = !cfg.restartFrom.empty();
+            size_t mgCompletedFinalGenerations = 0;
+            LoadBalanceMeasurements mgRestartLoadBalance;   // rank 0
+            if (restarting) {
+                PassRestartState loaded = BeginPassRestart(
+                    cfg, RestartPass::Forward, *observer, cfg.nGenerations, rank);
+                mgAdaptive = std::move(loaded.adaptive);
+                mgGroupHistory = std::move(loaded.groupHistory);
+                mgGroupSourceState = std::move(loaded.groupSourceState);
+                mgFinalGroupSamplingDiag = loaded.finalGroupSamplingDiag;
+                mgFinalGroupSourceSummary = loaded.finalGroupSourceSummary;
+                mgGroupFallbackToIntegrated = loaded.groupFallbackToIntegrated;
+                mgGroupFallbackReason = loaded.groupFallbackReason;
+                runtime.lastEscapingLuminosity = loaded.lastEscapingLuminosity;
+                mgCompletedFinalGenerations = loaded.completedFinalGenerations;
+                mgRestartLoadBalance = std::move(loaded.loadBalance);
+            }
+            // Touched cells of this segment's last final generation (local).
+            LoadBalanceMeasurements mgLastFinalMeasurements;
+
             size_t const mgInitialBurninGenerations = cfg.adaptiveSourceCells ? 1 : 0;
             size_t const mgUniformBurninGenerations = cfg.adaptiveSourceCells ? 19 : 0;
             size_t const mgBurninGenerations = mgInitialBurninGenerations + mgUniformBurninGenerations;
@@ -100,7 +126,251 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
             size_t const mgTotalGenerations = cfg.adaptiveSourceCells
                 ? mgFinalStartGeneration + mgFinalGenerations
                 : cfg.nGenerations;
-            for (size_t gen = 0; gen < mgTotalGenerations; ++gen)
+    #ifdef RICH_MPI
+            // Repartitions on one generation's measured per-cell steps and
+            // source packets: the periodic rebalances below, and on a restart
+            // the initial one from the stored last-generation measurements.
+            auto rebalanceOnMeasurements = [&](std::vector<size_t> const& localSteps,
+                                               std::vector<size_t> const& localParticles,
+                                               std::string const& mgLBLabel)
+            {
+                if (!params.noHydroFeedback) {
+                    throw UniversalError("Measured load balance repartition requires noHydroFeedback=true");
+                }
+
+                PrintVmRSS("before_measured_lb", rank);
+
+                std::vector<double> measuredWeightsForExchange;
+                // Set on every rank once the mesh was rebuilt; a rank that received
+                // no cells has an empty weight vector but must still rebuild its
+                // physics and join the collectives below.
+                bool meshRepartitioned = false;
+                imc_measured_lb::Parameters measuredLBParamsThisPass =
+                    measuredLBParams;
+
+                {
+                    std::vector<size_t> cellIDs(Ncells);
+                    for (size_t i = 0; i < Ncells; ++i)
+                        cellIDs[i] = cells[i].ID;
+
+                    auto localMeasurements = imc_measured_lb::BuildLocalMeasurements(
+                        cellIDs, localSteps,
+                        localParticles);
+
+                    uint64_t localTotalSteps = 0;
+                    uint64_t localTotalSourceParticles = 0;
+                    for (auto const& m : localMeasurements) {
+                        localTotalSteps += static_cast<uint64_t>(m.stepCount);
+                        localTotalSourceParticles +=
+                            static_cast<uint64_t>(m.particleCount);
+                    }
+
+                    uint64_t globalTotalSteps = 0;
+                    uint64_t globalTotalSourceParticles = 0;
+                    MPI_Allreduce(&localTotalSteps, &globalTotalSteps, 1,
+                                  MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+                    MPI_Allreduce(&localTotalSourceParticles,
+                                  &globalTotalSourceParticles, 1,
+                                  MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+
+                    // In CER mode the measured step counter is charged to
+                    // transport cells, while all new packets are created by
+                    // a thin set of source cells.  The generic global-mean
+                    // clamp otherwise reduces those source cells to almost
+                    // zero partition weight and can place millions of
+                    // particles on one rank.  Charge source origins the
+                    // measured average downstream work per emitted packet,
+                    // and add that term after the generic cell-cost clamp.
+                    if (cfg.fluxSourceCompare &&
+                        globalTotalSteps > 0 &&
+                        globalTotalSourceParticles > 0) {
+                        measuredLBParamsThisPass.particleWeight = std::max(
+                            1.0,
+                            static_cast<double>(globalTotalSteps) /
+                                static_cast<double>(globalTotalSourceParticles));
+                        measuredLBParamsThisPass.particleCostAfterClamp = true;
+                        if (rank == 0) {
+                            std::cerr
+                                << "MEASURED_LB_CER_SOURCE_COST"
+                                << " global_steps=" << globalTotalSteps
+                                << " global_source_particles="
+                                << globalTotalSourceParticles
+                                << " steps_per_source_particle="
+                                << measuredLBParamsThisPass.particleWeight
+                                << " post_clamp=yes\n";
+                        }
+                    }
+
+                    if (globalTotalSteps == 0) {
+                        if (rank == 0)
+                            std::cerr << mgLBLabel
+                                      << ": measured generation had zero total steps, skipping repartition\n";
+                    } else {
+                        // Global-mean-based clamp via MPI_Allreduce (no per-cell allgather).
+                        auto localCostByCellID = imc_measured_lb::BuildMeasuredCosts(
+                            localMeasurements, measuredLBParamsThisPass,
+                            isMultigroup, MPI_COMM_WORLD);
+
+                        imc_measured_lb::PrintMeasuredLBDiagnosticsDistributed(
+                            localMeasurements, localCostByCellID, isMultigroup, MPI_COMM_WORLD);
+
+                        PrintVmRSS("after_local_costs", rank);
+
+                        size_t localMissingCosts = 0;
+                        for (size_t i = 0; i < Ncells; ++i) {
+                            if (localCostByCellID.find(cells[i].ID) == localCostByCellID.end())
+                                ++localMissingCosts;
+                        }
+                        uint64_t localMissing64 = static_cast<uint64_t>(localMissingCosts);
+                        uint64_t globalMissingCosts = 0;
+                        MPI_Allreduce(&localMissing64, &globalMissingCosts, 1,
+                                      MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+                        if (rank == 0 && globalMissingCosts != 0) {
+                            std::cerr << "MEASURED_LB_WARNING missing local measured costs before repartition: "
+                                      << globalMissingCosts << "\n";
+                        }
+
+                        IMCStepCounterCostCalculator::Parameters costCalcParams;
+                        costCalcParams.floorCost =
+                            measuredLBParamsThisPass.floorCost;
+                        costCalcParams.missingCellCost =
+                            measuredLBParamsThisPass.missingCellCost;
+                        IMCStepCounterCostCalculator measuredCostCalc(std::move(localCostByCellID), costCalcParams);
+
+                        std::vector<Vector3D> currentPoints(Ncells);
+                        for (size_t i = 0; i < Ncells; ++i)
+                            currentPoints[i] = tess.GetMeshPoint(i);
+
+                        auto lbWeightsNew = measuredCostCalc.CalculateCost(tess, cells);
+
+                        if (lbWeightsNew.size() != Ncells) {
+                            throw UniversalError("Measured LB weight count mismatch before BuildParallel");
+                        }
+
+                        measuredWeightsForExchange = lbWeightsNew;
+
+                        for (auto& w : lbWeightsNew)
+                            w = std::pow(w, measuredLBWeightCompression);
+
+                        // Release the pre-repartition transport objects before
+                        // the rebuild: the parallel Voronoi build is the memory
+                        // peak of the whole run, and every rank on a node hits
+                        // it at the same moment. Their measured costs were
+                        // copied above; nothing below reads them until they
+                        // are rebuilt on the new decomposition.
+                        manager.reset();
+                        physics.reset();
+                        popControl.reset();
+                        boundary.reset();
+#ifdef __linux__
+                        malloc_trim(0);
+#endif
+                        PrintVmRSS("after_release_old_physics", rank);
+
+                        tess.BuildParallel(currentPoints, lbWeightsNew);
+                        meshRepartitioned = true;
+                        // The rebuild leaves every mesh container with the capacity of
+                        // the largest mesh this rank ever held; hand it back.
+                        tess.ShrinkToFit();
+                    }
+                }
+
+                PrintVmRSS("after_build_parallel", rank);
+
+                if (meshRepartitioned) {
+                    MPI_exchange_data(tess, cells, false, 1, &runtime.dummyCell);
+
+                    double dummyWeight =
+                        measuredLBParamsThisPass.missingCellCost;
+                    MPI_exchange_data(tess, measuredWeightsForExchange, false, 1, &dummyWeight);
+
+                    Ncells = tess.GetPointNo();
+
+                    if (cells.size() != Ncells) {
+                        UniversalError eo("Cell count mismatch after measured LB repartition");
+                        eo.addEntry("cells.size()", static_cast<double>(cells.size()));
+                        eo.addEntry("Ncells", static_cast<double>(Ncells));
+                        throw eo;
+                    }
+
+                    if (measuredWeightsForExchange.size() != Ncells) {
+                        UniversalError eo("Measured weight count mismatch after repartition");
+                        eo.addEntry("weights.size()", static_cast<double>(measuredWeightsForExchange.size()));
+                        eo.addEntry("Ncells", static_cast<double>(Ncells));
+                        throw eo;
+                    }
+
+                    imc_measured_lb::PrintPostRepartitionDiagnosticsFromWeights(
+                        measuredWeightsForExchange, measuredLBWeightCompression,
+                        isMultigroup, MPI_COMM_WORLD);
+
+                    PrintVmRSS("after_exchange", rank);
+
+                    cells.shrink_to_fit();
+                    extensives.resize(Ncells);
+                    for (size_t i = 0; i < Ncells; ++i)
+                        PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
+                    extensives.shrink_to_fit();
+#ifdef __linux__
+                    malloc_trim(0);
+#endif
+
+#if ENERGY_GROUPS_NUM > 1
+                    if (cfg.opacityScaleMode != OpacityScaleMode::None) {
+                        // Measured LB changes which cell IDs are local to each MPI rank.
+                        // The alpha table is local and ID-keyed, so refresh it
+                        // before rebuilding physics and before the next transport step.
+                        RecomputeOpacityScaleFactors(
+                            *opacity, *greyOpacity, cells, Ncells, rank,
+                            cfg.opacityScaleMode,
+                            cfg.opacityScaleAlphaMin, cfg.opacityScaleAlphaMax,
+                            runtime.applyOpacityScaleFactors,
+                            "after measured LB repartition");
+                    }
+#endif
+
+                    // Old transport objects were released before the rebuild.
+                    boundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
+
+                    physics = std::make_shared<RadiationIMC>(
+                        tess, boundary, cells, extensives, eos, opacity, params);
+                    physics->setObserver(observer);
+                    if(cfg.fluxSourceCompare)
+                        ConfigureFluxSourceForCurrentDecomposition(
+                            cfg, runtime, *physics, *opacity, true);
+
+                    popControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Tessellation3D>>(tess);
+
+                    MonteCarloConfig monteCarloConfig;
+                    std::unique_ptr<STORM::CommunicationEngine<Vector3D>> rebuiltEngine =
+                        MakeCommunicationEngine(
+            tess, monteCarloConfig, cfg.communication, MPI_COMM_WORLD);
+                    manager = std::make_shared<MonteCarloManager3D>(
+                        tess, physics, popControl, boundary,
+                        monteCarloConfig, std::move(rebuiltEngine));
+
+                    if (rank == 0)
+                        std::cout << mgLBLabel
+                                  << ": repartitioned, new local cells=" << Ncells << std::endl;
+
+                    PrintVmRSS("after_rebuild_physics", rank);
+                }
+            };
+    #endif // RICH_MPI
+
+    #ifdef RICH_MPI
+            if (restarting && measuredLBActive && mgFinalGenerations > 0) {
+                // Balance on the last generation of the run being continued,
+                // which used the final allocation, before the first generation.
+                RebalanceFromStoredMeasurements(
+                    mgRestartLoadBalance, cells, Ncells, "MG",
+                    [&](std::vector<size_t> const& steps, std::vector<size_t> const& particles) {
+                        rebalanceOnMeasurements(steps, particles, "MEASURED_LB_RESTART");
+                    }, rank);
+            }
+    #endif // RICH_MPI
+            size_t const mgStartGeneration = restarting ? mgFinalStartGeneration : 0;
+            for (size_t gen = mgStartGeneration; gen < mgTotalGenerations; ++gen)
             {
                 bool const firstBurninThisGen =
                     cfg.adaptiveSourceCells && gen < mgInitialBurninGenerations;
@@ -248,7 +518,12 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                         cfg.volumeEmissionExplorationWeightFraction * escapingReference * cfg.sourceDt);
                 }
 
-                physics->reseedRNG(static_cast<uint64_t>(rank+12345678) * mgTotalGenerations + gen);
+                if (restarting)
+                    physics->reseedRNG(RestartGenerationSeed(
+                        RestartPass::Forward, rank,
+                        mgCompletedFinalGenerations + finalGenerationIndex));
+                else
+                    physics->reseedRNG(static_cast<uint64_t>(rank+12345678) * mgTotalGenerations + gen);
 
                 manager->getParticles().clear();
                 manager->step(cells, cfg.transportTime);
@@ -280,6 +555,10 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
 #endif
                 IMCPostProcessGenerationDiagnostics const generationDiagnostics =
                     physics->getPostProcessGenerationDiagnostics();
+                if (finalThisGen && gen + 1 == mgTotalGenerations)
+                    mgLastFinalMeasurements = CollectLocalLoadBalanceMeasurements(
+                        cells, Ncells, manager->GetCellsStepsCounters(),
+                        generationDiagnostics.sourcePhotonsPerCell);
 
                 auto mgAllocation = ReduceSourceAllocationSummary(
                     generationDiagnostics.sourceAllocation);
@@ -370,6 +649,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                               << ": " << mgAdaptive.scoreByCellID.size() << std::endl;
                 observer->addBoxEscapeEnergy(boundary->getEscapedEnergy());
                 boundary->resetEscapedEnergy();
+                observer->printHeavyPacketReport("MG", gen + 1, 10);
                 observer->mpiReduceToRank0();
                 if (includeGenerationInFinal) {
                     if (rank == 0)
@@ -395,7 +675,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 RankStepImbalance const mgStepImbalance =
                     ComputeRankStepImbalance("MG", gen, manager->GetCellsStepsCounters(), rank);
                 bool const doInitialMeasuredLB =
-                    gen == 0 && measuredLBActive &&
+                    gen == 0 && measuredLBActive && !restarting &&
                     (cfg.fluxSourceCompare || !cfg.adaptiveSourceCells);
                 bool const doPostAdaptiveMeasuredLB =
                     measuredLBActive &&
@@ -409,8 +689,12 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     finalGenerationIndex + 1 < mgFinalGenerations &&
                     // The probe LB balances the probe's allocation, not the
                     // final one (240x rank imbalance until final step 10 with
-                    // exploration splitting), so also rebalance after step 1.
-                    (finalGenerationIndex == 0 || (finalGenerationIndex + 1) % 10 == 0);
+                    // exploration splitting), so also rebalance after final
+                    // steps 1 and 2. A restart balanced on a final generation
+                    // already, so it skips the one after step 1.
+                    ((finalGenerationIndex == 0 && !restarting) ||
+                     finalGenerationIndex == 1 ||
+                     (finalGenerationIndex + 1) % 10 == 0);
                 std::string const mgLBLabel = doPostAdaptiveMeasuredLB
                     ? "MEASURED_LB_ADAPTIVE"
                     : (doAdaptivePeriodicMeasuredLB
@@ -434,229 +718,9 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 //   - The observer statistics accumulator and adaptive scores are preserved.
                 if (doInitialMeasuredLB ||
                     doPostAdaptiveMeasuredLB || doAdaptivePeriodicMeasuredLB) {
-                    if (!params.noHydroFeedback) {
-                        throw UniversalError("Measured load balance repartition requires noHydroFeedback=true");
-                    }
-
-                    PrintVmRSS("before_measured_lb", rank);
-
-                    std::vector<double> measuredWeightsForExchange;
-                    // Set on every rank once the mesh was rebuilt; a rank that received
-                    // no cells has an empty weight vector but must still rebuild its
-                    // physics and join the collectives below.
-                    bool meshRepartitioned = false;
-                    imc_measured_lb::Parameters measuredLBParamsThisPass =
-                        measuredLBParams;
-
-                    {
-                        auto const& localSteps = manager->GetCellsStepsCounters();
-
-                        std::vector<size_t> cellIDs(Ncells);
-                        for (size_t i = 0; i < Ncells; ++i)
-                            cellIDs[i] = cells[i].ID;
-
-                        auto localMeasurements = imc_measured_lb::BuildLocalMeasurements(
-                            cellIDs, localSteps,
-                            generationDiagnostics.sourcePhotonsPerCell);
-
-                        uint64_t localTotalSteps = 0;
-                        uint64_t localTotalSourceParticles = 0;
-                        for (auto const& m : localMeasurements) {
-                            localTotalSteps += static_cast<uint64_t>(m.stepCount);
-                            localTotalSourceParticles +=
-                                static_cast<uint64_t>(m.particleCount);
-                        }
-
-                        uint64_t globalTotalSteps = 0;
-                        uint64_t globalTotalSourceParticles = 0;
-                        MPI_Allreduce(&localTotalSteps, &globalTotalSteps, 1,
-                                      MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
-                        MPI_Allreduce(&localTotalSourceParticles,
-                                      &globalTotalSourceParticles, 1,
-                                      MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
-
-                        // In CER mode the measured step counter is charged to
-                        // transport cells, while all new packets are created by
-                        // a thin set of source cells.  The generic global-mean
-                        // clamp otherwise reduces those source cells to almost
-                        // zero partition weight and can place millions of
-                        // particles on one rank.  Charge source origins the
-                        // measured average downstream work per emitted packet,
-                        // and add that term after the generic cell-cost clamp.
-                        if (cfg.fluxSourceCompare &&
-                            globalTotalSteps > 0 &&
-                            globalTotalSourceParticles > 0) {
-                            measuredLBParamsThisPass.particleWeight = std::max(
-                                1.0,
-                                static_cast<double>(globalTotalSteps) /
-                                    static_cast<double>(globalTotalSourceParticles));
-                            measuredLBParamsThisPass.particleCostAfterClamp = true;
-                            if (rank == 0) {
-                                std::cerr
-                                    << "MEASURED_LB_CER_SOURCE_COST"
-                                    << " global_steps=" << globalTotalSteps
-                                    << " global_source_particles="
-                                    << globalTotalSourceParticles
-                                    << " steps_per_source_particle="
-                                    << measuredLBParamsThisPass.particleWeight
-                                    << " post_clamp=yes\n";
-                            }
-                        }
-
-                        if (globalTotalSteps == 0) {
-                            if (rank == 0)
-                                std::cerr << mgLBLabel
-                                          << ": measured generation had zero total steps, skipping repartition\n";
-                        } else {
-                            // Global-mean-based clamp via MPI_Allreduce (no per-cell allgather).
-                            auto localCostByCellID = imc_measured_lb::BuildMeasuredCosts(
-                                localMeasurements, measuredLBParamsThisPass,
-                                isMultigroup, MPI_COMM_WORLD);
-
-                            imc_measured_lb::PrintMeasuredLBDiagnosticsDistributed(
-                                localMeasurements, localCostByCellID, isMultigroup, MPI_COMM_WORLD);
-
-                            PrintVmRSS("after_local_costs", rank);
-
-                            size_t localMissingCosts = 0;
-                            for (size_t i = 0; i < Ncells; ++i) {
-                                if (localCostByCellID.find(cells[i].ID) == localCostByCellID.end())
-                                    ++localMissingCosts;
-                            }
-                            uint64_t localMissing64 = static_cast<uint64_t>(localMissingCosts);
-                            uint64_t globalMissingCosts = 0;
-                            MPI_Allreduce(&localMissing64, &globalMissingCosts, 1,
-                                          MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
-                            if (rank == 0 && globalMissingCosts != 0) {
-                                std::cerr << "MEASURED_LB_WARNING missing local measured costs before repartition: "
-                                          << globalMissingCosts << "\n";
-                            }
-
-                            IMCStepCounterCostCalculator::Parameters costCalcParams;
-                            costCalcParams.floorCost =
-                                measuredLBParamsThisPass.floorCost;
-                            costCalcParams.missingCellCost =
-                                measuredLBParamsThisPass.missingCellCost;
-                            IMCStepCounterCostCalculator measuredCostCalc(std::move(localCostByCellID), costCalcParams);
-
-                            std::vector<Vector3D> currentPoints(Ncells);
-                            for (size_t i = 0; i < Ncells; ++i)
-                                currentPoints[i] = tess.GetMeshPoint(i);
-
-                            auto lbWeightsNew = measuredCostCalc.CalculateCost(tess, cells);
-
-                            if (lbWeightsNew.size() != Ncells) {
-                                throw UniversalError("Measured LB weight count mismatch before BuildParallel");
-                            }
-
-                            measuredWeightsForExchange = lbWeightsNew;
-
-                            for (auto& w : lbWeightsNew)
-                                w = std::pow(w, measuredLBWeightCompression);
-
-                            // Release the pre-repartition transport objects before
-                            // the rebuild: the parallel Voronoi build is the memory
-                            // peak of the whole run, and every rank on a node hits
-                            // it at the same moment. Their measured costs were
-                            // copied above; nothing below reads them until they
-                            // are rebuilt on the new decomposition.
-                            manager.reset();
-                            physics.reset();
-                            popControl.reset();
-                            boundary.reset();
-#ifdef __linux__
-                            malloc_trim(0);
-#endif
-                            PrintVmRSS("after_release_old_physics", rank);
-
-                            tess.BuildParallel(currentPoints, lbWeightsNew);
-                            meshRepartitioned = true;
-                            // The rebuild leaves every mesh container with the capacity of
-                            // the largest mesh this rank ever held; hand it back.
-                            tess.ShrinkToFit();
-                        }
-                    }
-
-                    PrintVmRSS("after_build_parallel", rank);
-
-                    if (meshRepartitioned) {
-                        MPI_exchange_data(tess, cells, false, 1, &runtime.dummyCell);
-
-                        double dummyWeight =
-                            measuredLBParamsThisPass.missingCellCost;
-                        MPI_exchange_data(tess, measuredWeightsForExchange, false, 1, &dummyWeight);
-
-                        Ncells = tess.GetPointNo();
-
-                        if (cells.size() != Ncells) {
-                            UniversalError eo("Cell count mismatch after measured LB repartition");
-                            eo.addEntry("cells.size()", static_cast<double>(cells.size()));
-                            eo.addEntry("Ncells", static_cast<double>(Ncells));
-                            throw eo;
-                        }
-
-                        if (measuredWeightsForExchange.size() != Ncells) {
-                            UniversalError eo("Measured weight count mismatch after repartition");
-                            eo.addEntry("weights.size()", static_cast<double>(measuredWeightsForExchange.size()));
-                            eo.addEntry("Ncells", static_cast<double>(Ncells));
-                            throw eo;
-                        }
-
-                        imc_measured_lb::PrintPostRepartitionDiagnosticsFromWeights(
-                            measuredWeightsForExchange, measuredLBWeightCompression,
-                            isMultigroup, MPI_COMM_WORLD);
-
-                        PrintVmRSS("after_exchange", rank);
-
-                        cells.shrink_to_fit();
-                        extensives.resize(Ncells);
-                        for (size_t i = 0; i < Ncells; ++i)
-                            PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
-                        extensives.shrink_to_fit();
-#ifdef __linux__
-                        malloc_trim(0);
-#endif
-
-    #if ENERGY_GROUPS_NUM > 1
-                        if (cfg.opacityScaleMode != OpacityScaleMode::None) {
-                            // Measured LB changes which cell IDs are local to each MPI rank.
-                            // The alpha table is local and ID-keyed, so refresh it
-                            // before rebuilding physics and before the next transport step.
-                            RecomputeOpacityScaleFactors(
-                                *opacity, *greyOpacity, cells, Ncells, rank,
-                                cfg.opacityScaleMode,
-                                cfg.opacityScaleAlphaMin, cfg.opacityScaleAlphaMax,
-                                runtime.applyOpacityScaleFactors,
-                                "after measured LB repartition");
-                        }
-    #endif
-
-                        // Old transport objects were released before the rebuild.
-                        boundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
-
-                        physics = std::make_shared<RadiationIMC>(
-                            tess, boundary, cells, extensives, eos, opacity, params);
-                        physics->setObserver(observer);
-                        if(cfg.fluxSourceCompare)
-                            ConfigureFluxSourceForCurrentDecomposition(
-                                cfg, runtime, *physics, *opacity, true);
-
-                        popControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Tessellation3D>>(tess);
-
-                        MonteCarloConfig monteCarloConfig;
-                        std::unique_ptr<STORM::CommunicationEngine<Vector3D>> rebuiltEngine =
-                            MakeCommunicationEngine(
-                tess, monteCarloConfig, cfg.communication, MPI_COMM_WORLD);
-                        manager = std::make_shared<MonteCarloManager3D>(
-                            tess, physics, popControl, boundary,
-                            monteCarloConfig, std::move(rebuiltEngine));
-
-                        if (rank == 0)
-                            std::cout << mgLBLabel
-                                      << ": repartitioned, new local cells=" << Ncells << std::endl;
-
-                        PrintVmRSS("after_rebuild_physics", rank);
-                    }
+                    rebalanceOnMeasurements(
+                        manager->GetCellsStepsCounters(),
+                        generationDiagnostics.sourcePhotonsPerCell, mgLBLabel);
                     if (doPostAdaptiveMeasuredLB) {
                         mgAdaptive.postAdaptiveMeasuredLBDone = true;
                         mgAdaptive.adaptiveMeasuredLBCount += 1;
@@ -673,6 +737,12 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 }
     #endif // RICH_MPI
             }
+
+            // Restart state for a later continuation. With no generation run
+            // this segment the stored measurements are carried over.
+            LoadBalanceMeasurements mgSavedLoadBalance = FinishPassLoadBalance(
+                mgLastFinalMeasurements, std::move(mgRestartLoadBalance),
+                mgIncludedFinalGenerations + mgDiscardedBurninGenerations > 0, rank);
 
             // ============================================================
             // Finish diagnostics
@@ -697,8 +767,10 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 diag.cutoffEnergy = observer->getCutoffEnergy();
                 diag.snapshotTime = runtime.snapshotTime;
                 diag.snapshotCycle = runtime.snapshotCycle;
-                diag.nGenerations = static_cast<int>(mgFinalGenerations);
-                diag.includedFinalGenerations = static_cast<int>(mgIncludedFinalGenerations);
+                // Final generations in the result, like included_final_generations.
+                diag.nGenerations = static_cast<int>(mgCompletedFinalGenerations + mgFinalGenerations);
+                diag.includedFinalGenerations = static_cast<int>(
+                    mgCompletedFinalGenerations + mgIncludedFinalGenerations);
                 diag.discardedBurninGenerations = static_cast<int>(mgDiscardedBurninGenerations);
                 diag.adaptiveOnlyFinalOutput = cfg.adaptiveSourceCells ? 1 : 0;
                 diag.adaptiveGroupQualityEnabled = cfg.adaptiveGroupQuality ? 1 : 0;
@@ -759,6 +831,21 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     mgFinalGroupSourceSummary.maxPackedBytes;
 
                 observer->writeHDF5(cfg.outputPath, diag);
+                {
+                    PassRestartState saved;
+                    saved.adaptive = mgAdaptive;
+                    saved.groupHistory = mgGroupHistory;
+                    saved.groupSourceState = mgGroupSourceState;
+                    saved.finalGroupSamplingDiag = mgFinalGroupSamplingDiag;
+                    saved.finalGroupSourceSummary = mgFinalGroupSourceSummary;
+                    saved.groupFallbackToIntegrated = mgGroupFallbackToIntegrated;
+                    saved.groupFallbackReason = mgGroupFallbackReason;
+                    saved.lastEscapingLuminosity = runtime.lastEscapingLuminosity;
+                    saved.completedFinalGenerations =
+                        mgCompletedFinalGenerations + mgIncludedFinalGenerations;
+                    saved.loadBalance = std::move(mgSavedLoadBalance);
+                    WritePassRestartState(cfg.outputPath, saved, *observer);
+                }
 
                 std::string const forwardVtk = BaseVtkOutputPath(cfg);
                 if (!forwardVtk.empty()) {
@@ -841,6 +928,9 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 std::cout << "\n=== TDE Post-Processing Results ===\n"
                           << "Generations:              " << mgFinalGenerations << "\n"
                           << "Final included generations: " << mgIncludedFinalGenerations << "\n"
+                          << "Total final generations:  "
+                          << (mgCompletedFinalGenerations + mgIncludedFinalGenerations)
+                          << (restarting ? " (restart)" : "") << "\n"
                           << "Discarded burn-in generations: " << mgDiscardedBurninGenerations << "\n"
                           << "Final average policy:     " << (cfg.adaptiveSourceCells ? "adaptive_only" : "all_generations") << "\n"
                           << "Photons/cell/gen:         " << genPhotonsPerCell << "\n"
@@ -859,6 +949,8 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                           << std::endl;
             }
     result.ran = true;
+    result.finalGenerationsAdded = mgIncludedFinalGenerations;
+    result.finalGenerationsTotal = mgCompletedFinalGenerations + mgIncludedFinalGenerations;
     result.usesVelocity = cfg.useCellVelocities;
     result.usesDDMC = params.withDDMC;
     result.usesPolarization = cfg.polarization;

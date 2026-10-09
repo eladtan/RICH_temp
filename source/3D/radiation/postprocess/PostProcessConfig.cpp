@@ -4,6 +4,8 @@
 #include <climits>
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
+#include <system_error>
 #include <iostream>
 #include <sstream>
 
@@ -306,16 +308,47 @@ bool ValidateConfig(Config &cfg, int rank)
     }
     if (cfg.sourceDt <= 0.0) { if (rank == 0) std::cerr << "--source-dt must be positive\n"; return false; }
     if (cfg.photonsPerCell == 0) { if (rank == 0) std::cerr << "--photons-per-cell must be > 0\n"; return false; }
-    if (cfg.nGenerations == 0) { if (rank == 0) std::cerr << "--n-generations must be >= 1\n"; return false; }
+    if (cfg.nGenerations == 0 && cfg.restartFrom.empty()) { if (rank == 0) std::cerr << "--transport.generations must be >= 1 (0 is allowed only with --restart.from)\n"; return false; }
+    if (!cfg.restartFrom.empty()) {
+        std::error_code ec;
+        std::filesystem::path const source =
+            std::filesystem::weakly_canonical(cfg.restartFrom, ec);
+        if (ec || !std::filesystem::is_regular_file(source)) {
+            if (rank == 0) std::cerr << "--restart.from file not found: " << cfg.restartFrom << "\n";
+            return false;
+        }
+        std::filesystem::path const output =
+            std::filesystem::weakly_canonical(cfg.outputPath, ec);
+        if (!ec && output == source && !cfg.restartInPlace) {
+            if (rank == 0)
+                std::cerr << "--output.stem names the --restart.from file " << cfg.restartFrom
+                          << "; pass --restart.in-place true to replace it, or choose another stem\n";
+            return false;
+        }
+    }
     if (!(cfg.fluxSourceThermalizationTau > 0.0) ||
         !std::isfinite(cfg.fluxSourceThermalizationTau)) {
         if (rank == 0) std::cerr << "--flux-source-tau must be finite and positive\n";
+        return false;
+    }
+    if (!(cfg.ddmcMaxCellAdvectionPeclet > 0.0)) {
+        if (rank == 0)
+            std::cerr << "--transport.ddmc-max-cell-advection-peclet must be positive\n";
         return false;
     }
     if (!(cfg.fluxSourceDDMCFaceOpticalDepth > 0.0) ||
         !std::isfinite(cfg.fluxSourceDDMCFaceOpticalDepth)) {
         if (rank == 0)
             std::cerr << "--flux-source-ddmc-face-tau must be finite and positive\n";
+        return false;
+    }
+    if (!(cfg.measuredLBClampFactor == 0.0 || cfg.measuredLBClampFactor >= 1.0) ||
+        !std::isfinite(cfg.measuredLBClampFactor)) {
+        if (rank == 0) std::cerr << "--load-balance.clamp-factor must be 0 (built-in) or >= 1\n";
+        return false;
+    }
+    if (!(cfg.fluxSourceSmoothingFloor >= 0.0) || cfg.fluxSourceSmoothingFloor > 1.0) {
+        if (rank == 0) std::cerr << "--flux-source.smoothing-floor must lie in [0, 1]\n";
         return false;
     }
     if (cfg.fluxSourceCompare && cfg.compton) {

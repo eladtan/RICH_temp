@@ -29,6 +29,7 @@
 
 #include "AdaptiveStatistics.hpp"
 #include "FluxSourceCalculation.hpp"
+#include "PostProcessRestart.hpp"
 #include "source/3D/radiation/IMCMeasuredLoadBalance.hpp"
 #include "source/3D/radiation/IMCStepCounterCostCalculator.hpp"
 
@@ -81,9 +82,9 @@ ForwardPostprocessResult RunGreyPostprocess(
             // ============================================================
             // Grey IMC run (half generations)
             // ============================================================
-            size_t nGreyGens = cfg.fluxSourceCompare
-                ? cfg.nGenerations : std::max<size_t>(1, cfg.nGenerations / 2);
-            size_t greyBudgetDivisor = cfg.fluxSourceCompare ? nGreyGens : 2 * nGreyGens;
+            size_t nGreyGens = GreyGenerationCount(cfg);
+            size_t greyBudgetDivisor = std::max<size_t>(
+                1, cfg.fluxSourceCompare ? nGreyGens : 2 * nGreyGens);
             size_t greyPhotonsPerCell = std::max<size_t>(1, cfg.photonsPerCell / greyBudgetDivisor);
 
             if (rank == 0)
@@ -104,6 +105,9 @@ ForwardPostprocessResult RunGreyPostprocess(
             greyParams.rwMinCellOpticalDepth = 15;
             greyParams.withDDMC = cfg.ddmc;
             greyParams.ddmcMinCellOpticalDepth = cfg.ddmcMinCellOpticalDepth;
+            greyParams.ddmcUseMovingInterfaceCorrection = cfg.ddmcMovingInterfaceCorrection;
+            greyParams.ddmcAdvection = cfg.ddmcAdvection;
+            greyParams.ddmcMaxCellAdvectionPeclet = cfg.ddmcMaxCellAdvectionPeclet;
             greyParams.ddmcExternalSourceMinFaceOpticalDepth =
                 cfg.fluxSourceDDMCFaceOpticalDepth;
             greyParams.withMultigroupDDMC = false;
@@ -158,6 +162,9 @@ ForwardPostprocessResult RunGreyPostprocess(
             greyLBParams.multigroupZeroStepInflation = 5.0;
             greyLBParams.maxCellImbalance = MEASURED_LB_MAX_CELL_IMBALANCE;
             greyLBParams.useMedianClamp = true;
+            greyLBParams.clampToActiveMean = cfg.measuredLBClampToActiveMean;
+            if (cfg.measuredLBClampFactor > 0.0)
+                greyLBParams.medianClampFactor = cfg.measuredLBClampFactor;
             double const greyLBWeightCompression = EffectiveMeasuredLBWeightCompression(cfg);
 
             AdaptiveSourceState greyAdaptive;
@@ -166,6 +173,24 @@ ForwardPostprocessResult RunGreyPostprocess(
             greyObserver->clearGenerationStatistics();
             size_t greyIncludedFinalGenerations = 0;
             size_t greyDiscardedBurninGenerations = 0;
+
+            // A restart continues the statistics and learned state of the file
+            // and never reruns the burn-in or the learned-only probe.
+            bool const restarting = !cfg.restartFrom.empty();
+            size_t greyCompletedFinalGenerations = 0;
+            LoadBalanceMeasurements greyRestartLoadBalance;   // rank 0
+            if (restarting) {
+                PassRestartState greyLoaded = BeginPassRestart(
+                    cfg, RestartPass::Grey, *greyObserver, nGreyGens, rank);
+                greyAdaptive = std::move(greyLoaded.adaptive);
+                runtime.lastEscapingLuminosity = greyLoaded.lastEscapingLuminosity;
+                greyCompletedFinalGenerations = greyLoaded.completedFinalGenerations;
+                greyRestartLoadBalance = std::move(greyLoaded.loadBalance);
+                // The restart balance below replaces the first-final-step one.
+                greyFirstNonBurninMeasuredLBDone = true;
+            }
+            // Touched cells of this segment's last final generation (local).
+            LoadBalanceMeasurements greyLastFinalMeasurements;
             size_t const greyInitialBurninGenerations = cfg.adaptiveSourceCells ? 1 : 0;
             size_t const greyUniformBurninGenerations = cfg.adaptiveSourceCells ? 19 : 0;
             size_t const greyBurninGenerations = greyInitialBurninGenerations + greyUniformBurninGenerations;
@@ -175,7 +200,209 @@ ForwardPostprocessResult RunGreyPostprocess(
             size_t const greyTotalGenerations = cfg.adaptiveSourceCells
                 ? greyFinalStartGeneration + nGreyGens
                 : nGreyGens;
-            for (size_t gen = 0; gen < greyTotalGenerations; ++gen) {
+    #ifdef RICH_MPI
+            // Repartitions on one generation's per-cell steps and source
+            // packets (predicted packets before the probe): the rebalances in
+            // the loop, and on a restart the initial one from the stored
+            // last-generation measurements.
+            auto greyRebalanceOnMeasurements = [&](std::vector<size_t> const& greyLocalSteps,
+                                                   std::vector<size_t> const& greyLocalParticles,
+                                                   std::string const& greyLBLabel,
+                                                   bool predictedProbe)
+            {
+                if (!greyParams.noHydroFeedback) {
+                    throw UniversalError("Grey measured load balance repartition requires noHydroFeedback=true");
+                }
+
+                PrintVmRSS("grey_before_measured_lb", rank);
+
+                std::vector<double> greyWeightsForExchange;
+                // Set on every rank once the mesh was rebuilt; a rank that received
+                // no cells has an empty weight vector but must still rebuild its
+                // physics and join the collectives below.
+                bool meshRepartitioned = false;
+                imc_measured_lb::Parameters greyLBParamsThisPass =
+                    greyLBParams;
+
+                {
+                    std::vector<size_t> greyCellIDs(Ncells);
+                    for (size_t i = 0; i < Ncells; ++i)
+                        greyCellIDs[i] = cells[i].ID;
+
+                    auto greyLocalMeas = imc_measured_lb::BuildLocalMeasurements(
+                        greyCellIDs, greyLocalSteps, greyLocalParticles);
+
+                    uint64_t greyLocalTotalSteps = 0;
+                    uint64_t greyLocalTotalSourceParticles = 0;
+                    for (auto const& m : greyLocalMeas) {
+                        greyLocalTotalSteps += static_cast<uint64_t>(m.stepCount);
+                        greyLocalTotalSourceParticles +=
+                            static_cast<uint64_t>(m.particleCount);
+                    }
+
+                    uint64_t greyGlobalTotalSteps = 0;
+                    uint64_t greyGlobalTotalSourceParticles = 0;
+                    MPI_Allreduce(&greyLocalTotalSteps, &greyGlobalTotalSteps, 1,
+                                  MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+                    MPI_Allreduce(&greyLocalTotalSourceParticles,
+                                  &greyGlobalTotalSourceParticles, 1,
+                                  MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+
+                    if (cfg.fluxSourceCompare &&
+                        greyGlobalTotalSteps > 0 &&
+                        greyGlobalTotalSourceParticles > 0) {
+                        greyLBParamsThisPass.particleWeight = std::max(
+                            1.0,
+                            static_cast<double>(greyGlobalTotalSteps) /
+                                static_cast<double>(greyGlobalTotalSourceParticles));
+                        greyLBParamsThisPass.particleCostAfterClamp = true;
+                        if (rank == 0) {
+                            std::cerr
+                                << "MEASURED_LB_GREY_CER_SOURCE_COST"
+                                << " global_steps=" << greyGlobalTotalSteps
+                                << " global_source_particles="
+                                << greyGlobalTotalSourceParticles
+                                << " steps_per_source_particle="
+                                << greyLBParamsThisPass.particleWeight
+                                << " post_clamp=yes\n";
+                        }
+                    }
+                    if (predictedProbe) {
+                        // Exploration packets of thick cells are absorbed in about
+                        // one step; their cost is creation and memory, so weight
+                        // each predicted packet as one step, after the clamp.
+                        greyLBParamsThisPass.particleWeight = 1.0;
+                        greyLBParamsThisPass.particleCostAfterClamp = true;
+                    }
+
+                    if (greyGlobalTotalSteps == 0) {
+                        if (rank == 0)
+                            std::cerr << greyLBLabel
+                                      << ": measured generation had zero total steps, skipping repartition\n";
+                    } else {
+                        auto greyCostByCellID = imc_measured_lb::BuildMeasuredCosts(
+                            greyLocalMeas, greyLBParamsThisPass,
+                            false, MPI_COMM_WORLD);
+
+                        imc_measured_lb::PrintMeasuredLBDiagnosticsDistributed(
+                            greyLocalMeas, greyCostByCellID, false, MPI_COMM_WORLD);
+
+                        IMCStepCounterCostCalculator::Parameters greyCostCalcParams;
+                        greyCostCalcParams.floorCost =
+                            greyLBParamsThisPass.floorCost;
+                        greyCostCalcParams.missingCellCost =
+                            greyLBParamsThisPass.missingCellCost;
+                        IMCStepCounterCostCalculator greyCostCalc(std::move(greyCostByCellID), greyCostCalcParams);
+
+                        std::vector<Vector3D> greyCurrentPoints(Ncells);
+                        for (size_t i = 0; i < Ncells; ++i)
+                            greyCurrentPoints[i] = tess.GetMeshPoint(i);
+
+                        auto greyLBWeights = greyCostCalc.CalculateCost(tess, cells);
+
+                        if (greyLBWeights.size() != Ncells) {
+                            throw UniversalError("Grey measured LB weight count mismatch before BuildParallel");
+                        }
+
+                        greyWeightsForExchange = greyLBWeights;
+
+                        for (auto& w : greyLBWeights)
+                            w = std::pow(w, greyLBWeightCompression);
+
+                        // Release the pre-repartition transport objects before the
+                        // rebuild (the memory peak). The boundary's escaped energy is
+                        // folded into the observer first, since the boundary goes too.
+                        greyObserver->addBoxEscapeEnergy(greyBoundary->getEscapedEnergy());
+                        greyManager.reset();
+                        greyPhysics.reset();
+                        greyPopControl.reset();
+                        greyBoundary.reset();
+#ifdef __linux__
+                        malloc_trim(0);
+#endif
+                        PrintVmRSS("grey_after_release_old_physics", rank);
+
+                        tess.BuildParallel(greyCurrentPoints, greyLBWeights);
+                        meshRepartitioned = true;
+                        tess.ShrinkToFit();
+                    }
+                }
+
+                if (meshRepartitioned) {
+                    MPI_exchange_data(tess, cells, false, 1, &runtime.dummyCell);
+
+                    double greyDummyWeight =
+                        greyLBParamsThisPass.missingCellCost;
+                    MPI_exchange_data(tess, greyWeightsForExchange, false, 1, &greyDummyWeight);
+
+                    Ncells = tess.GetPointNo();
+
+                    if (cells.size() != Ncells) {
+                        UniversalError eo("Cell count mismatch after grey measured LB repartition");
+                        eo.addEntry("cells.size()", static_cast<double>(cells.size()));
+                        eo.addEntry("Ncells", static_cast<double>(Ncells));
+                        throw eo;
+                    }
+
+                    if (greyWeightsForExchange.size() != Ncells) {
+                        UniversalError eo("Grey measured weight count mismatch after repartition");
+                        eo.addEntry("weights.size()", static_cast<double>(greyWeightsForExchange.size()));
+                        eo.addEntry("Ncells", static_cast<double>(Ncells));
+                        throw eo;
+                    }
+
+                    imc_measured_lb::PrintPostRepartitionDiagnosticsFromWeights(
+                        greyWeightsForExchange, greyLBWeightCompression,
+                        false, MPI_COMM_WORLD);
+
+                    cells.shrink_to_fit();
+                    extensives.resize(Ncells);
+                    for (size_t i = 0; i < Ncells; ++i)
+                        PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
+                    extensives.shrink_to_fit();
+#ifdef __linux__
+                    malloc_trim(0);
+#endif
+
+                    // Escaped energy was folded into the observer before the release.
+                    greyBoundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
+
+                    greyPhysics = std::make_shared<RadiationIMC>(
+                        tess, greyBoundary, cells, extensives, eos, greyOpacity, greyParams);
+                    greyPhysics->setObserver(greyObserver);
+                    if(cfg.fluxSourceCompare)
+                        ConfigureFluxSourceForCurrentDecomposition(
+                            cfg, runtime, *greyPhysics, *greyOpacity, false);
+
+                    greyPopControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Tessellation3D>>(tess);
+
+                    std::unique_ptr<STORM::CommunicationEngine<Vector3D>> rebuiltEngine =
+                        MakeCommunicationEngine(
+            tess, monteCarloConfig, cfg.communication, MPI_COMM_WORLD);
+                    greyManager = std::make_shared<MonteCarloManager3D>(
+                        tess, greyPhysics, greyPopControl, greyBoundary,
+                        monteCarloConfig, std::move(rebuiltEngine));
+
+                    if (rank == 0)
+                        std::cout << greyLBLabel
+                                  << ": repartitioned, new local cells=" << Ncells << std::endl;
+
+                    PrintVmRSS("grey_after_rebuild_physics", rank);
+                }
+            };
+    #endif // RICH_MPI
+
+    #ifdef RICH_MPI
+            if (restarting && greyMeasuredLBActive && nGreyGens > 0) {
+                RebalanceFromStoredMeasurements(
+                    greyRestartLoadBalance, cells, Ncells, "Grey",
+                    [&](std::vector<size_t> const& steps, std::vector<size_t> const& particles) {
+                        greyRebalanceOnMeasurements(steps, particles, "MEASURED_LB_GREY_RESTART", false);
+                    }, rank);
+            }
+    #endif // RICH_MPI
+            size_t const greyStartGeneration = restarting ? greyFinalStartGeneration : 0;
+            for (size_t gen = greyStartGeneration; gen < greyTotalGenerations; ++gen) {
                 bool const greyFirstBurninThisGen =
                     cfg.adaptiveSourceCells && gen < greyInitialBurninGenerations;
                 bool const greyUniformBurninThisGen =
@@ -295,7 +522,12 @@ ForwardPostprocessResult RunGreyPostprocess(
                         cfg.volumeEmissionExplorationWeightFractionGrey * escapingReference * cfg.sourceDt);
                 }
 
-                greyPhysics->reseedRNG(static_cast<uint64_t>(rank + 87654321) * greyTotalGenerations + gen);
+                if (restarting)
+                    greyPhysics->reseedRNG(RestartGenerationSeed(
+                        RestartPass::Grey, rank,
+                        greyCompletedFinalGenerations + greyFinalGenerationIndex));
+                else
+                    greyPhysics->reseedRNG(static_cast<uint64_t>(rank + 87654321) * greyTotalGenerations + gen);
 
                 greyManager->getParticles().clear();
                 greyManager->step(cells, cfg.transportTime);
@@ -324,6 +556,10 @@ ForwardPostprocessResult RunGreyPostprocess(
 #endif
                 IMCPostProcessGenerationDiagnostics const generationDiagnostics =
                     greyPhysics->getPostProcessGenerationDiagnostics();
+                if (greyFinalThisGen && gen + 1 == greyTotalGenerations)
+                    greyLastFinalMeasurements = CollectLocalLoadBalanceMeasurements(
+                        cells, Ncells, greyManager->GetCellsStepsCounters(),
+                        generationDiagnostics.sourcePhotonsPerCell);
 
                 auto greyAllocation = ReduceSourceAllocationSummary(
                     generationDiagnostics.sourceAllocation);
@@ -382,6 +618,7 @@ ForwardPostprocessResult RunGreyPostprocess(
                               << ": " << greyAdaptive.scoreByCellID.size() << std::endl;
                 greyObserver->addBoxEscapeEnergy(greyBoundary->getEscapedEnergy());
                 greyBoundary->resetEscapedEnergy();
+                greyObserver->printHeavyPacketReport("grey", gen + 1, 10);
                 greyObserver->mpiReduceToRank0();
                 if (greyIncludeGenerationInFinal) {
                     if (rank == 0)
@@ -410,7 +647,7 @@ ForwardPostprocessResult RunGreyPostprocess(
                     greyFirstBurninThisGen &&
                     !greyBurninMeasuredLBDone;
                 bool const greyDoInitialMeasuredLB =
-                    gen == 0 && greyMeasuredLBActive &&
+                    gen == 0 && greyMeasuredLBActive && !restarting &&
                     (cfg.fluxSourceCompare || !cfg.adaptiveSourceCells);
                 bool const greyDoPostAdaptiveMeasuredLB =
                     greyMeasuredLBActive &&
@@ -422,9 +659,12 @@ ForwardPostprocessResult RunGreyPostprocess(
                     cfg.adaptiveSourceCells &&
                     greyFinalThisGen &&
                     greyFinalGenerationIndex + 1 < nGreyGens &&
-                    // Rebalance after final step 1 too: the probe LB balances
-                    // the probe's allocation, not the final one.
-                    (greyFinalGenerationIndex == 0 ||
+                    // Rebalance after final steps 1 and 2 too: the probe LB
+                    // balances the probe's allocation, not the final one. A
+                    // restart balanced on a final generation already, so it
+                    // skips the one after step 1.
+                    ((greyFinalGenerationIndex == 0 && !restarting) ||
+                     greyFinalGenerationIndex == 1 ||
                      (greyFinalGenerationIndex + 1) %
                          (cfg.fluxSourceCompare ? 10 : 50) == 0);
                 // With exploration splitting, the probe puts most packets in a
@@ -464,26 +704,8 @@ ForwardPostprocessResult RunGreyPostprocess(
                 if (greyDoInitialMeasuredLB || greyDoBurninMeasuredLB ||
                     greyDoPostAdaptiveMeasuredLB || greyDoAdaptivePeriodicMeasuredLB ||
                     greyDoPredictedProbeLB) {
-                    if (!greyParams.noHydroFeedback) {
-                        throw UniversalError("Grey measured load balance repartition requires noHydroFeedback=true");
-                    }
-
-                    PrintVmRSS("grey_before_measured_lb", rank);
-
-                    std::vector<double> greyWeightsForExchange;
-                    // Set on every rank once the mesh was rebuilt; a rank that received
-                    // no cells has an empty weight vector but must still rebuild its
-                    // physics and join the collectives below.
-                    bool meshRepartitioned = false;
-                    imc_measured_lb::Parameters greyLBParamsThisPass =
-                        greyLBParams;
-
                     {
                         auto const& greyLocalSteps = greyManager->GetCellsStepsCounters();
-
-                        std::vector<size_t> greyCellIDs(Ncells);
-                        for (size_t i = 0; i < Ncells; ++i)
-                            greyCellIDs[i] = cells[i].ID;
 
                         std::vector<size_t> greyPredictedProbePhotons;
                         if (greyDoPredictedProbeLB) {
@@ -541,167 +763,11 @@ ForwardPostprocessResult RunGreyPostprocess(
                                           << std::endl;
                         }
 
-                        auto greyLocalMeas = imc_measured_lb::BuildLocalMeasurements(
-                            greyCellIDs, greyLocalSteps,
+                        greyRebalanceOnMeasurements(
+                            greyLocalSteps,
                             greyDoPredictedProbeLB ? greyPredictedProbePhotons
-                                                   : generationDiagnostics.sourcePhotonsPerCell);
-
-                        uint64_t greyLocalTotalSteps = 0;
-                        uint64_t greyLocalTotalSourceParticles = 0;
-                        for (auto const& m : greyLocalMeas) {
-                            greyLocalTotalSteps += static_cast<uint64_t>(m.stepCount);
-                            greyLocalTotalSourceParticles +=
-                                static_cast<uint64_t>(m.particleCount);
-                        }
-
-                        uint64_t greyGlobalTotalSteps = 0;
-                        uint64_t greyGlobalTotalSourceParticles = 0;
-                        MPI_Allreduce(&greyLocalTotalSteps, &greyGlobalTotalSteps, 1,
-                                      MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
-                        MPI_Allreduce(&greyLocalTotalSourceParticles,
-                                      &greyGlobalTotalSourceParticles, 1,
-                                      MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
-
-                        if (cfg.fluxSourceCompare &&
-                            greyGlobalTotalSteps > 0 &&
-                            greyGlobalTotalSourceParticles > 0) {
-                            greyLBParamsThisPass.particleWeight = std::max(
-                                1.0,
-                                static_cast<double>(greyGlobalTotalSteps) /
-                                    static_cast<double>(greyGlobalTotalSourceParticles));
-                            greyLBParamsThisPass.particleCostAfterClamp = true;
-                            if (rank == 0) {
-                                std::cerr
-                                    << "MEASURED_LB_GREY_CER_SOURCE_COST"
-                                    << " global_steps=" << greyGlobalTotalSteps
-                                    << " global_source_particles="
-                                    << greyGlobalTotalSourceParticles
-                                    << " steps_per_source_particle="
-                                    << greyLBParamsThisPass.particleWeight
-                                    << " post_clamp=yes\n";
-                            }
-                        }
-                        if (greyDoPredictedProbeLB) {
-                            // Exploration packets of thick cells are absorbed in about
-                            // one step; their cost is creation and memory, so weight
-                            // each predicted packet as one step, after the clamp.
-                            greyLBParamsThisPass.particleWeight = 1.0;
-                            greyLBParamsThisPass.particleCostAfterClamp = true;
-                        }
-
-                        if (greyGlobalTotalSteps == 0) {
-                            if (rank == 0)
-                                std::cerr << greyLBLabel
-                                          << ": measured generation had zero total steps, skipping repartition\n";
-                        } else {
-                            auto greyCostByCellID = imc_measured_lb::BuildMeasuredCosts(
-                                greyLocalMeas, greyLBParamsThisPass,
-                                false, MPI_COMM_WORLD);
-
-                            imc_measured_lb::PrintMeasuredLBDiagnosticsDistributed(
-                                greyLocalMeas, greyCostByCellID, false, MPI_COMM_WORLD);
-
-                            IMCStepCounterCostCalculator::Parameters greyCostCalcParams;
-                            greyCostCalcParams.floorCost =
-                                greyLBParamsThisPass.floorCost;
-                            greyCostCalcParams.missingCellCost =
-                                greyLBParamsThisPass.missingCellCost;
-                            IMCStepCounterCostCalculator greyCostCalc(std::move(greyCostByCellID), greyCostCalcParams);
-
-                            std::vector<Vector3D> greyCurrentPoints(Ncells);
-                            for (size_t i = 0; i < Ncells; ++i)
-                                greyCurrentPoints[i] = tess.GetMeshPoint(i);
-
-                            auto greyLBWeights = greyCostCalc.CalculateCost(tess, cells);
-
-                            if (greyLBWeights.size() != Ncells) {
-                                throw UniversalError("Grey measured LB weight count mismatch before BuildParallel");
-                            }
-
-                            greyWeightsForExchange = greyLBWeights;
-
-                            for (auto& w : greyLBWeights)
-                                w = std::pow(w, greyLBWeightCompression);
-
-                            // Release the pre-repartition transport objects before the
-                            // rebuild (the memory peak). The boundary's escaped energy is
-                            // folded into the observer first, since the boundary goes too.
-                            greyObserver->addBoxEscapeEnergy(greyBoundary->getEscapedEnergy());
-                            greyManager.reset();
-                            greyPhysics.reset();
-                            greyPopControl.reset();
-                            greyBoundary.reset();
-#ifdef __linux__
-                            malloc_trim(0);
-#endif
-                            PrintVmRSS("grey_after_release_old_physics", rank);
-
-                            tess.BuildParallel(greyCurrentPoints, greyLBWeights);
-                            meshRepartitioned = true;
-                            tess.ShrinkToFit();
-                        }
-                    }
-
-                    if (meshRepartitioned) {
-                        MPI_exchange_data(tess, cells, false, 1, &runtime.dummyCell);
-
-                        double greyDummyWeight =
-                            greyLBParamsThisPass.missingCellCost;
-                        MPI_exchange_data(tess, greyWeightsForExchange, false, 1, &greyDummyWeight);
-
-                        Ncells = tess.GetPointNo();
-
-                        if (cells.size() != Ncells) {
-                            UniversalError eo("Cell count mismatch after grey measured LB repartition");
-                            eo.addEntry("cells.size()", static_cast<double>(cells.size()));
-                            eo.addEntry("Ncells", static_cast<double>(Ncells));
-                            throw eo;
-                        }
-
-                        if (greyWeightsForExchange.size() != Ncells) {
-                            UniversalError eo("Grey measured weight count mismatch after repartition");
-                            eo.addEntry("weights.size()", static_cast<double>(greyWeightsForExchange.size()));
-                            eo.addEntry("Ncells", static_cast<double>(Ncells));
-                            throw eo;
-                        }
-
-                        imc_measured_lb::PrintPostRepartitionDiagnosticsFromWeights(
-                            greyWeightsForExchange, greyLBWeightCompression,
-                            false, MPI_COMM_WORLD);
-
-                        cells.shrink_to_fit();
-                        extensives.resize(Ncells);
-                        for (size_t i = 0; i < Ncells; ++i)
-                            PrimitiveToConserved(cells[i], tess.GetVolume(i), extensives[i]);
-                        extensives.shrink_to_fit();
-#ifdef __linux__
-                        malloc_trim(0);
-#endif
-
-                        // Escaped energy was folded into the observer before the release.
-                        greyBoundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
-
-                        greyPhysics = std::make_shared<RadiationIMC>(
-                            tess, greyBoundary, cells, extensives, eos, greyOpacity, greyParams);
-                        greyPhysics->setObserver(greyObserver);
-                        if(cfg.fluxSourceCompare)
-                            ConfigureFluxSourceForCurrentDecomposition(
-                                cfg, runtime, *greyPhysics, *greyOpacity, false);
-
-                        greyPopControl = std::make_shared<STORM::NoPopulationControl<Vector3D, Tessellation3D>>(tess);
-
-                        std::unique_ptr<STORM::CommunicationEngine<Vector3D>> rebuiltEngine =
-                            MakeCommunicationEngine(
-                tess, monteCarloConfig, cfg.communication, MPI_COMM_WORLD);
-                        greyManager = std::make_shared<MonteCarloManager3D>(
-                            tess, greyPhysics, greyPopControl, greyBoundary,
-                            monteCarloConfig, std::move(rebuiltEngine));
-
-                        if (rank == 0)
-                            std::cout << greyLBLabel
-                                      << ": repartitioned, new local cells=" << Ncells << std::endl;
-
-                        PrintVmRSS("grey_after_rebuild_physics", rank);
+                                                   : generationDiagnostics.sourcePhotonsPerCell,
+                            greyLBLabel, greyDoPredictedProbeLB);
                     }
                     if (greyDoPredictedProbeLB && rank == 0)
                         std::cout << "Grey predicted-probe measured load balance complete" << std::endl;
@@ -727,6 +793,12 @@ ForwardPostprocessResult RunGreyPostprocess(
                 }
     #endif // RICH_MPI
             }
+            // Restart state for a later continuation. With no generation run
+            // this segment the stored measurements are carried over.
+            LoadBalanceMeasurements greySavedLoadBalance = FinishPassLoadBalance(
+                greyLastFinalMeasurements, std::move(greyRestartLoadBalance),
+                greyIncludedFinalGenerations + greyDiscardedBurninGenerations > 0, rank);
+
             if (rank == 0) {
                 greyObserver->loadStatisticalMeanTallies();
                 if (cfg.polarization)
@@ -806,6 +878,9 @@ ForwardPostprocessResult RunGreyPostprocess(
                     ComputeFluxSourcePolarizationSummary(
                         greyObserver->getObserverQualitySnapshot());
                 result.ran = true;
+                result.finalGenerationsAdded = greyIncludedFinalGenerations;
+                result.finalGenerationsTotal =
+                    greyCompletedFinalGenerations + greyIncludedFinalGenerations;
                 result.usesVelocity = false;
                 result.usesDDMC = cfg.ddmc;
                 result.usesPolarization = cfg.polarization;
@@ -832,14 +907,21 @@ ForwardPostprocessResult RunGreyPostprocess(
                 greyDiagnostics.cutoffEnergy = greyCutoff;
                 greyDiagnostics.snapshotTime = runtime.snapshotTime;
                 greyDiagnostics.snapshotCycle = runtime.snapshotCycle;
-                greyDiagnostics.nGenerations = static_cast<int>(nGreyGens);
-                greyDiagnostics.includedFinalGenerations =
-                    static_cast<int>(greyIncludedFinalGenerations);
+                // Final generations in the result, like included_final_generations.
+                greyDiagnostics.nGenerations = static_cast<int>(greyCompletedFinalGenerations + nGreyGens);
+                greyDiagnostics.includedFinalGenerations = static_cast<int>(
+                    greyCompletedFinalGenerations + greyIncludedFinalGenerations);
                 greyDiagnostics.discardedBurninGenerations =
                     static_cast<int>(greyDiscardedBurninGenerations);
                 greyDiagnostics.adaptiveOnlyFinalOutput =
                     cfg.adaptiveSourceCells ? 1 : 0;
-                WriteGreyPassScratch(cfg, *greyObserver, greyDiagnostics);
+                PassRestartState greySaved;
+                greySaved.adaptive = greyAdaptive;
+                greySaved.lastEscapingLuminosity = runtime.lastEscapingLuminosity;
+                greySaved.completedFinalGenerations =
+                    greyCompletedFinalGenerations + greyIncludedFinalGenerations;
+                greySaved.loadBalance = std::move(greySavedLoadBalance);
+                WriteGreyPassScratch(cfg, *greyObserver, greyDiagnostics, greySaved);
 
                 if (cfg.fluxSourceCompare && !forwardResult.ran)
                     throw UniversalError(
@@ -848,6 +930,9 @@ ForwardPostprocessResult RunGreyPostprocess(
                 std::cout << "\n=== Grey IMC Results ===\n"
                           << "Generations:              " << nGreyGens << "\n"
                           << "Final included generations: " << greyIncludedFinalGenerations << "\n"
+                          << "Total final generations:  "
+                          << (greyCompletedFinalGenerations + greyIncludedFinalGenerations)
+                          << (restarting ? " (restart)" : "") << "\n"
                           << "Discarded burn-in generations: " << greyDiscardedBurninGenerations << "\n";
                 if (cfg.adaptiveSourceCells)
                     std::cout << "Schedule burn-in/probe/final: " << greyBurninGenerations

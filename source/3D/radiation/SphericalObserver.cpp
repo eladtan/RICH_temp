@@ -1,6 +1,8 @@
 #include "SphericalObserver.hpp"
 #include "PolarizationStatistics.hpp"
 #include "misc/mesh_generator3D.hpp"
+#include "StateHdf5IO.hpp"
+#include "utils/hdf5/HDF5Reader.hpp"
 #include "utils/hdf5/HDF5Writer.hpp"
 #include "misc/universal_error.hpp"
 #include <algorithm>
@@ -647,6 +649,7 @@ SphericalObserver::SphericalObserver(Vector3D center, double radius,
     groupEnergy_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
     groupEnergyWeightSq_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
     groupCrossingCount_.assign(numObservers_, std::vector<size_t>(numGroups_, 0));
+    heavyCrossingByBin_.assign(numObservers_ * numGroups_, HeavyCrossing{});
 #ifdef MONTECARLO_POLARIZATION
     observerStokesQ_.assign(numObservers_, 0.0);
     observerStokesU_.assign(numObservers_, 0.0);
@@ -757,6 +760,7 @@ void SphericalObserver::recordCrossing(::ObserverCrossingRecord const& rec)
     if (rec.weight > observerMaxPacketEnergy_[obs])
         observerMaxPacketEnergy_[obs] = rec.weight;
     ++observerCrossingCount_[obs];
+    recordHeavyCrossing(obs, findGroup(rec.frequency), rec);
 
     if (numGroups_ > 1) {
         size_t g = findGroup(rec.frequency);
@@ -1087,8 +1091,175 @@ SphericalObserver::getObserverGroupQualitySnapshot() const
     return snap;
 }
 
+void SphericalObserver::recordHeavyCrossing(size_t obs, size_t group,
+                                            ::ObserverCrossingRecord const& rec)
+{
+    double const w = std::abs(rec.weight);
+    size_t bin = 0;
+    if (rec.initialWeight > 0.0) {
+        double const growth = w / rec.initialWeight;
+        maxWeightGrowth_ = std::max(maxWeightGrowth_, growth);
+        bin = growth <= 1.01 ? 1 : growth <= 10.0 ? 2 : growth <= 1.0e3 ? 3 : 4;
+    }
+    growthBinEnergy_[bin] += w;
+    growthBinCount_[bin] += 1.0;
+
+    HeavyCrossing& heaviest = heavyCrossingByBin_[obs * numGroups_ + group];
+    if (w > heaviest.weight) {
+        heaviest.weight = w;
+        heaviest.initialWeight = rec.initialWeight;
+        heaviest.frequency = rec.frequency;
+        heaviest.sourceCellID = rec.sourceCellID;
+        heaviest.steps = rec.steps;
+    }
+}
+
+void SphericalObserver::printHeavyPacketReport(std::string const& label,
+                                               size_t generation,
+                                               size_t topBins) const
+{
+    int rank = 0;
+    int mpiSize = 1;
+#ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &mpiSize);
+#endif
+    size_t const nBins = numObservers_ * numGroups_;
+    if (nBins > static_cast<size_t>(std::numeric_limits<int>::max() / 2))
+        throw UniversalError("SphericalObserver heavy-packet report: too many observer/group bins");
+    int const n = static_cast<int>(nBins);
+
+    // Bin energy and crossing count summed over ranks, on every rank.
+    std::vector<double> binEnergy(nBins, 0.0);
+    std::vector<double> binCount(nBins, 0.0);
+    for (size_t o = 0; o < numObservers_; ++o) {
+        for (size_t g = 0; g < numGroups_; ++g) {
+            binEnergy[o * numGroups_ + g] = numGroups_ > 1
+                ? std::abs(groupEnergy_[o][g]) : std::abs(observerEnergy_[o]);
+            binCount[o * numGroups_ + g] = static_cast<double>(numGroups_ > 1
+                ? groupCrossingCount_[o][g] : observerCrossingCount_[o]);
+        }
+    }
+    // Heaviest packet of each bin and the rank holding it.
+    struct DoubleInt { double value; int rank; };
+    std::vector<DoubleInt> binMax(nBins);
+    for (size_t b = 0; b < nBins; ++b)
+        binMax[b] = DoubleInt{heavyCrossingByBin_[b].weight, rank};
+    std::array<double, kGrowthBins> growthEnergy = growthBinEnergy_;
+    std::array<double, kGrowthBins> growthCount = growthBinCount_;
+    double maxGrowth = maxWeightGrowth_;
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, binEnergy.data(), n, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, binCount.data(), n, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, binMax.data(), n, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+    MPI_Reduce(rank == 0 ? MPI_IN_PLACE : growthEnergy.data(), growthEnergy.data(),
+               static_cast<int>(kGrowthBins), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(rank == 0 ? MPI_IN_PLACE : growthCount.data(), growthCount.data(),
+               static_cast<int>(kGrowthBins), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(rank == 0 ? MPI_IN_PLACE : &maxGrowth, &maxGrowth, 1,
+               MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+#endif
+
+    // Bins ranked by the share of their energy carried by one packet. Only
+    // bins with many crossings are ranked: in a bin with a handful of
+    // crossings one packet dominating is ordinary sampling noise. Every rank
+    // computes the same ranking from the reduced arrays.
+    constexpr double kMinRankedCrossings = 100.0;
+    std::vector<size_t> order;
+    size_t dominatedHalf = 0;
+    size_t dominated90 = 0;
+    size_t nonEmpty = 0;
+    size_t ranked = 0;
+    for (size_t b = 0; b < nBins; ++b) {
+        if (!(binEnergy[b] > 0.0))
+            continue;
+        ++nonEmpty;
+        if (binCount[b] < kMinRankedCrossings)
+            continue;
+        ++ranked;
+        double const share = binMax[b].value / binEnergy[b];
+        if (share > 0.5) ++dominatedHalf;
+        if (share > 0.9) ++dominated90;
+        order.push_back(b);
+    }
+    auto share = [&](size_t b) { return binMax[b].value / binEnergy[b]; };
+    size_t const nTop = std::min(topBins, order.size());
+    std::partial_sort(order.begin(), order.begin() + static_cast<std::ptrdiff_t>(nTop), order.end(),
+                      [&](size_t a, size_t b) {
+                          double const sa = share(a), sb = share(b);
+                          return sa != sb ? sa > sb : a < b;
+                      });
+    order.resize(nTop);
+
+    // The owner of each top bin's heaviest packet contributes its details.
+    constexpr size_t kFields = 4;
+    std::vector<double> details(nTop * kFields, 0.0);
+    for (size_t i = 0; i < nTop; ++i) {
+        size_t const b = order[i];
+        if (binMax[b].rank != rank)
+            continue;
+        HeavyCrossing const& h = heavyCrossingByBin_[b];
+        details[i * kFields + 0] = h.initialWeight;
+        details[i * kFields + 1] = h.frequency;
+        details[i * kFields + 2] = h.sourceCellID == std::numeric_limits<size_t>::max()
+            ? -1.0 : static_cast<double>(h.sourceCellID);
+        details[i * kFields + 3] = static_cast<double>(h.steps);
+    }
+#ifdef RICH_MPI
+    if (!details.empty())
+        MPI_Reduce(rank == 0 ? MPI_IN_PLACE : details.data(), details.data(),
+                   static_cast<int>(details.size()), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+#endif
+    (void)mpiSize;
+    if (rank != 0)
+        return;
+
+    double const totalEnergy = std::accumulate(growthEnergy.begin(), growthEnergy.end(), 0.0);
+    double const totalCount = std::accumulate(growthCount.begin(), growthCount.end(), 0.0);
+    char const* const binNames[kGrowthBins] = {"w0_unknown", "le1.01", "1.01_10", "10_1e3", "gt1e3"};
+    std::ostringstream summary;
+    summary << std::setprecision(4) << "HEAVY_PACKETS " << label << " gen=" << generation
+            << " crossings=" << totalCount << " energy=" << totalEnergy
+            << " max_w_over_w0=" << maxGrowth
+            << " bins_nonempty=" << nonEmpty
+            << " bins_ge100_crossings=" << ranked
+            << " bins_ge100_one_packet_gt50pct=" << dominatedHalf
+            << " bins_ge100_one_packet_gt90pct=" << dominated90;
+    for (size_t k = 0; k < kGrowthBins; ++k) {
+        summary << " growth_" << binNames[k] << "_count=" << growthCount[k]
+                << " growth_" << binNames[k] << "_energy_frac="
+                << (totalEnergy > 0.0 ? growthEnergy[k] / totalEnergy : 0.0);
+    }
+    std::cout << summary.str() << std::endl;
+    for (size_t i = 0; i < nTop; ++i) {
+        size_t const b = order[i];
+        double const w = binMax[b].value;
+        double const w0 = details[i * kFields + 0];
+        double const meanWeight = binCount[b] > 0.0 ? binEnergy[b] / binCount[b] : 0.0;
+        std::ostringstream line;
+        line << std::setprecision(4) << "  HEAVY_PACKET " << label << " gen=" << generation
+             << " observer=" << b / numGroups_ << " group=" << b % numGroups_
+             << " share_of_bin=" << share(b)
+             << " weight=" << w << " w0=" << w0
+             << " w_over_w0=" << (w0 > 0.0 ? w / w0 : 0.0)
+             << " bin_mean_weight=" << meanWeight
+             << " w_over_bin_mean=" << (meanWeight > 0.0 ? w / meanWeight : 0.0)
+             << " bin_crossings=" << binCount[b]
+             << " source_cell=" << (details[i * kFields + 2] < 0.0 ? std::string("unknown")
+                                    : std::to_string(static_cast<size_t>(details[i * kFields + 2])))
+             << " steps=" << static_cast<size_t>(details[i * kFields + 3])
+             << " frequency=" << details[i * kFields + 1]
+             << " rank=" << binMax[b].rank;
+        std::cout << line.str() << std::endl;
+    }
+}
+
 void SphericalObserver::resetTallies()
 {
+    std::fill(heavyCrossingByBin_.begin(), heavyCrossingByBin_.end(), HeavyCrossing{});
+    growthBinEnergy_.fill(0.0);
+    growthBinCount_.fill(0.0);
+    maxWeightGrowth_ = 0.0;
     std::fill(observerEnergy_.begin(), observerEnergy_.end(), 0.0);
     std::fill(observerEnergyWeightSq_.begin(), observerEnergyWeightSq_.end(), 0.0);
     std::fill(observerMaxPacketEnergy_.begin(), observerMaxPacketEnergy_.end(), 0.0);
@@ -1312,6 +1483,225 @@ void SphericalObserver::loadStatisticalMeanTallies()
 size_t SphericalObserver::getStatisticsSamples() const
 {
     return generationStats_.samples;
+}
+
+namespace {
+
+void writeVectorRunning(HDF5Writer& writer, std::string const& path,
+                        SphericalObserver::RunningVectorStats const& stat)
+{
+    state_hdf5::WriteVector(writer, path + "/sum", stat.sum);
+    state_hdf5::WriteVector(writer, path + "/sum_sq", stat.sumSq);
+}
+
+void writeMatrixRunning(HDF5Writer& writer, std::string const& path,
+                        SphericalObserver::RunningMatrixStats const& stat)
+{
+    state_hdf5::WriteMatrix(writer, path + "/sum", stat.sum);
+    state_hdf5::WriteMatrix(writer, path + "/sum_sq", stat.sumSq);
+}
+
+void writeScalarRunning(HDF5Writer& writer, std::string const& path,
+                        SphericalObserver::RunningScalarStats const& stat)
+{
+    writer.WriteElement(path + "/sum", stat.sum);
+    writer.WriteElement(path + "/sum_sq", stat.sumSq);
+}
+
+void readVectorRunning(HDF5Reader const& reader, std::string const& path,
+                       size_t n, SphericalObserver::RunningVectorStats& stat)
+{
+    stat.sum = state_hdf5::ReadVector<double>(reader, path + "/sum", n);
+    stat.sumSq = state_hdf5::ReadVector<double>(reader, path + "/sum_sq", n);
+    if (stat.sum.size() != stat.sumSq.size())
+        throw UniversalError("Restart observer statistics " + path + " has mismatched sum/sum_sq");
+}
+
+void readMatrixRunning(HDF5Reader const& reader, std::string const& path,
+                       size_t rows, size_t cols, SphericalObserver::RunningMatrixStats& stat)
+{
+    stat.sum = state_hdf5::ReadMatrix<double>(reader, path + "/sum", rows, cols);
+    stat.sumSq = state_hdf5::ReadMatrix<double>(reader, path + "/sum_sq", rows, cols);
+    if (stat.sum.size() != stat.sumSq.size())
+        throw UniversalError("Restart observer statistics " + path + " has mismatched sum/sum_sq");
+}
+
+void readScalarRunning(HDF5Reader const& reader, std::string const& path,
+                       SphericalObserver::RunningScalarStats& stat)
+{
+    if (!reader.Exists(path + "/sum") || !reader.Exists(path + "/sum_sq"))
+        throw UniversalError("Restart file is missing observer statistics " + path);
+    reader.ReadElement(path + "/sum", stat.sum);
+    reader.ReadElement(path + "/sum_sq", stat.sumSq);
+}
+
+} // namespace
+
+void SphericalObserver::writeStatisticsState(HDF5Writer& writer, std::string const& prefix) const
+{
+    GenerationStatistics const& s = generationStats_;
+    writer.WriteElement(prefix + "/samples", s.samples);
+    writer.WriteElement(prefix + "/num_observers", numObservers_);
+    writer.WriteElement(prefix + "/num_groups", numGroups_);
+#ifdef MONTECARLO_POLARIZATION
+    writer.WriteElement(prefix + "/polarization_build", 1);
+#else
+    writer.WriteElement(prefix + "/polarization_build", 0);
+#endif
+    writeVectorRunning(writer, prefix + "/energy", s.energy);
+    writeVectorRunning(writer, prefix + "/luminosity", s.luminosity);
+    writeVectorRunning(writer, prefix + "/iso_luminosity", s.isoLuminosity);
+    writeVectorRunning(writer, prefix + "/flux", s.flux);
+    writeMatrixRunning(writer, prefix + "/group_energy", s.groupEnergy);
+    writeMatrixRunning(writer, prefix + "/group_luminosity", s.groupLuminosity);
+#ifdef MONTECARLO_POLARIZATION
+    writeVectorRunning(writer, prefix + "/stokes_q", s.stokesQ);
+    writeVectorRunning(writer, prefix + "/stokes_u", s.stokesU);
+    writeVectorRunning(writer, prefix + "/q", s.q);
+    writeVectorRunning(writer, prefix + "/u", s.u);
+    writeVectorRunning(writer, prefix + "/stokes_q_luminosity", s.stokesQLuminosity);
+    writeVectorRunning(writer, prefix + "/stokes_u_luminosity", s.stokesULuminosity);
+    writeVectorRunning(writer, prefix + "/polarization_degree", s.polarizationDegree);
+    writeVectorRunning(writer, prefix + "/polarization_angle", s.polarizationAngle);
+    writeMatrixRunning(writer, prefix + "/group_stokes_q", s.groupStokesQ);
+    writeMatrixRunning(writer, prefix + "/group_stokes_u", s.groupStokesU);
+    writeMatrixRunning(writer, prefix + "/group_q", s.groupQ);
+    writeMatrixRunning(writer, prefix + "/group_u", s.groupU);
+    writeMatrixRunning(writer, prefix + "/group_q_luminosity", s.groupQLuminosity);
+    writeMatrixRunning(writer, prefix + "/group_u_luminosity", s.groupULuminosity);
+    writeMatrixRunning(writer, prefix + "/group_polarization_degree", s.groupPolarizationDegree);
+    writeMatrixRunning(writer, prefix + "/group_polarization_angle", s.groupPolarizationAngle);
+#endif
+    writeScalarRunning(writer, prefix + "/total_energy", s.totalEnergy);
+    writeScalarRunning(writer, prefix + "/total_luminosity", s.totalLuminosity);
+    writeScalarRunning(writer, prefix + "/emitted_energy", s.emittedEnergy);
+    writeScalarRunning(writer, prefix + "/absorbed_energy", s.absorbedEnergy);
+    writeScalarRunning(writer, prefix + "/box_escape_energy", s.boxEscapeEnergy);
+    writeScalarRunning(writer, prefix + "/timed_out_energy", s.timedOutEnergy);
+    writeScalarRunning(writer, prefix + "/cutoff_energy", s.cutoffEnergy);
+    writeScalarRunning(writer, prefix + "/transport_sink_residual", s.transportSinkResidual);
+    writeScalarRunning(writer, prefix + "/timed_out_fraction", s.timedOutFraction);
+    state_hdf5::WriteVector(writer, prefix + "/energy_weight_sq_sum", s.energyWeightSqSum);
+    state_hdf5::WriteMatrix(writer, prefix + "/group_energy_weight_sq_sum", s.groupEnergyWeightSqSum);
+    writer.WriteElement(prefix + "/total_energy_weight_sq_sum", s.totalEnergyWeightSqSum);
+    state_hdf5::WriteVector(writer, prefix + "/observer_crossing_count_sum", s.observerCrossingCountSum);
+    state_hdf5::WriteMatrix(writer, prefix + "/group_crossing_count_sum", s.groupCrossingCountSum);
+    state_hdf5::WriteVector(writer, prefix + "/observer_max_packet_energy_max", s.observerMaxPacketEnergyMax);
+#ifdef MONTECARLO_POLARIZATION
+    state_hdf5::WriteVector(writer, prefix + "/observer_sum_weight_sq_sum", s.observerSumWeightSqSum);
+    state_hdf5::WriteVector(writer, prefix + "/observer_sum_wq2_sum", s.observerSumWQ2Sum);
+    state_hdf5::WriteVector(writer, prefix + "/observer_sum_wu2_sum", s.observerSumWU2Sum);
+    state_hdf5::WriteMatrix(writer, prefix + "/group_sum_wq2_sum", s.groupSumWQ2Sum);
+    state_hdf5::WriteMatrix(writer, prefix + "/group_sum_wu2_sum", s.groupSumWU2Sum);
+    state_hdf5::WriteVector(writer, prefix + "/mismatch_weighted_sum_sum", s.mismatchWeightedSumSum);
+    state_hdf5::WriteVector(writer, prefix + "/mismatch_weighted2_sum_sum", s.mismatchWeighted2SumSum);
+    state_hdf5::WriteVector(writer, prefix + "/mismatch_max_max", s.mismatchMaxMax);
+#endif
+}
+
+void SphericalObserver::readStatisticsState(HDF5Reader const& reader, std::string const& prefix)
+{
+    if (!reader.Exists(prefix + "/samples"))
+        throw UniversalError("Restart file has no observer statistics at " + prefix);
+    size_t storedObservers = 0, storedGroups = 0;
+    int storedPolarization = 0;
+    reader.ReadElement(prefix + "/num_observers", storedObservers);
+    reader.ReadElement(prefix + "/num_groups", storedGroups);
+    reader.ReadElement(prefix + "/polarization_build", storedPolarization);
+    if (storedObservers != numObservers_ || storedGroups != numGroups_) {
+        UniversalError eo("Restart observer statistics do not match this observer");
+        eo.addEntry("stored observers", static_cast<double>(storedObservers));
+        eo.addEntry("observers", static_cast<double>(numObservers_));
+        eo.addEntry("stored groups", static_cast<double>(storedGroups));
+        eo.addEntry("groups", static_cast<double>(numGroups_));
+        throw eo;
+    }
+#ifdef MONTECARLO_POLARIZATION
+    int const buildPolarization = 1;
+#else
+    int const buildPolarization = 0;
+#endif
+    if (storedPolarization != buildPolarization)
+        throw UniversalError("Restart observer statistics were written by a build with a different MONTECARLO_POLARIZATION setting");
+
+    size_t const n = numObservers_;
+    size_t const g = numGroups_;
+    GenerationStatistics s;
+    reader.ReadElement(prefix + "/samples", s.samples);
+    readVectorRunning(reader, prefix + "/energy", n, s.energy);
+    readVectorRunning(reader, prefix + "/luminosity", n, s.luminosity);
+    readVectorRunning(reader, prefix + "/iso_luminosity", n, s.isoLuminosity);
+    readVectorRunning(reader, prefix + "/flux", n, s.flux);
+    readMatrixRunning(reader, prefix + "/group_energy", n, g, s.groupEnergy);
+    readMatrixRunning(reader, prefix + "/group_luminosity", n, g, s.groupLuminosity);
+#ifdef MONTECARLO_POLARIZATION
+    readVectorRunning(reader, prefix + "/stokes_q", n, s.stokesQ);
+    readVectorRunning(reader, prefix + "/stokes_u", n, s.stokesU);
+    readVectorRunning(reader, prefix + "/q", n, s.q);
+    readVectorRunning(reader, prefix + "/u", n, s.u);
+    readVectorRunning(reader, prefix + "/stokes_q_luminosity", n, s.stokesQLuminosity);
+    readVectorRunning(reader, prefix + "/stokes_u_luminosity", n, s.stokesULuminosity);
+    readVectorRunning(reader, prefix + "/polarization_degree", n, s.polarizationDegree);
+    readVectorRunning(reader, prefix + "/polarization_angle", n, s.polarizationAngle);
+    readMatrixRunning(reader, prefix + "/group_stokes_q", n, g, s.groupStokesQ);
+    readMatrixRunning(reader, prefix + "/group_stokes_u", n, g, s.groupStokesU);
+    readMatrixRunning(reader, prefix + "/group_q", n, g, s.groupQ);
+    readMatrixRunning(reader, prefix + "/group_u", n, g, s.groupU);
+    readMatrixRunning(reader, prefix + "/group_q_luminosity", n, g, s.groupQLuminosity);
+    readMatrixRunning(reader, prefix + "/group_u_luminosity", n, g, s.groupULuminosity);
+    readMatrixRunning(reader, prefix + "/group_polarization_degree", n, g, s.groupPolarizationDegree);
+    readMatrixRunning(reader, prefix + "/group_polarization_angle", n, g, s.groupPolarizationAngle);
+#endif
+    readScalarRunning(reader, prefix + "/total_energy", s.totalEnergy);
+    readScalarRunning(reader, prefix + "/total_luminosity", s.totalLuminosity);
+    readScalarRunning(reader, prefix + "/emitted_energy", s.emittedEnergy);
+    readScalarRunning(reader, prefix + "/absorbed_energy", s.absorbedEnergy);
+    readScalarRunning(reader, prefix + "/box_escape_energy", s.boxEscapeEnergy);
+    readScalarRunning(reader, prefix + "/timed_out_energy", s.timedOutEnergy);
+    readScalarRunning(reader, prefix + "/cutoff_energy", s.cutoffEnergy);
+    readScalarRunning(reader, prefix + "/transport_sink_residual", s.transportSinkResidual);
+    readScalarRunning(reader, prefix + "/timed_out_fraction", s.timedOutFraction);
+    s.energyWeightSqSum = state_hdf5::ReadVector<double>(reader, prefix + "/energy_weight_sq_sum", n);
+    s.groupEnergyWeightSqSum = state_hdf5::ReadMatrix<double>(reader, prefix + "/group_energy_weight_sq_sum", n, g);
+    reader.ReadElement(prefix + "/total_energy_weight_sq_sum", s.totalEnergyWeightSqSum);
+    s.observerCrossingCountSum = state_hdf5::ReadVector<size_t>(reader, prefix + "/observer_crossing_count_sum", n);
+    s.groupCrossingCountSum = state_hdf5::ReadMatrix<size_t>(reader, prefix + "/group_crossing_count_sum", n, g);
+    s.observerMaxPacketEnergyMax = state_hdf5::ReadVector<double>(reader, prefix + "/observer_max_packet_energy_max", n);
+#ifdef MONTECARLO_POLARIZATION
+    s.observerSumWeightSqSum = state_hdf5::ReadVector<double>(reader, prefix + "/observer_sum_weight_sq_sum", n);
+    s.observerSumWQ2Sum = state_hdf5::ReadVector<double>(reader, prefix + "/observer_sum_wq2_sum", n);
+    s.observerSumWU2Sum = state_hdf5::ReadVector<double>(reader, prefix + "/observer_sum_wu2_sum", n);
+    s.groupSumWQ2Sum = state_hdf5::ReadMatrix<double>(reader, prefix + "/group_sum_wq2_sum", n, g);
+    s.groupSumWU2Sum = state_hdf5::ReadMatrix<double>(reader, prefix + "/group_sum_wu2_sum", n, g);
+    s.mismatchWeightedSumSum = state_hdf5::ReadVector<double>(reader, prefix + "/mismatch_weighted_sum_sum", n);
+    s.mismatchWeighted2SumSum = state_hdf5::ReadVector<double>(reader, prefix + "/mismatch_weighted2_sum_sum", n);
+    s.mismatchMaxMax = state_hdf5::ReadVector<double>(reader, prefix + "/mismatch_max_max", n);
+#endif
+    // accumulateCurrentTalliesForStatistics sizes these on its first call
+    // (samples == 0) and indexes them afterwards, so a non-empty state must
+    // carry every one of them.
+    if (s.samples > 0) {
+        bool const complete = s.energyWeightSqSum.size() == n &&
+            s.groupEnergyWeightSqSum.size() == n &&
+            s.observerCrossingCountSum.size() == n &&
+            s.groupCrossingCountSum.size() == n &&
+            s.observerMaxPacketEnergyMax.size() == n
+#ifdef MONTECARLO_POLARIZATION
+            && s.observerSumWeightSqSum.size() == n &&
+            s.observerSumWQ2Sum.size() == n &&
+            s.observerSumWU2Sum.size() == n &&
+            s.groupSumWQ2Sum.size() == n &&
+            s.groupSumWU2Sum.size() == n &&
+            s.mismatchWeightedSumSum.size() == n &&
+            s.mismatchWeighted2SumSum.size() == n &&
+            s.mismatchMaxMax.size() == n
+#endif
+            ;
+        if (!complete)
+            throw UniversalError("Restart observer statistics at " + prefix +
+                                 " have samples but incomplete per-observer sums");
+    }
+    generationStats_ = std::move(s);
 }
 
 double SphericalObserver::getTotalLuminosityStderrGen(double sourceDt) const

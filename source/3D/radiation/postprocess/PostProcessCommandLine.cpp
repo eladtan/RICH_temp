@@ -247,6 +247,8 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddString(options, "input.eos-directory", "Equation-of-state tables.", c.input.eosDirectory);
     AddString(options, "output.stem", "Output path without .h5 or .vtk.", c.output.stem);
     AddBool(options, "output.write-vtk", "Write the observer VTK map.", c.output.writeVtk);
+    AddString(options, "restart.from", "Result HDF5 to continue; transport.generations are then added to it (burn-in skipped).", c.restart.from);
+    AddBool(options, "restart.in-place", "Allow the output to replace the restart file.", c.restart.inPlace);
 
     AddDouble(options, "observer.center-x", "Observer sphere center x [cm].", c.observer.center.x);
     AddDouble(options, "observer.center-y", "Observer sphere center y [cm].", c.observer.center.y);
@@ -257,10 +259,13 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddDouble(options, "transport.source-dt", "Source emission interval [s].", c.transport.sourceDt);
     AddDouble(options, "transport.duration", "Transport duration [s], or zero for the snapshot default.", c.transport.duration);
     AddSize(options, "transport.photons-per-cell", "Base packet count per source cell.", c.transport.photonsPerCell);
-    AddSize(options, "transport.generations", "Number of learning/transport generations.", c.transport.generations);
+    AddSize(options, "transport.generations", "Number of final generations; with restart.from, the number added (0 rewrites the result unchanged).", c.transport.generations);
     AddBool(options, "transport.ddmc", "Enable DDMC acceleration.", c.transport.ddmc);
     AddBool(options, "transport.random-walk", "Enable random-walk acceleration.", c.transport.randomWalk);
     AddDouble(options, "transport.ddmc-min-cell-optical-depth", "Per-group cell optical depth above which DDMC is used.", c.transport.ddmcMinCellOpticalDepth);
+    AddBool(options, "transport.ddmc-moving-interface-correction", "Apply the moving-interface weight correction when packets enter DDMC.", c.transport.ddmcMovingInterfaceCorrection);
+    AddBool(options, "transport.ddmc-advection", "Advect DDMC radiation with the gas (cell velocities).", c.transport.ddmcAdvection);
+    AddDouble(options, "transport.ddmc-max-cell-advection-peclet", "Cells whose advection Peclet number |v|(L/2)/D exceeds this stay in IMC (default: no limit).", c.transport.ddmcMaxCellAdvectionPeclet);
     AddBool(options, "transport.use-cell-velocities", "Include snapshot cell velocities.", c.transport.useCellVelocities);
     AddCommunicationMode(options, c.transport.communication);
     AddBool(options, "transport.compton.enabled", "Enable Compton transport.", c.transport.compton.enabled);
@@ -276,6 +281,8 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddBool(options, "flux-source.enabled", "Compare against an FLD boundary source.", c.fluxSource.enabled);
     AddDouble(options, "flux-source.thermalization-tau", "Flux-source thermalization optical depth.", c.fluxSource.thermalizationTau);
     AddSize(options, "flux-source.construction-rays", "Rays used to construct the source surface.", c.fluxSource.constructionRays);
+    AddDouble(options, "flux-source.smoothing-floor", "Raise a direction's surface to at least this fraction of its 8 nearest directions' median radius (0 disables; warns when it changes the surface).", c.fluxSource.smoothingFloor);
+    AddBool(options, "flux-source.remove-enclosed-outside", "Make outside regions enclosed by the source surface (packet traps) inside.", c.fluxSource.removeEnclosedOutside);
     AddDouble(options, "flux-source.ddmc-face-optical-depth", "DDMC face optical-depth threshold.", c.fluxSource.ddmcFaceOpticalDepth);
     AddFluxSourceSurfaceMode(options, c.fluxSource.surfaceMode);
     AddBool(options, "volume-emission.enabled", "Thermal emission from cells outside the flux-source surface.", c.volumeEmission.enabled);
@@ -354,6 +361,8 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddDouble(options, "load-balance.weight-compression", "Measured load-weight compression, or -1 for automatic.", c.loadBalance.weightCompression);
     AddDouble(options, "load-balance.imbalance-threshold", "Imbalance ratio that triggers adaptive repartitioning.", c.loadBalance.imbalanceThreshold);
     AddSize(options, "load-balance.cooldown-generations", "Generations between adaptive rebalances.", c.loadBalance.cooldownGenerations);
+    AddBool(options, "load-balance.clamp-to-active-mean", "Cap measured cell costs relative to the mean of the cells that did work, not of all cells.", c.loadBalance.clampToActiveMean);
+    AddDouble(options, "load-balance.clamp-factor", "Measured cell-cost cap factor; 0 keeps the built-in 30.", c.loadBalance.clampFactor);
     AddSize(options, "load-balance.max-rebalances", "Maximum adaptive rebalances.", c.loadBalance.maxRebalances);
     AddBool(options, "diagnostics.verbose-adaptive", "Print detailed adaptive diagnostics.", c.diagnostics.verboseAdaptive);
 

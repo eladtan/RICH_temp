@@ -16,6 +16,8 @@
 #include <utility>
 #include <vector>
 
+#include <H5Cpp.h>
+
 #include "source/3D/output/read3D.hpp"
 #include "source/3D/output/Snapshot3D.hpp"
 #include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
@@ -55,6 +57,7 @@
 #include "PostProcessCommandLine.hpp"
 #include "PostProcessConfig.hpp"
 #include "PostProcessResultWriter.hpp"
+#include "PostProcessRestart.hpp"
 #include "PostProcessRuntime.hpp"
 #include "AdaptiveStatistics.hpp"
 #include "PhotosphereCalculation.hpp"
@@ -141,6 +144,8 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.opacityDir = publicConfig.input.multigroupOpacityDirectory;
     cfg.greyOpacityDir = publicConfig.input.greyOpacityDirectory;
     cfg.eosDir = publicConfig.input.eosDirectory;
+    cfg.restartFrom = publicConfig.restart.from;
+    cfg.restartInPlace = publicConfig.restart.inPlace;
     cfg.radius = publicConfig.observer.radius;
     cfg.nObservers = publicConfig.observer.count;
     cfg.sourceDt = publicConfig.transport.sourceDt;
@@ -154,6 +159,9 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.ddmc = publicConfig.transport.ddmc;
     cfg.randomWalk = publicConfig.transport.randomWalk;
     cfg.ddmcMinCellOpticalDepth = publicConfig.transport.ddmcMinCellOpticalDepth;
+    cfg.ddmcMovingInterfaceCorrection = publicConfig.transport.ddmcMovingInterfaceCorrection;
+    cfg.ddmcAdvection = publicConfig.transport.ddmcAdvection;
+    cfg.ddmcMaxCellAdvectionPeclet = publicConfig.transport.ddmcMaxCellAdvectionPeclet;
     cfg.useCellVelocities = publicConfig.transport.useCellVelocities;
     switch (publicConfig.transport.communication) {
     case PostProcessIMC::MonteCarloCommunication::Rdma:
@@ -170,6 +178,8 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.fluxSourceRays = publicConfig.fluxSource.constructionRays;
     cfg.fluxSourceDDMCFaceOpticalDepth = publicConfig.fluxSource.ddmcFaceOpticalDepth;
     cfg.fluxSourceSurfaceMode = publicConfig.fluxSource.surfaceMode;
+    cfg.fluxSourceRemoveEnclosedOutside = publicConfig.fluxSource.removeEnclosedOutside;
+    cfg.fluxSourceSmoothingFloor = publicConfig.fluxSource.smoothingFloor;
     cfg.volumeEmissionEnabled = publicConfig.volumeEmission.enabled;
     cfg.volumeEmissionCutoffFraction = publicConfig.volumeEmission.cutoffFraction;
     cfg.volumeEmissionBurninPacketsTarget = publicConfig.volumeEmission.burninPacketsTarget;
@@ -243,6 +253,8 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.adaptiveLBImbalanceThreshold = publicConfig.loadBalance.imbalanceThreshold;
     cfg.adaptiveLBCooldownGenerations = publicConfig.loadBalance.cooldownGenerations;
     cfg.adaptiveLBMaxRebalances = publicConfig.loadBalance.maxRebalances;
+    cfg.measuredLBClampToActiveMean = publicConfig.loadBalance.clampToActiveMean;
+    cfg.measuredLBClampFactor = publicConfig.loadBalance.clampFactor;
     cfg.adaptiveGroupQuality = publicConfig.adaptive.group.quality;
     cfg.adaptiveGroupSourceCells = publicConfig.adaptive.group.sourceCells;
     cfg.adaptiveGroupFrequencySampling = publicConfig.adaptive.group.frequencySampling;
@@ -567,6 +579,8 @@ int PostProcessIMC::RunPostProcessMain(
                       << "Center:          (" << cfg.center.x << ", " << cfg.center.y << ", " << cfg.center.z << ")\n"
                       << "Compton:         " << (cfg.compton ? "yes" : "no") << "\n"
                       << "DDMC min cell tau: " << cfg.ddmcMinCellOpticalDepth << "\n"
+                      << "DDMC moving-interface correction: " << (cfg.ddmcMovingInterfaceCorrection ? "yes" : "no") << "\n"
+                      << "DDMC advection:  " << (cfg.ddmcAdvection ? "yes" : "no") << "\n"
                       << "DDMC:            "
                       << (cfg.ddmc ? "yes" : "no")
                       << (cfg.fluxSourceCompare && cfg.ddmc
@@ -635,6 +649,10 @@ int PostProcessIMC::RunPostProcessMain(
                       << "  observer extra budget max: " << cfg.adaptiveObserverExtraBudgetFrac << "\n"
                       << "  burnin/adapt LB: " << ((cfg.adaptiveSourceCells && cfg.measuredLoadBalance) ? "requested" : "disabled") << "\n"
                       << "Requested generations: " << cfg.nGenerations << "\n"
+                      << "Restart from:    "
+                      << (cfg.restartFrom.empty() ? std::string("no (fresh run)")
+                          : cfg.restartFrom + " (adds the requested generations; burn-in skipped)")
+                      << "\n"
                       << "MPI ranks:       " << mpiSize << "\n"
                       << std::endl;
         }
@@ -729,6 +747,13 @@ int PostProcessIMC::RunPostProcessMain(
 
         if (rank == 0)
             std::cout << "Converted snapshot to CGS." << std::endl;
+
+        if (!cfg.restartFrom.empty()) {
+            CheckRestartCompatibility(
+                cfg.restartFrom, scenario.defaults, snapshot.time, snapshot.cycle, rank);
+            if (rank == 0)
+                std::cout << "Restart: settings match " << cfg.restartFrom << std::endl;
+        }
 
         // ============================================================
         // Rebuild tessellation (two-pass for weighted load balancing)
@@ -975,7 +1000,8 @@ int PostProcessIMC::RunPostProcessMain(
         // Construct RadiationIMC
         // ============================================================
         RadiationIMCParameters params;
-        size_t genPhotonsPerCell = std::max<size_t>(1, cfg.photonsPerCell / cfg.nGenerations);
+        size_t genPhotonsPerCell = std::max<size_t>(
+            1, cfg.photonsPerCell / std::max<size_t>(1, cfg.nGenerations));
         params.newPhotonsPerCell = genPhotonsPerCell;
         params.withHydro = false;
         params.noHydroFeedback = true;
@@ -983,6 +1009,9 @@ int PostProcessIMC::RunPostProcessMain(
         params.rwMinCellOpticalDepth = 15;
         params.withDDMC = cfg.ddmc;
         params.ddmcMinCellOpticalDepth = cfg.ddmcMinCellOpticalDepth;
+        params.ddmcUseMovingInterfaceCorrection = cfg.ddmcMovingInterfaceCorrection;
+        params.ddmcAdvection = cfg.ddmcAdvection;
+        params.ddmcMaxCellAdvectionPeclet = cfg.ddmcMaxCellAdvectionPeclet;
         params.ddmcExternalSourceMinFaceOpticalDepth =
             cfg.fluxSourceDDMCFaceOpticalDepth;
         params.withMultigroupDDMC = true;
@@ -1092,6 +1121,8 @@ int PostProcessIMC::RunPostProcessMain(
             InitializeFluxSourceSurface(cfg, runtime);
             ConfigureFluxSourceForCurrentDecomposition(cfg, runtime, *physics, *opacity, true);
         }
+        if (!cfg.restartFrom.empty())
+            CheckRestartSourceSurface(cfg.restartFrom, runtime, rank);
 
         Config const passConfig = MakePassOutputConfig(cfg);
         ForwardPostprocessResult forwardResult =
@@ -1115,6 +1146,20 @@ int PostProcessIMC::RunPostProcessMain(
         } else {
             std::cerr << "UniversalError on rank " << rank << ":\n";
             reportError(eo, std::cerr);
+#ifdef RICH_MPI
+            MPI_Abort(MPI_COMM_WORLD, 1);
+#endif
+            return 1;
+        }
+    } catch (H5::Exception const& e) {
+        // HDF5's C++ exceptions do not derive from std::exception; report
+        // them like any other failure instead of letting them terminate.
+        std::string const message =
+            "HDF5 error in " + e.getFuncName() + ": " + e.getDetailMsg();
+        if (embeddedResultSink != nullptr) {
+            embeddedFailure = std::make_exception_ptr(UniversalError(message));
+        } else {
+            std::cerr << "Exception on rank " << rank << ": " << message << "\n";
 #ifdef RICH_MPI
             MPI_Abort(MPI_COMM_WORLD, 1);
 #endif

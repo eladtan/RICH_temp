@@ -8,11 +8,13 @@
 #include <string>
 #include <cmath>
 #include <iostream>
+#include <sstream>
 #include <limits>
 #include <memory>
 #include <numeric>
 #include <tuple>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -26,6 +28,8 @@
 #include "source/misc/mesh_generator3D.hpp"
 #include "source/misc/universal_error.hpp"
 #include "source/misc/utils.hpp"
+#include "source/3D/radiation/StateHdf5IO.hpp"
+#include "PostProcessConfig.hpp"
 #include "source/monte/particle/StepResult.hpp"
 #include "source/monte/particle/ParticleStatus.hpp"
 #include "source/monte/boundary/Vacuum.hpp"
@@ -635,6 +639,183 @@ std::vector<Vector3D> ComputeGreyFldFlux(PostprocessRuntime& runtime)
     return flux;
 }
 
+// ---------------------------------------------------------------------------
+// Surface smoothing and enclosed-region removal
+// ---------------------------------------------------------------------------
+
+constexpr size_t kSmoothingNeighbours = 8;
+
+// Raises every resolved direction whose radius is below `floor` times the
+// median radius of its kSmoothingNeighbours nearest resolved directions to
+// that value. Only raises: a raised surface is shallower than the target
+// thermalization depth in that direction. Returns the raised directions.
+std::vector<size_t> SmoothSurfaceDips(
+    std::vector<Vector3D> const& directions,
+    std::vector<double>& radius,
+    std::vector<int> const& resolved,
+    double floor)
+{
+    std::vector<size_t> raised;
+    if(!(floor > 0.0))
+        return raised;
+    size_t const n = directions.size();
+    std::vector<double> const original = radius;
+    std::vector<std::pair<double, size_t>> byAngle;
+    std::vector<double> neighbourRadii;
+    for(size_t d = 0; d < n; ++d)
+    {
+        if(!resolved[d])
+            continue;
+        byAngle.clear();
+        for(size_t e = 0; e < n; ++e)
+            if(e != d && resolved[e])
+                byAngle.emplace_back(-ScalarProd(directions[d], directions[e]), e);
+        size_t const k = std::min(kSmoothingNeighbours, byAngle.size());
+        if(k == 0)
+            continue;
+        std::partial_sort(byAngle.begin(), byAngle.begin() + static_cast<std::ptrdiff_t>(k), byAngle.end());
+        neighbourRadii.clear();
+        for(size_t m = 0; m < k; ++m)
+            neighbourRadii.push_back(original[byAngle[m].second]);
+        std::nth_element(neighbourRadii.begin(),
+                         neighbourRadii.begin() + static_cast<std::ptrdiff_t>(k / 2),
+                         neighbourRadii.end());
+        double const limit = floor * neighbourRadii[k / 2];
+        if(original[d] < limit)
+        {
+            radius[d] = limit;
+            raised.push_back(d);
+        }
+    }
+    return raised;
+}
+
+#ifdef RICH_MPI
+template <typename T>
+std::vector<T> GatherToRankZero(std::vector<T> const& local, MPI_Datatype type, int rank)
+{
+    int mpiSize = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &mpiSize);
+    int const count = static_cast<int>(local.size());
+    std::vector<int> counts(rank == 0 ? static_cast<size_t>(mpiSize) : 0);
+    MPI_Gather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+    std::vector<int> displacements(counts.size(), 0);
+    int total = 0;
+    for(size_t r = 0; r < counts.size(); ++r)
+    {
+        displacements[r] = total;
+        total += counts[r];
+    }
+    std::vector<T> all(rank == 0 ? static_cast<size_t>(total) : 0);
+    MPI_Gatherv(local.data(), count, type, all.data(), counts.data(),
+                displacements.data(), type, 0, MPI_COMM_WORLD);
+    return all;
+}
+#endif
+
+// Outside cells are kept only if they connect, through faces between outside
+// cells, to the exterior beyond the outermost surface radius. A region of
+// outside cells enclosed on every side by inside cells is a trap: each of its
+// faces is a thermalizing wall that returns packets into it, so nothing born
+// or arriving there can leave before the transport time runs out. Such regions
+// form where one direction's surface dips far below its neighbours' within a
+// cone narrower than a cell. Clears `outside` for those cells (local and
+// ghost) and returns the local ones. Collective.
+std::vector<size_t> FindEnclosedOutsideCells(
+    Config const& cfg,
+    PostprocessRuntime const& runtime,
+    std::vector<unsigned char> const& outside)
+{
+    double seedRadius = 0.0;
+    for(size_t d = 0; d < runtime.fluxSourceRadius.size(); ++d)
+        if(runtime.fluxSourceRadiusDirectlyResolved[d])
+            seedRadius = std::max(seedRadius, runtime.fluxSourceRadius[d]);
+    size_t const nLocal = runtime.tess.GetPointNo();
+    size_t const nPoints = outside.size();
+    std::vector<size_t> reached(nPoints, 0);
+    std::vector<size_t> stack;
+    unsigned long long seeds = 0;
+    for(size_t i = 0; i < nLocal; ++i)
+    {
+        if(outside[i] && fastabs(runtime.tess.GetMeshPoint(i) - cfg.center) > seedRadius)
+        {
+            reached[i] = 1;
+            stack.push_back(i);
+            ++seeds;
+        }
+    }
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &seeds, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+#endif
+    if(seeds == 0)
+    {
+        UniversalError eo("Flux-source exterior has no outside cell beyond the outermost surface radius");
+        eo.addEntry("Outermost surface radius", seedRadius);
+        throw eo;
+    }
+    std::vector<size_t> neighbors;
+    auto connected = [&](size_t j) {
+        return j < nPoints && !runtime.tess.IsPointOutsideBox(j) && outside[j];
+    };
+    auto flood = [&]() {
+        while(!stack.empty())
+        {
+            size_t const i = stack.back();
+            stack.pop_back();
+            runtime.tess.GetNeighbors(i, neighbors);
+            for(size_t j : neighbors)
+            {
+                if(!connected(j) || reached[j])
+                    continue;
+                reached[j] = 1;
+                if(j < nLocal)
+                    stack.push_back(j);
+            }
+        }
+    };
+    flood();
+#ifdef RICH_MPI
+    // Each round hands every rank its neighbours' reached cells (as ghosts)
+    // and continues the fill from there, until no rank reaches a new cell.
+    auto syncGhosts = [&]() {
+        std::vector<size_t> shared(reached.begin(), reached.begin() + static_cast<std::ptrdiff_t>(nLocal));
+        MPI_exchange_data(runtime.tess, shared, true);
+        for(size_t g = nLocal; g < nPoints && g < shared.size(); ++g)
+            reached[g] = shared[g];
+    };
+    while(true)
+    {
+        syncGhosts();
+        unsigned long long added = 0;
+        for(size_t i = 0; i < nLocal; ++i)
+        {
+            if(!outside[i] || reached[i])
+                continue;
+            runtime.tess.GetNeighbors(i, neighbors);
+            for(size_t j : neighbors)
+            {
+                if(connected(j) && reached[j])
+                {
+                    reached[i] = 1;
+                    stack.push_back(i);
+                    ++added;
+                    break;
+                }
+            }
+        }
+        flood();
+        MPI_Allreduce(MPI_IN_PLACE, &added, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        if(added == 0)
+            break;
+    }
+#endif
+    std::vector<size_t> enclosed;
+    for(size_t i = 0; i < nLocal; ++i)
+        if(outside[i] && !reached[i])
+            enclosed.push_back(i);
+    return enclosed;
+}
+
 } // namespace
 
 void InitializeFluxSourceSurface(
@@ -893,6 +1074,33 @@ void InitializeFluxSourceSurface(
         }
     }
 
+    // Smoothing: no direction may dip far below its neighbours. A raised
+    // direction no longer sits at the target depth, so say so loudly.
+    runtime.fluxSourceRawRadius = runtime.fluxSourceRadius;
+    runtime.fluxSourceSmoothedDirections = SmoothSurfaceDips(
+        directions, runtime.fluxSourceRadius,
+        runtime.fluxSourceRadiusDirectlyResolved, cfg.fluxSourceSmoothingFloor);
+    if(runtime.rank == 0 && !runtime.fluxSourceSmoothedDirections.empty())
+    {
+        std::vector<double> factors;
+        for(size_t d : runtime.fluxSourceSmoothedDirections)
+            factors.push_back(runtime.fluxSourceRadius[d] / runtime.fluxSourceRawRadius[d]);
+        std::sort(factors.begin(), factors.end());
+        std::ostringstream warning;
+        warning << "FLUX_SOURCE_SMOOTHING WARNING: raised the source surface in "
+                << factors.size() << "/" << nSourceRays
+                << " directions to at least " << cfg.fluxSourceSmoothingFloor
+                << " x the median radius of their " << kSmoothingNeighbours
+                << " nearest directions (radius raised by x" << factors.front()
+                << " to x" << factors.back() << ", median x" << factors[factors.size() / 2]
+                << "). In those directions the surface is shallower than tau_eff="
+                << cfg.fluxSourceThermalizationTau
+                << ", so the gas between the old and new radius is transported instead of"
+                << " treated as thermalized. Set --flux-source.smoothing-floor 0 to disable.";
+        std::cout << warning.str() << std::endl;
+        std::cerr << warning.str() << std::endl;
+    }
+
     size_t const directCount = static_cast<size_t>(std::count(
         runtime.fluxSourceRadiusDirectlyResolved.begin(),
         runtime.fluxSourceRadiusDirectlyResolved.end(), 1));
@@ -925,6 +1133,38 @@ void InitializeFluxSourceSurface(
                   << " fraction="
                   << runtime.fluxSourceDirectlyResolvedFraction
                   << std::endl;
+
+    // The surface as the code built it, written before any transport so even
+    // a cancelled run leaves it behind.
+    runtime.fluxSourceSurfaceFile =
+        InsertSuffixBeforeExtension(cfg.outputPath, ".source-surface");
+    if(runtime.rank == 0)
+    {
+        HDF5Writer writer(runtime.fluxSourceSurfaceFile);
+        std::vector<double> dx, dy, dz;
+        for(Vector3D const& d : directions)
+        {
+            dx.push_back(d.x);
+            dy.push_back(d.y);
+            dz.push_back(d.z);
+        }
+        state_hdf5::WriteVector(writer, "/directions/x", dx);
+        state_hdf5::WriteVector(writer, "/directions/y", dy);
+        state_hdf5::WriteVector(writer, "/directions/z", dz);
+        writer.WriteElement("/thermalization_tau", cfg.fluxSourceThermalizationTau);
+        writer.WriteElement("/smoothing_floor", cfg.fluxSourceSmoothingFloor);
+        writer.WriteElement("/surface_mode", std::string(mgSurface ? "mg-innermost" : "grey"));
+        state_hdf5::WriteVector(writer, "/surface/radius", runtime.fluxSourceRadius);
+        state_hdf5::WriteVector(writer, "/surface/radius_before_smoothing", runtime.fluxSourceRawRadius);
+        state_hdf5::WriteVector(writer, "/surface/resolved", runtime.fluxSourceRadiusDirectlyResolved);
+        state_hdf5::WriteVector(writer, "/surface/smoothed_directions", runtime.fluxSourceSmoothedDirections);
+        state_hdf5::WriteVector(writer, "/grey/radius", runtime.fluxSourceGreyRadius);
+        state_hdf5::WriteVector(writer, "/grey/resolved", runtime.fluxSourceGreyResolved);
+        state_hdf5::WriteMatrix(writer, "/groups/radius", runtime.fluxSourceGroupRadius);
+        state_hdf5::WriteMatrix(writer, "/groups/resolved", runtime.fluxSourceGroupResolved);
+        writer.Close();
+        std::cout << "FLUX_SOURCE_SURFACE written to " << runtime.fluxSourceSurfaceFile << std::endl;
+    }
 }
 
 void ConfigureFluxSourceForCurrentDecomposition(
@@ -944,7 +1184,7 @@ void ConfigureFluxSourceForCurrentDecomposition(
         throw UniversalError("Flux-source surface was not initialized");
 
     std::vector<Vector3D> const fldFlux = ComputeGreyFldFlux(runtime);
-    std::vector<unsigned char> const outside =
+    std::vector<unsigned char> outside =
         BuildOutsideSurfaceMask(cfg, runtime);
     size_t const nCells = runtime.tess.GetPointNo();
     if(runtime.cells.size() < nCells)
@@ -964,6 +1204,98 @@ void ConfigureFluxSourceForCurrentDecomposition(
     MPI_exchange_data(
         runtime.tess, pointCellIDs, true, 1, &invalidCellID);
 #endif
+
+    // Enclosed outside regions (packet traps) become inside. Found once by a
+    // connectivity fill; every later decomposition applies the same cell IDs.
+    if(cfg.fluxSourceRemoveEnclosedOutside)
+    {
+        if(!runtime.fluxSourceEnclosedComputed)
+        {
+            std::vector<size_t> const enclosed = FindEnclosedOutsideCells(cfg, runtime, outside);
+            // Positive face luminosity the walls of these cells would inject.
+            double removedLuminosity = 0.0;
+            std::vector<size_t> faceNeighbors;
+            std::vector<double> localIDs, localX, localY, localZ;
+            for(size_t i : enclosed)
+            {
+                Vector3D const p = runtime.tess.GetMeshPoint(i);
+                localIDs.push_back(static_cast<double>(runtime.cells[i].ID));
+                localX.push_back(p.x);
+                localY.push_back(p.y);
+                localZ.push_back(p.z);
+                auto const& cellFaces = runtime.tess.GetCellFaces(i);
+                runtime.tess.GetNeighbors(i, faceNeighbors);
+                for(size_t j = 0; j < faceNeighbors.size() && j < cellFaces.size(); ++j)
+                {
+                    size_t const n = faceNeighbors[j];
+                    if(runtime.tess.IsPointOutsideBox(n) || n >= outside.size() ||
+                       n >= fldFlux.size() || outside[n] != 0)
+                        continue;
+                    Vector3D normal = p - runtime.tess.GetMeshPoint(n);
+                    double const distance = abs(normal);
+                    if(!(distance > 0.0))
+                        continue;
+                    normal *= 1.0 / distance;
+                    double const flux = ScalarProd(0.5 * (fldFlux[i] + fldFlux[n]), normal) *
+                        runtime.tess.GetArea(cellFaces[j]);
+                    removedLuminosity += std::max(0.0, flux);
+                }
+            }
+            std::vector<double> allIDs = localIDs, allX = localX, allY = localY, allZ = localZ;
+#ifdef RICH_MPI
+            MPI_Allreduce(MPI_IN_PLACE, &removedLuminosity, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+            {
+                // Every rank needs the IDs; rank 0 also the positions.
+                int const count = static_cast<int>(localIDs.size());
+                std::vector<int> counts(static_cast<size_t>(runtime.mpiSize), 0);
+                MPI_Allgather(&count, 1, MPI_INT, counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+                std::vector<int> displs(counts.size(), 0);
+                int total = 0;
+                for(size_t r = 0; r < counts.size(); ++r)
+                {
+                    displs[r] = total;
+                    total += counts[r];
+                }
+                allIDs.assign(static_cast<size_t>(total), 0.0);
+                MPI_Allgatherv(localIDs.data(), count, MPI_DOUBLE, allIDs.data(),
+                               counts.data(), displs.data(), MPI_DOUBLE, MPI_COMM_WORLD);
+                allX = GatherToRankZero(localX, MPI_DOUBLE, runtime.rank);
+                allY = GatherToRankZero(localY, MPI_DOUBLE, runtime.rank);
+                allZ = GatherToRankZero(localZ, MPI_DOUBLE, runtime.rank);
+            }
+#endif
+            runtime.fluxSourceEnclosedCellIDs.clear();
+            for(double id : allIDs)
+                runtime.fluxSourceEnclosedCellIDs.insert(static_cast<size_t>(id));
+            runtime.fluxSourceEnclosedLuminosity = removedLuminosity;
+            runtime.fluxSourceEnclosedComputed = true;
+            if(runtime.rank == 0)
+            {
+                std::cout << "FLUX_SOURCE_ENCLOSED removed_cells=" << allIDs.size()
+                          << " wall_luminosity_removed=" << removedLuminosity << " erg/s"
+                          << " (outside cells enclosed by the source surface; their walls"
+                          << " would return every packet into them)" << std::endl;
+                if(!runtime.fluxSourceSurfaceFile.empty())
+                {
+                    std::vector<size_t> ids;
+                    for(double id : allIDs)
+                        ids.push_back(static_cast<size_t>(id));
+                    HDF5Writer writer(runtime.fluxSourceSurfaceFile, false);
+                    writer.WriteElement("/enclosed/removed_cells", ids.size());
+                    writer.WriteElement("/enclosed/wall_luminosity_removed", removedLuminosity);
+                    state_hdf5::WriteVector(writer, "/enclosed/cell_ids", ids);
+                    state_hdf5::WriteVector(writer, "/enclosed/x", allX);
+                    state_hdf5::WriteVector(writer, "/enclosed/y", allY);
+                    state_hdf5::WriteVector(writer, "/enclosed/z", allZ);
+                    writer.Close();
+                }
+            }
+        }
+        // Local and ghost points alike, by stable cell ID.
+        for(size_t p = 0; p < outside.size() && p < pointCellIDs.size(); ++p)
+            if(outside[p] && runtime.fluxSourceEnclosedCellIDs.count(pointCellIDs[p]))
+                outside[p] = 0;
+    }
 
     std::vector<RadiationIMC::PostProcessExternalSource> sources;
     std::vector<size_t> neighbors;
@@ -1173,6 +1505,10 @@ void ConfigureFluxSourceForCurrentDecomposition(
                     cfg, runtime, nearest, runtime.fluxSourceGreyRadius, runtime.fluxSourceGreyResolved);
             else
                 outsideGroup[g] = outside;
+            // A group surface is never inside the deepest one, so its mask is
+            // a subset of the uncleaned one; drop the enclosed cells from it.
+            for(size_t i = 0; i < outsideGroup[g].size() && i < outside.size(); ++i)
+                outsideGroup[g][i] = outsideGroup[g][i] && outside[i];
         }
         std::vector<std::uint16_t> groupBits(nCells, 0);
         for(size_t i = 0; i < nCells; ++i)
