@@ -245,13 +245,19 @@ void ComptonTableReader::get_S_and_dSdUm(
             energy_groups_boundaries[g], energy_groups_boundaries[g + 1], T);
     }
 
-    // 4. Compute nonequilibrium occupation numbers from E_g
+    // 4. Compute nonequilibrium occupation numbers from E_g.
+    // n_buf (in S and dS/dT) and the n_eq of the detailed balance of S share the
+    // cap, which keeps B an exact steady state. The detailed balance of dS/dT uses
+    // the uncapped n_eq: with the cap, dn_eq/dT = 0 above it made dS/dUm rows
+    // negative (kappa_C < 0) where n_eq exceeds it (T_r << T on wide low groups).
+    // n_buf stays capped in dS/dT because, unlike n_eq < kT/h nu, it is unbounded.
+    double constexpr occupation_cap = 100.0;
     for (std::size_t g = 0; g < num_energy_groups; ++g) {
         if (calculate_n) {
             double const nu  = energy_groups_centers[g] / units::planck_constant;
             double const dnu = (energy_groups_boundaries[g + 1] - energy_groups_boundaries[g])
                              / units::planck_constant;
-            n_buf[g] = std::min(100.0, fac * E_g[g] / (pow<3>(nu) * dnu));
+            n_buf[g] = std::min(occupation_cap, fac * E_g[g] / (pow<3>(nu) * dnu));
         } else {
             n_buf[g] = 0.0;
         }
@@ -259,59 +265,60 @@ void ComptonTableReader::get_S_and_dSdUm(
 
     // 5. Always-shrink DB enforcement + analytical derivatives
     double constexpr tiny_thresh = std::numeric_limits<double>::min() * 1e40;
-    double constexpr occupation_cap = 100.0;
+    // Pairs are balanced only where both B_g >= 1e-100 aT^4. Below that the
+    // balanced derivative is a cancellation of e^{x}-sized terms.
+    double const db_floor = std::max(tiny_thresh, 1e-100 * units::arad * pow<4>(T));
 
-    // Use capped equilibrium occupancies in detailed-balance factors:
-    //   n_eq_db = min(occupation_cap, n_eq_raw)
-    // and piecewise-consistent derivatives:
-    //   dn_eq_db/dT = dn_eq_raw/dT when uncapped, else 0.
-    //
-    // For DB derivative formulas we need:
-    //   d/dT ln(B/(1+n_eq_db)) = dlnB - dln(1+n_eq_db)
+    // The DB factors of S use n_eq_db = min(occupation_cap, n_eq); those of dS/dT
+    // use the uncapped n_eq, with
+    //   d/dT ln(B/(1+n_eq)) = dlnB - (dn_eq/dT)/(1+n_eq).
     Vector n_eq_db(num_energy_groups, 0.0);
     Vector log_db_factor_deriv(num_energy_groups, 0.0);
     for (std::size_t g = 0; g < num_energy_groups; ++g) {
         n_eq_db[g] = std::min(occupation_cap, n_eq_buf[g]);
-
-        double dn_eq_raw_dT = 0.0;
-        if (B_eq_buf[g] > tiny_thresh) {
-            dn_eq_raw_dT = n_eq_buf[g] * dBdT_buf[g] / B_eq_buf[g];
-        }
-        double const dn_eq_db_dT = (n_eq_buf[g] < occupation_cap) ? dn_eq_raw_dT : 0.0;
-
         if (B_eq_buf[g] > tiny_thresh) {
             double const dlnB = dBdT_buf[g] / B_eq_buf[g];
-            double const dln_n1 = dn_eq_db_dT / (1.0 + n_eq_db[g]);
-            log_db_factor_deriv[g] = dlnB - dln_n1;
-        } else {
-            log_db_factor_deriv[g] = 0.0;
+            double const dn_eq_dT = n_eq_buf[g] * dBdT_buf[g] / B_eq_buf[g];
+            log_db_factor_deriv[g] = dlnB - dn_eq_dT / (1.0 + n_eq_buf[g]);
         }
     }
 
     // Photon-number detailed balance on each unordered pair g < gp:
     //   sigma_s[g][gp] (1+n_gp) B_g/nu_g = sigma_s[gp][g] (1+n_g) B_gp/nu_gp,
     // i.e. the balanced reverse coefficient is Q * sigma_s[g][gp]. The larger of
-    // the two coefficients is shrunk to its balanced value.
+    // the two coefficients is shrunk to its balanced value, separately for S
+    // (capped Q) and for dS/dT (uncapped Q_d).
     for (std::size_t g = 0; g < num_energy_groups; ++g) {
         for (std::size_t gp = g + 1; gp < num_energy_groups; ++gp) {
-            if (B_eq_buf[g] < tiny_thresh || B_eq_buf[gp] < tiny_thresh) continue;
+            if (B_eq_buf[g] < db_floor || B_eq_buf[gp] < db_floor) continue;
             double const forward = sigma_s_buf[g][gp];
             double const reverse = sigma_s_buf[gp][g];
+            double const dforward = dsigma_s_buf[g][gp];
+            double const dreverse = dsigma_s_buf[gp][g];
             if (forward < tiny_thresh && reverse < tiny_thresh) continue;
+            double const center_ratio = energy_groups_centers[gp] / energy_groups_centers[g];
 
             double const Q = ((1.0 + n_eq_db[gp]) * B_eq_buf[g])
-                           / ((1.0 + n_eq_db[g]) * B_eq_buf[gp])
-                           * (energy_groups_centers[gp] / energy_groups_centers[g]);
-            if (!std::isfinite(Q) || Q <= tiny_thresh) continue;
-            double const dlnQ = log_db_factor_deriv[g] - log_db_factor_deriv[gp];
+                           / ((1.0 + n_eq_db[g]) * B_eq_buf[gp]) * center_ratio;
+            if (std::isfinite(Q) && Q > tiny_thresh) {
+                double const balanced_reverse = Q * forward;
+                if (reverse > balanced_reverse) {
+                    sigma_s_buf[gp][g] = balanced_reverse;
+                } else if (reverse < balanced_reverse) {
+                    sigma_s_buf[g][gp] = reverse / Q;
+                }
+            }
 
-            double const balanced_reverse = Q * forward;
-            if (reverse > balanced_reverse) {
-                sigma_s_buf[gp][g] = balanced_reverse;
-                dsigma_s_buf[gp][g] = Q * (dsigma_s_buf[g][gp] + forward * dlnQ);
-            } else if (reverse < balanced_reverse) {
-                sigma_s_buf[g][gp] = reverse / Q;
-                dsigma_s_buf[g][gp] = (dsigma_s_buf[gp][g] - reverse * dlnQ) / Q;
+            double const Q_d = ((1.0 + n_eq_buf[gp]) * B_eq_buf[g])
+                             / ((1.0 + n_eq_buf[g]) * B_eq_buf[gp]) * center_ratio;
+            if (std::isfinite(Q_d) && Q_d > tiny_thresh) {
+                double const dlnQ = log_db_factor_deriv[g] - log_db_factor_deriv[gp];
+                double const balanced_reverse = Q_d * forward;
+                if (reverse > balanced_reverse) {
+                    dsigma_s_buf[gp][g] = Q_d * (dforward + forward * dlnQ);
+                } else if (reverse < balanced_reverse) {
+                    dsigma_s_buf[g][gp] = (dreverse - reverse * dlnQ) / Q_d;
+                }
             }
         }
     }
