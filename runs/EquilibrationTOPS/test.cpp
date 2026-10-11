@@ -342,7 +342,6 @@ int main(int argc, char *argv[])
 		for(std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g){
 			init_cell.Eg[g] = planck_integral::planck_energy_density_group_integral(energy_groups_boundary[g], energy_groups_boundary[g+1], T_rad);
 			init_cell.Eg[g] *= tscale * tscale / (init_cell.density * mscale / lscale);
-			init_cell.Eg[g] = std::max(init_cell.Eg[g], init_cell.Erad*1e-8);
 		}
 
 		std::cout << "Erad=" << init_cell.Erad << ", sumEg=" << std::accumulate(init_cell.Eg.begin(), init_cell.Eg.end(), 0.0) << std::endl;
