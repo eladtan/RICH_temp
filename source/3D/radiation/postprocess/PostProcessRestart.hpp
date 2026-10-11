@@ -25,7 +25,9 @@
 
 namespace imc_postprocess_tde {
 
-constexpr int kRestartSchemaVersion = 1;
+// 2: compression clock and work, split-aware polarization second moments and
+// generation cross sums.
+constexpr int kRestartSchemaVersion = 2;
 
 enum class RestartPass { Forward, Grey };
 

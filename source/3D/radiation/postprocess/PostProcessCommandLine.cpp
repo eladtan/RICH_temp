@@ -40,13 +40,15 @@ bool ParseBool(std::string const& text, bool& value)
     return false;
 }
 
-bool ParseDouble(std::string const& text, double& value)
+// A finite number, or also +-infinity ("inf") when allowInfinity is set.
+bool ParseDouble(std::string const& text, double& value, bool allowInfinity = false)
 {
     errno = 0;
     char* end = nullptr;
     double const parsed = std::strtod(text.c_str(), &end);
-    if (errno == ERANGE || end == text.c_str() || *end != '\0' ||
-        !std::isfinite(parsed))
+    if (end == text.c_str() || *end != '\0' || std::isnan(parsed))
+        return false;
+    if (std::isinf(parsed) ? !allowInfinity : errno == ERANGE)
         return false;
     value = parsed;
     return true;
@@ -123,6 +125,24 @@ void AddDouble(std::vector<Option>& options, std::string name,
                 error = "expected a finite number";
                 return false;
             }
+            return true;
+        },
+        [&target]() { return FormatDouble(target); }});
+}
+
+// A number >= 0, or "inf" (std::strtod spellings) for no limit.
+void AddLimit(std::vector<Option>& options, std::string name,
+              std::string help, double& target)
+{
+    options.push_back(Option{
+        std::move(name), "number|inf", std::move(help),
+        [&target](std::string const& text, std::string& error) {
+            double parsed = 0.0;
+            if (!ParseDouble(text, parsed, true) || !(parsed >= 0.0)) {
+                error = "expected a number >= 0 or inf";
+                return false;
+            }
+            target = parsed;
             return true;
         },
         [&target]() { return FormatDouble(target); }});
@@ -209,6 +229,52 @@ void AddFluxSourceSurfaceMode(std::vector<Option>& options,
         }});
 }
 
+void AddFluxSourceSpectrumTemperature(std::vector<Option>& options,
+                                      PostProcessIMC::FluxSourceSpectrumTemperature& target)
+{
+    using Mode = PostProcessIMC::FluxSourceSpectrumTemperature;
+    options.push_back(Option{
+        "flux-source.spectrum-temperature", "radiation|gas",
+        "Planck temperature of CER face packets (multigroup): the outer cell's radiation temperature (E_rad/a)^(1/4), or its gas temperature.",
+        [&target](std::string const& text, std::string& error) {
+            if (text == "radiation")
+                target = Mode::Radiation;
+            else if (text == "gas")
+                target = Mode::Gas;
+            else {
+                error = "expected radiation or gas";
+                return false;
+            }
+            return true;
+        },
+        [&target]() {
+            return std::string(target == Mode::Radiation ? "radiation" : "gas");
+        }});
+}
+
+void AddFluxSourceFaceFlux(std::vector<Option>& options,
+                           PostProcessIMC::FluxSourceFaceFlux& target)
+{
+    using Mode = PostProcessIMC::FluxSourceFaceFlux;
+    options.push_back(Option{
+        "flux-source.face-flux", "hydro|cell-average",
+        "CER face luminosity: the hydro's FLD flux across the face, or the mean of the two cells' FLD fluxes.",
+        [&target](std::string const& text, std::string& error) {
+            if (text == "hydro")
+                target = Mode::Hydro;
+            else if (text == "cell-average")
+                target = Mode::CellAverage;
+            else {
+                error = "expected hydro or cell-average";
+                return false;
+            }
+            return true;
+        },
+        [&target]() {
+            return std::string(target == Mode::Hydro ? "hydro" : "cell-average");
+        }});
+}
+
 void AddOpacityMode(std::vector<Option>& options, OpacityScaleMode& target)
 {
     options.push_back(Option{
@@ -265,7 +331,12 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddDouble(options, "transport.ddmc-min-cell-optical-depth", "Per-group cell optical depth above which DDMC is used.", c.transport.ddmcMinCellOpticalDepth);
     AddBool(options, "transport.ddmc-moving-interface-correction", "Apply the moving-interface weight correction when packets enter DDMC.", c.transport.ddmcMovingInterfaceCorrection);
     AddBool(options, "transport.ddmc-advection", "Advect DDMC radiation with the gas (cell velocities).", c.transport.ddmcAdvection);
+    AddDouble(options, "transport.split-observer-fraction", "Weight window: split packets in cells that escape, so none exceeds this fraction of the average observer energy per generation (0 = off).", c.transport.splitObserverFraction);
+    AddDouble(options, "transport.split-escape-reference", "Weight window: escape probability at which a cell's window reaches the full split-observer-fraction target, in (0, 1].", c.transport.splitEscapeReference);
+    AddSize(options, "transport.split-max-copies", "Weight window: maximum copies per split (>= 2).", c.transport.splitMaxCopies);
+    AddSize(options, "transport.split-copy-budget", "Weight window: maximum copies per rank per generation; splits beyond it are reduced or refused.", c.transport.splitCopyBudget);
     AddDouble(options, "transport.ddmc-max-cell-advection-peclet", "Cells whose advection Peclet number |v|(L/2)/D exceeds this stay in IMC (default: no limit).", c.transport.ddmcMaxCellAdvectionPeclet);
+    AddLimit(options, "transport.ddmc-compression-max-dynamical-times", "Frozen-flow limit on the DDMC compression shift: a packet's frequency and weight follow the gas compression only until it has spent this many local dynamical times min(1/|div v|, r/|v|) in the flow (0 = no shift, inf = unlimited).", c.transport.ddmcCompressionMaxDynamicalTimes);
     AddBool(options, "transport.use-cell-velocities", "Include snapshot cell velocities.", c.transport.useCellVelocities);
     AddCommunicationMode(options, c.transport.communication);
     AddBool(options, "transport.compton.enabled", "Enable Compton transport.", c.transport.compton.enabled);
@@ -285,17 +356,23 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddBool(options, "flux-source.remove-enclosed-outside", "Make outside regions enclosed by the source surface (packet traps) inside.", c.fluxSource.removeEnclosedOutside);
     AddDouble(options, "flux-source.ddmc-face-optical-depth", "DDMC face optical-depth threshold.", c.fluxSource.ddmcFaceOpticalDepth);
     AddFluxSourceSurfaceMode(options, c.fluxSource.surfaceMode);
+    AddFluxSourceSpectrumTemperature(options, c.fluxSource.spectrumTemperature);
+    AddFluxSourceFaceFlux(options, c.fluxSource.faceFlux);
     AddBool(options, "volume-emission.enabled", "Thermal emission from cells outside the flux-source surface.", c.volumeEmission.enabled);
     AddDouble(options, "volume-emission.cutoff-fraction", "Minimum cell luminosity as a fraction of the total emission.", c.volumeEmission.cutoffFraction);
     AddSize(options, "volume-emission.burnin-packets-target", "Volume packets per burn-in generation (cell subsampling).", c.volumeEmission.burninPacketsTarget);
     AddBool(options, "volume-emission.gate-groups", "Emit each group only outside its own thermalization surface (false: full spectrum everywhere outside the deep surface).", c.volumeEmission.gateGroups);
     AddDouble(options, "volume-emission.exploration-weight-fraction", "Split exploration packets so none exceeds this fraction of the last generation's escaping energy (0 = one packet per cell).", c.volumeEmission.explorationWeightFraction);
     AddDouble(options, "volume-emission.exploration-weight-fraction-grey", "Grey-pass exploration weight fraction (negative = same as MG).", c.volumeEmission.explorationWeightFractionGrey);
+    AddBool(options, "volume-emission.cap-learned-weight", "In probe and final generations, give learned cells at least ceil(E / exploration weight bound) packets too.", c.volumeEmission.capLearnedWeight);
     AddBool(options, "volume-emission.burnin-exact", "Burn-in gives every emitting cell exactly the per-cell packet count (false: energy-proportional).", c.volumeEmission.burninExact);
     AddSize(options, "volume-emission.learned-photons-per-cell-budget", "Average packets per learned volume cell per final generation.", c.volumeEmission.learnedPhotonsPerCellBudget);
     AddSize(options, "volume-emission.learned-photons-per-cell-budget-grey", "Grey-pass average packets per learned volume cell per final generation (0 = same as MG).", c.volumeEmission.learnedPhotonsPerCellBudgetGrey);
     AddSize(options, "volume-emission.learned-min-photons", "Minimum packets per learned volume cell.", c.volumeEmission.learnedMinPhotons);
     AddSize(options, "volume-emission.learned-max-photons", "Maximum packets per learned volume cell.", c.volumeEmission.learnedMaxPhotons);
+    AddBool(options, "volume-emission.cooling-limit", "Limit each outside cell's net emission to the hydro's Fleck-limited cooling rate (aT^4 - E) V / (beta t_hydro).", c.volumeEmission.coolingLimit);
+    AddDouble(options, "volume-emission.cooling-limit-cfl", "Courant number for the hydro time step of the cooling limit, in (0, 1).", c.volumeEmission.coolingLimitCfl);
+    AddDouble(options, "volume-emission.cooling-limit-dt", "Hydro time step [s] for the cooling limit; 0 uses the Courant step.", c.volumeEmission.coolingLimitDt);
     AddOpacityMode(options, c.opacityScaling.mode);
     AddDouble(options, "opacity-scaling.alpha-min", "Lower bound on the per-cell multigroup scale factor (0 = none).", c.opacityScaling.alphaMin);
     AddDouble(options, "opacity-scaling.alpha-max", "Upper bound on the per-cell multigroup scale factor (0 = none).", c.opacityScaling.alphaMax);
@@ -364,6 +441,7 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddBool(options, "load-balance.clamp-to-active-mean", "Cap measured cell costs relative to the mean of the cells that did work, not of all cells.", c.loadBalance.clampToActiveMean);
     AddDouble(options, "load-balance.clamp-factor", "Measured cell-cost cap factor; 0 keeps the built-in 30.", c.loadBalance.clampFactor);
     AddSize(options, "load-balance.max-rebalances", "Maximum adaptive rebalances.", c.loadBalance.maxRebalances);
+    AddSize(options, "load-balance.final-period", "Rebalance on measured costs after every N-th final generation; 0 keeps the built-in period (10).", c.loadBalance.finalPeriod);
     AddBool(options, "diagnostics.verbose-adaptive", "Print detailed adaptive diagnostics.", c.diagnostics.verboseAdaptive);
 
     return options;

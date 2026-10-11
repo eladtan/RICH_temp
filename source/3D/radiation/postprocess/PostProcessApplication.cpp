@@ -64,6 +64,7 @@
 #include "ForwardCalculation.hpp"
 #include "GreyCalculation.hpp"
 #include "FluxSourceCalculation.hpp"
+#include "CoolingLimit.hpp"
 
 using namespace imc_postprocess_tde;
 
@@ -89,6 +90,12 @@ PostProcessIMC::PostProcessPassResult ToPublicResult(
     result.luminosityWeightedPolarizationDegree =
         value.luminosityWeightedPolarizationDegree;
     result.polarizedObserverCount = value.polarizedObserverCount;
+    result.splitCopies = value.splitCopies;
+    result.weightCapExtraPhotons = value.weightCapExtraPhotons;
+    result.weightCappedCells = value.weightCappedCells;
+    result.allocatedCells = value.allocatedCells;
+    result.probePredictedPackets = value.probePredictedPackets;
+    result.probePackets = value.probePackets;
     return result;
 }
 
@@ -162,6 +169,11 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.ddmcMovingInterfaceCorrection = publicConfig.transport.ddmcMovingInterfaceCorrection;
     cfg.ddmcAdvection = publicConfig.transport.ddmcAdvection;
     cfg.ddmcMaxCellAdvectionPeclet = publicConfig.transport.ddmcMaxCellAdvectionPeclet;
+    cfg.ddmcCompressionMaxDynamicalTimes = publicConfig.transport.ddmcCompressionMaxDynamicalTimes;
+    cfg.splitObserverFraction = publicConfig.transport.splitObserverFraction;
+    cfg.splitEscapeReference = publicConfig.transport.splitEscapeReference;
+    cfg.splitMaxCopies = publicConfig.transport.splitMaxCopies;
+    cfg.splitCopyBudget = publicConfig.transport.splitCopyBudget;
     cfg.useCellVelocities = publicConfig.transport.useCellVelocities;
     switch (publicConfig.transport.communication) {
     case PostProcessIMC::MonteCarloCommunication::Rdma:
@@ -180,6 +192,8 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.fluxSourceSurfaceMode = publicConfig.fluxSource.surfaceMode;
     cfg.fluxSourceRemoveEnclosedOutside = publicConfig.fluxSource.removeEnclosedOutside;
     cfg.fluxSourceSmoothingFloor = publicConfig.fluxSource.smoothingFloor;
+    cfg.fluxSourceSpectrumTemperature = publicConfig.fluxSource.spectrumTemperature;
+    cfg.fluxSourceFaceFlux = publicConfig.fluxSource.faceFlux;
     cfg.volumeEmissionEnabled = publicConfig.volumeEmission.enabled;
     cfg.volumeEmissionCutoffFraction = publicConfig.volumeEmission.cutoffFraction;
     cfg.volumeEmissionBurninPacketsTarget = publicConfig.volumeEmission.burninPacketsTarget;
@@ -193,10 +207,14 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.volumeEmissionExplorationWeightFractionGrey = publicConfig.volumeEmission.explorationWeightFractionGrey < 0.0
         ? cfg.volumeEmissionExplorationWeightFraction
         : publicConfig.volumeEmission.explorationWeightFractionGrey;
+    cfg.volumeEmissionCapLearnedWeight = publicConfig.volumeEmission.capLearnedWeight;
     cfg.volumeEmissionLearnedPhotonsPerCellBudget = publicConfig.volumeEmission.learnedPhotonsPerCellBudget;
     cfg.volumeEmissionLearnedPhotonsPerCellBudgetGrey = publicConfig.volumeEmission.learnedPhotonsPerCellBudgetGrey;
     cfg.volumeEmissionLearnedMinPhotons = publicConfig.volumeEmission.learnedMinPhotons;
     cfg.volumeEmissionLearnedMaxPhotons = publicConfig.volumeEmission.learnedMaxPhotons;
+    cfg.volumeEmissionCoolingLimit = publicConfig.volumeEmission.coolingLimit;
+    cfg.volumeEmissionCoolingLimitCfl = publicConfig.volumeEmission.coolingLimitCfl;
+    cfg.volumeEmissionCoolingLimitDt = publicConfig.volumeEmission.coolingLimitDt;
     cfg.polarizationManualScatterings =
         publicConfig.polarization.manualScatteringsAfterAcceleration;
     cfg.polarizationDepolarizationScatterings =
@@ -253,6 +271,7 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.adaptiveLBImbalanceThreshold = publicConfig.loadBalance.imbalanceThreshold;
     cfg.adaptiveLBCooldownGenerations = publicConfig.loadBalance.cooldownGenerations;
     cfg.adaptiveLBMaxRebalances = publicConfig.loadBalance.maxRebalances;
+    cfg.measuredLBFinalPeriod = publicConfig.loadBalance.finalPeriod;
     cfg.measuredLBClampToActiveMean = publicConfig.loadBalance.clampToActiveMean;
     cfg.measuredLBClampFactor = publicConfig.loadBalance.clampFactor;
     cfg.adaptiveGroupQuality = publicConfig.adaptive.group.quality;
@@ -588,6 +607,8 @@ int PostProcessIMC::RunPostProcessMain(
                       << "Communication:   "
                       << CommunicationModeName(cfg.communication) << "\n"
                       << "Cell velocities: " << (cfg.useCellVelocities ? "yes" : "no") << "\n"
+                      << "DDMC compression: at most " << cfg.ddmcCompressionMaxDynamicalTimes
+                      << " local dynamical times per packet\n"
                       << "Polarization:    " << (cfg.polarization ? "yes" : "no") << "\n"
                       << "Photosphere:     " << (cfg.photosphere ? "yes" : "no") << "\n"
                       << "Flux source test:" << (cfg.fluxSourceCompare ? " yes" : " no") << "\n"
@@ -597,12 +618,28 @@ int PostProcessIMC::RunPostProcessMain(
                             " of total, burn-in target " + std::to_string(cfg.volumeEmissionBurninPacketsTarget) +
                             " packets, learned budget " + std::to_string(cfg.volumeEmissionLearnedPhotonsPerCellBudget) +
                             "/cell, exploration weight fraction MG " + std::to_string(cfg.volumeEmissionExplorationWeightFraction) +
-                            " grey " + std::to_string(cfg.volumeEmissionExplorationWeightFractionGrey) + ")"
+                            " grey " + std::to_string(cfg.volumeEmissionExplorationWeightFractionGrey) +
+                            (cfg.volumeEmissionCapLearnedWeight ? ", also for learned cells" : "") + ")"
                           : std::string("no")) << "\n"
+                      << "Weight window:    " << (cfg.splitObserverFraction > 0.0
+                          ? "yes (" + std::to_string(cfg.splitObserverFraction) + " of the average observer energy, escape reference "
+                            + std::to_string(cfg.splitEscapeReference) + ", at most " + std::to_string(cfg.splitMaxCopies) + " copies)"
+                          : std::string("no")) << "\n"
+                      << "Cooling limit:    " << (!cfg.volumeEmissionEnabled || !cfg.volumeEmissionCoolingLimit
+                          ? std::string("no")
+                          : cfg.volumeEmissionCoolingLimitDt > 0.0
+                              ? "yes (hydro dt " + std::to_string(cfg.volumeEmissionCoolingLimitDt) + " s)"
+                              : "yes (Courant hydro dt, CFL " + std::to_string(cfg.volumeEmissionCoolingLimitCfl) + ")") << "\n"
                       << "Flux source surface: "
                       << (cfg.fluxSourceSurfaceMode == FluxSourceSurfaceMode::MultigroupInnermost
                           ? "innermost per-group thermalization radius (mg-innermost)"
                           : "grey thermalization radius") << "\n"
+                      << "Flux source faces: "
+                      << (cfg.fluxSourceFaceFlux == FluxSourceFaceFlux::Hydro
+                          ? "hydro FLD face flux" : "mean of cell FLD fluxes")
+                      << ", spectrum at the outer cell's "
+                      << (cfg.fluxSourceSpectrumTemperature == FluxSourceSpectrumTemperature::Radiation
+                          ? "radiation temperature" : "gas temperature") << "\n"
                       << "Flux source DDMC face tau: "
                       << cfg.fluxSourceDDMCFaceOpticalDepth << "\n"
                       << "Flux source transport: "
@@ -1028,6 +1065,8 @@ int PostProcessIMC::RunPostProcessMain(
 
         params.postProcess.enabled = true;
         params.postProcess.sourceDt = cfg.sourceDt;
+        params.postProcess.compressionMaxDynamicalTimes = cfg.ddmcCompressionMaxDynamicalTimes;
+        params.postProcess.compressionCenter = {cfg.center.x, cfg.center.y, cfg.center.z};
         params.postProcess.transportTime = cfg.transportTime;
         params.postProcess.useCellVelocities = cfg.useCellVelocities;
         params.postProcess.polarization.enabled = cfg.polarization;
@@ -1119,7 +1158,31 @@ int PostProcessIMC::RunPostProcessMain(
 
         if (cfg.fluxSourceCompare) {
             InitializeFluxSourceSurface(cfg, runtime);
+            // After the surface, the FLD luminosity and the photospheres
+            // (all from the snapshot temperatures), before any source setup.
+            ApplyVolumeEmissionCoolingLimit(cfg, runtime);
+#if ENERGY_GROUPS_NUM > 1
+            // alpha is a function of each cell's temperature: rebuild it for
+            // the limited temperatures before any source setup or transport
+            // (the surface and FLD above keep the snapshot-temperature alpha).
+            // The counts are global, so every rank takes the same branch.
+            if (cfg.opacityScaleMode != imc_postprocess_tde::OpacityScaleMode::None &&
+                runtime.coolingLimit.hotLimitedCells + runtime.coolingLimit.coldLimitedCells > 0) {
+                RecomputeOpacityScaleFactors(
+                    *opacity, *greyOpacity, cells, Ncells, rank,
+                    cfg.opacityScaleMode,
+                    cfg.opacityScaleAlphaMin, cfg.opacityScaleAlphaMax,
+                    runtime.applyOpacityScaleFactors,
+                    "after cooling limit");
+            }
+#endif
             ConfigureFluxSourceForCurrentDecomposition(cfg, runtime, *physics, *opacity, true);
+            if (cfg.volumeEmissionEnabled) {
+                // After the first source setup (it fills fluxSourceCellIDs).
+                BuildEscapeOriginHotCells(cfg, runtime);
+                observer->setEscapeOriginClassification(
+                    &runtime.fluxSourceCellIDs, &runtime.escapeOriginHotCells);
+            }
         }
         if (!cfg.restartFrom.empty())
             CheckRestartSourceSurface(cfg.restartFrom, runtime, rank);
@@ -1137,6 +1200,15 @@ int PostProcessIMC::RunPostProcessMain(
         if (embeddedResultSink != nullptr) {
             embeddedResultSink->forward = ToPublicResult(forwardResult);
             embeddedResultSink->grey = ToPublicResult(greyResult);
+            PostprocessRuntime::CoolingLimitSummary const& limit = runtime.coolingLimit;
+            embeddedResultSink->coolingLimit.applied = limit.applied;
+            embeddedResultSink->coolingLimit.hydroTime = limit.hydroTime;
+            embeddedResultSink->coolingLimit.hydroTimeFromCourant = limit.hydroTimeFromCourant;
+            embeddedResultSink->coolingLimit.outsideCells = limit.outsideCells;
+            embeddedResultSink->coolingLimit.hotLimitedCells = limit.hotLimitedCells;
+            embeddedResultSink->coolingLimit.coldLimitedCells = limit.coldLimitedCells;
+            embeddedResultSink->coolingLimit.netEmissionBefore = limit.netEmissionBefore;
+            embeddedResultSink->coolingLimit.netEmissionAfter = limit.netEmissionAfter;
             embeddedResultSink->hdf5Path = cfg.outputPath;
             embeddedResultSink->vtkPath = BaseVtkOutputPath(cfg);
         }

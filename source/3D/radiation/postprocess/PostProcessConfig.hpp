@@ -14,6 +14,8 @@ namespace imc_postprocess_tde {
 
 using OpacityScaleMode = PostProcessIMC::OpacityScaleMode;
 using FluxSourceSurfaceMode = PostProcessIMC::FluxSourceSurfaceMode;
+using FluxSourceSpectrumTemperature = PostProcessIMC::FluxSourceSpectrumTemperature;
+using FluxSourceFaceFlux = PostProcessIMC::FluxSourceFaceFlux;
 
 //! \brief Monte Carlo particle-exchange engine selection
 enum class CommunicationMode
@@ -52,6 +54,11 @@ struct Config
     bool ddmcMovingInterfaceCorrection = true;
     bool ddmcAdvection = true;
     double ddmcMaxCellAdvectionPeclet = std::numeric_limits<double>::infinity();
+    double ddmcCompressionMaxDynamicalTimes = 1.0;  // inf = unlimited, 0 = off
+    double splitObserverFraction = 0.0;   // 0 = no weight window
+    double splitEscapeReference = 0.1;
+    size_t splitMaxCopies = 1000;
+    size_t splitCopyBudget = 1000000;
     bool useCellVelocities = true;
     CommunicationMode communication = CommunicationMode::Auto;
     bool polarization = true;
@@ -63,6 +70,8 @@ struct Config
     FluxSourceSurfaceMode fluxSourceSurfaceMode = FluxSourceSurfaceMode::Grey;
     bool fluxSourceRemoveEnclosedOutside = true;
     double fluxSourceSmoothingFloor = 0.5;
+    FluxSourceSpectrumTemperature fluxSourceSpectrumTemperature = FluxSourceSpectrumTemperature::Radiation;
+    FluxSourceFaceFlux fluxSourceFaceFlux = FluxSourceFaceFlux::Hydro;
     bool volumeEmissionEnabled = false;
     double volumeEmissionCutoffFraction = 1e-10;
     size_t volumeEmissionBurninPacketsTarget = 2000000;
@@ -70,10 +79,14 @@ struct Config
     bool volumeEmissionBurninExact = true;
     double volumeEmissionExplorationWeightFraction = 0.0;
     double volumeEmissionExplorationWeightFractionGrey = 0.0;  // resolved: never negative
+    bool volumeEmissionCapLearnedWeight = true;
     size_t volumeEmissionLearnedPhotonsPerCellBudget = 10;
     size_t volumeEmissionLearnedPhotonsPerCellBudgetGrey = 0;  // 0 = same as MG
     size_t volumeEmissionLearnedMinPhotons = 1;
     size_t volumeEmissionLearnedMaxPhotons = 5000;
+    bool volumeEmissionCoolingLimit = true;
+    double volumeEmissionCoolingLimitCfl = 0.25;
+    double volumeEmissionCoolingLimitDt = 0.0;  // 0 = Courant step
     int polarizationManualScatterings = 128;
     double polarizationDepolarizationScatterings = 0.5;
     std::string polarizationClosure = "damped_last_scatterings";
@@ -107,6 +120,7 @@ struct Config
     double adaptiveLBImbalanceThreshold = 2.0;
     size_t adaptiveLBCooldownGenerations = 2;
     size_t adaptiveLBMaxRebalances = 6;
+    size_t measuredLBFinalPeriod = 0;  // 0 = built-in (10; grey without flux source 50)
     bool measuredLBClampToActiveMean = true;
     double measuredLBClampFactor = 0.0;   // 0 = built-in
 
@@ -150,6 +164,7 @@ struct Config
 std::string ReplaceExtension(std::string const& path, std::string const& newExt);
 std::string InsertSuffixBeforeExtension(std::string const& path, std::string const& suffix);
 std::string BaseVtkOutputPath(Config const& cfg);
+// Empty when VTK output is off.
 std::string GreyVtkOutputPath(Config const& cfg);
 bool ValidateConfig(Config& cfg, int rank);
 

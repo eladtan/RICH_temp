@@ -323,11 +323,39 @@ public:
     // ConfigureFluxSourceForCurrentDecomposition call. Empty when volume
     // emission is off. Predicts exploration packet counts for load balancing.
     std::vector<double> volumeEmissionCellLuminosity;
+    // Face-source luminosity owned by each local cell of the current
+    // decomposition (erg/s), from the last
+    // ConfigureFluxSourceForCurrentDecomposition call.
+    std::vector<double> fluxSourceCellLuminosity;
     bool volumeEmissionReported = false;
     // Escaping (observer-crossing) luminosity of the last transported
     // generation, erg/s; 0 before the first one. Reference for the volume
     // emission cutoff.
     double lastEscapingLuminosity = 0.0;
+    // Volume-emission cooling limit (ApplyVolumeEmissionCoolingLimit), applied
+    // once to the snapshot temperatures before the first source setup. Global
+    // values, the same on every rank.
+    struct CoolingLimitSummary
+    {
+        bool applied = false;
+        double hydroTime = 0.0;            // s
+        bool hydroTimeFromCourant = false; // false: explicit cooling-limit-dt
+        size_t courantCellID = 0;          // cell with the smallest Courant time
+        double courantCellRadius = 0.0;    // cm from the observer centre
+        double courantCellDensity = 0.0;   // g/cm^3
+        double courantCellTemperature = 0.0;
+        uint64_t outsideCells = 0;
+        uint64_t hotLimitedCells = 0;
+        uint64_t coldLimitedCells = 0;
+        double netEmissionBefore = 0.0;    // erg/s, c kappa_P (aT^4 - E) V summed
+        double netEmissionAfter = 0.0;
+        double maxRelativeTemperatureChange = 0.0;
+    } coolingLimit;
+    // Escape-origin diagnostic: (cell ID, class) of every volume cell at or
+    // beyond the flux-source surface hotter than 1e5 K after the cooling limit
+    // (class 2 [1e5,1e6) K, 3 [1e6,1e7) K, 4 >= 1e7 K), sorted by ID, the same
+    // on every rank. See SphericalObserver::setEscapeOriginClassification.
+    std::vector<std::pair<size_t, unsigned char>> escapeOriginHotCells;
 };
 
 using PostprocessRuntime = PostProcessSession;
@@ -343,6 +371,18 @@ struct ForwardPostprocessResult
     bool usesDDMC = false;
     bool usesPolarization = false;
     bool usesCompton = false;
+    // Weight-window copies made over the pass (all generations).
+    uint64_t splitCopies = 0;
+    // Packets added by the learned packet-weight cap over the pass, the cells
+    // it raised and all cells given packets, summed over generations (global,
+    // the same on every rank).
+    uint64_t weightCapExtraPhotons = 0;
+    uint64_t weightCappedCells = 0;
+    uint64_t allocatedCells = 0;
+    // Packets of the learned-only probe generation: predicted for the load
+    // balance before it (0 when that balance did not run) and created.
+    uint64_t probePredictedPackets = 0;
+    uint64_t probePackets = 0;
     std::vector<double> fleckFactors;
     double sourceLuminosity = 0.0;
     double emittedLuminosity = 0.0;

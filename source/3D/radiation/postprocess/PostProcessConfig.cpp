@@ -157,7 +157,10 @@ std::string BaseVtkOutputPath(Config const& cfg)
 
 std::string GreyVtkOutputPath(Config const& cfg)
 {
-    return InsertSuffixBeforeExtension(BaseVtkOutputPath(cfg), "_grey");
+    // Empty when VTK output is off, like BaseVtkOutputPath (a bare "_grey"
+    // would be written to the working directory).
+    std::string const base = BaseVtkOutputPath(cfg);
+    return base.empty() ? base : InsertSuffixBeforeExtension(base, "_grey");
 }
 
 bool ValidateConfig(Config &cfg, int rank)
@@ -331,11 +334,52 @@ bool ValidateConfig(Config &cfg, int rank)
         if (rank == 0) std::cerr << "--flux-source-tau must be finite and positive\n";
         return false;
     }
+    if (!(cfg.splitObserverFraction >= 0.0) || !std::isfinite(cfg.splitObserverFraction)) {
+        if (rank == 0) std::cerr << "--transport.split-observer-fraction must be finite and >= 0 (0 = off)\n";
+        return false;
+    }
+    if (!(cfg.splitEscapeReference > 0.0) || cfg.splitEscapeReference > 1.0) {
+        if (rank == 0) std::cerr << "--transport.split-escape-reference must lie in (0, 1]\n";
+        return false;
+    }
+#ifdef STORM_WITH_GPU
+    if (cfg.splitObserverFraction > 0.0) {
+        // Device-transported packets do not pass the host step that splits.
+        if (rank == 0) std::cerr << "--transport.split-observer-fraction is not supported with STORM GPU transport\n";
+        return false;
+    }
+#endif
+    if (cfg.splitObserverFraction > 0.0 && (!cfg.adaptiveSourceCells || !cfg.fluxSourceCompare)) {
+        // The importance is the learned escaped energy over the emitted
+        // energy of the flux-source and volume emission.
+        if (rank == 0) std::cerr << "--transport.split-observer-fraction requires adaptive.source.enabled and flux-source.enabled\n";
+        return false;
+    }
+    if (cfg.splitObserverFraction > 0.0 && cfg.splitCopyBudget < 1) {
+        if (rank == 0) std::cerr << "--transport.split-copy-budget must be >= 1\n";
+        return false;
+    }
+    if (cfg.splitMaxCopies < 2) {
+        if (rank == 0) std::cerr << "--transport.split-max-copies must be >= 2\n";
+        return false;
+    }
     if (!(cfg.ddmcMaxCellAdvectionPeclet > 0.0)) {
         if (rank == 0)
             std::cerr << "--transport.ddmc-max-cell-advection-peclet must be positive\n";
         return false;
     }
+    if (!(cfg.ddmcCompressionMaxDynamicalTimes >= 0.0)) {
+        if (rank == 0)
+            std::cerr << "--transport.ddmc-compression-max-dynamical-times must be >= 0 or inf\n";
+        return false;
+    }
+#ifdef STORM_WITH_GPU
+    if (std::isfinite(cfg.ddmcCompressionMaxDynamicalTimes) && cfg.ddmc && cfg.useCellVelocities) {
+        if (rank == 0)
+            std::cerr << "--transport.ddmc-compression-max-dynamical-times is not supported with STORM GPU transport (use inf)\n";
+        return false;
+    }
+#endif
     if (!(cfg.fluxSourceDDMCFaceOpticalDepth > 0.0) ||
         !std::isfinite(cfg.fluxSourceDDMCFaceOpticalDepth)) {
         if (rank == 0)
@@ -345,6 +389,14 @@ bool ValidateConfig(Config &cfg, int rank)
     if (!(cfg.measuredLBClampFactor == 0.0 || cfg.measuredLBClampFactor >= 1.0) ||
         !std::isfinite(cfg.measuredLBClampFactor)) {
         if (rank == 0) std::cerr << "--load-balance.clamp-factor must be 0 (built-in) or >= 1\n";
+        return false;
+    }
+    if (!(cfg.volumeEmissionCoolingLimitCfl > 0.0) || !(cfg.volumeEmissionCoolingLimitCfl < 1.0)) {
+        if (rank == 0) std::cerr << "--volume-emission.cooling-limit-cfl must lie in (0, 1)\n";
+        return false;
+    }
+    if (!(cfg.volumeEmissionCoolingLimitDt >= 0.0) || !std::isfinite(cfg.volumeEmissionCoolingLimitDt)) {
+        if (rank == 0) std::cerr << "--volume-emission.cooling-limit-dt must be finite and >= 0 (0 = Courant step)\n";
         return false;
     }
     if (!(cfg.fluxSourceSmoothingFloor >= 0.0) || cfg.fluxSourceSmoothingFloor > 1.0) {

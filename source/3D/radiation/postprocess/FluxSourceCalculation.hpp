@@ -18,6 +18,12 @@ void InitializeFluxSourceSurface(
     Config const& cfg,
     PostprocessRuntime& runtime);
 
+// Per tessellation point (owned and ghost): 1 at or beyond the flux-source
+// surface, 0 inside it. Enclosed outside regions are not removed here.
+std::vector<unsigned char> BuildOutsideFluxSourceMask(
+    Config const& cfg,
+    PostprocessRuntime const& runtime);
+
 // Installs the face sources of the current decomposition on `physics`, and,
 // when volume emission is enabled, the mask of outside cells whose thermal
 // emission (Planck-mean of `emissionOpacity`) passes the cutoff.

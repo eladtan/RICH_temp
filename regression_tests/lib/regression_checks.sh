@@ -2846,3 +2846,166 @@ check_imc_ddmc_review_fixes_case() {
     set_check_msg "Doppler path-length estimator, DDMC thermal admission and DDMC force invariant hold (estimator=${estimator}, kept=${kept} vs ${expected}, internal=${internal}, invariant=${invariant})"
     return 0
 }
+
+check_imc_postprocess_restart_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/imc_postprocess_restart_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale imc_postprocess_restart_metrics.txt"
+        return 1
+    fi
+
+    local round_trip chain segments pass_flag
+    round_trip=$(awk '$1 == "round_trip_max_rel" { print $2 }' "$metrics_file")
+    chain=$(awk '$1 == "chain_max_rel" { print $2 }' "$metrics_file")
+    segments=$(awk '$1 == "segments" { print $2 "/" $3 "/" $4 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse imc_postprocess_restart metrics"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "imc_postprocess_restart reported pass=0 (round_trip_max_rel=${round_trip:-?}, chain_max_rel=${chain:-?}, segments=${segments:-?}); see the FAIL lines in stdout"
+        return 1
+    fi
+
+    if [[ -n "$chain" ]]; then
+        set_check_msg "restart round trip exact, restart chain reproduces one restart (max rel ${chain}), refusals hold"
+    else
+        set_check_msg "restart round trip exact under MPI (chain check needs one rank), refusals hold"
+    fi
+    return 0
+}
+
+check_imc_postprocess_cooling_limit_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/imc_postprocess_cooling_limit_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale imc_postprocess_cooling_limit_metrics.txt"
+        return 1
+    fi
+
+    local pass_flag hot_rel grey_l
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    hot_rel=$(awk '$1 == "single_hot_cap_rel" { print $2 }' "$metrics_file")
+    grey_l=$(awk '$1 == "grey_L" { print "E0=" $3 " H0=" $5 " H1=" $7 }' "$metrics_file")
+    if [[ -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse imc_postprocess_cooling_limit metrics"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "imc_postprocess_cooling_limit reported pass=0; see the FAIL lines in stdout"
+        return 1
+    fi
+    set_check_msg "cooling limit exact on single cells (hot cap rel ${hot_rel:-?}), planted cells limited, grey L ${grey_l:-?}"
+    return 0
+}
+
+check_imc_postprocess_weight_split_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/imc_postprocess_weight_split_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale imc_postprocess_weight_split_metrics.txt"
+        return 1
+    fi
+
+    local pass_flag grey mg
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    grey=$(awk '$1 == "grey_L" { print "z=" $11 " copies=" $13 }' "$metrics_file")
+    mg=$(awk '$1 == "MG_L" { print "z=" $11 " copies=" $13 }' "$metrics_file")
+    if [[ -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse imc_postprocess_weight_split metrics"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "imc_postprocess_weight_split reported pass=0; see the FAIL lines in stdout"
+        return 1
+    fi
+    local cap_grey cap_mg
+    cap_grey=$(awk '$1 == "grey_cap" { print "z=" $11 }' "$metrics_file")
+    cap_mg=$(awk '$1 == "MG_cap" { print "z=" $11 }' "$metrics_file")
+    set_check_msg "weight window unbiased: grey ${grey:-?}, MG ${mg:-?}; learned cap unbiased: grey ${cap_grey:-?}, MG ${cap_mg:-?}"
+    return 0
+}
+
+check_multigroup_thermal_sampling_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/multigroup_thermal_sampling_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale multigroup_thermal_sampling_metrics.txt"
+        return 1
+    fi
+
+    local pass_flag scale_diff
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    scale_diff=$(awk '$1 == "scale_independence_max_relative" { print $2 }' "$metrics_file")
+    if [[ -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse multigroup_thermal_sampling metrics"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "thermal frequency sampling lands outside its group, on a boundary, off the group pdf, or depends on the opacity scale (scale difference ${scale_diff}); see the FAIL lines in stdout"
+        return 1
+    fi
+    set_check_msg "thermal frequency samples stay inside their groups, follow the group pdf and do not depend on the opacity scale (max relative difference ${scale_diff})"
+    return 0
+}
+
+check_imc_postprocess_moving_frame_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/imc_postprocess_moving_frame_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale imc_postprocess_moving_frame_metrics.txt"
+        return 1
+    fi
+
+    local pass_flag gains
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    gains=$(awk '$1 ~ /_(outflow|inflow)$/ { printf "%s=%s ", $1, $2 }' "$metrics_file")
+    if [[ -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse imc_postprocess_moving_frame metrics"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "moving-envelope energy gains have the wrong sign, a static envelope does not conserve energy, or DDMC differs from IMC (${gains}); see the FAIL lines in stdout"
+        return 1
+    fi
+    set_check_msg "static envelope conserves energy; outflow loses and inflow gains energy in IMC and DDMC; DDMC matches IMC (${gains})"
+    return 0
+}

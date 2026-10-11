@@ -36,6 +36,23 @@ enum class MonteCarloCommunication { Auto, Rdma, TwoSided };
 // thermalization layer.
 enum class FluxSourceSurfaceMode { Grey, MultigroupInnermost };
 
+// Temperature of the Planck spectrum given to packets emitted at, or
+// re-emitted by, a CER face (multigroup): the radiation temperature
+// (E_rad / a)^(1/4) of the face's outer cell, or that cell's gas temperature.
+// Radiation is the default: the face carries the flux of the thermalized
+// radiation field, and hot optically thin gas next to the surface (T_gas up to
+// ~1e8 K under T_rad ~1e5 K in snap_109) does not set its spectrum.
+enum class FluxSourceSpectrumTemperature { Radiation, Gas };
+
+// Luminosity of a CER face: the hydro's FLD flux across that face (two-point
+// gradient between the cells' centres of mass, both cells' diffusion
+// coefficients at the face temperature ((T_1^4 + T_2^4) / 2)^(1/4), harmonic
+// mean, flux limiter on the face gradient; Diffusion.cpp), or the arithmetic
+// mean of the two cells' cell-centred FLD fluxes (the original formula; in
+// snap_109 it gives 0.85 of the hydro's positive face luminosity, 3.86e42
+// against 4.56e42 erg/s).
+enum class FluxSourceFaceFlux { Hydro, CellAverage };
+
 struct PostProcessConfig
 {
     struct Input
@@ -92,6 +109,27 @@ struct PostProcessConfig
         // Cells whose advection Peclet number |v| (L/2) / D exceeds this stay
         // in IMC (STORM's ddmcMaxCellAdvectionPeclet); infinity disables it.
         double ddmcMaxCellAdvectionPeclet = std::numeric_limits<double>::infinity();
+        // Frozen-flow limit on the DDMC comoving-frame compression shift
+        // (STORM's postProcess.compressionMaxDynamicalTimes): each packet's
+        // clock advances at max(|div v|, |v| / max(r, cell size)) on every
+        // step, with r measured from the observer center, and the shift of
+        // its frequency and weight stops once the clock reaches this value.
+        // 1 allows the compression of one local dynamical time, the most the
+        // frozen snapshot can justify; 0 turns the shift off; infinity is the
+        // unlimited shift.
+        double ddmcCompressionMaxDynamicalTimes = 1.0;
+        // Weight window (importance splitting): a packet that starts a step
+        // in a cell whose measured escape probability is p splits into equal
+        // copies when heavier than w_max / min(1, p / splitEscapeReference),
+        // w_max = splitObserverFraction x (last generation's escaping energy)
+        // / (number of observers). 0 disables it. p is the cell's escaped
+        // energy over its emitted energy, accumulated over the final
+        // generations.
+        double splitObserverFraction = 0.0;
+        double splitEscapeReference = 0.1;
+        size_t splitMaxCopies = 1000;
+        // At most this many copies per rank per generation (288 B each).
+        size_t splitCopyBudget = 1000000;
         bool useCellVelocities = true;
         MonteCarloCommunication communication = MonteCarloCommunication::Auto;
 
@@ -133,6 +171,8 @@ struct PostProcessConfig
         // raised direction no longer sits at thermalizationTau, and the run
         // warns when that happens.
         double smoothingFloor = 0.5;
+        FluxSourceSpectrumTemperature spectrumTemperature = FluxSourceSpectrumTemperature::Radiation;
+        FluxSourceFaceFlux faceFlux = FluxSourceFaceFlux::Hydro;
     } fluxSource;
 
     // Thermal emission from every cell outside the flux-source surface at its
@@ -165,6 +205,13 @@ struct PostProcessConfig
         // explorationWeightFraction. The grey escaping luminosity is ~5x lower
         // than the MG one, so the same fraction gives a ~5x smaller cap.
         double explorationWeightFractionGrey = -1.0;
+        // true: in the probe and final generations the same weight bound also
+        // applies to cells the allocation gave packets: each gets at least
+        // ceil(E / bound) packets, above learnedMaxPhotons if needed. Without
+        // it, a learned cell that emits far more than the escaping luminosity
+        // but gets few packets sends rare packets carrying several per cent of
+        // a generation's escaping energy.
+        bool capLearnedWeight = true;
         // Neyman budget and bounds for learned volume cells (face cells keep
         // adaptive.source.learned*).
         size_t learnedPhotonsPerCellBudget = 10;
@@ -172,6 +219,19 @@ struct PostProcessConfig
         size_t learnedPhotonsPerCellBudgetGrey = 0;
         size_t learnedMinPhotons = 1;
         size_t learnedMaxPhotons = 5000;
+        // Limit each outside cell's net emission to what the hydro's Fleck
+        // step removes per hydro time, (aT^4 - E) V / (beta t_hydro). A cell
+        // whose cooling time is far shorter than the hydro step stays too hot
+        // in the hydro (the Fleck factor spreads its cooling over several
+        // steps), so its snapshot temperature overstates the emission by about
+        // t_hydro / t_cool. The cell's temperature is lowered to the value that
+        // gives the limited net emission; transport keeps Fleck factor 1.
+        bool coolingLimit = true;
+        // Courant number for t_hydro (RICH CourantFriedrichsLewy, face
+        // velocities from the gas as on a Lagrangian mesh).
+        double coolingLimitCfl = 0.25;
+        // Explicit hydro time step in seconds; 0 uses the Courant step.
+        double coolingLimitDt = 0.0;
     } volumeEmission;
 
     struct OpacityScaling
@@ -271,6 +331,10 @@ struct PostProcessConfig
         double imbalanceThreshold = 2.0;
         size_t cooldownGenerations = 2;
         size_t maxRebalances = 6;
+        // Rebalance on the measured costs after every finalPeriod-th final
+        // generation (besides final steps 1 and 2). 0 keeps the built-in
+        // period: 10, or 50 for a grey pass without the flux source.
+        size_t finalPeriod = 0;
         // Cap a cell's measured cost at clampFactor times the mean cost of the
         // cells that did work (true) or of all cells (false). With the work in
         // ~2% of the cells, the all-cell cap hid ~30x of the hot cells' cost
@@ -338,12 +402,37 @@ struct PostProcessPassResult
     double timedOutFraction = 0.0;
     double luminosityWeightedPolarizationDegree = 0.0;
     uint64_t polarizedObserverCount = 0;
+    uint64_t splitCopies = 0;   // weight-window copies over the pass
+    // Packets added by volume-emission.cap-learned-weight over the pass, the
+    // cells it raised and all cells given packets, summed over generations.
+    uint64_t weightCapExtraPhotons = 0;
+    uint64_t weightCappedCells = 0;
+    uint64_t allocatedCells = 0;
+    // Packets of the learned-only probe generation: predicted by the load
+    // balance before it (0 when that balance did not run, e.g. serial) and
+    // created.
+    uint64_t probePredictedPackets = 0;
+    uint64_t probePackets = 0;
+};
+
+// Volume-emission cooling limit applied before transport (global values).
+struct PostProcessCoolingLimitResult
+{
+    bool applied = false;
+    double hydroTime = 0.0;
+    bool hydroTimeFromCourant = false;
+    uint64_t outsideCells = 0;
+    uint64_t hotLimitedCells = 0;
+    uint64_t coldLimitedCells = 0;
+    double netEmissionBefore = 0.0;
+    double netEmissionAfter = 0.0;
 };
 
 struct PostProcessResult
 {
     PostProcessPassResult forward;
     PostProcessPassResult grey;
+    PostProcessCoolingLimitResult coolingLimit;
     std::string hdf5Path;
     std::string vtkPath;
 };

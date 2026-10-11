@@ -1,4 +1,5 @@
 #include "MultigroupOpacity.hpp"
+#include "GroupThermalSampling.hpp"
 #include "misc/universal_error.hpp"
 #include <algorithm>
 #include <cmath>
@@ -43,9 +44,9 @@ double MultigroupOpacity::GetThermalEnergy(const ComputationalCell3D &cell, doub
     {
         this->GetCummulativeOpacity(cell);
     }
-    double interp = LinearInterpolation(this->cummulativeOpacity, ComputationalCell3D::energyBoundaries, random * this->cummulativeOpacity.back());
-
-    return interp;
+    return group_thermal_sampling::SampleThermalEnergy(
+        this->cummulativeOpacity, ComputationalCell3D::energyBoundaries, ENERGY_GROUPS_NUM,
+        std::clamp(random, 0.0, std::nextafter(1.0, 0.0)));
 }
 
 std::array<double, ENERGY_GROUPS_NUM> MultigroupOpacity::GetThermalGroupPdf(const ComputationalCell3D &cell)
@@ -83,7 +84,5 @@ double MultigroupOpacity::SampleThermalEnergyInGroup(const ComputationalCell3D &
     double const r = std::isfinite(random)
         ? std::clamp(random, 0.0, upperRandom)
         : 0.5;
-    double const target = c0 + r * (c1 - c0);
-    double interp = LinearInterpolation(this->cummulativeOpacity, ComputationalCell3D::energyBoundaries, target);
-    return interp;
+    return group_thermal_sampling::SampleLinearInGroup(ComputationalCell3D::energyBoundaries, group, r);
 }

@@ -718,8 +718,10 @@ CollectGlobalObserverQuality(SphericalObserver::ObserverQualitySnapshot local)
     ReduceDoubleVector(local.stokesQ);
     ReduceDoubleVector(local.stokesU);
     ReduceDoubleVector(local.polarizationWeightSq);
-    ReduceDoubleVector(local.sumWQ2);
-    ReduceDoubleVector(local.sumWU2);
+    ReduceDoubleVector(local.sumKW2Q);
+    ReduceDoubleVector(local.sumKW2QQ);
+    ReduceDoubleVector(local.sumKW2U);
+    ReduceDoubleVector(local.sumKW2UU);
 #ifdef RICH_MPI
     int polEnabled = local.polarizationEnabled ? 1 : 0;
     MPI_Allreduce(MPI_IN_PLACE, &polEnabled, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
@@ -766,8 +768,10 @@ ObserverQualityDiagnostics BuildObserverQualityDiagnostics(
         state.cumulativeObserverPolarizationWeightSq.assign(diag.observerCount, 0.0);
         state.cumulativeObserverStokesQ.assign(diag.observerCount, 0.0);
         state.cumulativeObserverStokesU.assign(diag.observerCount, 0.0);
-        state.cumulativeObserverSumWQ2.assign(diag.observerCount, 0.0);
-        state.cumulativeObserverSumWU2.assign(diag.observerCount, 0.0);
+        state.cumulativeObserverSumKW2Q.assign(diag.observerCount, 0.0);
+        state.cumulativeObserverSumKW2QQ.assign(diag.observerCount, 0.0);
+        state.cumulativeObserverSumKW2U.assign(diag.observerCount, 0.0);
+        state.cumulativeObserverSumKW2UU.assign(diag.observerCount, 0.0);
         state.cumulativeObserverCrossings.assign(diag.observerCount, 0ULL);
     }
 
@@ -783,10 +787,14 @@ ObserverQualityDiagnostics BuildObserverQualityDiagnostics(
                     state.cumulativeObserverStokesQ[i] += snap.stokesQ[i];
                 if (i < snap.stokesU.size())
                     state.cumulativeObserverStokesU[i] += snap.stokesU[i];
-                if (i < snap.sumWQ2.size())
-                    state.cumulativeObserverSumWQ2[i] += snap.sumWQ2[i];
-                if (i < snap.sumWU2.size())
-                    state.cumulativeObserverSumWU2[i] += snap.sumWU2[i];
+                if (i < snap.sumKW2Q.size())
+                    state.cumulativeObserverSumKW2Q[i] += snap.sumKW2Q[i];
+                if (i < snap.sumKW2QQ.size())
+                    state.cumulativeObserverSumKW2QQ[i] += snap.sumKW2QQ[i];
+                if (i < snap.sumKW2U.size())
+                    state.cumulativeObserverSumKW2U[i] += snap.sumKW2U[i];
+                if (i < snap.sumKW2UU.size())
+                    state.cumulativeObserverSumKW2UU[i] += snap.sumKW2UU[i];
             }
             if (i < snap.crossingCount.size())
                 state.cumulativeObserverCrossings[i] += snap.crossingCount[i];
@@ -834,8 +842,10 @@ ObserverQualityDiagnostics BuildObserverQualityDiagnostics(
                 state.cumulativeObserverStokesQ[i],
                 state.cumulativeObserverStokesU[i],
                 state.cumulativeObserverPolarizationWeightSq[i],
-                state.cumulativeObserverSumWQ2[i],
-                state.cumulativeObserverSumWU2[i]);
+                state.cumulativeObserverSumKW2Q[i],
+                state.cumulativeObserverSumKW2QQ[i],
+                state.cumulativeObserverSumKW2U[i],
+                state.cumulativeObserverSumKW2UU[i]);
             diag.snrByObserver[i] = quality.snr;
             diag.sigmaPByObserver[i] =
                 quality.uncertaintyValid ? quality.sigmaP : 0.0;
@@ -972,7 +982,7 @@ ReduceSourceAllocationSummary(RadiationIMC::SourceAllocationSummary local)
 #ifdef RICH_MPI
     unsigned long long const localSourceCells = local.sourceCells;
     unsigned long long const localLearnedCells = local.learnedCells;
-    unsigned long long sums[8] = {
+    unsigned long long sums[9] = {
         local.totalPhotons,
         local.sourceCells,
         local.boostedCells,
@@ -980,9 +990,10 @@ ReduceSourceAllocationSummary(RadiationIMC::SourceAllocationSummary local)
         local.learnedBoostedCells,
         local.learnedPhotons,
         local.learnedExtraPhotons,
-        0
+        local.weightCappedCells,
+        local.weightCapExtraPhotons
     };
-    MPI_Allreduce(MPI_IN_PLACE, sums, 8, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, sums, 9, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
     local.totalPhotons = sums[0];
     local.sourceCells = sums[1];
     local.boostedCells = sums[2];
@@ -990,6 +1001,8 @@ ReduceSourceAllocationSummary(RadiationIMC::SourceAllocationSummary local)
     local.learnedBoostedCells = sums[4];
     local.learnedPhotons = sums[5];
     local.learnedExtraPhotons = sums[6];
+    local.weightCappedCells = sums[7];
+    local.weightCapExtraPhotons = sums[8];
 
     unsigned long long minPhotons = localSourceCells > 0
         ? static_cast<unsigned long long>(local.minPhotons)
@@ -1429,6 +1442,10 @@ AdaptiveSourceUpdateSummary UpdateAdaptiveSourceScoresDistributed(
     ownedStats.reserve(byPair.size());
     for (auto const& kv : byPair)
         ownedStats.push_back(kv.second);
+    if (cfg.splitObserverFraction > 0.0) {
+        for (auto const& s : ownedStats)
+            summary.ownedEscapedEnergyByCellID[s.cellID] += s.energy;
+    }
     std::unordered_map<AdaptivePairKey, SphericalObserver::SourceCellEscapeStat,
                        AdaptivePairKeyHash>().swap(byPair);
     summary.topStats = GatherTopSourceStats(ownedStats);
@@ -1787,6 +1804,8 @@ void PrintAdaptiveGenerationStats(
               << "/" << allocation.learnedMaxPhotons
               << " learned_cells_photons_ge1000=" << allocation.learnedPhotonsAtLeast1000
               << " learned_cells_photons_ge2000=" << allocation.learnedPhotonsAtLeast2000
+              << " weight_capped_cells=" << allocation.weightCappedCells
+              << " weight_cap_extra_photons=" << allocation.weightCapExtraPhotons
               << " score_p05/p50/p95/max=" << allocation.adaptiveScoreP05
               << "/" << allocation.adaptiveScoreP50
               << "/" << allocation.adaptiveScoreP95
@@ -1936,8 +1955,10 @@ void CollectGlobalObserverGroupQuality(
     if (snap.polarizationEnabled) {
         flattenD(snap.stokesQ);
         flattenD(snap.stokesU);
-        flattenD(snap.sumWQ2);
-        flattenD(snap.sumWU2);
+        flattenD(snap.sumKW2Q);
+        flattenD(snap.sumKW2QQ);
+        flattenD(snap.sumKW2U);
+        flattenD(snap.sumKW2UU);
     }
 #else
     (void)snap;
@@ -2003,8 +2024,10 @@ ObserverGroupQualityDiagnostics BuildObserverGroupQualityDiagnosticsFromSnapshot
                     snap.stokesQ[o][g],
                     snap.stokesU[o][g],
                     snap.energyWeightSq[o][g],
-                    snap.sumWQ2[o][g],
-                    snap.sumWU2[o][g]);
+                    snap.sumKW2Q[o][g],
+                    snap.sumKW2QQ[o][g],
+                    snap.sumKW2U[o][g],
+                    snap.sumKW2UU[o][g]);
                 diag.polarizationDegree[o][g] = quality.degree;
                 diag.polarizationSnr[o][g] = quality.snr;
                 diag.polarizationSnrValid[o][g] =
@@ -2090,8 +2113,10 @@ ObserverGroupQualityDiagnostics BuildObserverGroupQualityDiagnosticsFromSnapshot
         history.cumulativeWeightSq = std::vector<std::vector<double>>(nObs, std::vector<double>(nGrp, 0.0));
         history.cumulativeStokesQ = std::vector<std::vector<double>>(nObs, std::vector<double>(nGrp, 0.0));
         history.cumulativeStokesU = std::vector<std::vector<double>>(nObs, std::vector<double>(nGrp, 0.0));
-        history.cumulativeSumWQ2 = std::vector<std::vector<double>>(nObs, std::vector<double>(nGrp, 0.0));
-        history.cumulativeSumWU2 = std::vector<std::vector<double>>(nObs, std::vector<double>(nGrp, 0.0));
+        history.cumulativeSumKW2Q = std::vector<std::vector<double>>(nObs, std::vector<double>(nGrp, 0.0));
+        history.cumulativeSumKW2QQ = std::vector<std::vector<double>>(nObs, std::vector<double>(nGrp, 0.0));
+        history.cumulativeSumKW2U = std::vector<std::vector<double>>(nObs, std::vector<double>(nGrp, 0.0));
+        history.cumulativeSumKW2UU = std::vector<std::vector<double>>(nObs, std::vector<double>(nGrp, 0.0));
         history.cumulativeCrossings.assign(nObs, std::vector<size_t>(nGrp, 0));
     }
 
@@ -2103,8 +2128,10 @@ ObserverGroupQualityDiagnostics BuildObserverGroupQualityDiagnosticsFromSnapshot
                 if (snap.polarizationEnabled) {
                     history.cumulativeStokesQ[o][g] += snap.stokesQ[o][g];
                     history.cumulativeStokesU[o][g] += snap.stokesU[o][g];
-                    history.cumulativeSumWQ2[o][g] += snap.sumWQ2[o][g];
-                    history.cumulativeSumWU2[o][g] += snap.sumWU2[o][g];
+                    history.cumulativeSumKW2Q[o][g] += snap.sumKW2Q[o][g];
+                    history.cumulativeSumKW2QQ[o][g] += snap.sumKW2QQ[o][g];
+                    history.cumulativeSumKW2U[o][g] += snap.sumKW2U[o][g];
+                    history.cumulativeSumKW2UU[o][g] += snap.sumKW2UU[o][g];
                 }
                 history.cumulativeCrossings[o][g] += snap.crossingCount[o][g];
             }
@@ -2139,8 +2166,10 @@ ObserverGroupQualityDiagnostics BuildObserverGroupQualityDiagnosticsFromSnapshot
                     history.cumulativeStokesQ[o][g],
                     history.cumulativeStokesU[o][g],
                     cumW2,
-                    history.cumulativeSumWQ2[o][g],
-                    history.cumulativeSumWU2[o][g]);
+                    history.cumulativeSumKW2Q[o][g],
+                    history.cumulativeSumKW2QQ[o][g],
+                    history.cumulativeSumKW2U[o][g],
+                    history.cumulativeSumKW2UU[o][g]);
                 cumPolDegree = quality.degree;
                 cumPolSnr = quality.snr;
                 if (history.integratedUpdateCount > 0) {
@@ -3290,12 +3319,14 @@ void PrintPolarizationSummary(
     for (size_t i = 0; i < observerCount; ++i) {
         if (i >= snap.stokesQ.size() || i >= snap.stokesU.size() ||
             i >= snap.polarizationWeightSq.size() ||
-            i >= snap.sumWQ2.size() || i >= snap.sumWU2.size())
+            i >= snap.sumKW2Q.size() || i >= snap.sumKW2QQ.size() ||
+            i >= snap.sumKW2U.size() || i >= snap.sumKW2UU.size())
             continue;
 
         auto const quality = polarization_statistics::ComputeQuality(
             snap.energy[i], snap.stokesQ[i], snap.stokesU[i],
-            snap.polarizationWeightSq[i], snap.sumWQ2[i], snap.sumWU2[i]);
+            snap.polarizationWeightSq[i], snap.sumKW2Q[i], snap.sumKW2QQ[i],
+            snap.sumKW2U[i], snap.sumKW2UU[i]);
         if (!quality.intensityValid)
             continue;
 
@@ -3423,6 +3454,73 @@ void ReportGenerationMemory(char const* pass, size_t generation, int rank, int m
 #else
     (void)pass; (void)generation; (void)rank; (void)mpiSize; (void)tess; (void)censusParticles;
 #endif
+}
+
+PredictedProbePackets PredictProbeSourcePackets(
+    std::vector<ComputationalCell3D> const& cells,
+    size_t const nCells,
+    PostprocessRuntime const& runtime,
+    std::unordered_map<size_t, double> const& learnedScores,
+    std::vector<size_t> const& burninPhotons,
+    size_t const probePhotons,
+    double const explorationWeightFraction,
+    bool const capLearned,
+    std::string const& label,
+    int const rank,
+    int const mpiSize)
+{
+    if (runtime.volumeEmissionCellLuminosity.size() != nCells || cells.size() < nCells) {
+        UniversalError eo(label + ": predicted probe load balance needs the per-cell volume emission of the current decomposition");
+        eo.addEntry("volumeEmissionCellLuminosity.size()",
+                    static_cast<double>(runtime.volumeEmissionCellLuminosity.size()));
+        eo.addEntry("cells.size()", static_cast<double>(cells.size()));
+        eo.addEntry("Ncells", static_cast<double>(nCells));
+        throw eo;
+    }
+    double const escapingReference = runtime.lastEscapingLuminosity > 0.0
+        ? runtime.lastEscapingLuminosity : runtime.fluxSourceInjectedLuminosity;
+    double const capLuminosity = explorationWeightFraction * escapingReference;
+    if (!(capLuminosity > 0.0) || !std::isfinite(capLuminosity)) {
+        UniversalError eo(label + ": predicted probe load balance has no valid exploration cap");
+        eo.addEntry("escapingReference", escapingReference);
+        eo.addEntry("explorationWeightFraction", explorationWeightFraction);
+        throw eo;
+    }
+    std::vector<size_t> predicted(nCells, 0);
+    uint64_t localPredicted = 0;
+    for (size_t i = 0; i < nCells; ++i) {
+        // STORM's per-cell emission is the face-source plus the volume energy.
+        double const luminosity = runtime.volumeEmissionCellLuminosity[i] +
+            (i < runtime.fluxSourceCellLuminosity.size() ? runtime.fluxSourceCellLuminosity[i] : 0.0);
+        size_t photons = i < burninPhotons.size() ? burninPhotons[i] : 0;
+        if (luminosity > 0.0) {
+            auto const it = learnedScores.find(cells[i].ID);
+            bool const learned = it != learnedScores.end() &&
+                std::isfinite(it->second) && it->second > 0.0;
+            size_t const capped = static_cast<size_t>(std::clamp(
+                std::ceil(luminosity / capLuminosity), 1.0, 1.0e7));
+            photons = !learned ? capped
+                : (capLearned ? std::max(probePhotons, capped) : probePhotons);
+        }
+        predicted[i] = photons;
+        localPredicted += photons;
+    }
+    uint64_t predictedSum = localPredicted;
+    uint64_t predictedMax = localPredicted;
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &predictedSum, 1, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &predictedMax, 1, MPI_UINT64_T, MPI_MAX, MPI_COMM_WORLD);
+#endif
+    if (rank == 0)
+        std::cout << label << " cap_luminosity=" << capLuminosity
+                  << " erg/s predicted_packets=" << predictedSum
+                  << " max_rank_predicted_packets_before_lb=" << predictedMax
+                  << " mean_rank=" << static_cast<double>(predictedSum) / std::max(1, mpiSize)
+                  << std::endl;
+    PredictedProbePackets result;
+    result.perCell = std::move(predicted);
+    result.total = predictedSum;
+    return result;
 }
 
 void PrintVmRSS(std::string const& label, int rank) {

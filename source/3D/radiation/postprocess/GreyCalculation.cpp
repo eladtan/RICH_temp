@@ -29,6 +29,8 @@
 
 #include "AdaptiveStatistics.hpp"
 #include "FluxSourceCalculation.hpp"
+#include "WeightSplit.hpp"
+#include "CoolingLimit.hpp"
 #include "PostProcessRestart.hpp"
 #include "source/3D/radiation/IMCMeasuredLoadBalance.hpp"
 #include "source/3D/radiation/IMCStepCounterCostCalculator.hpp"
@@ -94,6 +96,9 @@ ForwardPostprocessResult RunGreyPostprocess(
                 cfg.center, cfg.radius, cfg.nObservers, std::vector<double>());
             if (hasGreyPhotosphere)
                 greyObserver->setPhotosphereData(std::move(greyPhotosphere));
+            if (cfg.fluxSourceCompare && cfg.volumeEmissionEnabled)
+                greyObserver->setEscapeOriginClassification(
+                    &runtime.fluxSourceCellIDs, &runtime.escapeOriginHotCells);
 
             auto greyBoundary = std::make_shared<VacuumBoundaryCondition<Vector3D, Tessellation3D>>(tess);
 
@@ -119,6 +124,8 @@ ForwardPostprocessResult RunGreyPostprocess(
             greyParams.postProcess.sourceDt = cfg.sourceDt;
             greyParams.postProcess.transportTime = cfg.transportTime;
             greyParams.postProcess.useCellVelocities = cfg.useCellVelocities;
+            greyParams.postProcess.compressionMaxDynamicalTimes = cfg.ddmcCompressionMaxDynamicalTimes;
+            greyParams.postProcess.compressionCenter = {cfg.center.x, cfg.center.y, cfg.center.z};
             greyParams.postProcess.polarization.enabled = cfg.polarization;
             greyParams.postProcess.polarization.manualScatteringsAfterAcceleration = cfg.polarizationManualScatterings;
             greyParams.postProcess.polarization.depolarizationScatterings = cfg.polarizationDepolarizationScatterings;
@@ -168,6 +175,7 @@ ForwardPostprocessResult RunGreyPostprocess(
             double const greyLBWeightCompression = EffectiveMeasuredLBWeightCompression(cfg);
 
             AdaptiveSourceState greyAdaptive;
+            WeightSplitState greySplit;
             bool greyBurninMeasuredLBDone = false;
             bool greyFirstNonBurninMeasuredLBDone = false;
             greyObserver->clearGenerationStatistics();
@@ -330,6 +338,7 @@ ForwardPostprocessResult RunGreyPostprocess(
 
                 if (meshRepartitioned) {
                     MPI_exchange_data(tess, cells, false, 1, &runtime.dummyCell);
+                    MigrateWeightSplitState(runtime, greySplit);
 
                     double greyDummyWeight =
                         greyLBParamsThisPass.missingCellCost;
@@ -520,6 +529,12 @@ ForwardPostprocessResult RunGreyPostprocess(
                         ? runtime.lastEscapingLuminosity : runtime.fluxSourceInjectedLuminosity;
                     greyPhysics->setPostProcessExplorationMaxWeight(
                         cfg.volumeEmissionExplorationWeightFractionGrey * escapingReference * cfg.sourceDt);
+                    // Probe and final generations bound the learned cells'
+                    // packets the same way; the burn-in keeps its flat counts.
+                    greyPhysics->setPostProcessLearnedMaxWeight(
+                        cfg.volumeEmissionCapLearnedWeight && !greyBurninThisGen
+                            ? cfg.volumeEmissionExplorationWeightFractionGrey * escapingReference * cfg.sourceDt
+                            : 0.0);
                 }
 
                 if (restarting)
@@ -530,6 +545,7 @@ ForwardPostprocessResult RunGreyPostprocess(
                     greyPhysics->reseedRNG(static_cast<uint64_t>(rank + 87654321) * greyTotalGenerations + gen);
 
                 greyManager->getParticles().clear();
+                InstallWeightSplit(cfg, runtime, *greyPhysics, greySplit);
                 greyManager->step(cells, cfg.transportTime);
                 if (cfg.volumeEmissionEnabled && greyPhysics->hasPostProcessVolumeEmission()) {
                     double volumeEnergy = greyPhysics->getLastVolumeEmissionEnergy();
@@ -563,6 +579,11 @@ ForwardPostprocessResult RunGreyPostprocess(
 
                 auto greyAllocation = ReduceSourceAllocationSummary(
                     generationDiagnostics.sourceAllocation);
+                result.weightCapExtraPhotons += greyAllocation.weightCapExtraPhotons;
+                result.weightCappedCells += greyAllocation.weightCappedCells;
+                result.allocatedCells += greyAllocation.sourceCells;
+                if (greyLearnedProbeThisGen)
+                    result.probePackets += greyAllocation.totalPhotons;
                 size_t const photonHistMin = greyFinalThisGen
                     ? cfg.adaptiveSourceLearnedMinPhotons
                     : 1;
@@ -591,6 +612,8 @@ ForwardPostprocessResult RunGreyPostprocess(
                     !greyBurninThisGen, rank, mpiSize);
                 if (cfg.sourceDt > 0.0 && greyUpdate.totalEscapedEnergy > 0.0)
                     runtime.lastEscapingLuminosity = greyUpdate.totalEscapedEnergy / cfg.sourceDt;
+                if (!greyBurninThisGen)
+                    AccumulateWeightSplitStatistics(cfg, runtime, greyUpdate, greySplit);
                 std::vector<SphericalObserver::SourceCellEscapeStat>().swap(greySourceStats);
                 bool const greyIncludeGenerationInFinal = greyFinalThisGen;
                 PrintAdaptiveGenerationStats(
@@ -619,6 +642,9 @@ ForwardPostprocessResult RunGreyPostprocess(
                 greyObserver->addBoxEscapeEnergy(greyBoundary->getEscapedEnergy());
                 greyBoundary->resetEscapedEnergy();
                 greyObserver->printHeavyPacketReport("grey", gen + 1, 10);
+                greyObserver->printEscapeOriginReport("grey", gen + 1);
+                result.splitCopies += PrintWeightSplitReport(cfg, *greyPhysics, greySplit, "grey", gen + 1, rank);
+                PrintCompressionReport(cfg, *greyPhysics, "grey", gen + 1, rank);
                 greyObserver->mpiReduceToRank0();
                 if (greyIncludeGenerationInFinal) {
                     if (rank == 0)
@@ -666,7 +692,8 @@ ForwardPostprocessResult RunGreyPostprocess(
                     ((greyFinalGenerationIndex == 0 && !restarting) ||
                      greyFinalGenerationIndex == 1 ||
                      (greyFinalGenerationIndex + 1) %
-                         (cfg.fluxSourceCompare ? 10 : 50) == 0);
+                         (cfg.measuredLBFinalPeriod > 0 ? cfg.measuredLBFinalPeriod
+                                                        : (cfg.fluxSourceCompare ? 10 : 50)) == 0);
                 // With exploration splitting, the probe puts most packets in a
                 // few thick cells (ceil(E/cap) each), which cost almost nothing
                 // in the burn-in (1-3 packets per cell). At a small cap that
@@ -707,65 +734,20 @@ ForwardPostprocessResult RunGreyPostprocess(
                     {
                         auto const& greyLocalSteps = greyManager->GetCellsStepsCounters();
 
-                        std::vector<size_t> greyPredictedProbePhotons;
-                        if (greyDoPredictedProbeLB) {
-                            // Mirrors the STORM probe allocation: learned cells get
-                            // greyProbePhotons, other emitting volume cells get
-                            // ceil(E/cap) exploration packets (at most 1e7), other
-                            // source cells keep their burn-in count. It only has
-                            // to be close: the LB after the probe measures it.
-                            if (runtime.volumeEmissionCellLuminosity.size() != Ncells) {
-                                UniversalError eo("Grey predicted probe LB needs the per-cell volume emission of the current decomposition");
-                                eo.addEntry("volumeEmissionCellLuminosity.size()",
-                                            static_cast<double>(runtime.volumeEmissionCellLuminosity.size()));
-                                eo.addEntry("Ncells", static_cast<double>(Ncells));
-                                throw eo;
-                            }
-                            double const escapingReference = runtime.lastEscapingLuminosity > 0.0
-                                ? runtime.lastEscapingLuminosity : runtime.fluxSourceInjectedLuminosity;
-                            double const capLuminosity =
-                                cfg.volumeEmissionExplorationWeightFractionGrey * escapingReference;
-                            if (!(capLuminosity > 0.0) || !std::isfinite(capLuminosity)) {
-                                UniversalError eo("Grey predicted probe LB has no valid exploration cap");
-                                eo.addEntry("escapingReference", escapingReference);
-                                eo.addEntry("explorationWeightFractionGrey",
-                                            cfg.volumeEmissionExplorationWeightFractionGrey);
-                                throw eo;
-                            }
-                            std::vector<size_t> const& burninPhotons =
-                                generationDiagnostics.sourcePhotonsPerCell;
-                            greyPredictedProbePhotons.assign(Ncells, 0);
-                            uint64_t localPredicted = 0;
-                            for (size_t i = 0; i < Ncells; ++i) {
-                                double const luminosity = runtime.volumeEmissionCellLuminosity[i];
-                                size_t photons = i < burninPhotons.size() ? burninPhotons[i] : 0;
-                                if (luminosity > 0.0) {
-                                    auto const it = greyAdaptive.scoreByCellID.find(cells[i].ID);
-                                    bool const learned = it != greyAdaptive.scoreByCellID.end() &&
-                                        std::isfinite(it->second) && it->second > 0.0;
-                                    photons = learned
-                                        ? greyProbePhotons
-                                        : static_cast<size_t>(std::clamp(
-                                              std::ceil(luminosity / capLuminosity), 1.0, 1.0e7));
-                                }
-                                greyPredictedProbePhotons[i] = photons;
-                                localPredicted += photons;
-                            }
-                            uint64_t predictedSum = localPredicted;
-                            uint64_t predictedMax = localPredicted;
-                            MPI_Allreduce(MPI_IN_PLACE, &predictedSum, 1, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
-                            MPI_Allreduce(MPI_IN_PLACE, &predictedMax, 1, MPI_UINT64_T, MPI_MAX, MPI_COMM_WORLD);
-                            if (rank == 0)
-                                std::cout << "MEASURED_LB_GREY_PREDICTED_PROBE cap_luminosity=" << capLuminosity
-                                          << " erg/s predicted_packets=" << predictedSum
-                                          << " max_rank_predicted_packets_before_lb=" << predictedMax
-                                          << " mean_rank=" << static_cast<double>(predictedSum) / mpiSize
-                                          << std::endl;
-                        }
+                        PredictedProbePackets greyPredictedProbePhotons;
+                        if (greyDoPredictedProbeLB)
+                            greyPredictedProbePhotons = PredictProbeSourcePackets(
+                                cells, Ncells, runtime, greyAdaptive.scoreByCellID,
+                                generationDiagnostics.sourcePhotonsPerCell, greyProbePhotons,
+                                cfg.volumeEmissionExplorationWeightFractionGrey,
+                                cfg.volumeEmissionCapLearnedWeight,
+                                "MEASURED_LB_GREY_PREDICTED_PROBE", rank, mpiSize);
+                        if (greyDoPredictedProbeLB)
+                            result.probePredictedPackets = greyPredictedProbePhotons.total;
 
                         greyRebalanceOnMeasurements(
                             greyLocalSteps,
-                            greyDoPredictedProbeLB ? greyPredictedProbePhotons
+                            greyDoPredictedProbeLB ? greyPredictedProbePhotons.perCell
                                                    : generationDiagnostics.sourcePhotonsPerCell,
                             greyLBLabel, greyDoPredictedProbeLB);
                     }
@@ -801,9 +783,11 @@ ForwardPostprocessResult RunGreyPostprocess(
 
             if (rank == 0) {
                 greyObserver->loadStatisticalMeanTallies();
-                if (cfg.polarization)
+                if (cfg.polarization) {
                     PrintPolarizationSummary(
                         "Grey", greyObserver->getObserverQualitySnapshot(), rank);
+                    greyObserver->printGenerationPolarizationSummary("Grey");
+                }
             }
 
             if (rank == 0) {
@@ -872,7 +856,9 @@ ForwardPostprocessResult RunGreyPostprocess(
                 double greyBoxEscape = greyObserver->getBoxEscapeEnergy();
                 double greyTimedOut = greyObserver->getTimedOutEnergy();
                 double greyCutoff = greyObserver->getCutoffEnergy();
-                double greyResidual = greyEmitted - greyAbsorbed - greyBoxEscape - greyTimedOut - greyCutoff;
+                double greyCompressionWork = greyObserver->getCompressionWork();
+                double greyResidual = greyEmitted + greyCompressionWork - greyAbsorbed - greyBoxEscape
+                                    - greyTimedOut - greyCutoff;
                 double greyTimedOutFrac = (greyEmitted > 0.0) ? greyTimedOut / greyEmitted : 0.0;
                 FluxSourcePolarizationSummary const greyPol =
                     ComputeFluxSourcePolarizationSummary(
@@ -905,6 +891,7 @@ ForwardPostprocessResult RunGreyPostprocess(
                 greyDiagnostics.boxEscapeEnergy = greyBoxEscape;
                 greyDiagnostics.timedOutEnergy = greyTimedOut;
                 greyDiagnostics.cutoffEnergy = greyCutoff;
+                greyDiagnostics.compressionWork = greyCompressionWork;
                 greyDiagnostics.snapshotTime = runtime.snapshotTime;
                 greyDiagnostics.snapshotCycle = runtime.snapshotCycle;
                 // Final generations in the result, like included_final_generations.
@@ -949,6 +936,7 @@ ForwardPostprocessResult RunGreyPostprocess(
                           << "Box escape energy:        " << greyBoxEscape << " erg\n"
                           << "Timed-out energy:         " << greyTimedOut << " erg\n"
                           << "Cutoff energy:            " << greyCutoff << " erg\n"
+                          << "Compression work:         " << greyCompressionWork << " erg\n"
                           << "Sink residual:            " << greyResidual << " erg\n"
                           << "Timed-out fraction:       " << greyTimedOutFrac << "\n"
                           << "Grey VTK written to:      " << greyVtk << "\n"

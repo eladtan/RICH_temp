@@ -19,6 +19,7 @@
 #include "monte/utils/LinearInterpolation.hpp"
 #include "monte/radiation/RadiationIMC.hpp"
 #include "SphericalObserver.hpp"
+#include "GroupThermalSampling.hpp"
 #include "postprocess/IMCPostProcessControl.hpp"
 #include "CMMC/src/planck_integral/planck_integral.hpp"
 
@@ -135,8 +136,8 @@ public:
             return Base::GetThermalEnergy(cell, random, boundaries);
         }
 
-        double const r = this->clampUnitOpen(random);
-        return STORM::LinearInterpolation(cumulative, boundaries, r * total);
+        return group_thermal_sampling::SampleThermalEnergy(
+            cumulative, boundaries, ENERGY_GROUPS_NUM, this->clampUnitOpen(random));
     }
 
     double SampleThermalEnergyInGroup(const ComputationalCell3D &cell,
@@ -153,8 +154,7 @@ public:
             return 0.5 * (boundaries[group] + boundaries[group + 1]);
         }
 
-        double const r = this->clampUnitOpen(random);
-        return STORM::LinearInterpolation(cumulative, boundaries, c0 + r * (c1 - c0));
+        return group_thermal_sampling::SampleLinearInGroup(boundaries, group, this->clampUnitOpen(random));
     }
 
     GroupArray GetThermalGroupPdf(const ComputationalCell3D &cell,
@@ -397,6 +397,8 @@ public:
             oldRecord.sourceCellID = record.sourceCellID;
             oldRecord.initialWeight = record.initialWeight;
             oldRecord.steps = record.steps;
+            oldRecord.splitFactor = record.splitFactor;
+            oldRecord.compressionConverted = record.compressionConverted;
 #ifdef MONTECARLO_POLARIZATION
             oldRecord.stokesQ = record.stokesQ;
             oldRecord.stokesU = record.stokesU;
@@ -411,6 +413,7 @@ public:
         void addBoxEscapeEnergy(double energy) override { observer_->addBoxEscapeEnergy(energy); }
         void addTimedOutEnergy(double energy) override { observer_->addTimedOutEnergy(energy); }
         void addCutoffEnergy(double energy) override { observer_->addCutoffEnergy(energy); }
+        void addCompressionWork(double energy) override { observer_->addCompressionWork(energy); }
         void resetTallies() override { observer_->resetTallies(); }
 
     private:
@@ -706,6 +709,31 @@ public:
     {
         this->impl_.setPostProcessExplorationMaxWeight(maxWeight);
     }
+
+    void setPostProcessLearnedMaxWeight(double maxWeight)
+    {
+        this->impl_.setPostProcessLearnedMaxWeight(maxWeight);
+    }
+    void setPostProcessWeightSplit(double maxWeight, std::vector<double> importance, std::size_t maxCopies,
+                                   std::size_t copyBudget)
+    {
+        this->impl_.setPostProcessWeightSplit(maxWeight, std::move(importance), maxCopies, copyBudget);
+    }
+    std::size_t getPostProcessSplitRefused() const { return this->impl_.getPostProcessSplitRefused(); }
+    void setPostProcessExternalSourceSpectrumTemperatures(std::unordered_map<std::size_t, double> temperatures)
+    {
+        this->impl_.setPostProcessExternalSourceSpectrumTemperatures(std::move(temperatures));
+    }
+    std::size_t getPostProcessSplitEvents() const { return this->impl_.getPostProcessSplitEvents(); }
+    // DDMC comoving-frame compression since the last step (STORM DDMCDiagnostics).
+    std::size_t getDDMCCompressionCutoffCount() const { return this->impl_.getDDMCCompressionCutoffCount(); }
+    double getDDMCCompressionCutoffEnergy() const { return this->impl_.getDDMCCompressionCutoffEnergy(); }
+    std::size_t getDDMCCompressionLimitedStepCount() const { return this->impl_.getDDMCCompressionLimitedStepCount(); }
+    std::size_t getDDMCCompressionMovingStepCount() const { return this->impl_.getDDMCCompressionMovingStepCount(); }
+    double getDDMCCompressionWorkGain() const { return this->impl_.getDDMCCompressionWorkGain(); }
+    double getDDMCCompressionWorkLoss() const { return this->impl_.getDDMCCompressionWorkLoss(); }
+    std::size_t getPostProcessSplitCopies() const { return this->impl_.getPostProcessSplitCopies(); }
+    std::size_t getPostProcessSplitCapped() const { return this->impl_.getPostProcessSplitCapped(); }
     void setPostProcessVolumeEmission(std::vector<std::uint8_t> mask, std::vector<std::uint16_t> groupOutsideBits,
                                       double subsampleFraction, std::uint64_t seed)
     {
@@ -826,6 +854,8 @@ private:
             source.learnedPhotonsAtLeast1000;
         target.learnedPhotonsAtLeast2000 =
             source.learnedPhotonsAtLeast2000;
+        target.weightCappedCells = source.weightCappedCells;
+        target.weightCapExtraPhotons = source.weightCapExtraPhotons;
         return target;
     }
 

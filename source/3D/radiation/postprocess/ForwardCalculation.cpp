@@ -27,6 +27,8 @@
 
 #include "AdaptiveStatistics.hpp"
 #include "FluxSourceCalculation.hpp"
+#include "WeightSplit.hpp"
+#include "CoolingLimit.hpp"
 #include "PostProcessRestart.hpp"
 #include "source/3D/radiation/IMCMeasuredLoadBalance.hpp"
 #include "source/3D/radiation/IMCStepCounterCostCalculator.hpp"
@@ -84,6 +86,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
             double const measuredLBWeightCompression = EffectiveMeasuredLBWeightCompression(cfg);
 
             AdaptiveSourceState mgAdaptive;
+            WeightSplitState mgSplit;
             AdaptiveGroupHistory mgGroupHistory;
             AdaptiveGroupSourceState mgGroupSourceState;
             RadiationIMC::GroupSamplingDiagnostics mgLastGroupSamplingDiag;
@@ -121,6 +124,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
             size_t const mgUniformBurninGenerations = cfg.adaptiveSourceCells ? 19 : 0;
             size_t const mgBurninGenerations = mgInitialBurninGenerations + mgUniformBurninGenerations;
             size_t const mgLearnedProbeGenerations = cfg.adaptiveSourceCells ? 1 : 0;
+            size_t const mgProbePhotons = cfg.volumeEmissionEnabled ? 10 : 75;
             size_t const mgFinalStartGeneration = mgBurninGenerations + mgLearnedProbeGenerations;
             size_t const mgFinalGenerations = cfg.nGenerations;
             size_t const mgTotalGenerations = cfg.adaptiveSourceCells
@@ -128,11 +132,13 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 : cfg.nGenerations;
     #ifdef RICH_MPI
             // Repartitions on one generation's measured per-cell steps and
-            // source packets: the periodic rebalances below, and on a restart
-            // the initial one from the stored last-generation measurements.
+            // source packets (predicted packets before the probe): the
+            // rebalances in the loop, and on a restart the initial one from
+            // the stored last-generation measurements.
             auto rebalanceOnMeasurements = [&](std::vector<size_t> const& localSteps,
                                                std::vector<size_t> const& localParticles,
-                                               std::string const& mgLBLabel)
+                                               std::string const& mgLBLabel,
+                                               bool predictedProbe)
             {
                 if (!params.noHydroFeedback) {
                     throw UniversalError("Measured load balance repartition requires noHydroFeedback=true");
@@ -199,6 +205,13 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                                 << measuredLBParamsThisPass.particleWeight
                                 << " post_clamp=yes\n";
                         }
+                    }
+                    if (predictedProbe) {
+                        // Exploration packets of thick cells are absorbed in about
+                        // one step; their cost is creation and memory, so weight
+                        // each predicted packet as one step, after the clamp.
+                        measuredLBParamsThisPass.particleWeight = 1.0;
+                        measuredLBParamsThisPass.particleCostAfterClamp = true;
                     }
 
                     if (globalTotalSteps == 0) {
@@ -279,6 +292,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
 
                 if (meshRepartitioned) {
                     MPI_exchange_data(tess, cells, false, 1, &runtime.dummyCell);
+                    MigrateWeightSplitState(runtime, mgSplit);
 
                     double dummyWeight =
                         measuredLBParamsThisPass.missingCellCost;
@@ -365,7 +379,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 RebalanceFromStoredMeasurements(
                     mgRestartLoadBalance, cells, Ncells, "MG",
                     [&](std::vector<size_t> const& steps, std::vector<size_t> const& particles) {
-                        rebalanceOnMeasurements(steps, particles, "MEASURED_LB_RESTART");
+                        rebalanceOnMeasurements(steps, particles, "MEASURED_LB_RESTART", false);
                     }, rank);
             }
     #endif // RICH_MPI
@@ -394,7 +408,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     !mgAdaptive.scoreByCellID.empty();
                 size_t const photonsThisGen = firstBurninThisGen ? 1
                     : (uniformBurninThisGen ? 3
-                       : (learnedProbeThisGen ? (cfg.volumeEmissionEnabled ? 10 : 75)
+                       : (learnedProbeThisGen ? mgProbePhotons
                           : (cfg.adaptiveSourceCells ? 1 : genPhotonsPerCell)));
                 std::string phase = "final";
                 if (firstBurninThisGen)
@@ -516,6 +530,12 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                         ? runtime.lastEscapingLuminosity : runtime.fluxSourceInjectedLuminosity;
                     physics->setPostProcessExplorationMaxWeight(
                         cfg.volumeEmissionExplorationWeightFraction * escapingReference * cfg.sourceDt);
+                    // Probe and final generations bound the learned cells'
+                    // packets the same way; the burn-in keeps its flat counts.
+                    physics->setPostProcessLearnedMaxWeight(
+                        cfg.volumeEmissionCapLearnedWeight && !burninThisGen
+                            ? cfg.volumeEmissionExplorationWeightFraction * escapingReference * cfg.sourceDt
+                            : 0.0);
                 }
 
                 if (restarting)
@@ -526,6 +546,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     physics->reseedRNG(static_cast<uint64_t>(rank+12345678) * mgTotalGenerations + gen);
 
                 manager->getParticles().clear();
+                InstallWeightSplit(cfg, runtime, *physics, mgSplit);
                 manager->step(cells, cfg.transportTime);
                 if (cfg.volumeEmissionEnabled && physics->hasPostProcessVolumeEmission()) {
                     double volumeEnergy = physics->getLastVolumeEmissionEnergy();
@@ -562,6 +583,11 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
 
                 auto mgAllocation = ReduceSourceAllocationSummary(
                     generationDiagnostics.sourceAllocation);
+                result.weightCapExtraPhotons += mgAllocation.weightCapExtraPhotons;
+                result.weightCappedCells += mgAllocation.weightCappedCells;
+                result.allocatedCells += mgAllocation.sourceCells;
+                if (learnedProbeThisGen)
+                    result.probePackets += mgAllocation.totalPhotons;
                 size_t const photonHistMin = finalThisGen
                     ? cfg.adaptiveSourceLearnedMinPhotons
                     : 1;
@@ -609,6 +635,8 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     !burninThisGen, rank, mpiSize);
                 if (cfg.sourceDt > 0.0 && mgUpdate.totalEscapedEnergy > 0.0)
                     runtime.lastEscapingLuminosity = mgUpdate.totalEscapedEnergy / cfg.sourceDt;
+                if (!burninThisGen)
+                    AccumulateWeightSplitStatistics(cfg, runtime, mgUpdate, mgSplit);
                 std::vector<SphericalObserver::SourceCellEscapeStat>().swap(mgSourceStats);
 
                 AdaptiveGroupSourceUpdateSummary mgGroupUpdate;
@@ -650,6 +678,9 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 observer->addBoxEscapeEnergy(boundary->getEscapedEnergy());
                 boundary->resetEscapedEnergy();
                 observer->printHeavyPacketReport("MG", gen + 1, 10);
+                observer->printEscapeOriginReport("MG", gen + 1);
+                result.splitCopies += PrintWeightSplitReport(cfg, *physics, mgSplit, "MG", gen + 1, rank);
+                PrintCompressionReport(cfg, *physics, "MG", gen + 1, rank);
                 observer->mpiReduceToRank0();
                 if (includeGenerationInFinal) {
                     if (rank == 0)
@@ -694,12 +725,31 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     // already, so it skips the one after step 1.
                     ((finalGenerationIndex == 0 && !restarting) ||
                      finalGenerationIndex == 1 ||
-                     (finalGenerationIndex + 1) % 10 == 0);
-                std::string const mgLBLabel = doPostAdaptiveMeasuredLB
+                     (finalGenerationIndex + 1) %
+                         (cfg.measuredLBFinalPeriod > 0 ? cfg.measuredLBFinalPeriod : 10) == 0);
+                // With exploration splitting, the probe puts most packets in a
+                // few thick cells (ceil(E/cap) each), which cost almost nothing
+                // in the burn-in (1-3 packets per cell). At a small cap that
+                // crowds one rank past its memory (snapshot 109 at fraction
+                // 0.005: 147M packets on one rank), so before the probe,
+                // balance on the packet counts the probe will create, as the
+                // grey pass does.
+                bool const doPredictedProbeLB =
+                    measuredLBActive &&
+                    cfg.adaptiveSourceCells &&
+                    cfg.volumeEmissionEnabled &&
+                    cfg.volumeEmissionExplorationWeightFraction > 0.0 &&
+                    mgLearnedProbeGenerations > 0 &&
+                    gen + 1 == mgBurninGenerations;
+                std::string const mgLBLabel = doPredictedProbeLB
+                    ? "MEASURED_LB_PREDICTED_PROBE"
+                    : doPostAdaptiveMeasuredLB
                     ? "MEASURED_LB_ADAPTIVE"
                     : (doAdaptivePeriodicMeasuredLB
                         ? "MEASURED_LB_ADAPTIVE_PERIODIC"
                         : "MEASURED_LB");
+                if (rank == 0 && doPredictedProbeLB)
+                    std::cout << "MG burn-in complete; running measured LB on predicted probe packets" << std::endl;
                 if (rank == 0 && doPostAdaptiveMeasuredLB)
                     std::cout << "MG learned-only probe complete; running measured LB before final calculation" << std::endl;
                 if (rank == 0 && doAdaptivePeriodicMeasuredLB)
@@ -716,11 +766,26 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 //   - noHydroFeedback is true: gas state is not modified by MC generations.
                 //   - Extensives can be rebuilt from cell primitives after repartition.
                 //   - The observer statistics accumulator and adaptive scores are preserved.
-                if (doInitialMeasuredLB ||
+                if (doInitialMeasuredLB || doPredictedProbeLB ||
                     doPostAdaptiveMeasuredLB || doAdaptivePeriodicMeasuredLB) {
+                    PredictedProbePackets predictedProbePhotons;
+                    if (doPredictedProbeLB)
+                        predictedProbePhotons = PredictProbeSourcePackets(
+                            cells, Ncells, runtime,
+                            BuildCombinedSourceScoresForIMC(mgAdaptive, mgGroupSourceState),
+                            generationDiagnostics.sourcePhotonsPerCell, mgProbePhotons,
+                            cfg.volumeEmissionExplorationWeightFraction,
+                            cfg.volumeEmissionCapLearnedWeight,
+                            "MEASURED_LB_PREDICTED_PROBE", rank, mpiSize);
+                    if (doPredictedProbeLB)
+                        result.probePredictedPackets = predictedProbePhotons.total;
                     rebalanceOnMeasurements(
                         manager->GetCellsStepsCounters(),
-                        generationDiagnostics.sourcePhotonsPerCell, mgLBLabel);
+                        doPredictedProbeLB ? predictedProbePhotons.perCell
+                                           : generationDiagnostics.sourcePhotonsPerCell,
+                        mgLBLabel, doPredictedProbeLB);
+                    if (doPredictedProbeLB && rank == 0)
+                        std::cout << "MG predicted-probe measured load balance complete" << std::endl;
                     if (doPostAdaptiveMeasuredLB) {
                         mgAdaptive.postAdaptiveMeasuredLBDone = true;
                         mgAdaptive.adaptiveMeasuredLBCount += 1;
@@ -749,9 +814,11 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
             // ============================================================
             if (rank == 0) {
                 observer->loadStatisticalMeanTallies();
-                if (cfg.polarization)
+                if (cfg.polarization) {
                     PrintPolarizationSummary(
                         "MG", observer->getObserverQualitySnapshot(), rank);
+                    observer->printGenerationPolarizationSummary("MG");
+                }
             }
 
             if (rank == 0) {
@@ -765,6 +832,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 diag.boxEscapeEnergy = observer->getBoxEscapeEnergy();
                 diag.timedOutEnergy = observer->getTimedOutEnergy();
                 diag.cutoffEnergy = observer->getCutoffEnergy();
+                diag.compressionWork = observer->getCompressionWork();
                 diag.snapshotTime = runtime.snapshotTime;
                 diag.snapshotCycle = runtime.snapshotCycle;
                 // Final generations in the result, like included_final_generations.
@@ -907,7 +975,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 }
 
                 double totalLum = observer->getTotalCrossingEnergy() / cfg.sourceDt;
-                double residual = diag.emittedEnergy - diag.absorbedEnergy
+                double residual = diag.emittedEnergy + diag.compressionWork - diag.absorbedEnergy
                                 - diag.boxEscapeEnergy - diag.timedOutEnergy - diag.cutoffEnergy;
                 double timedOutFrac = (diag.emittedEnergy > 0.0)
                     ? diag.timedOutEnergy / diag.emittedEnergy : 0.0;
@@ -943,6 +1011,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                           << "Box escape energy:        " << diag.boxEscapeEnergy << " erg\n"
                           << "Timed-out energy:         " << diag.timedOutEnergy << " erg\n"
                           << "Cutoff energy:            " << diag.cutoffEnergy << " erg\n"
+                          << "Compression work:         " << diag.compressionWork << " erg\n"
                           << "Sink residual:            " << residual << " erg\n"
                           << "Timed-out fraction:       " << timedOutFrac << "\n"
                           << "Output written to:        " << cfg.outputPath << "\n"

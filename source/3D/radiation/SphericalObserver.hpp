@@ -7,6 +7,8 @@
 #include <limits>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
+#include <utility>
 #include <vector>
 #include "3D/elementary/Vector3D.hpp"
 
@@ -27,6 +29,12 @@ struct ObserverCrossingRecord
     // for the heavy-packet diagnostics.
     double initialWeight = 0.0;
     size_t steps = 0;
+    // Weight-window split factor k of the packet (1 when never split). The
+    // adaptive source statistics record k weight^2, the weight-squared of the
+    // unsplit packet; the observer tallies and errors use the weight itself.
+    double splitFactor = 1.0;
+    // The packet reached its band through the DDMC compression cutoff.
+    bool compressionConverted = false;
 #ifdef MONTECARLO_POLARIZATION
     double stokesQ = 0.0;
     double stokesU = 0.0;
@@ -65,6 +73,8 @@ public:
         double boxEscapeEnergy = 0.0;
         double timedOutEnergy = 0.0;
         double cutoffEnergy = 0.0;
+        // Signed pdV work of the comoving-frame shift on DDMC packets.
+        double compressionWork = 0.0;
         double snapshotTime = 0.0;
         int snapshotCycle = 0;
         int nGenerations = 1;
@@ -212,9 +222,13 @@ public:
         std::vector<unsigned long long> crossingCount;
         std::vector<double> stokesQ;
         std::vector<double> stokesU;
+        // Split-aware second moments (PolarizationStatistics.hpp): sum k w^2
+        // (polarizationWeightSq), sum k w^2 q and q^2, sum k w^2 u and u^2.
         std::vector<double> polarizationWeightSq;
-        std::vector<double> sumWQ2;
-        std::vector<double> sumWU2;
+        std::vector<double> sumKW2Q;
+        std::vector<double> sumKW2QQ;
+        std::vector<double> sumKW2U;
+        std::vector<double> sumKW2UU;
     };
 
     struct ObserverGroupQualitySnapshot
@@ -227,8 +241,11 @@ public:
         std::vector<std::vector<size_t>> crossingCount;
         std::vector<std::vector<double>> stokesQ;
         std::vector<std::vector<double>> stokesU;
-        std::vector<std::vector<double>> sumWQ2;
-        std::vector<std::vector<double>> sumWU2;
+        // energyWeightSq is sum k w^2; the rest as in ObserverQualitySnapshot.
+        std::vector<std::vector<double>> sumKW2Q;
+        std::vector<std::vector<double>> sumKW2QQ;
+        std::vector<std::vector<double>> sumKW2U;
+        std::vector<std::vector<double>> sumKW2UU;
     };
 
     SphericalObserver(Vector3D center, double radius, size_t numObservers,
@@ -259,6 +276,9 @@ public:
     void addBoxEscapeEnergy(double energy);
     void addTimedOutEnergy(double energy);
     void addCutoffEnergy(double energy);
+    // Signed work of the DDMC comoving-frame compression (+) and expansion
+    // (-) on packet weights; part of the energy budget.
+    void addCompressionWork(double energy);
 
     void resetGenerationSourceCellEscapeStats();
     std::vector<SourceCellEscapeStat> getGenerationSourceCellEscapeStats() const;
@@ -276,6 +296,19 @@ public:
     // mpiReduceToRank0); rank 0 prints.
     void printHeavyPacketReport(std::string const& label, size_t generation,
                                 size_t topBins) const;
+    // Escape-origin diagnostic: this generation's crossing energy split by the
+    // class of the packet's source cell and by group. Classes: 0 a cell that
+    // owns emitting flux-source faces (its face and volume packets share the
+    // ID), 1 another volume cell below 1e5 K, 2 [1e5, 1e6) K, 3 [1e6, 1e7) K,
+    // 4 >= 1e7 K, 5 unknown source. hotCells is sorted by cell ID and lists
+    // the cells of classes 2-4. Both must outlive the observer's use; null
+    // pointers disable the tally.
+    static constexpr size_t kEscapeOriginClasses = 6;
+    void setEscapeOriginClassification(
+        std::unordered_set<size_t> const* faceCellIDs,
+        std::vector<std::pair<size_t, unsigned char>> const* hotCells);
+    // Collective (call before mpiReduceToRank0); rank 0 prints ESCAPE_ORIGIN.
+    void printEscapeOriginReport(std::string const& label, size_t generation) const;
     void clearGenerationStatistics();
     void accumulateCurrentTalliesForStatistics(double sourceDt);
     void loadStatisticalMeanTallies();
@@ -288,6 +321,29 @@ public:
     // Throws if the stored shapes do not match this observer.
     void readStatisticsState(HDF5Reader const& reader, std::string const& prefix);
     double getTotalLuminosityStderrGen(double sourceDt) const;
+    // Generation error of the reported (luminosity-weighted) polarization
+    // q = sum_g Q_g / sum_g I_g of one bin over the accumulated final
+    // generations, by the delta method:
+    //   var(q) = n/(n-1) sum_g (Q_g - q I_g)^2 / (sum_g I_g)^2  (u alike),
+    // with the effective number of generations (sum I_g)^2 / sum I_g^2. A bin
+    // with fewer than kMinGenerationNeff effective generations is dominated by
+    // a few generations (typically single heavy packets), so its error is not
+    // estimable and `measured` is false. Uses the statistics on the rank that
+    // accumulates them (rank 0).
+    struct GenerationPolarizationError
+    {
+        double sigmaP = 0.0;
+        double snr = 0.0;
+        double generationNeff = 0.0;
+        bool measured = false;
+    };
+    static constexpr double kMinGenerationNeff = 5.0;
+    // group = numGroups for the observer total.
+    GenerationPolarizationError getGenerationPolarizationError(size_t observer, size_t group) const;
+    // Rank 0 prints "<label> generation polarization errors: ..." with the
+    // number of measured observers and the percentiles of sigma_P and
+    // P / sigma_P over them.
+    void printGenerationPolarizationSummary(std::string const& label) const;
     double getTotalLuminosityRelErrGen(double sourceDt) const;
 
     void scale(double factor);
@@ -314,6 +370,7 @@ public:
     double getBoxEscapeEnergy() const;
     double getTimedOutEnergy() const;
     double getCutoffEnergy() const;
+    double getCompressionWork() const;
 
     std::vector<Vector3D> const& getDirections() const;
     Vector3D getCenter() const;
@@ -363,6 +420,7 @@ private:
         double frequency = 0.0;
         size_t sourceCellID = std::numeric_limits<size_t>::max();
         size_t steps = 0;
+        bool compressionConverted = false;
     };
     std::vector<HeavyCrossing> heavyCrossingByBin_;
     // Crossings binned by weight growth w/w0: unknown w0, <=1.01, (1.01,10],
@@ -372,6 +430,13 @@ private:
     std::array<double, kGrowthBins> growthBinCount_{};
     double maxWeightGrowth_ = 0.0;
     void recordHeavyCrossing(size_t obs, size_t group, ::ObserverCrossingRecord const& rec);
+    std::unordered_set<size_t> const* escapeOriginFaceCells_ = nullptr;
+    std::vector<std::pair<size_t, unsigned char>> const* escapeOriginHotCells_ = nullptr;
+    std::vector<double> escapeOriginEnergy_;  // class * numGroups_ + group
+    // Crossing energy per group of packets converted by the DDMC compression
+    // cutoff (any class).
+    std::vector<double> escapeOriginConvertedEnergy_;
+    size_t escapeOriginClass(size_t sourceCellID) const;
     PhotosphereData photosphereData_;
 #ifdef MONTECARLO_POLARIZATION
     bool polarizationOutputEnabled_ = false;
@@ -382,9 +447,13 @@ private:
     std::vector<Vector3D> skyE1_;
     std::vector<double> observerStokesQ_;
     std::vector<double> observerStokesU_;
+    // Split-aware second moments of the polarized crossings: sum k w^2,
+    // sum k w^2 q, sum k w^2 q^2 and the same for u (PolarizationStatistics.hpp).
     std::vector<double> observerSumWeightSq_;
-    std::vector<double> observerSumWQ2_;
-    std::vector<double> observerSumWU2_;
+    std::vector<double> observerSumKW2Q_;
+    std::vector<double> observerSumKW2QQ_;
+    std::vector<double> observerSumKW2U_;
+    std::vector<double> observerSumKW2UU_;
     std::vector<double> mismatchWeightedSum_;
     std::vector<double> mismatchWeighted2Sum_;
     std::vector<double> mismatchMax_;
@@ -392,8 +461,10 @@ private:
     size_t uninitializedPolarizationCount_ = 0;
     std::vector<std::vector<double>> groupStokesQ_;
     std::vector<std::vector<double>> groupStokesU_;
-    std::vector<std::vector<double>> groupSumWQ2_;
-    std::vector<std::vector<double>> groupSumWU2_;
+    std::vector<std::vector<double>> groupSumKW2Q_;
+    std::vector<std::vector<double>> groupSumKW2QQ_;
+    std::vector<std::vector<double>> groupSumKW2U_;
+    std::vector<std::vector<double>> groupSumKW2UU_;
 
     void buildSkyBases();
     void rotateAndAccumulate(::ObserverCrossingRecord const& rec, size_t obs);
@@ -406,6 +477,7 @@ private:
     double boxEscapeEnergy_ = 0.0;
     double timedOutEnergy_ = 0.0;
     double cutoffEnergy_ = 0.0;
+    double compressionWork_ = 0.0;
 
 public:
     struct RunningScalarStats
@@ -461,6 +533,7 @@ private:
         RunningScalarStats boxEscapeEnergy;
         RunningScalarStats timedOutEnergy;
         RunningScalarStats cutoffEnergy;
+        RunningScalarStats compressionWork;
         RunningScalarStats transportSinkResidual;
         RunningScalarStats timedOutFraction;
         std::vector<double> energyWeightSqSum;
@@ -471,10 +544,22 @@ private:
         std::vector<double> observerMaxPacketEnergyMax;
 #ifdef MONTECARLO_POLARIZATION
         std::vector<double> observerSumWeightSqSum;
-        std::vector<double> observerSumWQ2Sum;
-        std::vector<double> observerSumWU2Sum;
-        std::vector<std::vector<double>> groupSumWQ2Sum;
-        std::vector<std::vector<double>> groupSumWU2Sum;
+        std::vector<double> observerSumKW2QSum;
+        std::vector<double> observerSumKW2QQSum;
+        std::vector<double> observerSumKW2USum;
+        std::vector<double> observerSumKW2UUSum;
+        std::vector<std::vector<double>> groupSumKW2QSum;
+        std::vector<std::vector<double>> groupSumKW2QQSum;
+        std::vector<std::vector<double>> groupSumKW2USum;
+        std::vector<std::vector<double>> groupSumKW2UUSum;
+        // Generation cross sums sum_g I_g Q_g and sum_g I_g U_g (crossing
+        // energy and Stokes energy of each final generation), which with the
+        // sums of squares in energy/stokesQ/stokesU give the generation error
+        // of the luminosity-weighted q = sum Q / sum I (generationRatioSigma).
+        std::vector<double> energyStokesQCrossSum;
+        std::vector<double> energyStokesUCrossSum;
+        std::vector<std::vector<double>> groupEnergyStokesQCrossSum;
+        std::vector<std::vector<double>> groupEnergyStokesUCrossSum;
         std::vector<double> mismatchWeightedSumSum;
         std::vector<double> mismatchWeighted2SumSum;
         std::vector<double> mismatchMaxMax;
@@ -486,8 +571,9 @@ private:
     size_t findNearestObserver(Vector3D const& crossingPoint) const;
     size_t findNearestObserverDirection(Vector3D const& direction) const;
     size_t findGroup(double frequency) const;
-    void recordGenerationSourceCellEscape(size_t observerIndex, size_t cellID, double energy);
-    void recordGenerationSourceCellGroupEscape(size_t observerIndex, size_t groupIndex, size_t cellID, double weight);
+    void recordGenerationSourceCellEscape(size_t observerIndex, size_t cellID, double energy, double splitFactor);
+    void recordGenerationSourceCellGroupEscape(size_t observerIndex, size_t groupIndex, size_t cellID, double weight,
+                                               double splitFactor);
 };
 
 #endif // SPHERICAL_OBSERVER_HPP

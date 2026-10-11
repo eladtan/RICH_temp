@@ -114,8 +114,10 @@ void SerializeLearnedState(PassRestartState const& s, Serializer& out)
     out.insert(s.adaptive.cumulativeObserverPolarizationWeightSq);
     out.insert(s.adaptive.cumulativeObserverStokesQ);
     out.insert(s.adaptive.cumulativeObserverStokesU);
-    out.insert(s.adaptive.cumulativeObserverSumWQ2);
-    out.insert(s.adaptive.cumulativeObserverSumWU2);
+    out.insert(s.adaptive.cumulativeObserverSumKW2Q);
+    out.insert(s.adaptive.cumulativeObserverSumKW2QQ);
+    out.insert(s.adaptive.cumulativeObserverSumKW2U);
+    out.insert(s.adaptive.cumulativeObserverSumKW2UU);
     out.insert(s.adaptive.cumulativeObserverCrossings);
     out.insert(s.adaptive.observerBudgetMultiplier);
     out.insert(s.adaptive.adaptiveMeasuredLBCount);
@@ -132,8 +134,10 @@ void SerializeLearnedState(PassRestartState const& s, Serializer& out)
     out.insert(h.cumulativeWeightSq);
     out.insert(h.cumulativeStokesQ);
     out.insert(h.cumulativeStokesU);
-    out.insert(h.cumulativeSumWQ2);
-    out.insert(h.cumulativeSumWU2);
+    out.insert(h.cumulativeSumKW2Q);
+    out.insert(h.cumulativeSumKW2QQ);
+    out.insert(h.cumulativeSumKW2U);
+    out.insert(h.cumulativeSumKW2UU);
     out.insert(h.cumulativeCrossings);
 
     std::vector<size_t> const groupKeys = SortedKeys(s.groupSourceState.scoreByCellGroup);
@@ -229,8 +233,10 @@ void DeserializeLearnedState(Serializer const& in, PassRestartState& s)
     get(s.adaptive.cumulativeObserverPolarizationWeightSq);
     get(s.adaptive.cumulativeObserverStokesQ);
     get(s.adaptive.cumulativeObserverStokesU);
-    get(s.adaptive.cumulativeObserverSumWQ2);
-    get(s.adaptive.cumulativeObserverSumWU2);
+    get(s.adaptive.cumulativeObserverSumKW2Q);
+    get(s.adaptive.cumulativeObserverSumKW2QQ);
+    get(s.adaptive.cumulativeObserverSumKW2U);
+    get(s.adaptive.cumulativeObserverSumKW2UU);
     get(s.adaptive.cumulativeObserverCrossings);
     get(s.adaptive.observerBudgetMultiplier);
     get(s.adaptive.adaptiveMeasuredLBCount);
@@ -247,8 +253,10 @@ void DeserializeLearnedState(Serializer const& in, PassRestartState& s)
     get(h.cumulativeWeightSq);
     get(h.cumulativeStokesQ);
     get(h.cumulativeStokesU);
-    get(h.cumulativeSumWQ2);
-    get(h.cumulativeSumWU2);
+    get(h.cumulativeSumKW2Q);
+    get(h.cumulativeSumKW2QQ);
+    get(h.cumulativeSumKW2U);
+    get(h.cumulativeSumKW2UU);
     get(h.cumulativeCrossings);
 
     std::vector<size_t> groupKeys;
@@ -332,8 +340,10 @@ void WriteLearnedState(HDF5Writer& w, std::string const& p, PassRestartState con
     WriteVector(w, p + "/adaptive/cumulative_observer_polarization_weight_sq", s.adaptive.cumulativeObserverPolarizationWeightSq);
     WriteVector(w, p + "/adaptive/cumulative_observer_stokes_q", s.adaptive.cumulativeObserverStokesQ);
     WriteVector(w, p + "/adaptive/cumulative_observer_stokes_u", s.adaptive.cumulativeObserverStokesU);
-    WriteVector(w, p + "/adaptive/cumulative_observer_sum_wq2", s.adaptive.cumulativeObserverSumWQ2);
-    WriteVector(w, p + "/adaptive/cumulative_observer_sum_wu2", s.adaptive.cumulativeObserverSumWU2);
+    WriteVector(w, p + "/adaptive/cumulative_observer_sum_kw2q", s.adaptive.cumulativeObserverSumKW2Q);
+    WriteVector(w, p + "/adaptive/cumulative_observer_sum_kw2qq", s.adaptive.cumulativeObserverSumKW2QQ);
+    WriteVector(w, p + "/adaptive/cumulative_observer_sum_kw2u", s.adaptive.cumulativeObserverSumKW2U);
+    WriteVector(w, p + "/adaptive/cumulative_observer_sum_kw2uu", s.adaptive.cumulativeObserverSumKW2UU);
     WriteVector(w, p + "/adaptive/cumulative_observer_crossings", s.adaptive.cumulativeObserverCrossings);
     w.WriteElement(p + "/adaptive/observer_budget_multiplier", s.adaptive.observerBudgetMultiplier);
     w.WriteElement(p + "/adaptive/measured_lb_count", s.adaptive.adaptiveMeasuredLBCount);
@@ -350,8 +360,10 @@ void WriteLearnedState(HDF5Writer& w, std::string const& p, PassRestartState con
     WriteMatrix(w, p + "/group_history/cumulative_weight_sq", h.cumulativeWeightSq);
     WriteMatrix(w, p + "/group_history/cumulative_stokes_q", h.cumulativeStokesQ);
     WriteMatrix(w, p + "/group_history/cumulative_stokes_u", h.cumulativeStokesU);
-    WriteMatrix(w, p + "/group_history/cumulative_sum_wq2", h.cumulativeSumWQ2);
-    WriteMatrix(w, p + "/group_history/cumulative_sum_wu2", h.cumulativeSumWU2);
+    WriteMatrix(w, p + "/group_history/cumulative_sum_kw2q", h.cumulativeSumKW2Q);
+    WriteMatrix(w, p + "/group_history/cumulative_sum_kw2qq", h.cumulativeSumKW2QQ);
+    WriteMatrix(w, p + "/group_history/cumulative_sum_kw2u", h.cumulativeSumKW2U);
+    WriteMatrix(w, p + "/group_history/cumulative_sum_kw2uu", h.cumulativeSumKW2UU);
     WriteMatrix(w, p + "/group_history/cumulative_crossings", h.cumulativeCrossings);
 
     std::vector<size_t> const groupKeys = SortedKeys(s.groupSourceState.scoreByCellGroup);
@@ -433,8 +445,10 @@ void ReadLearnedState(HDF5Reader const& r, std::string const& p, PassRestartStat
     s.adaptive.cumulativeObserverPolarizationWeightSq = ReadVector<double>(r, p + "/adaptive/cumulative_observer_polarization_weight_sq");
     s.adaptive.cumulativeObserverStokesQ = ReadVector<double>(r, p + "/adaptive/cumulative_observer_stokes_q");
     s.adaptive.cumulativeObserverStokesU = ReadVector<double>(r, p + "/adaptive/cumulative_observer_stokes_u");
-    s.adaptive.cumulativeObserverSumWQ2 = ReadVector<double>(r, p + "/adaptive/cumulative_observer_sum_wq2");
-    s.adaptive.cumulativeObserverSumWU2 = ReadVector<double>(r, p + "/adaptive/cumulative_observer_sum_wu2");
+    s.adaptive.cumulativeObserverSumKW2Q = ReadVector<double>(r, p + "/adaptive/cumulative_observer_sum_kw2q");
+    s.adaptive.cumulativeObserverSumKW2QQ = ReadVector<double>(r, p + "/adaptive/cumulative_observer_sum_kw2qq");
+    s.adaptive.cumulativeObserverSumKW2U = ReadVector<double>(r, p + "/adaptive/cumulative_observer_sum_kw2u");
+    s.adaptive.cumulativeObserverSumKW2UU = ReadVector<double>(r, p + "/adaptive/cumulative_observer_sum_kw2uu");
     s.adaptive.cumulativeObserverCrossings = ReadVector<unsigned long long>(r, p + "/adaptive/cumulative_observer_crossings");
     s.adaptive.observerBudgetMultiplier = ReadScalar<double>(r, p + "/adaptive/observer_budget_multiplier");
     s.adaptive.adaptiveMeasuredLBCount = ReadScalar<size_t>(r, p + "/adaptive/measured_lb_count");
@@ -451,8 +465,10 @@ void ReadLearnedState(HDF5Reader const& r, std::string const& p, PassRestartStat
     h.cumulativeWeightSq = ReadMatrix<double>(r, p + "/group_history/cumulative_weight_sq");
     h.cumulativeStokesQ = ReadMatrix<double>(r, p + "/group_history/cumulative_stokes_q");
     h.cumulativeStokesU = ReadMatrix<double>(r, p + "/group_history/cumulative_stokes_u");
-    h.cumulativeSumWQ2 = ReadMatrix<double>(r, p + "/group_history/cumulative_sum_wq2");
-    h.cumulativeSumWU2 = ReadMatrix<double>(r, p + "/group_history/cumulative_sum_wu2");
+    h.cumulativeSumKW2Q = ReadMatrix<double>(r, p + "/group_history/cumulative_sum_kw2q");
+    h.cumulativeSumKW2QQ = ReadMatrix<double>(r, p + "/group_history/cumulative_sum_kw2qq");
+    h.cumulativeSumKW2U = ReadMatrix<double>(r, p + "/group_history/cumulative_sum_kw2u");
+    h.cumulativeSumKW2UU = ReadMatrix<double>(r, p + "/group_history/cumulative_sum_kw2uu");
     h.cumulativeCrossings = ReadMatrix<size_t>(r, p + "/group_history/cumulative_crossings");
 
     std::vector<size_t> const groupKeys = ReadVector<size_t>(r, p + "/group_source/score_cell_ids");
@@ -545,8 +561,10 @@ void ValidateLearnedState(PassRestartState const& s, size_t observers, size_t gr
     checkObserverVector(a.cumulativeObserverPolarizationWeightSq, "cumulative_observer_polarization_weight_sq");
     checkObserverVector(a.cumulativeObserverStokesQ, "cumulative_observer_stokes_q");
     checkObserverVector(a.cumulativeObserverStokesU, "cumulative_observer_stokes_u");
-    checkObserverVector(a.cumulativeObserverSumWQ2, "cumulative_observer_sum_wq2");
-    checkObserverVector(a.cumulativeObserverSumWU2, "cumulative_observer_sum_wu2");
+    checkObserverVector(a.cumulativeObserverSumKW2Q, "cumulative_observer_sum_kw2q");
+    checkObserverVector(a.cumulativeObserverSumKW2QQ, "cumulative_observer_sum_kw2qq");
+    checkObserverVector(a.cumulativeObserverSumKW2U, "cumulative_observer_sum_kw2u");
+    checkObserverVector(a.cumulativeObserverSumKW2UU, "cumulative_observer_sum_kw2uu");
     checkObserverVector(a.cumulativeObserverCrossings, "cumulative_observer_crossings");
 
     AdaptiveGroupHistory const& h = s.groupHistory;
@@ -574,8 +592,10 @@ void ValidateLearnedState(PassRestartState const& s, size_t observers, size_t gr
     checkHistoryMatrix(h.cumulativeWeightSq, "cumulative_weight_sq");
     checkHistoryMatrix(h.cumulativeStokesQ, "cumulative_stokes_q");
     checkHistoryMatrix(h.cumulativeStokesU, "cumulative_stokes_u");
-    checkHistoryMatrix(h.cumulativeSumWQ2, "cumulative_sum_wq2");
-    checkHistoryMatrix(h.cumulativeSumWU2, "cumulative_sum_wu2");
+    checkHistoryMatrix(h.cumulativeSumKW2Q, "cumulative_sum_kw2q");
+    checkHistoryMatrix(h.cumulativeSumKW2QQ, "cumulative_sum_kw2qq");
+    checkHistoryMatrix(h.cumulativeSumKW2U, "cumulative_sum_kw2u");
+    checkHistoryMatrix(h.cumulativeSumKW2UU, "cumulative_sum_kw2uu");
     checkHistoryMatrix(h.cumulativeCrossings, "cumulative_crossings");
     for (auto const& kv : s.groupSourceState.scoreByCellGroup)
         if (kv.second.size() != groups)
@@ -606,6 +626,7 @@ std::vector<std::string> const& MustMatchOptions()
         "transport.ddmc-moving-interface-correction",
         "transport.ddmc-advection",
         "transport.ddmc-max-cell-advection-peclet",
+        "transport.ddmc-compression-max-dynamical-times",
         "transport.use-cell-velocities",
         "transport.compton.enabled",
         "transport.compton.matrix-samples",
@@ -621,9 +642,14 @@ std::vector<std::string> const& MustMatchOptions()
         "flux-source.surface-mode",
         "flux-source.remove-enclosed-outside",
         "flux-source.smoothing-floor",
+        "flux-source.spectrum-temperature",
+        "flux-source.face-flux",
         "volume-emission.enabled",
         "volume-emission.cutoff-fraction",
         "volume-emission.gate-groups",
+        "volume-emission.cooling-limit",
+        "volume-emission.cooling-limit-cfl",
+        "volume-emission.cooling-limit-dt",
         "opacity-scaling.mode",
         "opacity-scaling.alpha-min",
         "opacity-scaling.alpha-max",
@@ -680,7 +706,10 @@ void CheckRestartCompatibility(
                 "or not a post-process result); it cannot be continued");
         int const schema = state_hdf5::ReadScalar<int>(reader, "/restart/schema_version");
         if (schema != kRestartSchemaVersion) {
-            UniversalError eo("Restart file " + path + " has an unsupported restart schema");
+            UniversalError eo("Restart file " + path + " has an unsupported restart schema; "
+                              "files written before schema 2 lack the DDMC compression clock and work "
+                              "and the split-aware polarization statistics, so they cannot be continued: "
+                              "start a fresh run");
             eo.addEntry("schema", schema);
             eo.addEntry("supported", kRestartSchemaVersion);
             throw eo;

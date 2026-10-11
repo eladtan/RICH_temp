@@ -26,8 +26,10 @@ struct AdaptiveSourceState
     std::vector<double> cumulativeObserverPolarizationWeightSq;
     std::vector<double> cumulativeObserverStokesQ;
     std::vector<double> cumulativeObserverStokesU;
-    std::vector<double> cumulativeObserverSumWQ2;
-    std::vector<double> cumulativeObserverSumWU2;
+    std::vector<double> cumulativeObserverSumKW2Q;
+    std::vector<double> cumulativeObserverSumKW2QQ;
+    std::vector<double> cumulativeObserverSumKW2U;
+    std::vector<double> cumulativeObserverSumKW2UU;
     std::vector<unsigned long long> cumulativeObserverCrossings;
     double observerBudgetMultiplier = 1.0;
     bool burninCompletePrinted = false;
@@ -78,6 +80,10 @@ struct SourceCellEmission
     size_t photons = 0;
 };
 
+// Rank that holds the adaptive statistics of a cell ID (a hash, independent
+// of the decomposition).
+int AdaptiveCellOwner(size_t cellID, int ranks);
+
 // Explicit per-cell packet counts for one final generation.
 struct SourceAllocationPlan
 {
@@ -125,8 +131,10 @@ struct AdaptiveGroupHistory
     std::vector<std::vector<double>> cumulativeWeightSq;
     std::vector<std::vector<double>> cumulativeStokesQ;
     std::vector<std::vector<double>> cumulativeStokesU;
-    std::vector<std::vector<double>> cumulativeSumWQ2;
-    std::vector<std::vector<double>> cumulativeSumWU2;
+    std::vector<std::vector<double>> cumulativeSumKW2Q;
+    std::vector<std::vector<double>> cumulativeSumKW2QQ;
+    std::vector<std::vector<double>> cumulativeSumKW2U;
+    std::vector<std::vector<double>> cumulativeSumKW2UU;
     std::vector<std::vector<size_t>> cumulativeCrossings;
 };
 
@@ -179,6 +187,9 @@ struct AdaptiveSourceUpdateSummary
     size_t scoreDeltaCells = 0;
     size_t scoreMapCells = 0;
     std::vector<SphericalObserver::SourceCellEscapeStat> topStats;
+    // Escaped energy of this generation summed over observers, for the
+    // source cells this rank owns (filled only with the weight window on).
+    std::unordered_map<size_t, double> ownedEscapedEnergyByCellID;
 };
 
 struct AdaptiveGroupSourceUpdateSummary
@@ -373,6 +384,34 @@ void RecomputeOpacityScaleFactors(
     std::function<void(std::unordered_map<size_t, double>)> const&
         applyScaleFactors,
     std::string const& phaseLabel);
+// Source packets each local cell will create in the learned-only probe, for a
+// load balance just before it. The burn-in (1-3 packets per cell) makes thick
+// cells look free, but the probe splits every emitting cell outside the
+// learned set into ceil(L/cap) exploration packets, cap = fraction x escaping
+// luminosity, so on the burn-in decomposition it can put most packets of the
+// generation on one rank. Mirrors the STORM probe allocation, with L the
+// cell's volume plus face-source luminosity: learned cells get probePhotons
+// (at least ceil(L/cap) with capLearned), other emitting cells ceil(L/cap)
+// (at most 1e7), other cells keep their burn-in count. It only has to be
+// close: the load balance after the probe measures the real counts. Prints
+// "<label> cap_luminosity=... predicted_packets=..." on rank 0 (collective).
+struct PredictedProbePackets
+{
+    std::vector<size_t> perCell;   // local cells
+    unsigned long long total = 0;  // global
+};
+PredictedProbePackets PredictProbeSourcePackets(
+    std::vector<ComputationalCell3D> const& cells,
+    size_t nCells,
+    PostprocessRuntime const& runtime,
+    std::unordered_map<size_t, double> const& learnedScores,
+    std::vector<size_t> const& burninPhotons,
+    size_t probePhotons,
+    double explorationWeightFraction,
+    bool capLearned,
+    std::string const& label,
+    int rank,
+    int mpiSize);
 void PrintVmRSS(std::string const& label, int rank);
 // Resident set size of this process in kB (0 when unavailable).
 size_t CurrentVmRSSkB();

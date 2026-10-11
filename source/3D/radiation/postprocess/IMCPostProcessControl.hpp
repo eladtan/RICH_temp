@@ -43,6 +43,10 @@ struct IMCSourceAllocationSummary
     double adaptiveScoreSpanHigh = 0.0;
     size_t learnedPhotonsAtLeast1000 = 0;
     size_t learnedPhotonsAtLeast2000 = 0;
+    // Allocated cells raised to the learned packet-weight cap, and the
+    // packets that added.
+    size_t weightCappedCells = 0;
+    size_t weightCapExtraPhotons = 0;
 };
 
 struct IMCGroupSamplingDiagnostics

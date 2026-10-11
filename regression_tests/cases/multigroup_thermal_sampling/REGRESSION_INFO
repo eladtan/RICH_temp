@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+TEST_ID="multigroup_thermal_sampling"
+TAGS="serial"
+CATEGORY="code_correctness"
+BUILD_TEST_NAME="regression_tests/cases/multigroup_thermal_sampling"
+RUN_DIR_REL="regression_tests/cases/multigroup_thermal_sampling"
+BUILD_ARGS="--energy_groups_num=4"
+RUN_MODE="direct"
+RUN_COMMAND='"${RICH_BIN}"'
+CHECK_FUNCTION="check_multigroup_thermal_sampling_case"

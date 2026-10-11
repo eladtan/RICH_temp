@@ -21,13 +21,26 @@ struct Quality
     double snr = 0.0;
 };
 
+// Fractional Stokes parameters, degree and angle of one observer (or
+// observer/group) bin, with the packet-level error of q = Q/I and u = U/I.
+// Each crossing of weight w, fractional Stokes parameters q_i, u_i in the
+// observer basis and weight-window split factor k adds
+//   kw2 += k w^2,  kw2q += k w^2 q_i,  kw2qq += k w^2 q_i^2  (u alike).
+// q = sum w q_i / sum w is a ratio estimator; its variance is
+//   var(q) = sum k w^2 (q_i - q)^2 / I^2 = (kw2qq - 2 q kw2q + q^2 kw2) / I^2.
+// k w^2 is the weight-squared of the unsplit packet, so the copies of a split
+// packet count once: exact when they leave together (same direction and
+// polarization), conservative when their paths diverge. The effective packet
+// count is I^2 / kw2.
 inline Quality ComputeQuality(
     double intensity,
     double stokesQ,
     double stokesU,
-    double weightSq,
-    double sumWQ2,
-    double sumWU2)
+    double kw2,
+    double kw2q,
+    double kw2qq,
+    double kw2u,
+    double kw2uu)
 {
     Quality result;
     if (!(intensity > 0.0) || !std::isfinite(intensity) ||
@@ -43,26 +56,27 @@ inline Quality ComputeQuality(
     result.degree = std::sqrt(result.q * result.q + result.u * result.u);
     result.angle = 0.5 * std::atan2(stokesU, stokesQ);
 
-    if (!(weightSq > 0.0) || !std::isfinite(weightSq) ||
-        !std::isfinite(sumWQ2) || !std::isfinite(sumWU2))
+    if (!(kw2 > 0.0) || !std::isfinite(kw2) ||
+        !std::isfinite(kw2q) || !std::isfinite(kw2qq) ||
+        !std::isfinite(kw2u) || !std::isfinite(kw2uu))
         return result;
 
-    result.effectivePackets = intensity * intensity / weightSq;
+    result.effectivePackets = intensity * intensity / kw2;
     if (!(result.effectivePackets > 0.0) ||
         !std::isfinite(result.effectivePackets)) {
         result.effectivePackets = 0.0;
         return result;
     }
 
-    double const secondQ = sumWQ2 / intensity;
-    double const secondU = sumWU2 / intensity;
-    if (!std::isfinite(secondQ) || !std::isfinite(secondU))
+    double const invI2 = 1.0 / (intensity * intensity);
+    double const varQ = std::max(
+        0.0, (kw2qq - 2.0 * result.q * kw2q + result.q * result.q * kw2) * invI2);
+    double const varU = std::max(
+        0.0, (kw2uu - 2.0 * result.u * kw2u + result.u * result.u * kw2) * invI2);
+    if (!std::isfinite(varQ) || !std::isfinite(varU))
         return result;
-
-    double const varQ = std::max(0.0, secondQ - result.q * result.q);
-    double const varU = std::max(0.0, secondU - result.u * result.u);
-    result.sigmaQ = std::sqrt(varQ / result.effectivePackets);
-    result.sigmaU = std::sqrt(varU / result.effectivePackets);
+    result.sigmaQ = std::sqrt(varQ);
+    result.sigmaU = std::sqrt(varU);
     result.sigmaP = std::sqrt(
         result.sigmaQ * result.sigmaQ + result.sigmaU * result.sigmaU);
 

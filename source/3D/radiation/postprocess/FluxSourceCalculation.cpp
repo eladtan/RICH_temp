@@ -639,6 +639,77 @@ std::vector<Vector3D> ComputeGreyFldFlux(PostprocessRuntime& runtime)
     return flux;
 }
 
+// Point-indexed copies of the owned cells with the MPI ghosts appended, so a
+// CER face whose interior neighbour is a ghost sees that cell's state.
+std::vector<ComputationalCell3D> PointCellsWithGhosts(PostprocessRuntime const& runtime)
+{
+    size_t const nCells = runtime.tess.GetPointNo();
+    std::vector<ComputationalCell3D> cells(runtime.cells.begin(),
+                                           runtime.cells.begin() + static_cast<std::ptrdiff_t>(nCells));
+#ifdef RICH_MPI
+    MPI_exchange_data(runtime.tess, cells, true);
+#endif
+    return cells;
+}
+
+// The hydro's FLD luminosity from innerCell to outerCell across one face
+// (Diffusion.cpp, matrix assembly): two-point gradient between the cells'
+// centres of mass, both cells' diffusion coefficients at the face temperature
+// ((T_1^4 + T_2^4) / 2)^(1/4), their harmonic mean, and the flux limiter on
+// that gradient. The hydro also raises tiny gradients before the limiter
+// (grad_factor); that only changes faces whose flux is negligible and is left
+// out. Positive outward.
+double HydroFldFaceLuminosity(
+    PostprocessRuntime const& runtime,
+    std::vector<ComputationalCell3D> const& pointCells,
+    size_t innerCell,
+    size_t outerCell,
+    size_t face)
+{
+    if(innerCell >= pointCells.size() || outerCell >= pointCells.size())
+        throw UniversalError("Flux-source hydro face flux is missing a cell (ghost exchange)");
+    ComputationalCell3D inner = pointCells[innerCell];
+    ComputationalCell3D outer = pointCells[outerCell];
+    double const energyInner = inner.density * inner.Erad;
+    double const energyOuter = outer.density * outer.Erad;
+    Vector3D const centres = runtime.tess.GetCellCM(innerCell) - runtime.tess.GetCellCM(outerCell);
+    Vector3D const separation = runtime.tess.GetMeshPoint(innerCell) - runtime.tess.GetMeshPoint(outerCell);
+    double const centres2 = ScalarProd(centres, centres);
+    double const separationLength = abs(separation);
+    double const area = runtime.tess.GetArea(face);
+    double const t4 = 0.5 * (std::pow(inner.temperature, 4) + std::pow(outer.temperature, 4));
+    if(!(centres2 > 0.0) || !std::isfinite(centres2) || !(separationLength > 0.0) ||
+       !(area > 0.0) || !std::isfinite(area) || !(t4 > 0.0) || !std::isfinite(t4))
+    {
+        UniversalError eo("Flux-source hydro face flux has invalid geometry or temperatures");
+        eo.addEntry("Inner cell ID", inner.ID);
+        eo.addEntry("Outer cell ID", outer.ID);
+        eo.addEntry("Inner temperature", inner.temperature);
+        eo.addEntry("Outer temperature", outer.temperature);
+        eo.addEntry("Face area", area);
+        throw eo;
+    }
+    double const faceTemperature = std::pow(t4, 0.25);
+    inner.temperature = faceTemperature;
+    outer.temperature = faceTemperature;
+    double const dInner = runtime.greyOpacity->CalcDiffusionCoefficient(inner);
+    double const dOuter = runtime.greyOpacity->CalcDiffusionCoefficient(outer);
+    if(!(dInner > 0.0) || !std::isfinite(dInner) || !(dOuter > 0.0) || !std::isfinite(dOuter))
+    {
+        UniversalError eo("Flux-source hydro face flux has an invalid diffusion coefficient");
+        eo.addEntry("Inner D", dInner);
+        eo.addEntry("Outer D", dOuter);
+        eo.addEntry("Face temperature", faceTemperature);
+        throw eo;
+    }
+    double const faceD = 2.0 * dInner * dOuter / (dInner + dOuter);
+    double const difference = energyInner - energyOuter;
+    Vector3D const gradient = centres * (difference / centres2);
+    double const limiter = CG::CalcSingleFluxLimiter(gradient, faceD, 0.5 * (energyInner + energyOuter));
+    double const geometry = ScalarProd(centres, separation) / (separationLength * centres2);
+    return limiter * faceD * geometry * difference * area;
+}
+
 // ---------------------------------------------------------------------------
 // Surface smoothing and enclosed-region removal
 // ---------------------------------------------------------------------------
@@ -817,6 +888,15 @@ std::vector<size_t> FindEnclosedOutsideCells(
 }
 
 } // namespace
+
+std::vector<unsigned char> BuildOutsideFluxSourceMask(
+    Config const& cfg,
+    PostprocessRuntime const& runtime)
+{
+    if(!runtime.fluxSourceEnabled || runtime.fluxSourceRadius.empty())
+        throw UniversalError("Flux-source surface was not initialized");
+    return BuildOutsideSurfaceMask(cfg, runtime);
+}
 
 void InitializeFluxSourceSurface(
     Config const& cfg,
@@ -1177,7 +1257,9 @@ void ConfigureFluxSourceForCurrentDecomposition(
     if(!cfg.fluxSourceCompare)
     {
         physics.clearPostProcessExternalSources();
+        physics.setPostProcessExternalSourceSpectrumTemperatures({});
         runtime.volumeEmissionCellLuminosity.clear();
+        runtime.fluxSourceCellLuminosity.clear();
         return;
     }
     if(!runtime.fluxSourceEnabled || runtime.fluxSourceRadius.empty())
@@ -1298,6 +1380,16 @@ void ConfigureFluxSourceForCurrentDecomposition(
     }
 
     std::vector<RadiationIMC::PostProcessExternalSource> sources;
+    runtime.fluxSourceCellLuminosity.assign(nCells, 0.0);
+    std::vector<ComputationalCell3D> const pointCells =
+        cfg.fluxSourceFaceFlux == FluxSourceFaceFlux::Hydro
+            ? PointCellsWithGhosts(runtime) : std::vector<ComputationalCell3D>();
+    // Spectrum temperature of each source (outer) cell, by cell ID, and the
+    // face-luminosity weighted diagnostics of the FLUX_SOURCE_SPECTRUM line.
+    std::unordered_map<size_t, double> spectrumTemperature;
+    double localHotLuminosity = 0.0;      // faces with T_gas > 10 T_rad
+    double localLogRadiationT = 0.0;      // sum L ln T_rad
+    double localLogGasT = 0.0;            // sum L ln T_gas
     std::vector<size_t> neighbors;
     double localLuminosity = 0.0;
     double localNetLuminosity = 0.0;
@@ -1333,12 +1425,17 @@ void ConfigureFluxSourceForCurrentDecomposition(
                 throw UniversalError("Flux-source surface has invalid face geometry");
             normal *= 1.0 / distance;
 
-            Vector3D const faceFlux = 0.5 *
-                (fldFlux[outerCell] + fldFlux[innerCell]);
-            double const signedOutwardFlux = ScalarProd(faceFlux, normal);
-            if(!std::isfinite(signedOutwardFlux))
+            double signedLuminosity = 0.0;
+            if(cfg.fluxSourceFaceFlux == FluxSourceFaceFlux::Hydro)
+                signedLuminosity = HydroFldFaceLuminosity(runtime, pointCells, innerCell, outerCell, faces[j]);
+            else
+            {
+                Vector3D const faceFlux = 0.5 *
+                    (fldFlux[outerCell] + fldFlux[innerCell]);
+                signedLuminosity = ScalarProd(faceFlux, normal) * area;
+            }
+            if(!std::isfinite(signedLuminosity))
                 throw UniversalError("Flux-source surface has non-finite face flux");
-            double const signedLuminosity = signedOutwardFlux * area;
             double const luminosity = std::max(0.0, signedLuminosity);
             localNetLuminosity += signedLuminosity;
             localInwardLuminosity += std::max(0.0, -signedLuminosity);
@@ -1360,6 +1457,26 @@ void ConfigureFluxSourceForCurrentDecomposition(
             source.outwardNormal = normal;
             source.luminosity = luminosity;
             sources.push_back(source);
+            runtime.fluxSourceCellLuminosity[outerCell] += luminosity;
+            {
+                ComputationalCell3D const& outer = runtime.cells[outerCell];
+                double const radiationT = std::pow(
+                    outer.density * outer.Erad / CG::radiation_constant, 0.25);
+                if(!(radiationT > 0.0) || !std::isfinite(radiationT) ||
+                   !(outer.temperature > 0.0) || !std::isfinite(outer.temperature))
+                {
+                    UniversalError eo("Flux-source cell has no valid radiation or gas temperature");
+                    eo.addEntry("Cell ID", outer.ID);
+                    eo.addEntry("Radiation energy density", outer.density * outer.Erad);
+                    eo.addEntry("Gas temperature", outer.temperature);
+                    throw eo;
+                }
+                spectrumTemperature[outer.ID] = radiationT;
+                if(outer.temperature > 10.0 * radiationT)
+                    localHotLuminosity += luminosity;
+                localLogRadiationT += luminosity * std::log(radiationT);
+                localLogGasT += luminosity * std::log(outer.temperature);
+            }
             ++localBoundaryFaces;
             if(luminosity > 0.0)
             {
@@ -1369,6 +1486,10 @@ void ConfigureFluxSourceForCurrentDecomposition(
         }
     }
 
+    double spectrumSums[3] = {localHotLuminosity, localLogRadiationT, localLogGasT};
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, spectrumSums, 3, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+#endif
     double rawGlobalLuminosity = localLuminosity;
     double globalNetLuminosity = localNetLuminosity;
     double globalInwardLuminosity = localInwardLuminosity;
@@ -1479,6 +1600,11 @@ void ConfigureFluxSourceForCurrentDecomposition(
     }
 
     physics.setPostProcessExternalSources(std::move(sources));
+    // Multigroup face and re-emitted packets take a Planck spectrum at this
+    // temperature (an empty map keeps the cell's gas temperature).
+    physics.setPostProcessExternalSourceSpectrumTemperatures(
+        cfg.fluxSourceSpectrumTemperature == FluxSourceSpectrumTemperature::Radiation
+            ? std::move(spectrumTemperature) : std::unordered_map<size_t, double>());
 
     if(cfg.volumeEmissionEnabled)
     {
@@ -1671,7 +1797,17 @@ void ConfigureFluxSourceForCurrentDecomposition(
                   << " inward_fraction="
                   << (rawGlobalLuminosity > 0.0
                       ? globalInwardLuminosity / rawGlobalLuminosity : 0.0)
+                  << " face_flux="
+                  << (cfg.fluxSourceFaceFlux == FluxSourceFaceFlux::Hydro ? "hydro" : "cell-average")
                   << " erg/s" << std::endl;
+    if(runtime.rank == 0 && rawGlobalLuminosity > 0.0)
+        std::cout << "FLUX_SOURCE_SPECTRUM temperature="
+                  << (cfg.fluxSourceSpectrumTemperature == FluxSourceSpectrumTemperature::Radiation
+                      ? "radiation" : "gas")
+                  << " luminosity_share_Tgas_gt_10_Trad=" << spectrumSums[0] / rawGlobalLuminosity
+                  << " L_weighted_geomean_Trad=" << std::exp(spectrumSums[1] / rawGlobalLuminosity)
+                  << " L_weighted_geomean_Tgas=" << std::exp(spectrumSums[2] / rawGlobalLuminosity)
+                  << " K" << std::endl;
 }
 
 FluxSourcePolarizationSummary ComputeFluxSourcePolarizationSummary(

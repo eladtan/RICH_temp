@@ -85,6 +85,22 @@ std::vector<double> vectorStderr(SphericalObserver::RunningVectorStats const& st
     return result;
 }
 
+// Generation variance of a luminosity-weighted ratio x = sum_g X_g / sum_g I_g
+// over n generations (delta method):
+//   var(x) = n/(n-1) sum_g (X_g - x I_g)^2 / (sum_g I_g)^2,
+//   sum_g (X_g - x I_g)^2 = sum X^2 - 2 x sum I X + x^2 sum I^2.
+// Negative when it cannot be estimated (n < 2 or no intensity).
+double generationRatioVariance(double sumI, double sumI2, double sumX, double sumX2,
+                               double sumIX, size_t n)
+{
+    if (n < 2 || !(sumI > 0.0))
+        return -1.0;
+    double const x = sumX / sumI;
+    double const squares = std::max(0.0, sumX2 - 2.0 * x * sumIX + x * x * sumI2);
+    double const samples = static_cast<double>(n);
+    return samples / (samples - 1.0) * squares / (sumI * sumI);
+}
+
 std::vector<double> relativeError(std::vector<double> const& mean,
                                   std::vector<double> const& stderr)
 {
@@ -650,19 +666,25 @@ SphericalObserver::SphericalObserver(Vector3D center, double radius,
     groupEnergyWeightSq_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
     groupCrossingCount_.assign(numObservers_, std::vector<size_t>(numGroups_, 0));
     heavyCrossingByBin_.assign(numObservers_ * numGroups_, HeavyCrossing{});
+    escapeOriginEnergy_.assign(kEscapeOriginClasses * numGroups_, 0.0);
+    escapeOriginConvertedEnergy_.assign(numGroups_, 0.0);
 #ifdef MONTECARLO_POLARIZATION
     observerStokesQ_.assign(numObservers_, 0.0);
     observerStokesU_.assign(numObservers_, 0.0);
     observerSumWeightSq_.assign(numObservers_, 0.0);
-    observerSumWQ2_.assign(numObservers_, 0.0);
-    observerSumWU2_.assign(numObservers_, 0.0);
+    observerSumKW2Q_.assign(numObservers_, 0.0);
+    observerSumKW2QQ_.assign(numObservers_, 0.0);
+    observerSumKW2U_.assign(numObservers_, 0.0);
+    observerSumKW2UU_.assign(numObservers_, 0.0);
     mismatchWeightedSum_.assign(numObservers_, 0.0);
     mismatchWeighted2Sum_.assign(numObservers_, 0.0);
     mismatchMax_.assign(numObservers_, 0.0);
     groupStokesQ_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
     groupStokesU_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
-    groupSumWQ2_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
-    groupSumWU2_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    groupSumKW2Q_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    groupSumKW2QQ_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    groupSumKW2U_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    groupSumKW2UU_.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
     buildSkyBases();
 #endif
 }
@@ -754,9 +776,12 @@ void SphericalObserver::recordCrossing(::ObserverCrossingRecord const& rec)
     Vector3D const khat = rec.direction * (1.0 / dirNorm);
 
     size_t obs = findNearestObserverDirection(khat);
+    // k w^2: the weight-squared of the unsplit packet, so the copies of a
+    // weight-window split count once in every packet-level error.
+    double const kw2 = std::max(1.0, rec.splitFactor) * rec.weight * rec.weight;
     observerEnergy_[obs] += rec.weight;
-    observerEnergyWeightSq_[obs] += rec.weight * rec.weight;
-    recordGenerationSourceCellEscape(obs, rec.sourceCellID, rec.weight);
+    observerEnergyWeightSq_[obs] += kw2;
+    recordGenerationSourceCellEscape(obs, rec.sourceCellID, rec.weight, rec.splitFactor);
     if (rec.weight > observerMaxPacketEnergy_[obs])
         observerMaxPacketEnergy_[obs] = rec.weight;
     ++observerCrossingCount_[obs];
@@ -765,14 +790,18 @@ void SphericalObserver::recordCrossing(::ObserverCrossingRecord const& rec)
     if (numGroups_ > 1) {
         size_t g = findGroup(rec.frequency);
         groupEnergy_[obs][g] += rec.weight;
-        groupEnergyWeightSq_[obs][g] += rec.weight * rec.weight;
+        groupEnergyWeightSq_[obs][g] += kw2;
         ++groupCrossingCount_[obs][g];
         if (generationSourceCellGroupStatsEnabled_)
-            recordGenerationSourceCellGroupEscape(obs, g, rec.sourceCellID, rec.weight);
+            recordGenerationSourceCellGroupEscape(obs, g, rec.sourceCellID, rec.weight, rec.splitFactor);
     }
 
 #ifdef MONTECARLO_POLARIZATION
     if (polarizationOutputEnabled_) {
+        // Every crossing enters sum k w^2, the unpolarized ones (whose Stokes
+        // parameters rotateAndAccumulate skips) with q = u = 0, as in the
+        // intensity.
+        observerSumWeightSq_[obs] += kw2;
         rotateAndAccumulate(rec, obs);
         accumulateMismatch(rec, obs, rhat);
     }
@@ -810,9 +839,12 @@ void SphericalObserver::recordCrossing(Vector3D const& crossingPoint,
         observerMaxPacketEnergy_[obs] = weight;
     observerStokesQ_[obs] += weight * qObserver;
     observerStokesU_[obs] += weight * uObserver;
-    observerSumWeightSq_[obs] += weight * weight;
-    observerSumWQ2_[obs] += weight * qObserver * qObserver;
-    observerSumWU2_[obs] += weight * uObserver * uObserver;
+    double const w2 = weight * weight;
+    observerSumWeightSq_[obs] += w2;
+    observerSumKW2Q_[obs] += w2 * qObserver;
+    observerSumKW2QQ_[obs] += w2 * qObserver * qObserver;
+    observerSumKW2U_[obs] += w2 * uObserver;
+    observerSumKW2UU_[obs] += w2 * uObserver * uObserver;
     ++observerCrossingCount_[obs];
 
     if (numGroups_ > 1) {
@@ -821,8 +853,10 @@ void SphericalObserver::recordCrossing(Vector3D const& crossingPoint,
         groupEnergyWeightSq_[obs][g] += weight * weight;
         groupStokesQ_[obs][g] += weight * qObserver;
         groupStokesU_[obs][g] += weight * uObserver;
-        groupSumWQ2_[obs][g] += weight * qObserver * qObserver;
-        groupSumWU2_[obs][g] += weight * uObserver * uObserver;
+        groupSumKW2Q_[obs][g] += w2 * qObserver;
+        groupSumKW2QQ_[obs][g] += w2 * qObserver * qObserver;
+        groupSumKW2U_[obs][g] += w2 * uObserver;
+        groupSumKW2UU_[obs][g] += w2 * uObserver * uObserver;
         ++groupCrossingCount_[obs][g];
     }
 }
@@ -926,18 +960,22 @@ void SphericalObserver::rotateAndAccumulate(::ObserverCrossingRecord const& rec,
     double const qRot = rec.stokesQ * cos2psi + rec.stokesU * sin2psi;
     double const uRot = -rec.stokesQ * sin2psi + rec.stokesU * cos2psi;
 
+    double const kw2 = std::max(1.0, rec.splitFactor) * rec.weight * rec.weight;
     observerStokesQ_[obs] += rec.weight * qRot;
     observerStokesU_[obs] += rec.weight * uRot;
-    observerSumWeightSq_[obs] += rec.weight * rec.weight;
-    observerSumWQ2_[obs] += rec.weight * qRot * qRot;
-    observerSumWU2_[obs] += rec.weight * uRot * uRot;
+    observerSumKW2Q_[obs] += kw2 * qRot;
+    observerSumKW2QQ_[obs] += kw2 * qRot * qRot;
+    observerSumKW2U_[obs] += kw2 * uRot;
+    observerSumKW2UU_[obs] += kw2 * uRot * uRot;
 
     if (numGroups_ > 1) {
         size_t g = findGroup(rec.frequency);
         groupStokesQ_[obs][g] += rec.weight * qRot;
         groupStokesU_[obs][g] += rec.weight * uRot;
-        groupSumWQ2_[obs][g] += rec.weight * qRot * qRot;
-        groupSumWU2_[obs][g] += rec.weight * uRot * uRot;
+        groupSumKW2Q_[obs][g] += kw2 * qRot;
+        groupSumKW2QQ_[obs][g] += kw2 * qRot * qRot;
+        groupSumKW2U_[obs][g] += kw2 * uRot;
+        groupSumKW2UU_[obs][g] += kw2 * uRot * uRot;
     }
 }
 
@@ -978,6 +1016,7 @@ void SphericalObserver::addAbsorbedEnergy(double energy) { absorbedEnergy_ += en
 void SphericalObserver::addBoxEscapeEnergy(double energy) { boxEscapeEnergy_ += energy; }
 void SphericalObserver::addTimedOutEnergy(double energy) { timedOutEnergy_ += energy; }
 void SphericalObserver::addCutoffEnergy(double energy) { cutoffEnergy_ += energy; }
+void SphericalObserver::addCompressionWork(double energy) { compressionWork_ += energy; }
 
 void SphericalObserver::setPhotosphereData(PhotosphereData data)
 {
@@ -1028,16 +1067,20 @@ SphericalObserver::getObserverQualitySnapshot() const
     snap.stokesQ.assign(n, 0.0);
     snap.stokesU.assign(n, 0.0);
     snap.polarizationWeightSq.assign(n, 0.0);
-    snap.sumWQ2.assign(n, 0.0);
-    snap.sumWU2.assign(n, 0.0);
+    snap.sumKW2Q.assign(n, 0.0);
+    snap.sumKW2QQ.assign(n, 0.0);
+    snap.sumKW2U.assign(n, 0.0);
+    snap.sumKW2UU.assign(n, 0.0);
 #ifdef MONTECARLO_POLARIZATION
     snap.polarizationEnabled = polarizationOutputEnabled_;
     if (polarizationOutputEnabled_) {
         snap.stokesQ = observerStokesQ_;
         snap.stokesU = observerStokesU_;
         snap.polarizationWeightSq = observerSumWeightSq_;
-        snap.sumWQ2 = observerSumWQ2_;
-        snap.sumWU2 = observerSumWU2_;
+        snap.sumKW2Q = observerSumKW2Q_;
+        snap.sumKW2QQ = observerSumKW2QQ_;
+        snap.sumKW2U = observerSumKW2U_;
+        snap.sumKW2UU = observerSumKW2UU_;
     }
 #endif
     return snap;
@@ -1077,15 +1120,19 @@ SphericalObserver::getObserverGroupQualitySnapshot() const
     snap.polarizationEnabled = false;
     snap.stokesQ.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
     snap.stokesU.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
-    snap.sumWQ2.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
-    snap.sumWU2.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    snap.sumKW2Q.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    snap.sumKW2QQ.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    snap.sumKW2U.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+    snap.sumKW2UU.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
 #ifdef MONTECARLO_POLARIZATION
     if (polarizationOutputEnabled_) {
         snap.polarizationEnabled = true;
         snap.stokesQ = groupStokesQ_;
         snap.stokesU = groupStokesU_;
-        snap.sumWQ2 = groupSumWQ2_;
-        snap.sumWU2 = groupSumWU2_;
+        snap.sumKW2Q = groupSumKW2Q_;
+        snap.sumKW2QQ = groupSumKW2QQ_;
+        snap.sumKW2U = groupSumKW2U_;
+        snap.sumKW2UU = groupSumKW2UU_;
     }
 #endif
     return snap;
@@ -1103,6 +1150,11 @@ void SphericalObserver::recordHeavyCrossing(size_t obs, size_t group,
     }
     growthBinEnergy_[bin] += w;
     growthBinCount_[bin] += 1.0;
+    if (escapeOriginFaceCells_ != nullptr || escapeOriginHotCells_ != nullptr) {
+        escapeOriginEnergy_[escapeOriginClass(rec.sourceCellID) * numGroups_ + group] += rec.weight;
+        if (rec.compressionConverted)
+            escapeOriginConvertedEnergy_[group] += rec.weight;
+    }
 
     HeavyCrossing& heaviest = heavyCrossingByBin_[obs * numGroups_ + group];
     if (w > heaviest.weight) {
@@ -1111,6 +1163,7 @@ void SphericalObserver::recordHeavyCrossing(size_t obs, size_t group,
         heaviest.frequency = rec.frequency;
         heaviest.sourceCellID = rec.sourceCellID;
         heaviest.steps = rec.steps;
+        heaviest.compressionConverted = rec.compressionConverted;
     }
 }
 
@@ -1192,7 +1245,7 @@ void SphericalObserver::printHeavyPacketReport(std::string const& label,
     order.resize(nTop);
 
     // The owner of each top bin's heaviest packet contributes its details.
-    constexpr size_t kFields = 4;
+    constexpr size_t kFields = 5;
     std::vector<double> details(nTop * kFields, 0.0);
     for (size_t i = 0; i < nTop; ++i) {
         size_t const b = order[i];
@@ -1204,6 +1257,7 @@ void SphericalObserver::printHeavyPacketReport(std::string const& label,
         details[i * kFields + 2] = h.sourceCellID == std::numeric_limits<size_t>::max()
             ? -1.0 : static_cast<double>(h.sourceCellID);
         details[i * kFields + 3] = static_cast<double>(h.steps);
+        details[i * kFields + 4] = h.compressionConverted ? 1.0 : 0.0;
     }
 #ifdef RICH_MPI
     if (!details.empty())
@@ -1249,14 +1303,99 @@ void SphericalObserver::printHeavyPacketReport(std::string const& label,
                                     : std::to_string(static_cast<size_t>(details[i * kFields + 2])))
              << " steps=" << static_cast<size_t>(details[i * kFields + 3])
              << " frequency=" << details[i * kFields + 1]
+             << " compression_converted=" << (details[i * kFields + 4] > 0.5 ? 1 : 0)
              << " rank=" << binMax[b].rank;
         std::cout << line.str() << std::endl;
     }
 }
 
+void SphericalObserver::setEscapeOriginClassification(
+    std::unordered_set<size_t> const* faceCellIDs,
+    std::vector<std::pair<size_t, unsigned char>> const* hotCells)
+{
+    escapeOriginFaceCells_ = faceCellIDs;
+    escapeOriginHotCells_ = hotCells;
+}
+
+size_t SphericalObserver::escapeOriginClass(size_t sourceCellID) const
+{
+    if (sourceCellID == std::numeric_limits<size_t>::max())
+        return 5;
+    if (escapeOriginFaceCells_ != nullptr && escapeOriginFaceCells_->count(sourceCellID) > 0)
+        return 0;
+    if (escapeOriginHotCells_ != nullptr) {
+        auto const it = std::lower_bound(
+            escapeOriginHotCells_->begin(), escapeOriginHotCells_->end(), sourceCellID,
+            [](std::pair<size_t, unsigned char> const& entry, size_t id) { return entry.first < id; });
+        if (it != escapeOriginHotCells_->end() && it->first == sourceCellID)
+            return it->second;
+    }
+    return 1;
+}
+
+void SphericalObserver::printEscapeOriginReport(std::string const& label, size_t generation) const
+{
+    if (escapeOriginFaceCells_ == nullptr && escapeOriginHotCells_ == nullptr)
+        return;
+    int rank = 0;
+    std::vector<double> total(escapeOriginEnergy_.size(), 0.0);
+    std::vector<double> converted(escapeOriginConvertedEnergy_.size(), 0.0);
+#ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+    MPI_Reduce(escapeOriginEnergy_.data(), total.data(), static_cast<int>(total.size()),
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(escapeOriginConvertedEnergy_.data(), converted.data(), static_cast<int>(converted.size()),
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+#else
+    total = escapeOriginEnergy_;
+    converted = escapeOriginConvertedEnergy_;
+#endif
+    if (rank != 0)
+        return;
+    static char const* const names[kEscapeOriginClasses] = {
+        "surface_cell", "vol_lt1e5K", "vol_1e5_1e6K", "vol_1e6_1e7K", "vol_ge1e7K", "unknown"};
+    double sum = 0.0;
+    std::array<double, kEscapeOriginClasses> classEnergy{};
+    for (size_t k = 0; k < kEscapeOriginClasses; ++k)
+        for (size_t g = 0; g < numGroups_; ++g)
+            classEnergy[k] += total[k * numGroups_ + g];
+    for (double e : classEnergy)
+        sum += e;
+    std::ostringstream line;
+    line << std::setprecision(4) << "ESCAPE_ORIGIN " << label << " gen=" << generation
+         << " energy=" << sum << " erg";
+    for (size_t k = 0; k < kEscapeOriginClasses; ++k)
+        line << " " << names[k] << "=" << classEnergy[k] << "("
+             << (sum > 0.0 ? classEnergy[k] / sum : 0.0) << ")";
+    // Packets that reached their band through the DDMC compression cutoff,
+    // whatever their source class.
+    double const convertedSum = std::accumulate(converted.begin(), converted.end(), 0.0);
+    line << " compression_converted=" << convertedSum << "("
+         << (sum > 0.0 ? convertedSum / sum : 0.0) << ")";
+    if (numGroups_ > 1) {
+        for (size_t k = 0; k < kEscapeOriginClasses; ++k) {
+            if (!(classEnergy[k] > 0.0))
+                continue;
+            line << " " << names[k] << "_group_shares=[";
+            for (size_t g = 0; g < numGroups_; ++g)
+                line << (g ? "," : "") << total[k * numGroups_ + g] / classEnergy[k];
+            line << "]";
+        }
+        if (convertedSum > 0.0) {
+            line << " compression_converted_group_shares=[";
+            for (size_t g = 0; g < numGroups_; ++g)
+                line << (g ? "," : "") << converted[g] / convertedSum;
+            line << "]";
+        }
+    }
+    std::cout << line.str() << std::endl;
+}
+
 void SphericalObserver::resetTallies()
 {
     std::fill(heavyCrossingByBin_.begin(), heavyCrossingByBin_.end(), HeavyCrossing{});
+    std::fill(escapeOriginEnergy_.begin(), escapeOriginEnergy_.end(), 0.0);
+    std::fill(escapeOriginConvertedEnergy_.begin(), escapeOriginConvertedEnergy_.end(), 0.0);
     growthBinEnergy_.fill(0.0);
     growthBinCount_.fill(0.0);
     maxWeightGrowth_ = 0.0;
@@ -1274,8 +1413,10 @@ void SphericalObserver::resetTallies()
     std::fill(observerStokesQ_.begin(), observerStokesQ_.end(), 0.0);
     std::fill(observerStokesU_.begin(), observerStokesU_.end(), 0.0);
     std::fill(observerSumWeightSq_.begin(), observerSumWeightSq_.end(), 0.0);
-    std::fill(observerSumWQ2_.begin(), observerSumWQ2_.end(), 0.0);
-    std::fill(observerSumWU2_.begin(), observerSumWU2_.end(), 0.0);
+    std::fill(observerSumKW2Q_.begin(), observerSumKW2Q_.end(), 0.0);
+    std::fill(observerSumKW2QQ_.begin(), observerSumKW2QQ_.end(), 0.0);
+    std::fill(observerSumKW2U_.begin(), observerSumKW2U_.end(), 0.0);
+    std::fill(observerSumKW2UU_.begin(), observerSumKW2UU_.end(), 0.0);
     std::fill(mismatchWeightedSum_.begin(), mismatchWeightedSum_.end(), 0.0);
     std::fill(mismatchWeighted2Sum_.begin(), mismatchWeighted2Sum_.end(), 0.0);
     std::fill(mismatchMax_.begin(), mismatchMax_.end(), 0.0);
@@ -1283,16 +1424,16 @@ void SphericalObserver::resetTallies()
         std::fill(row.begin(), row.end(), 0.0);
     for (auto& row : groupStokesU_)
         std::fill(row.begin(), row.end(), 0.0);
-    for (auto& row : groupSumWQ2_)
-        std::fill(row.begin(), row.end(), 0.0);
-    for (auto& row : groupSumWU2_)
-        std::fill(row.begin(), row.end(), 0.0);
+    for (auto* moments : {&groupSumKW2Q_, &groupSumKW2QQ_, &groupSumKW2U_, &groupSumKW2UU_})
+        for (auto& row : *moments)
+            std::fill(row.begin(), row.end(), 0.0);
 #endif
     emittedEnergy_ = 0.0;
     absorbedEnergy_ = 0.0;
     boxEscapeEnergy_ = 0.0;
     timedOutEnergy_ = 0.0;
     cutoffEnergy_ = 0.0;
+    compressionWork_ = 0.0;
 }
 
 void SphericalObserver::clearGenerationStatistics()
@@ -1377,7 +1518,8 @@ void SphericalObserver::accumulateCurrentTalliesForStatistics(double sourceDt)
     addScalarStat(generationStats_.boxEscapeEnergy, boxEscapeEnergy_);
     addScalarStat(generationStats_.timedOutEnergy, timedOutEnergy_);
     addScalarStat(generationStats_.cutoffEnergy, cutoffEnergy_);
-    double const transportSinkResidual = emittedEnergy_ - absorbedEnergy_
+    addScalarStat(generationStats_.compressionWork, compressionWork_);
+    double const transportSinkResidual = emittedEnergy_ + compressionWork_ - absorbedEnergy_
         - boxEscapeEnergy_ - timedOutEnergy_ - cutoffEnergy_;
     double const timedOutFraction = (emittedEnergy_ > 0.0)
         ? timedOutEnergy_ / emittedEnergy_ : 0.0;
@@ -1392,10 +1534,18 @@ void SphericalObserver::accumulateCurrentTalliesForStatistics(double sourceDt)
         generationStats_.observerMaxPacketEnergyMax.assign(numObservers_, 0.0);
 #ifdef MONTECARLO_POLARIZATION
         generationStats_.observerSumWeightSqSum.assign(numObservers_, 0.0);
-        generationStats_.observerSumWQ2Sum.assign(numObservers_, 0.0);
-        generationStats_.observerSumWU2Sum.assign(numObservers_, 0.0);
-        generationStats_.groupSumWQ2Sum.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
-        generationStats_.groupSumWU2Sum.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+        generationStats_.observerSumKW2QSum.assign(numObservers_, 0.0);
+        generationStats_.observerSumKW2QQSum.assign(numObservers_, 0.0);
+        generationStats_.observerSumKW2USum.assign(numObservers_, 0.0);
+        generationStats_.observerSumKW2UUSum.assign(numObservers_, 0.0);
+        generationStats_.groupSumKW2QSum.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+        generationStats_.groupSumKW2QQSum.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+        generationStats_.groupSumKW2USum.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+        generationStats_.groupSumKW2UUSum.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+        generationStats_.energyStokesQCrossSum.assign(numObservers_, 0.0);
+        generationStats_.energyStokesUCrossSum.assign(numObservers_, 0.0);
+        generationStats_.groupEnergyStokesQCrossSum.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
+        generationStats_.groupEnergyStokesUCrossSum.assign(numObservers_, std::vector<double>(numGroups_, 0.0));
         generationStats_.mismatchWeightedSumSum.assign(numObservers_, 0.0);
         generationStats_.mismatchWeighted2SumSum.assign(numObservers_, 0.0);
         generationStats_.mismatchMaxMax.assign(numObservers_, 0.0);
@@ -1412,12 +1562,20 @@ void SphericalObserver::accumulateCurrentTalliesForStatistics(double sourceDt)
         }
 #ifdef MONTECARLO_POLARIZATION
         generationStats_.observerSumWeightSqSum[i] += observerSumWeightSq_[i];
-        generationStats_.observerSumWQ2Sum[i] += observerSumWQ2_[i];
-        generationStats_.observerSumWU2Sum[i] += observerSumWU2_[i];
+        generationStats_.observerSumKW2QSum[i] += observerSumKW2Q_[i];
+        generationStats_.observerSumKW2QQSum[i] += observerSumKW2QQ_[i];
+        generationStats_.observerSumKW2USum[i] += observerSumKW2U_[i];
+        generationStats_.observerSumKW2UUSum[i] += observerSumKW2UU_[i];
         for (size_t g = 0; g < numGroups_; ++g) {
-            generationStats_.groupSumWQ2Sum[i][g] += groupSumWQ2_[i][g];
-            generationStats_.groupSumWU2Sum[i][g] += groupSumWU2_[i][g];
+            generationStats_.groupSumKW2QSum[i][g] += groupSumKW2Q_[i][g];
+            generationStats_.groupSumKW2QQSum[i][g] += groupSumKW2QQ_[i][g];
+            generationStats_.groupSumKW2USum[i][g] += groupSumKW2U_[i][g];
+            generationStats_.groupSumKW2UUSum[i][g] += groupSumKW2UU_[i][g];
+            generationStats_.groupEnergyStokesQCrossSum[i][g] += groupEnergy_[i][g] * groupStokesQ_[i][g];
+            generationStats_.groupEnergyStokesUCrossSum[i][g] += groupEnergy_[i][g] * groupStokesU_[i][g];
         }
+        generationStats_.energyStokesQCrossSum[i] += observerEnergy_[i] * observerStokesQ_[i];
+        generationStats_.energyStokesUCrossSum[i] += observerEnergy_[i] * observerStokesU_[i];
         generationStats_.mismatchWeightedSumSum[i] += mismatchWeightedSum_[i];
         generationStats_.mismatchWeighted2SumSum[i] += mismatchWeighted2Sum_[i];
         generationStats_.mismatchMaxMax[i] =
@@ -1441,6 +1599,7 @@ void SphericalObserver::loadStatisticalMeanTallies()
     boxEscapeEnergy_ = scalarMean(generationStats_.boxEscapeEnergy, samples);
     timedOutEnergy_ = scalarMean(generationStats_.timedOutEnergy, samples);
     cutoffEnergy_ = scalarMean(generationStats_.cutoffEnergy, samples);
+    compressionWork_ = scalarMean(generationStats_.compressionWork, samples);
     observerEnergyWeightSq_ = generationStats_.energyWeightSqSum;
     groupEnergyWeightSq_ = generationStats_.groupEnergyWeightSqSum;
     observerCrossingCount_ = generationStats_.observerCrossingCountSum;
@@ -1455,10 +1614,14 @@ void SphericalObserver::loadStatisticalMeanTallies()
         double const invSamples = 1.0 / static_cast<double>(samples);
         double const invSamplesSq = invSamples * invSamples;
         observerSumWeightSq_ = generationStats_.observerSumWeightSqSum;
-        observerSumWQ2_ = generationStats_.observerSumWQ2Sum;
-        observerSumWU2_ = generationStats_.observerSumWU2Sum;
-        groupSumWQ2_ = generationStats_.groupSumWQ2Sum;
-        groupSumWU2_ = generationStats_.groupSumWU2Sum;
+        observerSumKW2Q_ = generationStats_.observerSumKW2QSum;
+        observerSumKW2QQ_ = generationStats_.observerSumKW2QQSum;
+        observerSumKW2U_ = generationStats_.observerSumKW2USum;
+        observerSumKW2UU_ = generationStats_.observerSumKW2UUSum;
+        groupSumKW2Q_ = generationStats_.groupSumKW2QSum;
+        groupSumKW2QQ_ = generationStats_.groupSumKW2QQSum;
+        groupSumKW2U_ = generationStats_.groupSumKW2USum;
+        groupSumKW2UU_ = generationStats_.groupSumKW2UUSum;
         mismatchWeightedSum_ = generationStats_.mismatchWeightedSumSum;
         mismatchWeighted2Sum_ = generationStats_.mismatchWeighted2SumSum;
         mismatchMax_ = generationStats_.mismatchMaxMax;
@@ -1466,14 +1629,15 @@ void SphericalObserver::loadStatisticalMeanTallies()
         for (auto& row : groupEnergyWeightSq_)
             for (auto& e : row)
                 e *= invSamplesSq;
-        for (auto& e : observerSumWQ2_) e *= invSamples;
-        for (auto& e : observerSumWU2_) e *= invSamples;
-        for (auto& row : groupSumWQ2_)
-            for (auto& e : row)
-                e *= invSamples;
-        for (auto& row : groupSumWU2_)
-            for (auto& e : row)
-                e *= invSamples;
+        // Sums of k w^2 (q^n) scale like weight squares: the loaded energy
+        // and Stokes tallies are generation means.
+        for (auto* moments : {&observerSumKW2Q_, &observerSumKW2QQ_, &observerSumKW2U_, &observerSumKW2UU_})
+            for (auto& e : *moments)
+                e *= invSamplesSq;
+        for (auto* moments : {&groupSumKW2Q_, &groupSumKW2QQ_, &groupSumKW2U_, &groupSumKW2UU_})
+            for (auto& row : *moments)
+                for (auto& e : row)
+                    e *= invSamplesSq;
         for (auto& e : mismatchWeightedSum_) e *= invSamples;
         for (auto& e : mismatchWeighted2Sum_) e *= invSamples;
     }
@@ -1579,6 +1743,7 @@ void SphericalObserver::writeStatisticsState(HDF5Writer& writer, std::string con
     writeScalarRunning(writer, prefix + "/box_escape_energy", s.boxEscapeEnergy);
     writeScalarRunning(writer, prefix + "/timed_out_energy", s.timedOutEnergy);
     writeScalarRunning(writer, prefix + "/cutoff_energy", s.cutoffEnergy);
+    writeScalarRunning(writer, prefix + "/compression_work", s.compressionWork);
     writeScalarRunning(writer, prefix + "/transport_sink_residual", s.transportSinkResidual);
     writeScalarRunning(writer, prefix + "/timed_out_fraction", s.timedOutFraction);
     state_hdf5::WriteVector(writer, prefix + "/energy_weight_sq_sum", s.energyWeightSqSum);
@@ -1589,10 +1754,18 @@ void SphericalObserver::writeStatisticsState(HDF5Writer& writer, std::string con
     state_hdf5::WriteVector(writer, prefix + "/observer_max_packet_energy_max", s.observerMaxPacketEnergyMax);
 #ifdef MONTECARLO_POLARIZATION
     state_hdf5::WriteVector(writer, prefix + "/observer_sum_weight_sq_sum", s.observerSumWeightSqSum);
-    state_hdf5::WriteVector(writer, prefix + "/observer_sum_wq2_sum", s.observerSumWQ2Sum);
-    state_hdf5::WriteVector(writer, prefix + "/observer_sum_wu2_sum", s.observerSumWU2Sum);
-    state_hdf5::WriteMatrix(writer, prefix + "/group_sum_wq2_sum", s.groupSumWQ2Sum);
-    state_hdf5::WriteMatrix(writer, prefix + "/group_sum_wu2_sum", s.groupSumWU2Sum);
+    state_hdf5::WriteVector(writer, prefix + "/observer_sum_kw2q_sum", s.observerSumKW2QSum);
+    state_hdf5::WriteVector(writer, prefix + "/observer_sum_kw2qq_sum", s.observerSumKW2QQSum);
+    state_hdf5::WriteVector(writer, prefix + "/observer_sum_kw2u_sum", s.observerSumKW2USum);
+    state_hdf5::WriteVector(writer, prefix + "/observer_sum_kw2uu_sum", s.observerSumKW2UUSum);
+    state_hdf5::WriteMatrix(writer, prefix + "/group_sum_kw2q_sum", s.groupSumKW2QSum);
+    state_hdf5::WriteMatrix(writer, prefix + "/group_sum_kw2qq_sum", s.groupSumKW2QQSum);
+    state_hdf5::WriteMatrix(writer, prefix + "/group_sum_kw2u_sum", s.groupSumKW2USum);
+    state_hdf5::WriteMatrix(writer, prefix + "/group_sum_kw2uu_sum", s.groupSumKW2UUSum);
+    state_hdf5::WriteVector(writer, prefix + "/energy_stokes_q_cross_sum", s.energyStokesQCrossSum);
+    state_hdf5::WriteVector(writer, prefix + "/energy_stokes_u_cross_sum", s.energyStokesUCrossSum);
+    state_hdf5::WriteMatrix(writer, prefix + "/group_energy_stokes_q_cross_sum", s.groupEnergyStokesQCrossSum);
+    state_hdf5::WriteMatrix(writer, prefix + "/group_energy_stokes_u_cross_sum", s.groupEnergyStokesUCrossSum);
     state_hdf5::WriteVector(writer, prefix + "/mismatch_weighted_sum_sum", s.mismatchWeightedSumSum);
     state_hdf5::WriteVector(writer, prefix + "/mismatch_weighted2_sum_sum", s.mismatchWeighted2SumSum);
     state_hdf5::WriteVector(writer, prefix + "/mismatch_max_max", s.mismatchMaxMax);
@@ -1659,6 +1832,7 @@ void SphericalObserver::readStatisticsState(HDF5Reader const& reader, std::strin
     readScalarRunning(reader, prefix + "/box_escape_energy", s.boxEscapeEnergy);
     readScalarRunning(reader, prefix + "/timed_out_energy", s.timedOutEnergy);
     readScalarRunning(reader, prefix + "/cutoff_energy", s.cutoffEnergy);
+    readScalarRunning(reader, prefix + "/compression_work", s.compressionWork);
     readScalarRunning(reader, prefix + "/transport_sink_residual", s.transportSinkResidual);
     readScalarRunning(reader, prefix + "/timed_out_fraction", s.timedOutFraction);
     s.energyWeightSqSum = state_hdf5::ReadVector<double>(reader, prefix + "/energy_weight_sq_sum", n);
@@ -1669,10 +1843,18 @@ void SphericalObserver::readStatisticsState(HDF5Reader const& reader, std::strin
     s.observerMaxPacketEnergyMax = state_hdf5::ReadVector<double>(reader, prefix + "/observer_max_packet_energy_max", n);
 #ifdef MONTECARLO_POLARIZATION
     s.observerSumWeightSqSum = state_hdf5::ReadVector<double>(reader, prefix + "/observer_sum_weight_sq_sum", n);
-    s.observerSumWQ2Sum = state_hdf5::ReadVector<double>(reader, prefix + "/observer_sum_wq2_sum", n);
-    s.observerSumWU2Sum = state_hdf5::ReadVector<double>(reader, prefix + "/observer_sum_wu2_sum", n);
-    s.groupSumWQ2Sum = state_hdf5::ReadMatrix<double>(reader, prefix + "/group_sum_wq2_sum", n, g);
-    s.groupSumWU2Sum = state_hdf5::ReadMatrix<double>(reader, prefix + "/group_sum_wu2_sum", n, g);
+    s.observerSumKW2QSum = state_hdf5::ReadVector<double>(reader, prefix + "/observer_sum_kw2q_sum", n);
+    s.observerSumKW2QQSum = state_hdf5::ReadVector<double>(reader, prefix + "/observer_sum_kw2qq_sum", n);
+    s.observerSumKW2USum = state_hdf5::ReadVector<double>(reader, prefix + "/observer_sum_kw2u_sum", n);
+    s.observerSumKW2UUSum = state_hdf5::ReadVector<double>(reader, prefix + "/observer_sum_kw2uu_sum", n);
+    s.groupSumKW2QSum = state_hdf5::ReadMatrix<double>(reader, prefix + "/group_sum_kw2q_sum", n, g);
+    s.groupSumKW2QQSum = state_hdf5::ReadMatrix<double>(reader, prefix + "/group_sum_kw2qq_sum", n, g);
+    s.groupSumKW2USum = state_hdf5::ReadMatrix<double>(reader, prefix + "/group_sum_kw2u_sum", n, g);
+    s.groupSumKW2UUSum = state_hdf5::ReadMatrix<double>(reader, prefix + "/group_sum_kw2uu_sum", n, g);
+    s.energyStokesQCrossSum = state_hdf5::ReadVector<double>(reader, prefix + "/energy_stokes_q_cross_sum", n);
+    s.energyStokesUCrossSum = state_hdf5::ReadVector<double>(reader, prefix + "/energy_stokes_u_cross_sum", n);
+    s.groupEnergyStokesQCrossSum = state_hdf5::ReadMatrix<double>(reader, prefix + "/group_energy_stokes_q_cross_sum", n, g);
+    s.groupEnergyStokesUCrossSum = state_hdf5::ReadMatrix<double>(reader, prefix + "/group_energy_stokes_u_cross_sum", n, g);
     s.mismatchWeightedSumSum = state_hdf5::ReadVector<double>(reader, prefix + "/mismatch_weighted_sum_sum", n);
     s.mismatchWeighted2SumSum = state_hdf5::ReadVector<double>(reader, prefix + "/mismatch_weighted2_sum_sum", n);
     s.mismatchMaxMax = state_hdf5::ReadVector<double>(reader, prefix + "/mismatch_max_max", n);
@@ -1688,10 +1870,18 @@ void SphericalObserver::readStatisticsState(HDF5Reader const& reader, std::strin
             s.observerMaxPacketEnergyMax.size() == n
 #ifdef MONTECARLO_POLARIZATION
             && s.observerSumWeightSqSum.size() == n &&
-            s.observerSumWQ2Sum.size() == n &&
-            s.observerSumWU2Sum.size() == n &&
-            s.groupSumWQ2Sum.size() == n &&
-            s.groupSumWU2Sum.size() == n &&
+            s.observerSumKW2QSum.size() == n &&
+            s.observerSumKW2QQSum.size() == n &&
+            s.observerSumKW2USum.size() == n &&
+            s.observerSumKW2UUSum.size() == n &&
+            s.groupSumKW2QSum.size() == n &&
+            s.groupSumKW2QQSum.size() == n &&
+            s.groupSumKW2USum.size() == n &&
+            s.groupSumKW2UUSum.size() == n &&
+            s.energyStokesQCrossSum.size() == n &&
+            s.energyStokesUCrossSum.size() == n &&
+            s.groupEnergyStokesQCrossSum.size() == n &&
+            s.groupEnergyStokesUCrossSum.size() == n &&
             s.mismatchWeightedSumSum.size() == n &&
             s.mismatchWeighted2SumSum.size() == n &&
             s.mismatchMaxMax.size() == n
@@ -1702,6 +1892,93 @@ void SphericalObserver::readStatisticsState(HDF5Reader const& reader, std::strin
                                  " have samples but incomplete per-observer sums");
     }
     generationStats_ = std::move(s);
+}
+
+SphericalObserver::GenerationPolarizationError
+SphericalObserver::getGenerationPolarizationError(size_t observer, size_t group) const
+{
+    GenerationPolarizationError result;
+#ifdef MONTECARLO_POLARIZATION
+    GenerationStatistics const& s = generationStats_;
+    size_t const n = s.samples;
+    if (observer >= numObservers_ || group > numGroups_ ||
+        s.energyStokesQCrossSum.size() != numObservers_)
+        return result;
+    double sumI = 0.0, sumI2 = 0.0, sumQ = 0.0, sumQ2 = 0.0, sumU = 0.0, sumU2 = 0.0;
+    double crossQ = 0.0, crossU = 0.0;
+    if (group == numGroups_) {
+        sumI = s.energy.sum[observer];
+        sumI2 = s.energy.sumSq[observer];
+        sumQ = s.stokesQ.sum[observer];
+        sumQ2 = s.stokesQ.sumSq[observer];
+        sumU = s.stokesU.sum[observer];
+        sumU2 = s.stokesU.sumSq[observer];
+        crossQ = s.energyStokesQCrossSum[observer];
+        crossU = s.energyStokesUCrossSum[observer];
+    } else {
+        sumI = s.groupEnergy.sum[observer][group];
+        sumI2 = s.groupEnergy.sumSq[observer][group];
+        sumQ = s.groupStokesQ.sum[observer][group];
+        sumQ2 = s.groupStokesQ.sumSq[observer][group];
+        sumU = s.groupStokesU.sum[observer][group];
+        sumU2 = s.groupStokesU.sumSq[observer][group];
+        crossQ = s.groupEnergyStokesQCrossSum[observer][group];
+        crossU = s.groupEnergyStokesUCrossSum[observer][group];
+    }
+    double const varQ = generationRatioVariance(sumI, sumI2, sumQ, sumQ2, crossQ, n);
+    double const varU = generationRatioVariance(sumI, sumI2, sumU, sumU2, crossU, n);
+    if (!(varQ >= 0.0) || !(varU >= 0.0))
+        return result;
+    result.sigmaP = std::sqrt(varQ + varU);
+    double const degree = std::hypot(sumQ, sumU) / sumI;
+    result.snr = (result.sigmaP > 0.0) ? degree / result.sigmaP : 0.0;
+    result.generationNeff = (sumI2 > 0.0) ? sumI * sumI / sumI2 : 0.0;
+    result.measured = result.generationNeff >= kMinGenerationNeff && result.sigmaP > 0.0;
+#else
+    (void)observer;
+    (void)group;
+#endif
+    return result;
+}
+
+void SphericalObserver::printGenerationPolarizationSummary(std::string const& label) const
+{
+#ifdef MONTECARLO_POLARIZATION
+    int rank = 0;
+#ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+    if (rank != 0 || !polarizationOutputEnabled_)
+        return;
+    std::vector<double> sigma, snr, neff;
+    for (size_t i = 0; i < numObservers_; ++i) {
+        GenerationPolarizationError const e = getGenerationPolarizationError(i, numGroups_);
+        neff.push_back(e.generationNeff);
+        if (!e.measured)
+            continue;
+        sigma.push_back(e.sigmaP);
+        snr.push_back(e.snr);
+    }
+    auto percentile = [](std::vector<double> v, double f) {
+        if (v.empty())
+            return 0.0;
+        size_t const k = std::min(v.size() - 1, static_cast<size_t>(f * static_cast<double>(v.size() - 1) + 0.5));
+        std::nth_element(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(k), v.end());
+        return v[k];
+    };
+    std::ostringstream line;
+    line << std::setprecision(4) << label << " generation polarization errors: samples="
+         << generationStats_.samples << " measured_observers=" << sigma.size() << "/" << numObservers_
+         << " (generation neff >= " << kMinGenerationNeff << ")"
+         << " generation_neff_p05/med=" << percentile(neff, 0.05) << "/" << percentile(neff, 0.5)
+         << " sigma_P_gen_p05/med/p95=" << percentile(sigma, 0.05) << "/" << percentile(sigma, 0.5)
+         << "/" << percentile(sigma, 0.95)
+         << " snr_gen_p05/med/p95=" << percentile(snr, 0.05) << "/" << percentile(snr, 0.5)
+         << "/" << percentile(snr, 0.95);
+    std::cout << line.str() << std::endl;
+#else
+    (void)label;
+#endif
 }
 
 double SphericalObserver::getTotalLuminosityStderrGen(double sourceDt) const
@@ -1716,7 +1993,8 @@ double SphericalObserver::getTotalLuminosityRelErrGen(double sourceDt) const
     return relativeError(mean, getTotalLuminosityStderrGen(sourceDt));
 }
 
-void SphericalObserver::recordGenerationSourceCellEscape(size_t observerIndex, size_t cellID, double energy)
+void SphericalObserver::recordGenerationSourceCellEscape(size_t observerIndex, size_t cellID, double energy,
+                                                         double splitFactor)
 {
     if (observerIndex == std::numeric_limits<size_t>::max() ||
         cellID == std::numeric_limits<size_t>::max() ||
@@ -1726,12 +2004,13 @@ void SphericalObserver::recordGenerationSourceCellEscape(size_t observerIndex, s
     stat.cellID = cellID;
     stat.observerIndex = observerIndex;
     stat.energy += energy;
-    stat.weightSq += energy * energy;
+    stat.weightSq += splitFactor * energy * energy;
     stat.maxWeight = std::max(stat.maxWeight, energy);
     ++stat.count;
 }
 
-void SphericalObserver::recordGenerationSourceCellGroupEscape(size_t observerIndex, size_t groupIndex, size_t cellID, double weight)
+void SphericalObserver::recordGenerationSourceCellGroupEscape(size_t observerIndex, size_t groupIndex, size_t cellID,
+                                                              double weight, double splitFactor)
 {
     if (observerIndex == std::numeric_limits<size_t>::max() ||
         groupIndex == std::numeric_limits<size_t>::max() ||
@@ -1744,7 +2023,7 @@ void SphericalObserver::recordGenerationSourceCellGroupEscape(size_t observerInd
     stat.observerIndex = observerIndex;
     stat.groupIndex = groupIndex;
     stat.energy += weight;
-    stat.weightSq += weight * weight;
+    stat.weightSq += splitFactor * weight * weight;
     stat.maxWeight = std::max(stat.maxWeight, weight);
     ++stat.count;
 }
@@ -1814,6 +2093,7 @@ double SphericalObserver::getAbsorbedEnergy() const { return absorbedEnergy_; }
 double SphericalObserver::getBoxEscapeEnergy() const { return boxEscapeEnergy_; }
 double SphericalObserver::getTimedOutEnergy() const { return timedOutEnergy_; }
 double SphericalObserver::getCutoffEnergy() const { return cutoffEnergy_; }
+double SphericalObserver::getCompressionWork() const { return compressionWork_; }
 
 std::vector<Vector3D> const& SphericalObserver::getDirections() const { return directions_; }
 Vector3D SphericalObserver::getCenter() const { return center_; }
@@ -1853,24 +2133,25 @@ void SphericalObserver::scale(double factor)
     for (auto& e : observerStokesQ_) e *= factor;
     for (auto& e : observerStokesU_) e *= factor;
     for (auto& e : observerSumWeightSq_) e *= factor * factor;
-    for (auto& e : observerSumWQ2_) e *= factor;
-    for (auto& e : observerSumWU2_) e *= factor;
+    for (auto* moments : {&observerSumKW2Q_, &observerSumKW2QQ_, &observerSumKW2U_, &observerSumKW2UU_})
+        for (auto& e : *moments)
+            e *= factor * factor;
     for (auto& e : mismatchWeightedSum_) e *= factor;
     for (auto& e : mismatchWeighted2Sum_) e *= factor;
     for (auto& gv : groupStokesQ_)
         for (auto& e : gv) e *= factor;
     for (auto& gv : groupStokesU_)
         for (auto& e : gv) e *= factor;
-    for (auto& gv : groupSumWQ2_)
-        for (auto& e : gv) e *= factor;
-    for (auto& gv : groupSumWU2_)
-        for (auto& e : gv) e *= factor;
+    for (auto* moments : {&groupSumKW2Q_, &groupSumKW2QQ_, &groupSumKW2U_, &groupSumKW2UU_})
+        for (auto& gv : *moments)
+            for (auto& e : gv) e *= factor * factor;
 #endif
     emittedEnergy_ *= factor;
     absorbedEnergy_ *= factor;
     boxEscapeEnergy_ *= factor;
     timedOutEnergy_ *= factor;
     cutoffEnergy_ *= factor;
+    compressionWork_ *= factor;
 }
 
 void SphericalObserver::mpiReduceToRank0()
@@ -1917,15 +2198,12 @@ void SphericalObserver::mpiReduceToRank0()
     if (rank == 0)
         observerSumWeightSq_ = recvBuf;
 
-    MPI_Reduce(observerSumWQ2_.data(), recvBuf.data(), count,
-               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    if (rank == 0)
-        observerSumWQ2_ = recvBuf;
-
-    MPI_Reduce(observerSumWU2_.data(), recvBuf.data(), count,
-               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    if (rank == 0)
-        observerSumWU2_ = recvBuf;
+    for (auto* moments : {&observerSumKW2Q_, &observerSumKW2QQ_, &observerSumKW2U_, &observerSumKW2UU_}) {
+        MPI_Reduce(moments->data(), recvBuf.data(), count,
+                   MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        if (rank == 0)
+            *moments = recvBuf;
+    }
 
     MPI_Reduce(mismatchWeightedSum_.data(), recvBuf.data(), count,
                MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
@@ -2005,28 +2283,18 @@ void SphericalObserver::mpiReduceToRank0()
                 groupStokesU_[i][g] = flatRecv[i * numGroups_ + g];
     }
 
-    for (size_t i = 0; i < numObservers_; ++i)
-        for (size_t g = 0; g < numGroups_; ++g)
-            flatSend[i * numGroups_ + g] = groupSumWQ2_[i][g];
-    std::fill(flatRecv.begin(), flatRecv.end(), 0.0);
-    MPI_Reduce(flatSend.data(), flatRecv.data(), static_cast<int>(flatSize),
-               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    if (rank == 0) {
+    for (auto* moments : {&groupSumKW2Q_, &groupSumKW2QQ_, &groupSumKW2U_, &groupSumKW2UU_}) {
         for (size_t i = 0; i < numObservers_; ++i)
             for (size_t g = 0; g < numGroups_; ++g)
-                groupSumWQ2_[i][g] = flatRecv[i * numGroups_ + g];
-    }
-
-    for (size_t i = 0; i < numObservers_; ++i)
-        for (size_t g = 0; g < numGroups_; ++g)
-            flatSend[i * numGroups_ + g] = groupSumWU2_[i][g];
-    std::fill(flatRecv.begin(), flatRecv.end(), 0.0);
-    MPI_Reduce(flatSend.data(), flatRecv.data(), static_cast<int>(flatSize),
-               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
-    if (rank == 0) {
-        for (size_t i = 0; i < numObservers_; ++i)
-            for (size_t g = 0; g < numGroups_; ++g)
-                groupSumWU2_[i][g] = flatRecv[i * numGroups_ + g];
+                flatSend[i * numGroups_ + g] = (*moments)[i][g];
+        std::fill(flatRecv.begin(), flatRecv.end(), 0.0);
+        MPI_Reduce(flatSend.data(), flatRecv.data(), static_cast<int>(flatSize),
+                   MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        if (rank == 0) {
+            for (size_t i = 0; i < numObservers_; ++i)
+                for (size_t g = 0; g < numGroups_; ++g)
+                    (*moments)[i][g] = flatRecv[i * numGroups_ + g];
+        }
     }
 #endif
 
@@ -2044,16 +2312,17 @@ void SphericalObserver::mpiReduceToRank0()
                 groupCrossingCount_[i][g] = flatCountRecv[i * numGroups_ + g];
     }
 
-    double scalars[5] = {emittedEnergy_, absorbedEnergy_, boxEscapeEnergy_,
-                         timedOutEnergy_, cutoffEnergy_};
-    double scalarRecv[5] = {0.0, 0.0, 0.0, 0.0, 0.0};
-    MPI_Reduce(scalars, scalarRecv, 5, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    double scalars[6] = {emittedEnergy_, absorbedEnergy_, boxEscapeEnergy_,
+                         timedOutEnergy_, cutoffEnergy_, compressionWork_};
+    double scalarRecv[6] = {0.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+    MPI_Reduce(scalars, scalarRecv, 6, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     if (rank == 0) {
         emittedEnergy_ = scalarRecv[0];
         absorbedEnergy_ = scalarRecv[1];
         boxEscapeEnergy_ = scalarRecv[2];
         timedOutEnergy_ = scalarRecv[3];
         cutoffEnergy_ = scalarRecv[4];
+        compressionWork_ = scalarRecv[5];
     }
 #endif
 }
@@ -2106,7 +2375,8 @@ void SphericalObserver::writeHDF5(std::string const& filename,
         for (size_t i = 0; i < numObservers_; ++i) {
             auto const quality = polarization_statistics::ComputeQuality(
                 observerEnergy_[i], observerStokesQ_[i], observerStokesU_[i],
-                observerSumWeightSq_[i], observerSumWQ2_[i], observerSumWU2_[i]);
+                observerSumWeightSq_[i], observerSumKW2Q_[i], observerSumKW2QQ_[i],
+                observerSumKW2U_[i], observerSumKW2UU_[i]);
             polDegree[i] = quality.degree;
             polAngle[i] = quality.angle;
             qNorm[i] = quality.q;
@@ -2134,6 +2404,22 @@ void SphericalObserver::writeHDF5(std::string const& filename,
         writer.WriteElement("/tally/observer_polarization_sigma_p", polSigmaP);
         writer.WriteElement("/tally/observer_polarization_snr", polSnr);
         writer.WriteElement("/tally/observer_polarization_snr_valid", polSnrValid);
+        {
+            std::vector<double> sigmaGen(numObservers_, 0.0), snrGen(numObservers_, 0.0);
+            std::vector<double> neffGen(numObservers_, 0.0);
+            std::vector<int> measured(numObservers_, 0);
+            for (size_t i = 0; i < numObservers_; ++i) {
+                GenerationPolarizationError const e = getGenerationPolarizationError(i, numGroups_);
+                sigmaGen[i] = e.sigmaP;
+                snrGen[i] = e.snr;
+                neffGen[i] = e.generationNeff;
+                measured[i] = e.measured ? 1 : 0;
+            }
+            writer.WriteElement("/tally/observer_polarization_sigma_p_gen", sigmaGen);
+            writer.WriteElement("/tally/observer_polarization_snr_gen", snrGen);
+            writer.WriteElement("/tally/observer_generation_neff", neffGen);
+            writer.WriteElement("/tally/observer_polarization_gen_measured", measured);
+        }
 
         std::vector<double> meanMismatch(numObservers_, 0.0);
         std::vector<double> rmsMismatch(numObservers_, 0.0);
@@ -2243,7 +2529,8 @@ void SphericalObserver::writeHDF5(std::string const& filename,
                 for (size_t g = 0; g < numGroups_; ++g) {
                     auto const quality = polarization_statistics::ComputeQuality(
                         groupEnergy_[i][g], groupStokesQ_[i][g], groupStokesU_[i][g],
-                        groupEnergyWeightSq_[i][g], groupSumWQ2_[i][g], groupSumWU2_[i][g]);
+                        groupEnergyWeightSq_[i][g], groupSumKW2Q_[i][g], groupSumKW2QQ_[i][g],
+                        groupSumKW2U_[i][g], groupSumKW2UU_[i][g]);
                     gDegree[i][g] = quality.degree;
                     gAngle[i][g] = quality.angle;
                     gQNorm[i][g] = quality.q;
@@ -2272,6 +2559,23 @@ void SphericalObserver::writeHDF5(std::string const& filename,
             writer.WriteElement("/tally/multigroup/group_polarization_sigma_p", gSigmaP);
             writer.WriteElement("/tally/multigroup/group_polarization_snr", gSnr);
             writer.WriteElement("/tally/multigroup/group_polarization_snr_valid", gSnrValid);
+            std::vector<std::vector<double>> gSigmaGen(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<double>> gSnrGen(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<double>> gNeffGen(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<std::vector<int>> gMeasured(numObservers_, std::vector<int>(numGroups_, 0));
+            for (size_t i = 0; i < numObservers_; ++i) {
+                for (size_t g = 0; g < numGroups_; ++g) {
+                    GenerationPolarizationError const e = getGenerationPolarizationError(i, g);
+                    gSigmaGen[i][g] = e.sigmaP;
+                    gSnrGen[i][g] = e.snr;
+                    gNeffGen[i][g] = e.generationNeff;
+                    gMeasured[i][g] = e.measured ? 1 : 0;
+                }
+            }
+            writer.WriteElement("/tally/multigroup/group_polarization_sigma_p_gen", gSigmaGen);
+            writer.WriteElement("/tally/multigroup/group_polarization_snr_gen", gSnrGen);
+            writer.WriteElement("/tally/multigroup/group_generation_neff", gNeffGen);
+            writer.WriteElement("/tally/multigroup/group_polarization_gen_measured", gMeasured);
         }
 #endif
     }
@@ -2286,8 +2590,10 @@ void SphericalObserver::writeHDF5(std::string const& filename,
     writer.WriteElement("/diagnostics/box_escape_energy", diagnostics.boxEscapeEnergy);
     writer.WriteElement("/diagnostics/timed_out_energy", diagnostics.timedOutEnergy);
     writer.WriteElement("/diagnostics/cutoff_energy", diagnostics.cutoffEnergy);
+    writer.WriteElement("/diagnostics/compression_work", diagnostics.compressionWork);
 
-    double residual = diagnostics.emittedEnergy - diagnostics.absorbedEnergy
+    double residual = diagnostics.emittedEnergy + diagnostics.compressionWork
+                    - diagnostics.absorbedEnergy
                     - diagnostics.boxEscapeEnergy - diagnostics.timedOutEnergy
                     - diagnostics.cutoffEnergy;
     writer.WriteElement("/diagnostics/transport_sink_residual", residual);
@@ -2521,6 +2827,8 @@ void SphericalObserver::writeHDF5(std::string const& filename,
                               generationStats_.timedOutEnergy, diagnostics.timedOutEnergy, samples);
         writeScalarStatErrors(writer, "/diagnostics/cutoff_energy",
                               generationStats_.cutoffEnergy, diagnostics.cutoffEnergy, samples);
+        writeScalarStatErrors(writer, "/diagnostics/compression_work",
+                              generationStats_.compressionWork, diagnostics.compressionWork, samples);
     }
 #ifdef MONTECARLO_POLARIZATION
     writer.WriteElement("/diagnostics/polarization_compiled", 1);
@@ -2691,77 +2999,25 @@ void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) c
         for (size_t i = 0; i < N; ++i)
             file << PolarizationAngle(observerStokesQ_[i], observerStokesU_[i]) << "\n";
 
-        file << "SCALARS polarization_effective_packets double 1\n";
-        file << "LOOKUP_TABLE default\n";
-        for (size_t i = 0; i < N; ++i) {
-            double neff = (observerSumWeightSq_[i] > 0.0)
-                ? (observerEnergy_[i] * observerEnergy_[i]) / observerSumWeightSq_[i] : 0.0;
-            file << neff << "\n";
-        }
-
-        file << "SCALARS polarization_sigma_q double 1\n";
-        file << "LOOKUP_TABLE default\n";
-        for (size_t i = 0; i < N; ++i) {
-            double Iv = observerEnergy_[i];
-            double W2 = observerSumWeightSq_[i];
-            if (Iv <= 0.0 || W2 <= 0.0) { file << 0.0 << "\n"; continue; }
-            double q = observerStokesQ_[i] / Iv;
-            double varQ = observerSumWQ2_[i] / Iv - q * q;
-            if (varQ < 0.0) varQ = 0.0;
-            double neff = Iv * Iv / W2;
-            file << std::sqrt(varQ / neff) << "\n";
-        }
-
-        file << "SCALARS polarization_sigma_u double 1\n";
-        file << "LOOKUP_TABLE default\n";
-        for (size_t i = 0; i < N; ++i) {
-            double Iv = observerEnergy_[i];
-            double W2 = observerSumWeightSq_[i];
-            if (Iv <= 0.0 || W2 <= 0.0) { file << 0.0 << "\n"; continue; }
-            double u = observerStokesU_[i] / Iv;
-            double varU = observerSumWU2_[i] / Iv - u * u;
-            if (varU < 0.0) varU = 0.0;
-            double neff = Iv * Iv / W2;
-            file << std::sqrt(varU / neff) << "\n";
-        }
-
-        file << "SCALARS polarization_sigma_p double 1\n";
-        file << "LOOKUP_TABLE default\n";
-        for (size_t i = 0; i < N; ++i) {
-            double Iv = observerEnergy_[i];
-            double W2 = observerSumWeightSq_[i];
-            if (Iv <= 0.0 || W2 <= 0.0) { file << 0.0 << "\n"; continue; }
-            double q = observerStokesQ_[i] / Iv;
-            double u = observerStokesU_[i] / Iv;
-            double varQ = observerSumWQ2_[i] / Iv - q * q;
-            double varU = observerSumWU2_[i] / Iv - u * u;
-            if (varQ < 0.0) varQ = 0.0;
-            if (varU < 0.0) varU = 0.0;
-            double neff = Iv * Iv / W2;
-            double sigQ = std::sqrt(varQ / neff);
-            double sigU = std::sqrt(varU / neff);
-            file << std::sqrt(sigQ * sigQ + sigU * sigU) << "\n";
-        }
-
-        file << "SCALARS polarization_snr double 1\n";
-        file << "LOOKUP_TABLE default\n";
-        for (size_t i = 0; i < N; ++i) {
-            double Iv = observerEnergy_[i];
-            double W2 = observerSumWeightSq_[i];
-            if (Iv <= 0.0 || W2 <= 0.0) { file << 0.0 << "\n"; continue; }
-            double q = observerStokesQ_[i] / Iv;
-            double u = observerStokesU_[i] / Iv;
-            double p = std::sqrt(q * q + u * u);
-            double varQ = observerSumWQ2_[i] / Iv - q * q;
-            double varU = observerSumWU2_[i] / Iv - u * u;
-            if (varQ < 0.0) varQ = 0.0;
-            if (varU < 0.0) varU = 0.0;
-            double neff = Iv * Iv / W2;
-            double sigQ = std::sqrt(varQ / neff);
-            double sigU = std::sqrt(varU / neff);
-            double sigP = std::sqrt(sigQ * sigQ + sigU * sigU);
-            file << ((sigP > 0.0) ? p / sigP : 0.0) << "\n";
-        }
+        // Packet-level errors from the same split-aware estimator as the HDF5
+        // output (PolarizationStatistics.hpp).
+        std::vector<polarization_statistics::Quality> quality(N);
+        for (size_t i = 0; i < N; ++i)
+            quality[i] = polarization_statistics::ComputeQuality(
+                observerEnergy_[i], observerStokesQ_[i], observerStokesU_[i],
+                observerSumWeightSq_[i], observerSumKW2Q_[i], observerSumKW2QQ_[i],
+                observerSumKW2U_[i], observerSumKW2UU_[i]);
+        auto writeQuality = [&](char const* name, double polarization_statistics::Quality::*field) {
+            file << "SCALARS " << name << " double 1\n";
+            file << "LOOKUP_TABLE default\n";
+            for (size_t i = 0; i < N; ++i)
+                file << quality[i].*field << "\n";
+        };
+        writeQuality("polarization_effective_packets", &polarization_statistics::Quality::effectivePackets);
+        writeQuality("polarization_sigma_q", &polarization_statistics::Quality::sigmaQ);
+        writeQuality("polarization_sigma_u", &polarization_statistics::Quality::sigmaU);
+        writeQuality("polarization_sigma_p", &polarization_statistics::Quality::sigmaP);
+        writeQuality("polarization_snr", &polarization_statistics::Quality::snr);
 
         file << "SCALARS mean_direction_mismatch double 1\n";
         file << "LOOKUP_TABLE default\n";
@@ -2806,22 +3062,11 @@ void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) c
 
             for (size_t g = 0; g < numGroups_; ++g) {
                 std::vector<double> values(N, 0.0);
-                for (size_t i = 0; i < N; ++i) {
-                    double const Iv = groupEnergy_[i][g];
-                    double const W2 = groupEnergyWeightSq_[i][g];
-                    if (Iv <= 0.0 || W2 <= 0.0)
-                        continue;
-                    double const q = groupStokesQ_[i][g] / Iv;
-                    double const u = groupStokesU_[i][g] / Iv;
-                    double const p = std::sqrt(q * q + u * u);
-                    double varQ = groupSumWQ2_[i][g] / Iv - q * q;
-                    double varU = groupSumWU2_[i][g] / Iv - u * u;
-                    if (varQ < 0.0) varQ = 0.0;
-                    if (varU < 0.0) varU = 0.0;
-                    double const neff = Iv * Iv / W2;
-                    double const sigP = std::sqrt(varQ / neff + varU / neff);
-                    values[i] = (sigP > 0.0) ? p / sigP : 0.0;
-                }
+                for (size_t i = 0; i < N; ++i)
+                    values[i] = polarization_statistics::ComputeQuality(
+                        groupEnergy_[i][g], groupStokesQ_[i][g], groupStokesU_[i][g],
+                        groupEnergyWeightSq_[i][g], groupSumKW2Q_[i][g], groupSumKW2QQ_[i][g],
+                        groupSumKW2U_[i][g], groupSumKW2UU_[i][g]).snr;
                 writeScalarVtk(file, groupScalarName("polarization_snr_group_", g), values);
             }
         }

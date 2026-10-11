@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+
+TEST_ID="imc_postprocess_restart_mpi"
+TAGS="mpi"
+CATEGORY="code_correctness"
+BUILD_TEST_NAME="regression_tests/cases/imc_postprocess_restart"
+RUN_DIR_REL="regression_tests/cases/imc_postprocess_restart_mpi"
+BUILD_ARGS="--energy_groups_num=4 --montecarlo-polarization"
+CHECK_FUNCTION="check_imc_postprocess_restart_case"
+RUN_MODE="slurm"
+SLURM_NTASKS="4"
+SLURM_PARTITION="bigrun"
+SLURM_TIME_LIMIT="00:15:00"
+RUN_COMMAND='mpirun -np ${SLURM_NTASKS} "${RICH_BIN}"'
+
+# Same test program as imc_postprocess_restart, on 4 ranks: exercises the
+# load-balance gather/distribute, the learned-state broadcast, the restart
+# rebalance and the collective error relay. The chain check needs one rank
+# and is skipped here; the check function accepts that.
