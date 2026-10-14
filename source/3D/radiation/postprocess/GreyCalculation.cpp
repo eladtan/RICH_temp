@@ -411,6 +411,9 @@ ForwardPostprocessResult RunGreyPostprocess(
             }
     #endif // RICH_MPI
             size_t const greyStartGeneration = restarting ? greyFinalStartGeneration : 0;
+#ifdef RICH_MPI
+            ResetPeakRSS();   // MEMORY_GEN peak_* = one whole generation each
+#endif
             for (size_t gen = greyStartGeneration; gen < greyTotalGenerations; ++gen) {
                 bool const greyFirstBurninThisGen =
                     cfg.adaptiveSourceCells && gen < greyInitialBurninGenerations;

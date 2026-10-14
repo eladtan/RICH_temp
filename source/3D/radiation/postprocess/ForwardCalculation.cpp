@@ -384,6 +384,9 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
             }
     #endif // RICH_MPI
             size_t const mgStartGeneration = restarting ? mgFinalStartGeneration : 0;
+#ifdef RICH_MPI
+            ResetPeakRSS();   // MEMORY_GEN peak_* = one whole generation each
+#endif
             for (size_t gen = mgStartGeneration; gen < mgTotalGenerations; ++gen)
             {
                 bool const firstBurninThisGen =

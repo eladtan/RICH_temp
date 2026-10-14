@@ -420,12 +420,22 @@ size_t CurrentVmRSSkB();
 // and heap free-but-retained (the latter is what malloc_trim can return).
 struct ProcessMemoryKB
 {
-    size_t rss = 0, anon = 0, file = 0, shmem = 0, heapInUse = 0, heapFree = 0, heapMmap = 0;
+    size_t rss = 0, anon = 0, file = 0, shmem = 0, heapInUse = 0, heapFree = 0, heapMmap = 0, peak = 0;
 };
 ProcessMemoryKB CurrentProcessMemoryKB();
+// Resets this process's peak resident set size (VmHWM) to the current RSS, so
+// the next CurrentProcessMemoryKB().peak is the peak since this call. Cheap (no
+// page walk). Returns false when the kernel refuses.
+bool ResetPeakRSS();
 // Prints MEMORY_GEN (rank 0: means, worst node sums via a shared-memory
 // communicator) and MEMORY_GEN_MAXRANK (heaviest rank: what it holds) to
-// stderr. Collective on MPI_COMM_WORLD.
+// stderr. The peak_* fields cover the time since the previous report (it
+// resets the peak after reading it), so with a ResetPeakRSS() before the
+// generation loop each report covers one whole generation: transport,
+// end-of-generation reductions, load balance and the next allocation plan.
+// worst_node_rank_peaks_sum_GB adds each rank's own peak, an upper bound on
+// the node's peak because ranks may peak at different moments. Collective on
+// MPI_COMM_WORLD.
 void ReportGenerationMemory(char const* pass, size_t generation, int rank, int mpiSize,
                             Tessellation3D const& tess, size_t censusParticles);
 

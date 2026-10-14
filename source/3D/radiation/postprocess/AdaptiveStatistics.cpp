@@ -3397,6 +3397,7 @@ ProcessMemoryKB CurrentProcessMemoryKB()
         grab("RssAnon:", m.anon);
         grab("RssFile:", m.file);
         grab("RssShmem:", m.shmem);
+        grab("VmHWM:", m.peak);
     }
     struct mallinfo2 const mi = mallinfo2();
     m.heapInUse = mi.uordblks / 1024;
@@ -3404,6 +3405,18 @@ ProcessMemoryKB CurrentProcessMemoryKB()
     m.heapMmap = mi.hblkhd / 1024;
 #endif
     return m;
+}
+
+bool ResetPeakRSS()
+{
+#ifdef __linux__
+    std::ofstream f("/proc/self/clear_refs");
+    f << "5";
+    f.close();
+    return !f.fail();
+#else
+    return false;
+#endif
 }
 
 void ReportGenerationMemory(char const* pass, size_t generation, int rank, int mpiSize,
@@ -3415,17 +3428,24 @@ void ReportGenerationMemory(char const* pass, size_t generation, int rank, int m
         MPI_Comm_split_type(MPI_COMM_WORLD, MPI_COMM_TYPE_SHARED, 0, MPI_INFO_NULL, &nodeComm);
     ProcessMemoryKB const mem = CurrentProcessMemoryKB();
     double const rssMB = static_cast<double>(mem.rss) / 1024.0;
-    // rss, anon, shmem, heap in use, heap free (MB)
-    double local[5] = {rssMB, mem.anon / 1024.0, mem.shmem / 1024.0, mem.heapInUse / 1024.0, mem.heapFree / 1024.0};
-    double nodeSum[5] = {0, 0, 0, 0, 0}, worstNode[5] = {0, 0, 0, 0, 0}, globalSum[5] = {0, 0, 0, 0, 0};
-    MPI_Allreduce(local, nodeSum, 5, MPI_DOUBLE, MPI_SUM, nodeComm);
-    MPI_Reduce(nodeSum, worstNode, 5, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
-    MPI_Reduce(local, globalSum, 5, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    double const peakMB = static_cast<double>(mem.peak) / 1024.0;
+    // rss, anon, shmem, heap in use, heap free, peak rss (MB)
+    double local[6] = {rssMB, mem.anon / 1024.0, mem.shmem / 1024.0, mem.heapInUse / 1024.0, mem.heapFree / 1024.0, peakMB};
+    double nodeSum[6] = {0, 0, 0, 0, 0, 0}, worstNode[6] = {0, 0, 0, 0, 0, 0}, globalSum[6] = {0, 0, 0, 0, 0, 0};
+    MPI_Allreduce(local, nodeSum, 6, MPI_DOUBLE, MPI_SUM, nodeComm);
+    MPI_Reduce(nodeSum, worstNode, 6, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+    MPI_Reduce(local, globalSum, 6, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
     double globalMaxMB = 0.0;
     MPI_Allreduce(&rssMB, &globalMaxMB, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
     int const maxCandidate = (rssMB == globalMaxMB) ? rank : std::numeric_limits<int>::max();
     int maxRank = 0;
     MPI_Allreduce(&maxCandidate, &maxRank, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    // Heaviest rank peak with its rank, and the node with the largest sum of
+    // rank peaks with its first world rank (MAXLOC keeps the lowest rank on ties).
+    int nodeLeader = rank;
+    MPI_Allreduce(MPI_IN_PLACE, &nodeLeader, 1, MPI_INT, MPI_MIN, nodeComm);
+    struct { double value; int rank; } peakLoc[2] = {{peakMB, rank}, {nodeSum[5], nodeLeader}}, peakMax[2];
+    MPI_Allreduce(peakLoc, peakMax, 2, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
     double const n = static_cast<double>(std::max(1, mpiSize));
     if (rank == 0)
         std::cerr << "MEMORY_GEN pass=" << pass << " gen=" << generation
@@ -3439,18 +3459,24 @@ void ReportGenerationMemory(char const* pass, size_t generation, int rank, int m
                   << " mean_anon_MB=" << globalSum[1] / n
                   << " mean_shmem_MB=" << globalSum[2] / n
                   << " mean_heap_in_use_MB=" << globalSum[3] / n
-                  << " mean_heap_free_MB=" << globalSum[4] / n << std::endl;
+                  << " mean_heap_free_MB=" << globalSum[4] / n
+                  << " worst_node_rank_peaks_sum_GB=" << peakMax[1].value / 1024.0
+                  << " worst_rank_peaks_node_first_rank=" << peakMax[1].rank
+                  << " peak_max_MB=" << peakMax[0].value << " peak_max_rank=" << peakMax[0].rank
+                  << " mean_peak_MB=" << globalSum[5] / n << std::endl;
     if (rank == maxRank)
         std::cerr << "MEMORY_GEN_MAXRANK pass=" << pass << " gen=" << generation << " rank=" << rank
                   << " rss_MB=" << rssMB
                   << " anon_MB=" << mem.anon / 1024.0 << " shmem_MB=" << mem.shmem / 1024.0
                   << " heap_in_use_MB=" << mem.heapInUse / 1024.0 << " heap_free_MB=" << mem.heapFree / 1024.0
                   << " heap_mmap_MB=" << mem.heapMmap / 1024.0
+                  << " peak_MB=" << peakMB
                   << " local_cells=" << tess.GetPointNo()
                   << " points_with_ghosts=" << tess.GetTotalPointNumber()
                   << " faces=" << tess.GetTotalFacesNumber()
                   << " face_vertices=" << tess.GetFacePoints().size()
                   << " census_particles=" << censusParticles << std::endl;
+    ResetPeakRSS();
 #else
     (void)pass; (void)generation; (void)rank; (void)mpiSize; (void)tess; (void)censusParticles;
 #endif
