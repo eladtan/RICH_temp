@@ -112,10 +112,15 @@ public:
     mutable std::vector<double> new_Eg; // energy groups per cell at the end of the time step [cell*ENERGY_GROUPS_NUM + group]
     mutable std::vector<double> new_Eg_full; // energy groups per cell at the end of the time step (plus the residue/volume for algebraic energy conservation) [cell*ENERGY_GROUPS_NUM + group]
 
-    mutable std::vector<std::vector<double>> old_Eg; // energy groups per cell at the beggining of the time step [cell][group] 
+    mutable std::vector<std::vector<double>> old_Eg; // energy groups per cell at the beggining of the current (sub)step [cell][group]
 
-    mutable std::vector<double> old_Er; // total radiation energy per cell at the beggining of the time step [cell]
-    mutable std::vector<double> old_Tm; // temperature per cell at the beggining of the time step [cell]
+    mutable std::vector<double> old_Er; // total radiation energy per cell at the beggining of the current (sub)step [cell]
+    mutable std::vector<double> old_Tm; // temperature per cell at the beggining of the current (sub)step [cell]
+
+    // the same quantities at the beggining of the full radiation time step (set in `prestep`), used by `calculate_dt`
+    mutable std::vector<std::vector<double>> full_step_old_Eg;
+    mutable std::vector<double> full_step_old_Er;
+    mutable std::vector<double> full_step_old_Tm;
 
     mutable std::vector<Vector3D> grad; // numerical gradient operator bewteen cells ij for i < j [face]
 
@@ -138,6 +143,9 @@ private:
     bool const clamp_coupling_strength_; // when true, cap opacity so c*dt*sigma <= max_coupling_strength and limit per-group exchange to 2*cv*T
     bool const compton_optical_depth_cutoff_on_; // when true, omit Compton scattering where c*dt*sigma_planck >= compton_optical_depth_turn_off
     mutable bool displayed_warning_; // flag whether to display the planck sum warning
+
+    // stores Erad, the group energies and the temperature of `cells` as the start of the current (sub)step (old_Er, old_Eg, old_Tm)
+    void store_step_start_state(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells) const;
 
     void calculate_group_absorption_and_scattering_coefficients(Tessellation3D const& tess,
                                                                 std::vector<ComputationalCell3D> const& cells,

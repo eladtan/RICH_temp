@@ -160,22 +160,10 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
     sigma_absorption_planck.resize(N, 0.0);
     fleck_factor.resize(N, 0.0);
 
-    old_Er.resize(N, 0.0);
-    old_Tm.resize(N, 0.0);
-
-    for (std::size_t i=0; i < N; ++i) {
-        old_Er[i] = cells[i].Erad * cells[i].density;
-        old_Tm[i] = cells[i].temperature;
-    }
-
-    old_Eg.resize(N);
-    for (std::size_t i=0; i < N; ++i) {
-        old_Eg[i].resize(ENERGY_GROUPS_NUM, 0.0);
-
-        for (std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g) {
-            old_Eg[i][g] = cells[i].Eg[g] * cells[i].density;
-        }
-    }
+    store_step_start_state(tess, cells);
+    full_step_old_Er = old_Er;
+    full_step_old_Tm = old_Tm;
+    full_step_old_Eg = old_Eg;
 
     auto const Nfaces = tess.GetTotalFacesNumber();
     grad.resize(Nfaces);
@@ -211,6 +199,28 @@ bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
     return true;
 }
 
+void MultigroupDiffusion::store_step_start_state(Tessellation3D const& tess,
+                                                 std::vector<ComputationalCell3D> const& cells) const {
+    auto const N = tess.GetPointNo();
+
+    old_Er.resize(N, 0.0);
+    old_Tm.resize(N, 0.0);
+
+    for (std::size_t i=0; i < N; ++i) {
+        old_Er[i] = cells[i].Erad * cells[i].density;
+        old_Tm[i] = cells[i].temperature;
+    }
+
+    old_Eg.resize(N);
+    for (std::size_t i=0; i < N; ++i) {
+        old_Eg[i].resize(ENERGY_GROUPS_NUM, 0.0);
+
+        for (std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g) {
+            old_Eg[i][g] = cells[i].Eg[g] * cells[i].density;
+        }
+    }
+}
+
 bool MultigroupDiffusion::poststep() const {
     std::vector<ComputationalCell3D>().swap(cells_cgs);
 
@@ -225,7 +235,7 @@ double MultigroupDiffusion::calculate_dt(double const dt,
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
 #endif
 
-    double max_Er = old_Er.size() > 0 ? *std::max_element(old_Er.begin(), old_Er.end()) : std::numeric_limits<double>::min();
+    double max_Er = full_step_old_Er.size() > 0 ? *std::max_element(full_step_old_Er.begin(), full_step_old_Er.end()) : std::numeric_limits<double>::min();
     double max_rhoT = 0;
     auto const N = tess.GetPointNo();
 
@@ -261,9 +271,9 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 
         double const new_Er_cell = cells[i].Erad * cells[i].density;
         double const equlibrium_factor = std::abs(cells[i].temperature - std::pow(new_Er_cell / CG::radiation_constant, 0.25)) < 0.05 * cells[i].temperature ? 0.5 : 1;
-        double diff = equlibrium_factor * std::abs(new_Er_cell - old_Er[i]) / (new_Er_cell+0.02*max_Er);
-        bool const Erad_equib = std::abs(new_Er_cell - old_Er[i]) < 0.075 * old_Er[i];
-        double temp_diff = cells[i].density * equlibrium_factor* std::abs(cells[i].temperature - old_Tm[i]) / (cells[i].density * cells[i].temperature+1e-3*max_rhoT);
+        double diff = equlibrium_factor * std::abs(new_Er_cell - full_step_old_Er[i]) / (new_Er_cell+0.02*max_Er);
+        bool const Erad_equib = std::abs(new_Er_cell - full_step_old_Er[i]) < 0.075 * full_step_old_Er[i];
+        double temp_diff = cells[i].density * equlibrium_factor* std::abs(cells[i].temperature - full_step_old_Tm[i]) / (cells[i].density * cells[i].temperature+1e-3*max_rhoT);
 
         if (Erad_equib) temp_diff *= 0.25;
 
@@ -275,7 +285,7 @@ double MultigroupDiffusion::calculate_dt(double const dt,
         }
 
         for (std::size_t g=0; g<ENERGY_GROUPS_NUM; ++g) {
-            double temp = 0.2 * (7 * equlibrium_factor / 6 - (1.0 / 6.0))* std::abs(cells[i].Eg[g]*cells[i].density - old_Eg[i][g]) / (cells[i].Eg[g]*cells[i].density + 0.01/ENERGY_GROUPS_NUM*max_Er + cells[i].Erad * cells[i].density / ENERGY_GROUPS_NUM);
+            double temp = 0.2 * (7 * equlibrium_factor / 6 - (1.0 / 6.0))* std::abs(cells[i].Eg[g]*cells[i].density - full_step_old_Eg[i][g]) / (cells[i].Eg[g]*cells[i].density + 0.01/ENERGY_GROUPS_NUM*max_Er + cells[i].Erad * cells[i].density / ENERGY_GROUPS_NUM);
 
             if (Erad_equib) temp *= 0.25;
 
@@ -309,18 +319,18 @@ double MultigroupDiffusion::calculate_dt(double const dt,
 #endif
     if (rank == max_data.mpi_id) {
         // max_loc /= ENERGY_GROUPS_NUM;
-        std::cout<<"Radiation time step ID "<<cells[max_loc].ID<<" old Er "<<old_Er[max_loc]<<" new Er "<<cells[max_loc].Erad * cells[max_loc].density<<
+        std::cout<<"Radiation time step ID "<<cells[max_loc].ID<<" old Er "<<full_step_old_Er[max_loc]<<" new Er "<<cells[max_loc].Erad * cells[max_loc].density<<
             " diff "<<max_diff<<" Tgas "<<cells[max_loc].temperature<<" Trad "<<std::pow(cells[max_loc].density * cells[max_loc].Erad * mass_scale_ / (length_scale_ * pow<2>(time_scale_) * CG::radiation_constant), 0.25)<<" max_Er "<<max_Er<<" max_rhoT "<<max_rhoT<<" rank "<<rank<<" density "<<cells[max_loc].density<<
-            " width "<<tess.GetWidth(max_loc)<<" Tgas_old "<<old_Tm[max_loc]<<" loc="<<tess.GetMeshPoint(max_loc)<<std::endl;
+            " width "<<tess.GetWidth(max_loc)<<" Tgas_old "<<full_step_old_Tm[max_loc]<<" loc="<<tess.GetMeshPoint(max_loc)<<std::endl;
         std::cout<<"kp="<<sigma_absorption_planck[max_loc]<<" fleck factor "<<fleck_factor[max_loc]<<" which one "<<max_which<<" equlibrium_factor "<<equlibrium_factor_final<<" final_Erad_eq "<<final_Erad_eq<<std::endl;
 
-        if (max_which >= 2) std::cout << "Group number "<<max_which - 2<<" New_Eg="<<cells[max_loc].Eg[max_which - 2]*cells[max_loc].density<<" old_Eg="<<old_Eg[max_loc][max_which - 2]<<std::endl;
+        if (max_which >= 2) std::cout << "Group number "<<max_which - 2<<" New_Eg="<<cells[max_loc].Eg[max_which - 2]*cells[max_loc].density<<" old_Eg="<<full_step_old_Eg[max_loc][max_which - 2]<<std::endl;
 #ifdef DEBUG
         for (size_t j = 0; j < ENERGY_GROUPS_NUM; ++j) {
-            std::cout<<"Eg["<<j<<"]="<<cells[max_loc].Eg[j]*cells[max_loc].density*mass_scale_ / (length_scale_ * pow<2>(time_scale_)) <<" old Eg["<<j<<"]="<<old_Eg[max_loc][j]*mass_scale_ / (length_scale_ * pow<2>(time_scale_))<<" energy(keV) "<<energy_groups_center[j] / units::kev<<" bg="<<
+            std::cout<<"Eg["<<j<<"]="<<cells[max_loc].Eg[j]*cells[max_loc].density*mass_scale_ / (length_scale_ * pow<2>(time_scale_)) <<" old Eg["<<j<<"]="<<full_step_old_Eg[max_loc][j]*mass_scale_ / (length_scale_ * pow<2>(time_scale_))<<" energy(keV) "<<energy_groups_center[j] / units::kev<<" bg="<<
             planck_integral::planck_energy_density_group_integral(energy_groups_boundary[j], energy_groups_boundary[j+1], cells[max_loc].temperature)<<
             " bg_old="<<
-            planck_integral::planck_energy_density_group_integral(energy_groups_boundary[j], energy_groups_boundary[j+1], old_Tm[max_loc])<< ", sigma[g]=" << sigma_absorption_group[max_loc][j] << ", cdt*sigma_g=" <<sigma_absorption_group[max_loc][j]*CG::speed_of_light*dt*time_scale_<< std::endl;
+            planck_integral::planck_energy_density_group_integral(energy_groups_boundary[j], energy_groups_boundary[j+1], full_step_old_Tm[max_loc])<< ", sigma[g]=" << sigma_absorption_group[max_loc][j] << ", cdt*sigma_g=" <<sigma_absorption_group[max_loc][j]*CG::speed_of_light*dt*time_scale_<< std::endl;
         }
 #endif
     }
@@ -337,6 +347,10 @@ bool MultigroupDiffusion::step(double const tolerance,
                                double const time) const {
 
     auto const N = tess.GetPointNo();
+
+    // the step starts from the current state, which differs from the `prestep` state when the
+    // radiation time step was split into substeps after a failed solve
+    store_step_start_state(tess, cells);
 
     cells_cgs = cells;
     for (std::size_t i=0; i<N; ++i) {
