@@ -76,7 +76,8 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                          bool const protections_on,
                                          bool const cooling_time_limiter_on,
                                          std::string const& compton_table_directory,
-                                         bool const clamp_coupling_strength) :
+                                         bool const clamp_coupling_strength,
+                                         bool const compton_optical_depth_cutoff_on) :
     RadiationDriver(eos,
         zero_cells,
         flux_limiter,
@@ -112,7 +113,8 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
     use_n_zero(),
     protections_on_(protections_on),
     cooling_time_limiter_on_(cooling_time_limiter_on),
-    clamp_coupling_strength_(clamp_coupling_strength) {
+    clamp_coupling_strength_(clamp_coupling_strength),
+    compton_optical_depth_cutoff_on_(compton_optical_depth_cutoff_on) {
 
     if (energy_groups_center.size() != ENERGY_GROUPS_NUM) {
         std::cout << "bad energy_groups_center.size()" << std::endl;
@@ -462,7 +464,7 @@ void MultigroupDiffusion::BuildMatrix(Tessellation3D const& tess,
 
     // Add the emission term to the matrix
     for (std::size_t i=0; i < Nlocal; ++i) {
-        bool const do_compton = compton_on_ && (sigma_absorption_planck[i] * dt_cgs * CG::speed_of_light < compton_optical_depth_turn_off);
+        bool const do_compton = compton_enabled_in_cell(i, dt_cgs);
         if (do_compton) {
             generate_S_and_dSdUm_matrices(cells[i], i, dt_cgs, !use_n_zero[i]);
         }
@@ -913,7 +915,7 @@ void MultigroupDiffusion::PostCG(Tessellation3D const& tess,
         double dE_absorption_emission = -volume * f * cdt * kp*Um;
 
         double dE_compton = 0.0;
-        bool const do_compton = compton_on_ && (sigma_absorption_planck[i] * dt_cgs * CG::speed_of_light < compton_optical_depth_turn_off);
+        bool const do_compton = compton_enabled_in_cell(i, dt_cgs);
         if (do_compton) {
             generate_S_and_dSdUm_matrices(cells[i], i, dt_cgs, !use_n_zero[i]);
 
@@ -1152,8 +1154,7 @@ void MultigroupDiffusion::calculate_fleck_factor(Tessellation3D const& tess, std
         double Gamma = sigma_planck;
         bool negative_upsilon = false;
         double upsilon = 0;
-        if (compton_on_ &&
-            (sigma_planck * dt_cgs * CG::speed_of_light < compton_optical_depth_turn_off)) {
+        if (compton_enabled_in_cell(i, dt_cgs)) {
             generate_S_and_dSdUm_matrices(cells[i], i, dt_cgs);
             upsilon = calculate_Upsilon(cells[i]);
 
@@ -1454,6 +1455,11 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
             }
         }
     }
+}
+
+bool MultigroupDiffusion::compton_enabled_in_cell(std::size_t const cell_index, double const dt_cgs) const {
+    return compton_on_ && (!compton_optical_depth_cutoff_on_ ||
+        sigma_absorption_planck[cell_index] * dt_cgs * CG::speed_of_light < compton_optical_depth_turn_off);
 }
 
 double MultigroupDiffusion::calculate_Upsilon(ComputationalCell3D const& cell) const {

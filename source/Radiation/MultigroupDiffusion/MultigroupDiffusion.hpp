@@ -31,6 +31,8 @@ public:
      * @param protections_on Enables protections in the diffusion calculation (modifies coupling strength). Default value is true.
      * @param clamp_coupling_strength When true (default), caps the absorption opacity so that c*dt*sigma <= max_coupling_strength
      *        and limits per-group energy exchange to 2*cv*T per timestep. Set to false for raw implicit solves.
+     * @param compton_optical_depth_cutoff_on When true, omits Compton scattering in cells with
+     *        c*dt*sigma_planck >= compton_optical_depth_turn_off, to save computation. Default value is false.
      */
     MultigroupDiffusion(std::vector<double> const& energy_groups_center_,
                         std::vector<double> const& energy_groups_boundary_,
@@ -46,7 +48,8 @@ public:
                         bool const protections_on = true,
                         bool const cooling_time_limiter_on = false,
                         std::string const& compton_table_directory = "",
-                        bool const clamp_coupling_strength = true);
+                        bool const clamp_coupling_strength = true,
+                        bool const compton_optical_depth_cutoff_on = false);
 
     /**
      * @brief Destructor for the MultigroupDiffusion class.
@@ -133,6 +136,7 @@ private:
     bool const protections_on_; // flag whether to use Elad's protections on the amount of change allowed per time step (should not be on when running tests...)
     bool const cooling_time_limiter_on_;
     bool const clamp_coupling_strength_; // when true, cap opacity so c*dt*sigma <= max_coupling_strength and limit per-group exchange to 2*cv*T
+    bool const compton_optical_depth_cutoff_on_; // when true, omit Compton scattering where c*dt*sigma_planck >= compton_optical_depth_turn_off
     mutable bool displayed_warning_; // flag whether to display the planck sum warning
 
     void calculate_group_absorption_and_scattering_coefficients(Tessellation3D const& tess,
@@ -151,6 +155,9 @@ private:
     void generate_S_and_dSdUm_matrices(ComputationalCell3D const& cell, std::size_t const cell_index, double const dt_cgs, bool const calculate_n = true) const;
 
     double calculate_Upsilon(ComputationalCell3D const& cell) const;
+
+    // whether Compton scattering is evolved in cell `cell_index` (compton_on_ and, with the cutoff, c*dt*sigma_planck < compton_optical_depth_turn_off)
+    bool compton_enabled_in_cell(std::size_t const cell_index, double const dt_cgs) const;
 
 
     /**

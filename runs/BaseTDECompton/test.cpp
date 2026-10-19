@@ -1148,7 +1148,8 @@ int main(void)
 	bool const mixed_frame_on = false;
 	bool const protection_on = true;
 	bool const cooling_time_limiter_on = true;
-	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), flux_limit, hydro_on, compton_on, doppler_on, 2000, protection_on, cooling_time_limiter_on);
+	bool const compton_optical_depth_cutoff_on = true; // omit Compton where c*dt*kappa_P >= 10, to save computation
+	MultigroupDiffusion matrix_builder(opacity.energy_groups_center, opacity.energy_groups_boundary, opacity, D_boundary, eos, std::vector<std::string>(), flux_limit, hydro_on, compton_on, doppler_on, 2000, protection_on, cooling_time_limiter_on, "", true, compton_optical_depth_cutoff_on);
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
