@@ -39,7 +39,7 @@ void printLegacyUsage(int rank)
               << "  --no-velocity            Ignore cell velocities (no Doppler shifts)\n"
               << "  --no-photosphere         Disable observer photosphere postprocessing\n"
               << "  --flux-source-compare    Run MG and grey transport from one FLD-normalized CER source\n"
-              << "  --flux-source-tau TAU    Grey effective optical depth of CER (default: 5)\n"
+              << "  --flux-source-tau TAU    Grey effective optical depth of CER (default: 10)\n"
               << "  --flux-source-rays N     Inward rays used only to construct the CER\n"
               << "                           (default: use --n-observers)\n"
               << "  --flux-source-ddmc-face-tau TAU\n"
@@ -403,6 +403,19 @@ bool ValidateConfig(Config &cfg, int rank)
         if (rank == 0) std::cerr << "--flux-source.smoothing-floor must lie in [0, 1]\n";
         return false;
     }
+    if (!(cfg.fluxSourceMappingMaxDepthFactor == 0.0 || cfg.fluxSourceMappingMaxDepthFactor >= 1.0) ||
+        !std::isfinite(cfg.fluxSourceMappingMaxDepthFactor)) {
+        if (rank == 0)
+            std::cerr << "--flux-source.mapping-max-depth-factor must be 0 (no floor) or >= 1 "
+                         "(the floor is this many times the thermalization tau)\n";
+        return false;
+    }
+    if (cfg.fluxSourceMappingNeighbours > 64) {
+        if (rank == 0)
+            std::cerr << "--flux-source.mapping-neighbours must be at most 64 (6 is one ring of "
+                         "neighbouring rays; many more lowers every ray to the minimum over a wide cone)\n";
+        return false;
+    }
     if (cfg.fluxSourceCompare && cfg.compton) {
         if (rank == 0) std::cerr << "--flux-source-compare does not support --compton yet\n";
         return false;
@@ -423,6 +436,8 @@ bool ValidateConfig(Config &cfg, int rank)
     if (cfg.adaptiveSourceLearnedMaxPhotons <= cfg.adaptiveSourceLearnedMinPhotons) { if (rank == 0) std::cerr << "--adaptive-source-learned-max-photons must be > --adaptive-source-learned-min-photons\n"; return false; }
     if (cfg.adaptiveSourceLearnedPhotonsPerCellBudget < cfg.adaptiveSourceLearnedMinPhotons || cfg.adaptiveSourceLearnedPhotonsPerCellBudget > cfg.adaptiveSourceLearnedMaxPhotons) { if (rank == 0) std::cerr << "--adaptive-source-learned-photons-per-cell-budget must lie within [learned-min-photons, learned-max-photons]\n"; return false; }
     if (cfg.adaptiveSourceScorePower < 0.0 || !std::isfinite(cfg.adaptiveSourceScorePower)) { if (rank == 0) std::cerr << "--adaptive-source-score-power must be finite and >= 0\n"; return false; }
+    if (!(cfg.adaptiveSourceRampStartPhotons >= 0.0) || !std::isfinite(cfg.adaptiveSourceRampStartPhotons)) { if (rank == 0) std::cerr << "--adaptive.source.ramp-start-photons must be finite and >= 0 (0 disables the ramp)\n"; return false; }
+    if (cfg.adaptiveSourceRampStartPhotons > 0.0 && (!(cfg.adaptiveSourceRampFactor >= 1.1) || !std::isfinite(cfg.adaptiveSourceRampFactor))) { if (rank == 0) std::cerr << "--adaptive.source.ramp-factor must be finite and >= 1.1 (2 doubles the budget every ramp generation)\n"; return false; }
     if (cfg.adaptiveSourceWeightScoreFrac < 0.0 || cfg.adaptiveSourceWeightScoreFrac > 1.0 || !std::isfinite(cfg.adaptiveSourceWeightScoreFrac)) { if (rank == 0) std::cerr << "--adaptive-source-weight-score-frac must be finite in [0,1]\n"; return false; }
     if (cfg.adaptiveObserverExtraBudgetFrac < 0.0 || !std::isfinite(cfg.adaptiveObserverExtraBudgetFrac)) { if (rank == 0) std::cerr << "--adaptive-observer-extra-budget-frac must be finite and nonnegative\n"; return false; }
     if (cfg.adaptiveObserverTargetNeff <= 0.0 || !std::isfinite(cfg.adaptiveObserverTargetNeff)) { if (rank == 0) std::cerr << "--adaptive-observer-target-neff must be finite and positive\n"; return false; }

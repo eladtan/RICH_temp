@@ -2897,6 +2897,37 @@ void ApplyNeymanAllocationToControl(
         static_cast<size_t>(std::llround(extraBudget));
 }
 
+std::vector<double> FinalRampStageBudgets(Config const& cfg, double fullBudget)
+{
+    std::vector<double> budgets;
+    double const start = cfg.adaptiveSourceRampStartPhotons;
+    if (!(start > 0.0) || !(fullBudget > start))
+        return budgets;
+    if (!(cfg.adaptiveSourceRampFactor > 1.0) || !std::isfinite(cfg.adaptiveSourceRampFactor)) {
+        UniversalError eo("Final-budget ramp needs a factor above 1");
+        eo.addEntry("adaptive.source.ramp-factor", cfg.adaptiveSourceRampFactor);
+        throw eo;
+    }
+    for (double budget = start; budget < fullBudget; budget *= cfg.adaptiveSourceRampFactor)
+        budgets.push_back(budget);
+    return budgets;
+}
+
+Config RampStageAllocationConfig(Config const& allocationCfg, double stageBudget)
+{
+    Config stage = allocationCfg;
+    size_t const perCell = std::max<size_t>(1, static_cast<size_t>(std::floor(stageBudget)));
+    stage.adaptiveSourceLearnedPhotonsPerCellBudget =
+        std::min(stage.adaptiveSourceLearnedPhotonsPerCellBudget, perCell);
+    stage.volumeEmissionLearnedPhotonsPerCellBudget =
+        std::min(stage.volumeEmissionLearnedPhotonsPerCellBudget, perCell);
+    stage.adaptiveSourceLearnedMinPhotons = std::max<size_t>(1, std::min(
+        stage.adaptiveSourceLearnedMinPhotons, stage.adaptiveSourceLearnedPhotonsPerCellBudget));
+    stage.volumeEmissionLearnedMinPhotons = std::max<size_t>(1, std::min(
+        stage.volumeEmissionLearnedMinPhotons, stage.volumeEmissionLearnedPhotonsPerCellBudget));
+    return stage;
+}
+
 void PrintAdaptiveConvergenceReport(
     std::string const& label,
     Config const& cfg,
@@ -3482,6 +3513,34 @@ void ReportGenerationMemory(char const* pass, size_t generation, int rank, int m
 #endif
 }
 
+double WeightBoundedPacketLimit(unsigned long long emittingCells)
+{
+    return std::max(1.0e7 / static_cast<double>(std::max<unsigned long long>(1, emittingCells)), 1.0e4);
+}
+
+namespace {
+
+// Global number of cells with face-source or volume emission in the current
+// decomposition, the N of WeightBoundedPacketLimit (collective).
+unsigned long long GlobalEmittingCells(PostprocessRuntime const& runtime, size_t nCells)
+{
+    bool const haveVolume = runtime.volumeEmissionCellLuminosity.size() == nCells;
+    bool const haveFace = runtime.fluxSourceCellLuminosity.size() == nCells;
+    unsigned long long count = 0;
+    for (size_t i = 0; i < nCells; ++i) {
+        double const luminosity = (haveVolume ? runtime.volumeEmissionCellLuminosity[i] : 0.0) +
+                                  (haveFace ? runtime.fluxSourceCellLuminosity[i] : 0.0);
+        if (luminosity > 0.0)
+            ++count;
+    }
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &count, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+#endif
+    return count;
+}
+
+} // namespace
+
 PredictedProbePackets PredictProbeSourcePackets(
     std::vector<ComputationalCell3D> const& cells,
     size_t const nCells,
@@ -3512,6 +3571,7 @@ PredictedProbePackets PredictProbeSourcePackets(
         eo.addEntry("explorationWeightFraction", explorationWeightFraction);
         throw eo;
     }
+    double const packetLimit = WeightBoundedPacketLimit(GlobalEmittingCells(runtime, nCells));
     std::vector<size_t> predicted(nCells, 0);
     uint64_t localPredicted = 0;
     for (size_t i = 0; i < nCells; ++i) {
@@ -3524,7 +3584,7 @@ PredictedProbePackets PredictProbeSourcePackets(
             bool const learned = it != learnedScores.end() &&
                 std::isfinite(it->second) && it->second > 0.0;
             size_t const capped = static_cast<size_t>(std::clamp(
-                std::ceil(luminosity / capLuminosity), 1.0, 1.0e7));
+                std::ceil(luminosity / capLuminosity), 1.0, packetLimit));
             photons = !learned ? capped
                 : (capLearned ? std::max(probePhotons, capped) : probePhotons);
         }
@@ -3540,6 +3600,69 @@ PredictedProbePackets PredictProbeSourcePackets(
     if (rank == 0)
         std::cout << label << " cap_luminosity=" << capLuminosity
                   << " erg/s predicted_packets=" << predictedSum
+                  << " max_rank_predicted_packets_before_lb=" << predictedMax
+                  << " mean_rank=" << static_cast<double>(predictedSum) / std::max(1, mpiSize)
+                  << std::endl;
+    PredictedProbePackets result;
+    result.perCell = std::move(predicted);
+    result.total = predictedSum;
+    return result;
+}
+
+PredictedProbePackets PredictPlannedSourcePackets(
+    std::vector<ComputationalCell3D> const& cells,
+    size_t const nCells,
+    PostprocessRuntime const& runtime,
+    SourceAllocationPlan const& plan,
+    double const capLuminosity,
+    bool const capLearned,
+    std::string const& label,
+    int const rank,
+    int const mpiSize)
+{
+    if (cells.size() < nCells) {
+        UniversalError eo(label + ": planned-packet load balance has fewer cells than the decomposition");
+        eo.addEntry("cells.size()", static_cast<double>(cells.size()));
+        eo.addEntry("Ncells", static_cast<double>(nCells));
+        throw eo;
+    }
+    bool const haveVolume = runtime.volumeEmissionCellLuminosity.size() == nCells;
+    bool const haveFace = runtime.fluxSourceCellLuminosity.size() == nCells;
+    bool const bounded = capLuminosity > 0.0 && std::isfinite(capLuminosity);
+    double const packetLimit = WeightBoundedPacketLimit(GlobalEmittingCells(runtime, nCells));
+    std::vector<size_t> predicted(nCells, 0);
+    uint64_t localPredicted = 0;
+    for (size_t i = 0; i < nCells; ++i) {
+        // STORM's per-cell emission is the face-source plus the volume energy.
+        double const luminosity = (haveVolume ? runtime.volumeEmissionCellLuminosity[i] : 0.0) +
+                                  (haveFace ? runtime.fluxSourceCellLuminosity[i] : 0.0);
+        size_t const byWeight = bounded && luminosity > 0.0
+            ? static_cast<size_t>(std::clamp(std::ceil(luminosity / capLuminosity), 1.0, packetLimit))
+            : 1;
+        size_t photons = 0;
+        auto const it = plan.photonsByCell.find(cells[i].ID);
+        if (it != plan.photonsByCell.end()) {
+            // ApplyNeymanAllocationToControl makes a learned cell with plan n
+            // emit 1 + max(1, n - 1) packets.
+            photons = 1 + static_cast<size_t>(std::max(1.0, it->second - 1.0));
+            if (capLearned && bounded && luminosity > 0.0)
+                photons = std::max(photons, byWeight);
+        } else if (luminosity > 0.0) {
+            photons = byWeight;
+        }
+        predicted[i] = photons;
+        localPredicted += photons;
+    }
+    uint64_t predictedSum = localPredicted;
+    uint64_t predictedMax = localPredicted;
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &predictedSum, 1, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &predictedMax, 1, MPI_UINT64_T, MPI_MAX, MPI_COMM_WORLD);
+#endif
+    if (rank == 0)
+        std::cout << label << " cap_luminosity=" << capLuminosity
+                  << " erg/s planned_learned_packets=" << plan.totalPhotons
+                  << " predicted_packets=" << predictedSum
                   << " max_rank_predicted_packets_before_lb=" << predictedMax
                   << " mean_rank=" << static_cast<double>(predictedSum) / std::max(1, mpiSize)
                   << std::endl;

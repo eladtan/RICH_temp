@@ -66,7 +66,7 @@ ForwardPostprocessResult RunGreyPostprocess(
             if (observer && observer->hasPhotosphereData()) {
                 greyPhotosphere = observer->getPhotosphereData();
                 greyPhotosphere.clearMG();
-                hasGreyPhotosphere = greyPhotosphere.hasGrey();
+                hasGreyPhotosphere = greyPhotosphere.hasGrey() || greyPhotosphere.hasEmissionSurface();
             }
 
             // ============================================================
@@ -204,7 +204,22 @@ ForwardPostprocessResult RunGreyPostprocess(
             size_t const greyBurninGenerations = greyInitialBurninGenerations + greyUniformBurninGenerations;
             size_t const greyLearnedProbeGenerations = cfg.adaptiveSourceCells ? 1 : 0;
             size_t const greyProbePhotons = cfg.volumeEmissionEnabled ? 10 : 75;
-            size_t const greyFinalStartGeneration = greyBurninGenerations + greyLearnedProbeGenerations;
+            size_t const greyProbeEndGeneration = greyBurninGenerations + greyLearnedProbeGenerations;
+            // The grey pass may use its own learned-cell packet budget.
+            Config greyAllocationCfg = cfg;
+            if (cfg.volumeEmissionLearnedPhotonsPerCellBudgetGrey > 0)
+                greyAllocationCfg.volumeEmissionLearnedPhotonsPerCellBudget =
+                    cfg.volumeEmissionLearnedPhotonsPerCellBudgetGrey;
+            // Final-budget ramp between the probe and the final generations
+            // (a restart starts at the final generations and skips it).
+            double const greyRampFullBudget = static_cast<double>(std::max(
+                greyAllocationCfg.adaptiveSourceLearnedPhotonsPerCellBudget,
+                cfg.volumeEmissionEnabled ? greyAllocationCfg.volumeEmissionLearnedPhotonsPerCellBudget
+                                          : size_t(0)));
+            std::vector<double> const greyRampBudgets = cfg.adaptiveSourceCells
+                ? FinalRampStageBudgets(cfg, greyRampFullBudget) : std::vector<double>();
+            size_t const greyRampGenerations = greyRampBudgets.size();
+            size_t const greyFinalStartGeneration = greyProbeEndGeneration + greyRampGenerations;
             size_t const greyTotalGenerations = cfg.adaptiveSourceCells
                 ? greyFinalStartGeneration + nGreyGens
                 : nGreyGens;
@@ -426,7 +441,16 @@ ForwardPostprocessResult RunGreyPostprocess(
                 bool const greyLearnedProbeThisGen =
                     cfg.adaptiveSourceCells &&
                     gen >= greyBurninGenerations &&
+                    gen < greyProbeEndGeneration;
+                bool const greyRampThisGen =
+                    cfg.adaptiveSourceCells &&
+                    gen >= greyProbeEndGeneration &&
                     gen < greyFinalStartGeneration;
+                size_t const greyRampStage = greyRampThisGen ? gen - greyProbeEndGeneration : 0;
+                // The extra packets (learned-weight cap, exploration splitting)
+                // follow the ramp through their weight bound.
+                double const greyRampWeightScale = greyRampThisGen
+                    ? greyRampFullBudget / greyRampBudgets[greyRampStage] : 1.0;
                 bool const greyFinalThisGen =
                     !cfg.adaptiveSourceCells || gen >= greyFinalStartGeneration;
                 size_t const greyFinalGenerationIndex = greyFinalThisGen
@@ -434,7 +458,7 @@ ForwardPostprocessResult RunGreyPostprocess(
                     : 0;
                 bool const greyAdaptiveActiveThisGen =
                     cfg.adaptiveSourceCells &&
-                    (greyLearnedProbeThisGen || greyFinalThisGen) &&
+                    (greyLearnedProbeThisGen || greyRampThisGen || greyFinalThisGen) &&
                     !greyAdaptive.scoreByCellID.empty();
                 size_t const greyPhotonsThisGen = greyFirstBurninThisGen ? 1
                     : (greyUniformBurninThisGen ? 3
@@ -446,7 +470,9 @@ ForwardPostprocessResult RunGreyPostprocess(
                 else if (greyUniformBurninThisGen)
                     greyPhase = "burnin_exact3";
                 else if (greyLearnedProbeThisGen)
-                    greyPhase = "learned_only_probe_exact75";
+                    greyPhase = "learned_only_probe_exact" + std::to_string(greyProbePhotons);
+                else if (greyRampThisGen)
+                    greyPhase = "final_budget_ramp";
                 else if (cfg.adaptiveSourceCells)
                     greyPhase = "learned_only_final";
                 greyPhysics->setNewPhotonsPerCell(greyPhotonsThisGen);
@@ -454,6 +480,11 @@ ForwardPostprocessResult RunGreyPostprocess(
                     std::cout << "Grey generation " << (gen + 1) << "/" << greyTotalGenerations
                               << " phase=" << greyPhase
                               << " photons_per_cell_this_gen=" << greyPhotonsThisGen;
+                if (rank == 0 && greyRampThisGen)
+                    std::cout << " ramp_stage=" << (greyRampStage + 1) << "/" << greyRampGenerations
+                              << " packets_per_learned_cell=" << greyRampBudgets[greyRampStage]
+                              << " of " << greyRampFullBudget
+                              << " weight_bound_scale=" << greyRampWeightScale;
                 if (rank == 0 && greyFinalThisGen)
                     std::cout << " final_step=" << (greyFinalGenerationIndex + 1)
                               << "/" << nGreyGens;
@@ -464,15 +495,15 @@ ForwardPostprocessResult RunGreyPostprocess(
                                              greyAdaptiveActiveThisGen, rank);
 
                 IMCPostProcessControl postProcessControl;
-                if (greyAdaptiveActiveThisGen && greyFinalThisGen) {
-                    // The grey pass may use its own learned-cell packet budget.
-                    auto greyAllocationCfg = cfg;
-                    if (cfg.volumeEmissionLearnedPhotonsPerCellBudgetGrey > 0)
-                        greyAllocationCfg.volumeEmissionLearnedPhotonsPerCellBudget =
-                            cfg.volumeEmissionLearnedPhotonsPerCellBudgetGrey;
+                if (greyAdaptiveActiveThisGen && (greyFinalThisGen || greyRampThisGen)) {
+                    // Final and ramp generations: Neyman allocation at the
+                    // grey budgets, or at the ramp stage's.
+                    Config const allocationCfg = greyRampThisGen
+                        ? RampStageAllocationConfig(greyAllocationCfg, greyRampBudgets[greyRampStage])
+                        : greyAllocationCfg;
                     SourceAllocationPlan const plan = BuildNeymanSourceAllocation(
-                        greyAdaptive.scoreByCellID, greyAllocationCfg, &runtime.fluxSourceCellIDs);
-                    ApplyNeymanAllocationToControl(postProcessControl, plan, cfg);
+                        greyAdaptive.scoreByCellID, allocationCfg, &runtime.fluxSourceCellIDs);
+                    ApplyNeymanAllocationToControl(postProcessControl, plan, allocationCfg);
                     PrintSourceAllocationPlan("Grey", plan, gen, rank);
                 } else if (greyAdaptiveActiveThisGen) {
                     postProcessControl.adaptiveCells.enabled = true;
@@ -504,7 +535,7 @@ ForwardPostprocessResult RunGreyPostprocess(
                     postProcessControl.emission.useLearnedScores = true;
                     postProcessControl.emission.includeUniformBase = false;
                     postProcessControl.emission.learnedBoostFactor = 1;
-                } else if (cfg.adaptiveSourceCells && greyFinalThisGen &&
+                } else if (cfg.adaptiveSourceCells && (greyFinalThisGen || greyRampThisGen) &&
                            !greyAdaptiveActiveThisGen) {
                     postProcessControl.emission.enabled = true;
                     postProcessControl.emission.useLearnedScores = true;
@@ -531,12 +562,15 @@ ForwardPostprocessResult RunGreyPostprocess(
                     double const escapingReference = runtime.lastEscapingLuminosity > 0.0
                         ? runtime.lastEscapingLuminosity : runtime.fluxSourceInjectedLuminosity;
                     greyPhysics->setPostProcessExplorationMaxWeight(
-                        cfg.volumeEmissionExplorationWeightFractionGrey * escapingReference * cfg.sourceDt);
-                    // Probe and final generations bound the learned cells'
-                    // packets the same way; the burn-in keeps its flat counts.
+                        cfg.volumeEmissionExplorationWeightFractionGrey * escapingReference * cfg.sourceDt *
+                        greyRampWeightScale);
+                    // Probe, ramp and final generations bound the learned
+                    // cells' packets the same way; the burn-in keeps its flat
+                    // counts.
                     greyPhysics->setPostProcessLearnedMaxWeight(
                         cfg.volumeEmissionCapLearnedWeight && !greyBurninThisGen
-                            ? cfg.volumeEmissionExplorationWeightFractionGrey * escapingReference * cfg.sourceDt
+                            ? cfg.volumeEmissionExplorationWeightFractionGrey * escapingReference * cfg.sourceDt *
+                              greyRampWeightScale
                             : 0.0);
                 }
 
@@ -710,8 +744,16 @@ ForwardPostprocessResult RunGreyPostprocess(
                     cfg.volumeEmissionExplorationWeightFractionGrey > 0.0 &&
                     greyLearnedProbeGenerations > 0 &&
                     gen + 1 == greyBurninGenerations;
+                // With the final-budget ramp, the LB after the probe and after
+                // every ramp generation balances on the packets the next
+                // generation's plan will create (measured steps of this one).
+                bool const greyDoRampLB =
+                    greyMeasuredLBActive && greyRampGenerations > 0 &&
+                    ((greyDoPostAdaptiveMeasuredLB && greyLearnedProbeThisGen) || greyRampThisGen);
                 std::string const greyLBLabel = greyDoPredictedProbeLB
                     ? "MEASURED_LB_GREY_PREDICTED_PROBE"
+                    : greyDoRampLB
+                    ? "MEASURED_LB_GREY_RAMP_PLAN"
                     : greyDoBurninMeasuredLB
                     ? "MEASURED_LB_GREY_BURNIN"
                     : (greyDoPostAdaptiveMeasuredLB
@@ -731,9 +773,12 @@ ForwardPostprocessResult RunGreyPostprocess(
                               << std::endl;
                 if (rank == 0 && greyDoPredictedProbeLB)
                     std::cout << "Grey burn-in complete; running measured LB on predicted probe packets" << std::endl;
+                if (rank == 0 && greyDoRampLB)
+                    std::cout << "Grey " << (greyRampThisGen ? "ramp stage complete" : "learned-only probe complete")
+                              << "; the measured LB uses the next generation's planned packets" << std::endl;
                 if (greyDoInitialMeasuredLB || greyDoBurninMeasuredLB ||
                     greyDoPostAdaptiveMeasuredLB || greyDoAdaptivePeriodicMeasuredLB ||
-                    greyDoPredictedProbeLB) {
+                    greyDoPredictedProbeLB || greyDoRampLB) {
                     {
                         auto const& greyLocalSteps = greyManager->GetCellsStepsCounters();
 
@@ -747,12 +792,34 @@ ForwardPostprocessResult RunGreyPostprocess(
                                 "MEASURED_LB_GREY_PREDICTED_PROBE", rank, mpiSize);
                         if (greyDoPredictedProbeLB)
                             result.probePredictedPackets = greyPredictedProbePhotons.total;
+                        if (greyDoRampLB) {
+                            // The plan and weight bound the next generation
+                            // will use: the next ramp stage, or the full one.
+                            size_t const nextGen = gen + 1;
+                            bool const nextIsRamp = nextGen < greyFinalStartGeneration;
+                            double const nextBudget = nextIsRamp
+                                ? greyRampBudgets[nextGen - greyProbeEndGeneration] : greyRampFullBudget;
+                            Config const nextCfg = nextIsRamp
+                                ? RampStageAllocationConfig(greyAllocationCfg, nextBudget) : greyAllocationCfg;
+                            SourceAllocationPlan const nextPlan = BuildNeymanSourceAllocation(
+                                greyAdaptive.scoreByCellID, nextCfg, &runtime.fluxSourceCellIDs);
+                            double const escapingReference = runtime.lastEscapingLuminosity > 0.0
+                                ? runtime.lastEscapingLuminosity : runtime.fluxSourceInjectedLuminosity;
+                            double const capLuminosity = cfg.volumeEmissionEnabled
+                                ? cfg.volumeEmissionExplorationWeightFractionGrey * escapingReference *
+                                  (greyRampFullBudget / nextBudget)
+                                : 0.0;
+                            greyPredictedProbePhotons = PredictPlannedSourcePackets(
+                                cells, Ncells, runtime, nextPlan, capLuminosity,
+                                cfg.volumeEmissionCapLearnedWeight, "MEASURED_LB_GREY_RAMP_PLAN", rank, mpiSize);
+                        }
+                        bool const predicted = greyDoPredictedProbeLB || greyDoRampLB;
 
                         greyRebalanceOnMeasurements(
                             greyLocalSteps,
-                            greyDoPredictedProbeLB ? greyPredictedProbePhotons.perCell
-                                                   : generationDiagnostics.sourcePhotonsPerCell,
-                            greyLBLabel, greyDoPredictedProbeLB);
+                            predicted ? greyPredictedProbePhotons.perCell
+                                      : generationDiagnostics.sourcePhotonsPerCell,
+                            greyLBLabel, predicted);
                     }
                     if (greyDoPredictedProbeLB && rank == 0)
                         std::cout << "Grey predicted-probe measured load balance complete" << std::endl;

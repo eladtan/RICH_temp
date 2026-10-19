@@ -18,6 +18,12 @@ void InitializeFluxSourceSurface(
     Config const& cfg,
     PostprocessRuntime& runtime);
 
+// Adds the emission surface along each observer direction (nearest
+// construction ray) to the observer's photosphere output.
+void AttachEmissionSurfaceToObserver(
+    Config const& cfg,
+    PostprocessRuntime& runtime);
+
 // Per tessellation point (owned and ghost): 1 at or beyond the flux-source
 // surface, 0 inside it. Enclosed outside regions are not removed here.
 std::vector<unsigned char> BuildOutsideFluxSourceMask(

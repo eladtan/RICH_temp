@@ -192,6 +192,9 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.fluxSourceSurfaceMode = publicConfig.fluxSource.surfaceMode;
     cfg.fluxSourceRemoveEnclosedOutside = publicConfig.fluxSource.removeEnclosedOutside;
     cfg.fluxSourceSmoothingFloor = publicConfig.fluxSource.smoothingFloor;
+    cfg.fluxSourceSmoothingPhotosphereCap = publicConfig.fluxSource.smoothingPhotosphereCap;
+    cfg.fluxSourceMappingNeighbours = publicConfig.fluxSource.mappingNeighbours;
+    cfg.fluxSourceMappingMaxDepthFactor = publicConfig.fluxSource.mappingMaxDepthFactor;
     cfg.fluxSourceSpectrumTemperature = publicConfig.fluxSource.spectrumTemperature;
     cfg.fluxSourceFaceFlux = publicConfig.fluxSource.faceFlux;
     cfg.volumeEmissionEnabled = publicConfig.volumeEmission.enabled;
@@ -254,6 +257,8 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
         publicConfig.adaptive.source.learnedPhotonsPerCellBudget;
     cfg.adaptiveSourceScorePower = publicConfig.adaptive.source.scorePower;
     cfg.adaptiveSourceWeightScoreFrac = publicConfig.adaptive.source.weightScoreFraction;
+    cfg.adaptiveSourceRampStartPhotons = publicConfig.adaptive.source.rampStartPhotons;
+    cfg.adaptiveSourceRampFactor = publicConfig.adaptive.source.rampFactor;
     cfg.adaptiveObserverEquity = publicConfig.adaptive.observer.equity;
     cfg.adaptiveObserverExtraBudgetFrac =
         publicConfig.adaptive.observer.extraBudgetFraction;
@@ -634,6 +639,16 @@ int PostProcessIMC::RunPostProcessMain(
                       << (cfg.fluxSourceSurfaceMode == FluxSourceSurfaceMode::MultigroupInnermost
                           ? "innermost per-group thermalization radius (mg-innermost)"
                           : "grey thermalization radius") << "\n"
+                      << "Flux source shape: smoothing floor " << cfg.fluxSourceSmoothingFloor
+                      << (cfg.fluxSourceSmoothingPhotosphereCap ? " (never above the ray's photosphere)" : "")
+                      << ", cells below their nearest ray"
+                      << (cfg.fluxSourceMappingNeighbours > 0
+                          ? " and its " + std::to_string(cfg.fluxSourceMappingNeighbours) + " nearest neighbours" +
+                            (cfg.fluxSourceMappingMaxDepthFactor > 0.0
+                                ? ", never deeper than tau_eff = " +
+                                  std::to_string(cfg.fluxSourceMappingMaxDepthFactor * cfg.fluxSourceThermalizationTau)
+                                : std::string(", no depth floor"))
+                          : std::string(" only")) << "\n"
                       << "Flux source faces: "
                       << (cfg.fluxSourceFaceFlux == FluxSourceFaceFlux::Hydro
                           ? "hydro FLD face flux" : "mean of cell FLD fluxes")
@@ -651,15 +666,22 @@ int PostProcessIMC::RunPostProcessMain(
                       << "Measured LB:     " << (cfg.measuredLoadBalance ? "requested" : "disabled") << "\n"
                       << "  weight compression: " << EffectiveMeasuredLBWeightCompression(cfg) << "\n"
                       << "  max cell imbalance: " << MEASURED_LB_MAX_CELL_IMBALANCE << "\n"
-                      << "  adaptive cadence: learned-only probe LB, then after final step 1 and every 10 learned-final steps before the last\n"
+                      << "  adaptive cadence: on predicted probe packets before the probe, after the probe and every ramp generation"
+                      << " (on the next generation's planned packets when ramping), then after final steps 1 and 2 and every "
+                      << (cfg.measuredLBFinalPeriod > 0 ? cfg.measuredLBFinalPeriod : 10) << " final steps before the last\n"
                       << "Opacity scale:   " << (cfg.opacityScaleMode == imc_postprocess_tde::OpacityScaleMode::Planck ? "planck" :
                                                   cfg.opacityScaleMode == imc_postprocess_tde::OpacityScaleMode::Rosseland ? "rosseland" : "disabled")
                       << " alpha bounds [" << cfg.opacityScaleAlphaMin << ", "
                       << (cfg.opacityScaleAlphaMax > 0.0 ? std::to_string(cfg.opacityScaleAlphaMax) : std::string("inf")) << "]\n"
                       << "Adaptive source: " << (cfg.adaptiveSourceCells ? "enabled" : "disabled") << "\n"
-                      << "  MG schedule:   1 exact-1 burn-in, 19 exact-3 burn-in, learned-only exact-75 probe, LB, "
+                      << "  MG schedule:   1 exact-1 burn-in, 19 exact-3 burn-in, learned-only exact-"
+                      << (cfg.volumeEmissionEnabled ? 10 : 75) << " probe, "
+                      << (cfg.adaptiveSourceRampStartPhotons > 0.0
+                          ? "final-budget ramp from " + std::to_string(cfg.adaptiveSourceRampStartPhotons) +
+                            " packets per learned cell x" + std::to_string(cfg.adaptiveSourceRampFactor) +
+                            " per generation (not in the result), "
+                          : std::string())
                       << cfg.nGenerations << " Neyman-allocated final steps\n"
-                      << "  final LB cadence: after final step 1 and every 10 learned-final steps before the last\n"
                       << "  min esc frac:  " << cfg.adaptiveSourceMinEscapedFrac << "\n"
                       << "  strength:      " << cfg.adaptiveSourceStrength << "\n"
                       << "  EMA:           " << cfg.adaptiveSourceEma << "\n"
@@ -1158,6 +1180,7 @@ int PostProcessIMC::RunPostProcessMain(
 
         if (cfg.fluxSourceCompare) {
             InitializeFluxSourceSurface(cfg, runtime);
+            AttachEmissionSurfaceToObserver(cfg, runtime);
             // After the surface, the FLD luminosity and the photospheres
             // (all from the snapshot temperatures), before any source setup.
             ApplyVolumeEmissionCoolingLimit(cfg, runtime);

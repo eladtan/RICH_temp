@@ -125,7 +125,16 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
             size_t const mgBurninGenerations = mgInitialBurninGenerations + mgUniformBurninGenerations;
             size_t const mgLearnedProbeGenerations = cfg.adaptiveSourceCells ? 1 : 0;
             size_t const mgProbePhotons = cfg.volumeEmissionEnabled ? 10 : 75;
-            size_t const mgFinalStartGeneration = mgBurninGenerations + mgLearnedProbeGenerations;
+            size_t const mgProbeEndGeneration = mgBurninGenerations + mgLearnedProbeGenerations;
+            // Final-budget ramp between the probe and the final generations
+            // (a restart starts at the final generations and skips it).
+            double const mgRampFullBudget = static_cast<double>(std::max(
+                cfg.adaptiveSourceLearnedPhotonsPerCellBudget,
+                cfg.volumeEmissionEnabled ? cfg.volumeEmissionLearnedPhotonsPerCellBudget : size_t(0)));
+            std::vector<double> const mgRampBudgets = cfg.adaptiveSourceCells
+                ? FinalRampStageBudgets(cfg, mgRampFullBudget) : std::vector<double>();
+            size_t const mgRampGenerations = mgRampBudgets.size();
+            size_t const mgFinalStartGeneration = mgProbeEndGeneration + mgRampGenerations;
             size_t const mgFinalGenerations = cfg.nGenerations;
             size_t const mgTotalGenerations = cfg.adaptiveSourceCells
                 ? mgFinalStartGeneration + mgFinalGenerations
@@ -399,7 +408,16 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 bool const learnedProbeThisGen =
                     cfg.adaptiveSourceCells &&
                     gen >= mgBurninGenerations &&
+                    gen < mgProbeEndGeneration;
+                bool const rampThisGen =
+                    cfg.adaptiveSourceCells &&
+                    gen >= mgProbeEndGeneration &&
                     gen < mgFinalStartGeneration;
+                size_t const rampStage = rampThisGen ? gen - mgProbeEndGeneration : 0;
+                // The extra packets (learned-weight cap, exploration splitting)
+                // follow the ramp through their weight bound.
+                double const rampWeightScale = rampThisGen
+                    ? mgRampFullBudget / mgRampBudgets[rampStage] : 1.0;
                 bool const finalThisGen =
                     !cfg.adaptiveSourceCells || gen >= mgFinalStartGeneration;
                 size_t const finalGenerationIndex = finalThisGen
@@ -407,7 +425,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     : 0;
                 bool const adaptiveActiveThisGen =
                     cfg.adaptiveSourceCells &&
-                    (learnedProbeThisGen || finalThisGen) &&
+                    (learnedProbeThisGen || rampThisGen || finalThisGen) &&
                     !mgAdaptive.scoreByCellID.empty();
                 size_t const photonsThisGen = firstBurninThisGen ? 1
                     : (uniformBurninThisGen ? 3
@@ -419,7 +437,9 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 else if (uniformBurninThisGen)
                     phase = "burnin_exact3";
                 else if (learnedProbeThisGen)
-                    phase = "learned_only_probe_exact75";
+                    phase = "learned_only_probe_exact" + std::to_string(mgProbePhotons);
+                else if (rampThisGen)
+                    phase = "final_budget_ramp";
                 else if (cfg.adaptiveSourceCells)
                     phase = "learned_only_final";
                 physics->setNewPhotonsPerCell(photonsThisGen);
@@ -427,6 +447,11 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     std::cout << "Generation " << (gen + 1) << "/" << mgTotalGenerations
                               << " phase=" << phase
                               << " photons_per_cell_this_gen=" << photonsThisGen;
+                if (rank == 0 && rampThisGen)
+                    std::cout << " ramp_stage=" << (rampStage + 1) << "/" << mgRampGenerations
+                              << " packets_per_learned_cell=" << mgRampBudgets[rampStage]
+                              << " of " << mgRampFullBudget
+                              << " weight_bound_scale=" << rampWeightScale;
                 if (rank == 0 && finalThisGen)
                     std::cout << " final_step=" << (finalGenerationIndex + 1)
                               << "/" << mgFinalGenerations;
@@ -437,13 +462,16 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                                              adaptiveActiveThisGen, rank);
 
                 IMCPostProcessControl postProcessControl;
-                if (adaptiveActiveThisGen && finalThisGen) {
-                    // Final generations: explicit Neyman allocation from the
-                    // learned variance shares (see BuildNeymanSourceAllocation).
+                if (adaptiveActiveThisGen && (finalThisGen || rampThisGen)) {
+                    // Final and ramp generations: explicit Neyman allocation
+                    // from the learned variance shares (see
+                    // BuildNeymanSourceAllocation), at the ramp stage's budget.
+                    Config const allocationCfg = rampThisGen
+                        ? RampStageAllocationConfig(cfg, mgRampBudgets[rampStage]) : cfg;
                     SourceAllocationPlan const plan = BuildNeymanSourceAllocation(
                         BuildCombinedSourceScoresForIMC(mgAdaptive, mgGroupSourceState),
-                        cfg, &runtime.fluxSourceCellIDs);
-                    ApplyNeymanAllocationToControl(postProcessControl, plan, cfg);
+                        allocationCfg, &runtime.fluxSourceCellIDs);
+                    ApplyNeymanAllocationToControl(postProcessControl, plan, allocationCfg);
                     PrintSourceAllocationPlan("MG", plan, gen, rank);
                 } else if (adaptiveActiveThisGen) {
                     // Learned-only probe: flat 75 packets per learned cell,
@@ -477,7 +505,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     postProcessControl.emission.useLearnedScores = true;
                     postProcessControl.emission.includeUniformBase = false;
                     postProcessControl.emission.learnedBoostFactor = 1;
-                } else if (cfg.adaptiveSourceCells && finalThisGen &&
+                } else if (cfg.adaptiveSourceCells && (finalThisGen || rampThisGen) &&
                            !adaptiveActiveThisGen) {
                     // No learned cells at all: keep the legacy behaviour so the
                     // run fails loudly (zero emission) rather than silently
@@ -532,12 +560,15 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     double const escapingReference = runtime.lastEscapingLuminosity > 0.0
                         ? runtime.lastEscapingLuminosity : runtime.fluxSourceInjectedLuminosity;
                     physics->setPostProcessExplorationMaxWeight(
-                        cfg.volumeEmissionExplorationWeightFraction * escapingReference * cfg.sourceDt);
-                    // Probe and final generations bound the learned cells'
-                    // packets the same way; the burn-in keeps its flat counts.
+                        cfg.volumeEmissionExplorationWeightFraction * escapingReference * cfg.sourceDt *
+                        rampWeightScale);
+                    // Probe, ramp and final generations bound the learned
+                    // cells' packets the same way; the burn-in keeps its flat
+                    // counts.
                     physics->setPostProcessLearnedMaxWeight(
                         cfg.volumeEmissionCapLearnedWeight && !burninThisGen
-                            ? cfg.volumeEmissionExplorationWeightFraction * escapingReference * cfg.sourceDt
+                            ? cfg.volumeEmissionExplorationWeightFraction * escapingReference * cfg.sourceDt *
+                              rampWeightScale
                             : 0.0);
                 }
 
@@ -744,8 +775,17 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     cfg.volumeEmissionExplorationWeightFraction > 0.0 &&
                     mgLearnedProbeGenerations > 0 &&
                     gen + 1 == mgBurninGenerations;
+                // With the final-budget ramp, the LB after the probe and after
+                // every ramp generation balances on the packets the next
+                // generation's plan will create (measured steps of this one),
+                // so each budget step lands on a decomposition made for it.
+                bool const doRampLB =
+                    measuredLBActive && mgRampGenerations > 0 &&
+                    (doPostAdaptiveMeasuredLB || rampThisGen);
                 std::string const mgLBLabel = doPredictedProbeLB
                     ? "MEASURED_LB_PREDICTED_PROBE"
+                    : doRampLB
+                    ? "MEASURED_LB_RAMP_PLAN"
                     : doPostAdaptiveMeasuredLB
                     ? "MEASURED_LB_ADAPTIVE"
                     : (doAdaptivePeriodicMeasuredLB
@@ -769,7 +809,10 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 //   - noHydroFeedback is true: gas state is not modified by MC generations.
                 //   - Extensives can be rebuilt from cell primitives after repartition.
                 //   - The observer statistics accumulator and adaptive scores are preserved.
-                if (doInitialMeasuredLB || doPredictedProbeLB ||
+                if (rank == 0 && doRampLB)
+                    std::cout << "MG " << (rampThisGen ? "ramp stage complete" : "learned-only probe complete")
+                              << "; the measured LB uses the next generation's planned packets" << std::endl;
+                if (doInitialMeasuredLB || doPredictedProbeLB || doRampLB ||
                     doPostAdaptiveMeasuredLB || doAdaptivePeriodicMeasuredLB) {
                     PredictedProbePackets predictedProbePhotons;
                     if (doPredictedProbeLB)
@@ -782,11 +825,33 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                             "MEASURED_LB_PREDICTED_PROBE", rank, mpiSize);
                     if (doPredictedProbeLB)
                         result.probePredictedPackets = predictedProbePhotons.total;
+                    if (doRampLB) {
+                        // The plan and weight bound the next generation will
+                        // use: the next ramp stage, or the full final budget.
+                        size_t const nextGen = gen + 1;
+                        bool const nextIsRamp = nextGen < mgFinalStartGeneration;
+                        double const nextBudget = nextIsRamp
+                            ? mgRampBudgets[nextGen - mgProbeEndGeneration] : mgRampFullBudget;
+                        Config const nextCfg = nextIsRamp ? RampStageAllocationConfig(cfg, nextBudget) : cfg;
+                        SourceAllocationPlan const nextPlan = BuildNeymanSourceAllocation(
+                            BuildCombinedSourceScoresForIMC(mgAdaptive, mgGroupSourceState),
+                            nextCfg, &runtime.fluxSourceCellIDs);
+                        double const escapingReference = runtime.lastEscapingLuminosity > 0.0
+                            ? runtime.lastEscapingLuminosity : runtime.fluxSourceInjectedLuminosity;
+                        double const capLuminosity = cfg.volumeEmissionEnabled
+                            ? cfg.volumeEmissionExplorationWeightFraction * escapingReference *
+                              (mgRampFullBudget / nextBudget)
+                            : 0.0;
+                        predictedProbePhotons = PredictPlannedSourcePackets(
+                            cells, Ncells, runtime, nextPlan, capLuminosity,
+                            cfg.volumeEmissionCapLearnedWeight, "MEASURED_LB_RAMP_PLAN", rank, mpiSize);
+                    }
+                    bool const predicted = doPredictedProbeLB || doRampLB;
                     rebalanceOnMeasurements(
                         manager->GetCellsStepsCounters(),
-                        doPredictedProbeLB ? predictedProbePhotons.perCell
-                                           : generationDiagnostics.sourcePhotonsPerCell,
-                        mgLBLabel, doPredictedProbeLB);
+                        predicted ? predictedProbePhotons.perCell
+                                  : generationDiagnostics.sourcePhotonsPerCell,
+                        mgLBLabel, predicted);
                     if (doPredictedProbeLB && rank == 0)
                         std::cout << "MG predicted-probe measured load balance complete" << std::endl;
                     if (doPostAdaptiveMeasuredLB) {

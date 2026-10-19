@@ -1,6 +1,7 @@
 #include "PostProcessResultWriter.hpp"
 
 #include "PostProcessCommandLine.hpp"
+#include "source/3D/radiation/StateHdf5IO.hpp"
 
 #include "utils/hdf5/HDF5Writer.hpp"
 
@@ -329,6 +330,57 @@ void MergeHdf5(
                         runtime.fluxSourceEnclosedCellIDs.size());
     writer.WriteElement("/comparison/source_surface/enclosed_wall_luminosity_removed",
                         runtime.fluxSourceEnclosedLuminosity);
+    if (runtime.fluxSourceEnabled) {
+        // The surface per construction direction, as in the .source-surface.h5
+        // file, so it travels with the result. Arrays are stored flat next to
+        // a <name>_shape dataset; group matrices are [group][direction].
+        std::string const s = "/comparison/source_surface/";
+        std::vector<double> dx, dy, dz;
+        for (Vector3D const& d : runtime.fluxSourceDirections) {
+            dx.push_back(d.x);
+            dy.push_back(d.y);
+            dz.push_back(d.z);
+        }
+        state_hdf5::WriteVector(writer, s + "directions/x", dx);
+        state_hdf5::WriteVector(writer, s + "directions/y", dy);
+        state_hdf5::WriteVector(writer, s + "directions/z", dz);
+        writer.WriteElement(s + "mapping_neighbours", runtime.fluxSourceMappingNeighbours);
+        state_hdf5::WriteVector(writer, s + "radius", runtime.fluxSourceRadius);
+        state_hdf5::WriteVector(writer, s + "radius_before_mapping", runtime.fluxSourceSmoothedRadius);
+        state_hdf5::WriteVector(writer, s + "radius_before_smoothing", runtime.fluxSourceRawRadius);
+        state_hdf5::WriteVector(writer, s + "resolved", runtime.fluxSourceRadiusDirectlyResolved);
+        state_hdf5::WriteVector(writer, s + "photosphere_radius", runtime.fluxSourceSurfacePhotosphere);
+        state_hdf5::WriteVector(writer, s + "smoothed_direction_indices", runtime.fluxSourceSmoothedDirections);
+        state_hdf5::WriteVector(writer, s + "capped_direction_indices", runtime.fluxSourceCappedDirections);
+        state_hdf5::WriteVector(writer, s + "mapped_direction_indices", runtime.fluxSourceMappedDirections);
+        writer.WriteElement(s + "mapping_floor_tau", runtime.fluxSourceMappingFloorTau);
+        state_hdf5::WriteVector(writer, s + "mapping_floor_radius", runtime.fluxSourceMappingFloor);
+        state_hdf5::WriteVector(writer, s + "floor_held_direction_indices", runtime.fluxSourceFloorHeldDirections);
+        state_hdf5::WriteVector(writer, s + "grey/radius", runtime.fluxSourceGreyRadius);
+        state_hdf5::WriteVector(writer, s + "grey/resolved", runtime.fluxSourceGreyResolved);
+        state_hdf5::WriteVector(writer, s + "grey/photosphere_radius", runtime.fluxSourceGreyPhotosphere);
+        state_hdf5::WriteVector(writer, s + "grey/photosphere_resolved", runtime.fluxSourceGreyPhotosphereResolved);
+        state_hdf5::WriteMatrix(writer, s + "groups/radius", runtime.fluxSourceGroupRadius);
+        state_hdf5::WriteMatrix(writer, s + "groups/resolved", runtime.fluxSourceGroupResolved);
+        state_hdf5::WriteMatrix(writer, s + "groups/photosphere_radius", runtime.fluxSourceGroupPhotosphere);
+        state_hdf5::WriteMatrix(writer, s + "groups/photosphere_resolved", runtime.fluxSourceGroupPhotosphereResolved);
+        auto const& check = runtime.fluxSourcePhotosphereCheck;
+        if (check.computed) {
+            writer.WriteElement(s + "photosphere_check/boundary_faces", check.faces);
+            writer.WriteElement(s + "photosphere_check/face_luminosity", check.luminosity);
+            writer.WriteElement(s + "photosphere_check/faces_above_deepest", check.facesAboveDeepest);
+            writer.WriteElement(s + "photosphere_check/luminosity_above_deepest", check.luminosityAboveDeepest);
+            writer.WriteElement(s + "photosphere_check/faces_transparent_deepest", check.facesTransparentDeepest);
+            writer.WriteElement(s + "photosphere_check/luminosity_transparent_deepest",
+                                check.luminosityTransparentDeepest);
+            // Entry 0 is grey, then one per group in mg-innermost mode.
+            state_hdf5::WriteVector(writer, s + "photosphere_check/faces_above", check.facesAbove);
+            state_hdf5::WriteVector(writer, s + "photosphere_check/luminosity_above", check.luminosityAbove);
+            state_hdf5::WriteVector(writer, s + "photosphere_check/faces_transparent", check.facesTransparent);
+            state_hdf5::WriteVector(writer, s + "photosphere_check/luminosity_transparent",
+                                    check.luminosityTransparent);
+        }
+    }
     writer.WriteElement("/comparison/forward_crossing_luminosity", forward.crossingLuminosity);
     writer.WriteElement("/comparison/grey_crossing_luminosity", grey.crossingLuminosity);
     writer.WriteElement("/comparison/forward_emitted_luminosity", forward.emittedLuminosity);

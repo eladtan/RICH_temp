@@ -137,6 +137,19 @@ public:
         std::vector<int> greyValidTauTotal;
         std::vector<int> greyValidThermalization;
 
+        // The flux-source emission surface along each observer direction,
+        // from the nearest construction ray: the radius the cells along that
+        // line are tested against (after smoothing and the neighbour
+        // mapping), and the grey and per-group ([observer][group], in
+        // mg-innermost mode) radii where tau_eff reaches emissionSurfaceTau.
+        // -1 where the ray never reached it. Empty without a flux source.
+        double emissionSurfaceTau = 0.0;
+        std::vector<double> emissionSurfaceRadius;
+        std::vector<double> emissionSurfaceGreyRadius;
+        std::vector<std::vector<double>> emissionSurfaceGroupRadius;
+
+        bool hasEmissionSurface() const { return !emissionSurfaceRadius.empty(); }
+
         bool hasMG() const
         {
             return !mgGroupRadiusTauTotal.empty() ||

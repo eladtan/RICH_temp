@@ -45,49 +45,75 @@
 namespace imc_postprocess_tde {
 namespace {
 
-double EffectiveThermalizationOpacity(
+// Total optical depth of the photosphere, as in the observer photosphere
+// (PhotosphereCalculation.cpp).
+constexpr double kPhotosphereTau = 2.0 / 3.0;
+
+// Absorption and scattering opacity of one probe channel in one cell.
+struct ChannelOpacity
+{
+    double absorption = 0.0;
+    double scattering = 0.0;
+};
+
+ChannelOpacity GreyChannelOpacity(
     OpacityCalculator const& opacity,
     ComputationalCell3D const& cell)
 {
-    double const absorption = opacity.CalcPlanckOpacity(cell);
-    double const scattering = opacity.CalcScatteringOpacity(cell);
-    if(!std::isfinite(absorption) || !std::isfinite(scattering) ||
-       absorption < 0.0 || scattering < 0.0)
+    ChannelOpacity const k{opacity.CalcPlanckOpacity(cell), opacity.CalcScatteringOpacity(cell)};
+    if(!std::isfinite(k.absorption) || !std::isfinite(k.scattering) ||
+       k.absorption < 0.0 || k.scattering < 0.0)
         throw UniversalError(
             "Flux-source thermalization probe encountered invalid opacity");
-    return std::sqrt(std::max(
-        0.0, 3.0 * absorption * (absorption + scattering)));
+    return k;
 }
 
-// Same effective thermalization opacity, evaluated for one energy group of a
-// multigroup opacity at the group's representative energy.
-double EffectiveThermalizationOpacityAtEnergy(
+// The same for one energy group of a multigroup opacity, at the group's
+// representative energy.
+ChannelOpacity GroupChannelOpacity(
     OpacityCalculator const& opacity,
     ComputationalCell3D const& cell,
     double energy)
 {
-    double const absorption = opacity.CalcAbsorptionOpacity(cell, energy);
-    double const scattering = opacity.CalcScatteringOpacity(cell, energy);
-    if(!std::isfinite(absorption) || !std::isfinite(scattering) ||
-       absorption < 0.0 || scattering < 0.0)
+    ChannelOpacity const k{opacity.CalcAbsorptionOpacity(cell, energy),
+                           opacity.CalcScatteringOpacity(cell, energy)};
+    if(!std::isfinite(k.absorption) || !std::isfinite(k.scattering) ||
+       k.absorption < 0.0 || k.scattering < 0.0)
     {
         UniversalError eo(
             "Flux-source thermalization probe encountered invalid group opacity");
         eo.addEntry("Energy", energy);
-        eo.addEntry("Absorption", absorption);
-        eo.addEntry("Scattering", scattering);
+        eo.addEntry("Absorption", k.absorption);
+        eo.addEntry("Scattering", k.scattering);
         throw eo;
     }
-    return std::sqrt(std::max(
-        0.0, 3.0 * absorption * (absorption + scattering)));
+    return k;
 }
 
-// One optical-depth channel followed by a probe ray: the grey effective
-// opacity, or one energy group's effective opacity.
+// Effective (thermalization) opacity sqrt(3 k_a (k_a + k_s)).
+double EffectiveSigma(ChannelOpacity const& k)
+{
+    return std::sqrt(std::max(0.0, 3.0 * k.absorption * (k.absorption + k.scattering)));
+}
+
+// Total opacity k_a + k_s, the photosphere's.
+double TotalSigma(ChannelOpacity const& k)
+{
+    return k.absorption + k.scattering;
+}
+
+double EffectiveThermalizationOpacity(
+    OpacityCalculator const& opacity,
+    ComputationalCell3D const& cell)
+{
+    return EffectiveSigma(GreyChannelOpacity(opacity, cell));
+}
+
+// One opacity channel followed by a probe ray: grey, or one energy group.
 struct ThermalizationProbeChannel
 {
     std::string name;
-    std::function<double(ComputationalCell3D const&)> effectiveOpacity;
+    std::function<ChannelOpacity(ComputationalCell3D const&)> opacity;
 };
 
 #ifdef RICH_MPI
@@ -306,12 +332,17 @@ public:
     using Functionality = MonteCarloFunctionality;
     using BoundaryCond = BoundaryCondition<Vector3D, Tessellation3D>;
 
-    // Every ray integrates all channels at once, inward from the observer
-    // sphere, and records for each channel the radius where that channel's
-    // effective optical depth first reaches targetTau. The ray ends when all
-    // channels have resolved, when it leaves the box, or at its closest
-    // approach to the centre (beyond that it would be climbing out the far
-    // side and any later crossing would belong to the opposite direction).
+    // One particle per (ray, channel), with id = ray * channelCount + channel,
+    // runs inward from the observer sphere and records the radius where the
+    // channel's effective optical depth first reaches targetTau, the radius
+    // where it reaches depthTau (the neighbour mapping's floor; 0 skips it),
+    // and the radius where its total optical depth first reaches
+    // kPhotosphereTau (its photosphere along the same ray). The particle
+    // carries both depths (weight: effective, initialWeight: total), so they
+    // survive its migration to another rank's domain. It ends when all are
+    // found, when it leaves the box, or at its closest approach to the centre
+    // (beyond that it would be climbing out the far side and any later
+    // crossing would belong to the opposite direction).
     ThermalizationProbePhysics(
         Tessellation3D const& grid,
         std::shared_ptr<BoundaryCond> const& boundary,
@@ -320,13 +351,17 @@ public:
         OpacityCalculator const& monitorOpacity,
         Vector3D center,
         double targetTau,
+        double depthTau,
         size_t rayCount)
         : MonteCarloPhysics<Vector3D, Tessellation3D>(grid, boundary),
           cells_(cells), channels_(std::move(channels)), center_(center),
-          targetTau_(targetTau), rayCount_(rayCount),
-          tau_(rayCount * channels_.size(), 0.0),
+          targetTau_(targetTau), depthTau_(depthTau), rayCount_(rayCount),
           radius_(channels_.size(), std::vector<double>(rayCount, -1.0)),
           valid_(channels_.size(), std::vector<int>(rayCount, 0)),
+          depthRadius_(channels_.size(), std::vector<double>(rayCount, -1.0)),
+          depthValid_(channels_.size(), std::vector<int>(rayCount, 0)),
+          photosphereRadius_(channels_.size(), std::vector<double>(rayCount, -1.0)),
+          photosphereValid_(channels_.size(), std::vector<int>(rayCount, 0)),
           slowRayMonitor_(std::make_unique<FluxSourceSlowRayMonitor>(
               cells, monitorOpacity, center, targetTau))
     {
@@ -344,8 +379,11 @@ public:
         slowRayMonitor_->poll();
         Functionality result;
         result.change = MonteCarloParticleStatus::REMOVE;
-        if(particle.id >= rayCount_ || particle.cellIndex >= cells_.size())
+        size_t const channelCount = channels_.size();
+        if(particle.id >= rayCount_ * channelCount || particle.cellIndex >= cells_.size())
             return result;
+        size_t const ray = particle.id / channelCount;
+        size_t const channel = particle.id % channelCount;
 
         double const directionNorm = abs(particle.velocity);
         if(!(directionNorm > 0.0) || !std::isfinite(directionNorm))
@@ -375,35 +413,44 @@ public:
         double const dsEffective = reachesCentre
             ? std::max(0.0, remainingInward) : ds;
 
-        size_t const channelCount = channels_.size();
-        double* tau = &tau_[particle.id * channelCount];
-        bool allResolved = true;
-        for(size_t channel = 0; channel < channelCount; ++channel)
+        // The depths travel with the particle: a crossing is recorded on the
+        // rank where it happens, exactly once.
+        ChannelOpacity const k = channels_[channel].opacity(cells_[particle.cellIndex]);
+        double const oldTau = particle.weight;
+        double const oldTauTotal = particle.initialWeight;
+        if(oldTauTotal < kPhotosphereTau)
         {
-            if(valid_[channel][particle.id])
-                continue;
-            double const sigma =
-                channels_[channel].effectiveOpacity(cells_[particle.cellIndex]);
-            double const oldTau = tau[channel];
+            double const sigma = TotalSigma(k);
+            double const newTauTotal = oldTauTotal + sigma * dsEffective;
+            if(newTauTotal >= kPhotosphereTau)
+            {
+                photosphereRadius_[channel][ray] = crossingRadius(
+                    particle.location, direction, dsEffective, sigma, oldTauTotal, kPhotosphereTau);
+                photosphereValid_[channel][ray] = 1;
+            }
+            particle.initialWeight = newTauTotal;
+        }
+        double const finalTau = std::max(targetTau_, depthTau_);
+        if(oldTau < finalTau)
+        {
+            double const sigma = EffectiveSigma(k);
             double const newTau = oldTau + sigma * dsEffective;
             if(oldTau < targetTau_ && newTau >= targetTau_)
             {
-                double fraction = (sigma > 0.0 && dsEffective > 0.0)
-                    ? (targetTau_ - oldTau) / (sigma * dsEffective) : 0.0;
-                fraction = std::clamp(fraction, 0.0, 1.0);
-                Vector3D const crossing = particle.location
-                    + direction * (fraction * dsEffective);
-                radius_[channel][particle.id] = fastabs(crossing - center_);
-                valid_[channel][particle.id] = 1;
-                tau[channel] = targetTau_;
+                radius_[channel][ray] = crossingRadius(
+                    particle.location, direction, dsEffective, sigma, oldTau, targetTau_);
+                valid_[channel][ray] = 1;
             }
-            else
+            if(depthTau_ > 0.0 && oldTau < depthTau_ && newTau >= depthTau_)
             {
-                tau[channel] = newTau;
-                allResolved = false;
+                depthRadius_[channel][ray] = crossingRadius(
+                    particle.location, direction, dsEffective, sigma, oldTau, depthTau_);
+                depthValid_[channel][ray] = 1;
             }
+            particle.weight = newTau;
         }
-        particle.weight = tau[0];
+        bool const allResolved =
+            particle.weight >= finalTau && particle.initialWeight >= kPhotosphereTau;
 
         if(allResolved || reachesCentre)
         {
@@ -427,16 +474,33 @@ public:
     std::string const& channelName(size_t channel) const { return channels_[channel].name; }
     std::vector<double> const& radius(size_t channel) const { return radius_[channel]; }
     std::vector<int> const& valid(size_t channel) const { return valid_[channel]; }
+    std::vector<double> const& photosphereRadius(size_t channel) const { return photosphereRadius_[channel]; }
+    std::vector<int> const& photosphereValid(size_t channel) const { return photosphereValid_[channel]; }
+    std::vector<double> const& depthRadius(size_t channel) const { return depthRadius_[channel]; }
+    std::vector<int> const& depthValid(size_t channel) const { return depthValid_[channel]; }
 
 private:
+    // Radius where the depth accumulated over this step reaches `target`.
+    double crossingRadius(Vector3D const& location, Vector3D const& direction,
+                          double ds, double sigma, double oldTau, double target) const
+    {
+        double fraction = (sigma > 0.0 && ds > 0.0) ? (target - oldTau) / (sigma * ds) : 0.0;
+        fraction = std::clamp(fraction, 0.0, 1.0);
+        return fastabs(location + direction * (fraction * ds) - center_);
+    }
+
     std::vector<ComputationalCell3D> const& cells_;
     std::vector<ThermalizationProbeChannel> channels_;
     Vector3D center_;
     double targetTau_;
+    double depthTau_;
     size_t rayCount_;
-    std::vector<double> tau_;                 // rayCount * channels, ray-major
     std::vector<std::vector<double>> radius_; // [channel][ray]
     std::vector<std::vector<int>> valid_;     // [channel][ray]
+    std::vector<std::vector<double>> depthRadius_;       // [channel][ray]
+    std::vector<std::vector<int>> depthValid_;           // [channel][ray]
+    std::vector<std::vector<double>> photosphereRadius_; // [channel][ray]
+    std::vector<std::vector<int>> photosphereValid_;     // [channel][ray]
     std::unique_ptr<FluxSourceSlowRayMonitor> slowRayMonitor_;
 };
 
@@ -716,49 +780,155 @@ double HydroFldFaceLuminosity(
 
 constexpr size_t kSmoothingNeighbours = 8;
 
-// Raises every resolved direction whose radius is below `floor` times the
-// median radius of its kSmoothingNeighbours nearest resolved directions to
-// that value. Only raises: a raised surface is shallower than the target
-// thermalization depth in that direction. Returns the raised directions.
-std::vector<size_t> SmoothSurfaceDips(
+// For every resolved direction, the (up to) k resolved directions closest in
+// angle, nearest first, the direction itself excluded; empty for unresolved
+// directions. Shared by the smoothing and the neighbour mapping.
+std::vector<std::vector<size_t>> NearestResolvedNeighbours(
     std::vector<Vector3D> const& directions,
-    std::vector<double>& radius,
     std::vector<int> const& resolved,
-    double floor)
+    size_t k)
 {
-    std::vector<size_t> raised;
-    if(!(floor > 0.0))
-        return raised;
-    size_t const n = directions.size();
-    std::vector<double> const original = radius;
+    std::vector<std::vector<size_t>> neighbours(directions.size());
+    if(k == 0)
+        return neighbours;
     std::vector<std::pair<double, size_t>> byAngle;
-    std::vector<double> neighbourRadii;
-    for(size_t d = 0; d < n; ++d)
+    byAngle.reserve(directions.size());
+    for(size_t d = 0; d < directions.size(); ++d)
     {
         if(!resolved[d])
             continue;
         byAngle.clear();
-        for(size_t e = 0; e < n; ++e)
+        for(size_t e = 0; e < directions.size(); ++e)
             if(e != d && resolved[e])
                 byAngle.emplace_back(-ScalarProd(directions[d], directions[e]), e);
-        size_t const k = std::min(kSmoothingNeighbours, byAngle.size());
+        size_t const count = std::min(k, byAngle.size());
+        std::partial_sort(byAngle.begin(), byAngle.begin() + static_cast<std::ptrdiff_t>(count),
+                          byAngle.end());
+        neighbours[d].resize(count);
+        for(size_t m = 0; m < count; ++m)
+            neighbours[d][m] = byAngle[m].second;
+    }
+    return neighbours;
+}
+
+// Raises every resolved direction whose radius is below `floor` times the
+// median radius of its kSmoothingNeighbours nearest resolved directions (the
+// first ones in `neighbours`) to that value. Only raises: a raised surface is
+// shallower than the target thermalization depth in that direction. With a
+// non-empty `ceiling` no direction is raised above ceiling[d] (its own
+// photosphere), and a direction without one (negative) is not raised at all;
+// the directions held below the smoothing value are returned in `capped`.
+// Returns the raised directions.
+std::vector<size_t> SmoothSurfaceDips(
+    std::vector<std::vector<size_t>> const& neighbours,
+    std::vector<double>& radius,
+    std::vector<int> const& resolved,
+    double floor,
+    std::vector<double> const& ceiling,
+    std::vector<size_t>& capped)
+{
+    std::vector<size_t> raised;
+    capped.clear();
+    if(!(floor > 0.0))
+        return raised;
+    if(!ceiling.empty() && ceiling.size() != radius.size())
+        throw UniversalError("Flux-source smoothing ceiling does not match the direction set");
+    std::vector<double> const original = radius;
+    std::vector<double> neighbourRadii;
+    for(size_t d = 0; d < radius.size(); ++d)
+    {
+        if(!resolved[d])
+            continue;
+        size_t const k = std::min(kSmoothingNeighbours, neighbours[d].size());
         if(k == 0)
             continue;
-        std::partial_sort(byAngle.begin(), byAngle.begin() + static_cast<std::ptrdiff_t>(k), byAngle.end());
-        neighbourRadii.clear();
+        neighbourRadii.assign(k, 0.0);
         for(size_t m = 0; m < k; ++m)
-            neighbourRadii.push_back(original[byAngle[m].second]);
+            neighbourRadii[m] = original[neighbours[d][m]];
         std::nth_element(neighbourRadii.begin(),
                          neighbourRadii.begin() + static_cast<std::ptrdiff_t>(k / 2),
                          neighbourRadii.end());
         double const limit = floor * neighbourRadii[k / 2];
-        if(original[d] < limit)
+        if(!(original[d] < limit))
+            continue;
+        double target = limit;
+        if(!ceiling.empty())
         {
-            radius[d] = limit;
+            target = ceiling[d] > 0.0 ? std::min(limit, ceiling[d]) : original[d];
+            if(target < limit)
+                capped.push_back(d);
+        }
+        if(target > original[d])
+        {
+            radius[d] = target;
             raised.push_back(d);
         }
     }
     return raised;
+}
+
+// Lowers every resolved direction's radius to the smallest radius among
+// itself and its `count` nearest resolved directions (the first ones in
+// `neighbours`), but never below floor[d] (empty: no floor). A cell takes the
+// radius of its nearest direction, so after this it is inside only if it
+// lies below the surface of that direction and of all of its neighbours: a
+// cell between directions never inherits a neighbour's larger radius, while
+// the floor keeps the mapping out of gas far below the thermalization depth.
+// Only lowers. Returns the lowered directions; the directions the floor
+// stopped short of their neighbours' radius go to `held`.
+std::vector<size_t> ApplyNeighbourMapping(
+    std::vector<std::vector<size_t>> const& neighbours,
+    std::vector<double>& radius,
+    std::vector<int> const& resolved,
+    size_t count,
+    std::vector<double> const& floor,
+    std::vector<size_t>& held)
+{
+    std::vector<size_t> lowered;
+    held.clear();
+    if(count == 0)
+        return lowered;
+    if(!floor.empty() && floor.size() != radius.size())
+        throw UniversalError("Flux-source mapping floor does not match the direction set");
+    std::vector<double> const original = radius;
+    for(size_t d = 0; d < radius.size(); ++d)
+    {
+        if(!resolved[d])
+            continue;
+        double smallest = original[d];
+        size_t const k = std::min(count, neighbours[d].size());
+        for(size_t m = 0; m < k; ++m)
+            smallest = std::min(smallest, original[neighbours[d][m]]);
+        double target = smallest;
+        if(!floor.empty() && floor[d] > smallest)
+        {
+            target = std::min(original[d], floor[d]);
+            held.push_back(d);
+        }
+        if(target < original[d])
+        {
+            radius[d] = target;
+            lowered.push_back(d);
+        }
+    }
+    return lowered;
+}
+
+// Median and largest ratio numerator[d] / denominator[d] over `changed`, for
+// the surface reports.
+std::pair<double, double> MedianAndMaxRatio(
+    std::vector<size_t> const& changed,
+    std::vector<double> const& numerator,
+    std::vector<double> const& denominator)
+{
+    std::vector<double> factors;
+    factors.reserve(changed.size());
+    for(size_t d : changed)
+        factors.push_back(numerator[d] / denominator[d]);
+    if(factors.empty())
+        return {1.0, 1.0};
+    std::sort(factors.begin(), factors.end());
+    return {factors[factors.size() / 2], factors.back()};
 }
 
 #ifdef RICH_MPI
@@ -907,6 +1077,14 @@ void InitializeFluxSourceSurface(
         : runtime.observer->getNumObservers();
     if(nSourceRays == 0 || nSourceRays > static_cast<size_t>(INT_MAX))
         throw UniversalError("Flux-source surface requires a valid source-ray count");
+    if(cfg.fluxSourceMappingNeighbours >= nSourceRays)
+    {
+        UniversalError eo("--flux-source.mapping-neighbours must be smaller than the number of "
+                          "construction rays, or every ray takes the smallest radius on the sphere");
+        eo.addEntry("Mapping neighbours", cfg.fluxSourceMappingNeighbours);
+        eo.addEntry("Construction rays", nSourceRays);
+        throw eo;
+    }
 
     // The CER angular resolution is independent of the final observer binning.
     // Keep the old behavior when --flux-source-rays is omitted by using the
@@ -919,9 +1097,9 @@ void InitializeFluxSourceSurface(
 
     auto boundary = std::make_shared<
         VacuumBoundaryCondition<Vector3D, Tessellation3D>>(runtime.tess);
-    // Channel 0 is always the grey effective depth (kept for the report). In
-    // mg-innermost mode one channel per energy group follows, evaluated with
-    // the multigroup opacity at the group's representative energy.
+    // Channel 0 is always grey (kept for the report). In mg-innermost mode one
+    // channel per energy group follows, evaluated with the multigroup opacity
+    // at the group's representative energy.
     bool const mgSurface =
         cfg.fluxSourceSurfaceMode == FluxSourceSurfaceMode::MultigroupInnermost;
     std::vector<ThermalizationProbeChannel> channels;
@@ -930,7 +1108,7 @@ void InitializeFluxSourceSurface(
         channels.push_back(ThermalizationProbeChannel{
             "grey",
             [&grey](ComputationalCell3D const& cell) {
-                return EffectiveThermalizationOpacity(grey, cell);
+                return GreyChannelOpacity(grey, cell);
             }});
     }
 #if ENERGY_GROUPS_NUM > 1
@@ -952,7 +1130,7 @@ void InitializeFluxSourceSurface(
             channels.push_back(ThermalizationProbeChannel{
                 "group" + std::to_string(group),
                 [&mg, energy](ComputationalCell3D const& cell) {
-                    return EffectiveThermalizationOpacityAtEnergy(mg, cell, energy);
+                    return GroupChannelOpacity(mg, cell, energy);
                 }});
         }
     }
@@ -961,10 +1139,14 @@ void InitializeFluxSourceSurface(
         std::cout << "FLUX_SOURCE_SURFACE note: single-group build, mg-innermost equals grey"
                   << std::endl;
 #endif
+    // The neighbour mapping's floor: where tau_eff reaches K x the target.
+    double const mappingFloorTau = cfg.fluxSourceMappingNeighbours > 0 &&
+                                   cfg.fluxSourceMappingMaxDepthFactor > 0.0
+        ? cfg.fluxSourceMappingMaxDepthFactor * cfg.fluxSourceThermalizationTau : 0.0;
     auto physics = std::make_shared<ThermalizationProbePhysics>(
         runtime.tess, boundary, runtime.cells, std::move(channels),
         *runtime.greyOpacity, cfg.center, cfg.fluxSourceThermalizationTau,
-        nSourceRays);
+        mappingFloorTau, nSourceRays);
     auto population = std::make_shared<
         STORM::NoPopulationControl<Vector3D, Tessellation3D>>(runtime.tess);
     std::shared_ptr<MonteCarloManager3D> manager;
@@ -980,10 +1162,13 @@ void InitializeFluxSourceSurface(
         runtime.tess, physics, population, boundary);
 #endif
 
-    // Keep the global number of live probe rays below the default 500-slot
-    // RDMA peer buffer.  The probe creates no secondary particles, so a
-    // 400-ray global batch cannot require remote-handler reallocation.
-    size_t constexpr probeBatchSize = 400;
+    // Keep the global number of live probe particles below the default
+    // 500-slot RDMA peer buffer.  The probe creates no secondary particles,
+    // so a 400-particle global batch cannot require remote-handler
+    // reallocation.  Each ray launches one particle per channel.
+    size_t constexpr probeParticleLimit = 400;
+    size_t const channelCount = physics->channelCount();
+    size_t const probeBatchSize = std::max<size_t>(1, probeParticleLimit / channelCount);
     size_t const batchCount =
         (nSourceRays + probeBatchSize - 1) / probeBatchSize;
     for(size_t batchBegin = 0; batchBegin < nSourceRays;
@@ -993,7 +1178,7 @@ void InitializeFluxSourceSurface(
             nSourceRays, batchBegin + probeBatchSize);
         std::vector<ThermalizationProbePhysics::Particle> particles;
         particles.reserve(
-            (batchEnd - batchBegin) / std::max(1, runtime.mpiSize) + 1);
+            channelCount * (batchEnd - batchBegin) / std::max(1, runtime.mpiSize) + channelCount);
 
         for(size_t rayIndex = batchBegin; rayIndex < batchEnd; ++rayIndex)
         {
@@ -1017,15 +1202,19 @@ void InitializeFluxSourceSurface(
             size_t const cellIndex = runtime.tess.GetContainingCell(spherePoint);
             if(cellIndex >= runtime.tess.GetPointNo())
                 continue;
-            ThermalizationProbePhysics::Particle particle;
-            particle.id = rayIndex;
-            particle.location = spherePoint;
-            particle.velocity = -1.0 * direction;
-            particle.cellIndex = cellIndex;
-            particle.cellID = runtime.cells[cellIndex].ID;
-            particle.sourceCellID = particle.cellID;
-            particle.weight = 0.0;
-            particles.push_back(particle);
+            for(size_t channel = 0; channel < channelCount; ++channel)
+            {
+                ThermalizationProbePhysics::Particle particle;
+                particle.id = rayIndex * channelCount + channel;
+                particle.location = spherePoint;
+                particle.velocity = -1.0 * direction;
+                particle.cellIndex = cellIndex;
+                particle.cellID = runtime.cells[cellIndex].ID;
+                particle.sourceCellID = particle.cellID;
+                particle.weight = 0.0;
+                particle.initialWeight = 0.0;
+                particles.push_back(particle);
+            }
         }
 
         unsigned long long localLaunched =
@@ -1036,24 +1225,26 @@ void InitializeFluxSourceSurface(
                       MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
 #endif
         size_t const batchNumber = batchBegin / probeBatchSize + 1;
-        if(globalLaunched > static_cast<unsigned long long>(probeBatchSize) ||
-           globalLaunched > static_cast<unsigned long long>(batchEnd - batchBegin))
+        if(globalLaunched > static_cast<unsigned long long>(probeParticleLimit) ||
+           globalLaunched > static_cast<unsigned long long>(channelCount * (batchEnd - batchBegin)))
         {
             UniversalError eo(
-                "Flux-source probe batch exceeded its global ray limit");
+                "Flux-source probe batch exceeded its global particle limit");
             eo.addEntry("Batch", batchNumber);
             eo.addEntry("Batch begin", batchBegin);
             eo.addEntry("Batch end", batchEnd);
-            eo.addEntry("Global launched rays", globalLaunched);
-            eo.addEntry("Probe batch limit", probeBatchSize);
+            eo.addEntry("Channels", channelCount);
+            eo.addEntry("Global launched particles", globalLaunched);
+            eo.addEntry("Probe particle limit", probeParticleLimit);
             throw eo;
         }
         if(runtime.rank == 0)
             std::cout << "FLUX_SOURCE_PROBE_BATCH batch="
                       << batchNumber << "/" << batchCount
                       << " range=[" << batchBegin << "," << batchEnd << ")"
-                      << " global_rays=" << globalLaunched
-                      << " limit=" << probeBatchSize
+                      << " global_particles=" << globalLaunched
+                      << " (" << channelCount << " channels per ray)"
+                      << " limit=" << probeParticleLimit
                       << std::endl;
 
         if(globalLaunched > 0)
@@ -1063,31 +1254,50 @@ void InitializeFluxSourceSurface(
         }
     }
 
-    // Each ray ran on exactly one rank; a max-reduction assembles every
-    // channel's radii (unresolved entries stay at -1 / 0).
-    size_t const channelCount = physics->channelCount();
+    // Each crossing was recorded once, on the rank where it happened; a
+    // max-reduction assembles every channel's radii (unresolved entries stay
+    // at -1 / 0).
     std::vector<std::vector<double>> channelRadius(channelCount);
     std::vector<std::vector<int>> channelValid(channelCount);
+    std::vector<std::vector<double>> channelPhotosphere(channelCount);
+    std::vector<std::vector<int>> channelPhotosphereValid(channelCount);
+    std::vector<std::vector<double>> channelDepth(channelCount);
+    std::vector<std::vector<int>> channelDepthValid(channelCount);
     for(size_t channel = 0; channel < channelCount; ++channel)
     {
         channelRadius[channel] = physics->radius(channel);
         channelValid[channel] = physics->valid(channel);
+        channelPhotosphere[channel] = physics->photosphereRadius(channel);
+        channelPhotosphereValid[channel] = physics->photosphereValid(channel);
+        channelDepth[channel] = physics->depthRadius(channel);
+        channelDepthValid[channel] = physics->depthValid(channel);
 #ifdef RICH_MPI
         if(!channelRadius[channel].empty())
         {
-            MPI_Allreduce(MPI_IN_PLACE, channelRadius[channel].data(),
-                          static_cast<int>(channelRadius[channel].size()),
+            int const count = static_cast<int>(channelRadius[channel].size());
+            MPI_Allreduce(MPI_IN_PLACE, channelRadius[channel].data(), count,
                           MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
-            MPI_Allreduce(MPI_IN_PLACE, channelValid[channel].data(),
-                          static_cast<int>(channelValid[channel].size()),
+            MPI_Allreduce(MPI_IN_PLACE, channelValid[channel].data(), count,
+                          MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+            MPI_Allreduce(MPI_IN_PLACE, channelPhotosphere[channel].data(), count,
+                          MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+            MPI_Allreduce(MPI_IN_PLACE, channelPhotosphereValid[channel].data(), count,
+                          MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+            MPI_Allreduce(MPI_IN_PLACE, channelDepth[channel].data(), count,
+                          MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+            MPI_Allreduce(MPI_IN_PLACE, channelDepthValid[channel].data(), count,
                           MPI_INT, MPI_MAX, MPI_COMM_WORLD);
         }
 #endif
     }
     runtime.fluxSourceGreyRadius = channelRadius[0];
     runtime.fluxSourceGreyResolved = channelValid[0];
+    runtime.fluxSourceGreyPhotosphere = channelPhotosphere[0];
+    runtime.fluxSourceGreyPhotosphereResolved = channelPhotosphereValid[0];
     runtime.fluxSourceGroupRadius.clear();
     runtime.fluxSourceGroupResolved.clear();
+    runtime.fluxSourceGroupPhotosphere.clear();
+    runtime.fluxSourceGroupPhotosphereResolved.clear();
 
     size_t directionsMissingAGroup = 0;
     if(!mgSurface || channelCount == 1)
@@ -1127,6 +1337,48 @@ void InitializeFluxSourceSurface(
         }
         runtime.fluxSourceGroupRadius.assign(channelRadius.begin() + 1, channelRadius.end());
         runtime.fluxSourceGroupResolved.assign(channelValid.begin() + 1, channelValid.end());
+        runtime.fluxSourceGroupPhotosphere.assign(channelPhotosphere.begin() + 1, channelPhotosphere.end());
+        runtime.fluxSourceGroupPhotosphereResolved.assign(
+            channelPhotosphereValid.begin() + 1, channelPhotosphereValid.end());
+    }
+
+    // Per ray, the deepest photosphere of the channels the surface is built
+    // from: the grey one, or the innermost resolved group photosphere. A group
+    // whose total depth never reaches 2/3 along the ray is optically thin
+    // there and has no photosphere to compare with.
+    size_t const firstSurfaceChannel = (!mgSurface || channelCount == 1) ? 0 : 1;
+    runtime.fluxSourceSurfacePhotosphere.assign(nSourceRays, -1.0);
+    for(size_t i = 0; i < nSourceRays; ++i)
+    {
+        double deepest = std::numeric_limits<double>::infinity();
+        for(size_t channel = firstSurfaceChannel; channel < channelCount; ++channel)
+            if(channelPhotosphereValid[channel][i])
+                deepest = std::min(deepest, channelPhotosphere[channel][i]);
+        if(std::isfinite(deepest))
+            runtime.fluxSourceSurfacePhotosphere[i] = deepest;
+    }
+
+    // Per ray, the floor of the neighbour mapping: the radius where every
+    // channel the surface is built from (and resolved on this ray) has
+    // reached tau_eff = K x target, the deepest of them. No floor (0) when the
+    // floor is off or such a channel never gets that deep along the ray.
+    runtime.fluxSourceMappingFloorTau = mappingFloorTau;
+    runtime.fluxSourceMappingFloor.assign(nSourceRays, 0.0);
+    if(mappingFloorTau > 0.0)
+    {
+        for(size_t i = 0; i < nSourceRays; ++i)
+        {
+            double floor = std::numeric_limits<double>::infinity();
+            for(size_t channel = firstSurfaceChannel; channel < channelCount; ++channel)
+            {
+                if(!channelValid[channel][i])
+                    continue;
+                floor = channelDepthValid[channel][i] ? std::min(floor, channelDepth[channel][i]) : 0.0;
+                if(!(floor > 0.0))
+                    break;
+            }
+            runtime.fluxSourceMappingFloor[i] = std::isfinite(floor) ? floor : 0.0;
+        }
     }
 
     if(runtime.rank == 0)
@@ -1134,10 +1386,15 @@ void InitializeFluxSourceSurface(
         for(size_t channel = 0; channel < channelCount; ++channel)
         {
             RadiusSummary const summary = SummarizeRadii(channelRadius[channel], channelValid[channel]);
+            RadiusSummary const photosphere =
+                SummarizeRadii(channelPhotosphere[channel], channelPhotosphereValid[channel]);
             std::cout << "FLUX_SOURCE_CHANNEL name=" << physics->channelName(channel)
                       << " resolved=" << summary.resolved << "/" << nSourceRays
                       << " radius_p05/med/p95=" << summary.p05 << "/" << summary.median
-                      << "/" << summary.p95 << " cm" << std::endl;
+                      << "/" << summary.p95 << " cm"
+                      << " photosphere_resolved=" << photosphere.resolved << "/" << nSourceRays
+                      << " photosphere_p05/med/p95=" << photosphere.p05 << "/" << photosphere.median
+                      << "/" << photosphere.p95 << " cm" << std::endl;
         }
         if(mgSurface && channelCount > 1)
         {
@@ -1155,30 +1412,75 @@ void InitializeFluxSourceSurface(
     }
 
     // Smoothing: no direction may dip far below its neighbours. A raised
-    // direction no longer sits at the target depth, so say so loudly.
+    // direction no longer sits at the target depth, so say so loudly. With
+    // the photosphere cap it is never raised above its own photosphere.
     runtime.fluxSourceRawRadius = runtime.fluxSourceRadius;
+    // The nearest resolved directions of every direction, once, for the
+    // smoothing and the neighbour mapping (the resolved set is the same).
+    std::vector<std::vector<size_t>> const neighbours = NearestResolvedNeighbours(
+        directions, runtime.fluxSourceRadiusDirectlyResolved,
+        std::max(kSmoothingNeighbours, cfg.fluxSourceMappingNeighbours));
+    std::vector<double> const noCeiling;
     runtime.fluxSourceSmoothedDirections = SmoothSurfaceDips(
-        directions, runtime.fluxSourceRadius,
-        runtime.fluxSourceRadiusDirectlyResolved, cfg.fluxSourceSmoothingFloor);
+        neighbours, runtime.fluxSourceRadius,
+        runtime.fluxSourceRadiusDirectlyResolved, cfg.fluxSourceSmoothingFloor,
+        cfg.fluxSourceSmoothingPhotosphereCap ? runtime.fluxSourceSurfacePhotosphere : noCeiling,
+        runtime.fluxSourceCappedDirections);
+    if(runtime.rank == 0 && runtime.fluxSourceSmoothedDirections.empty() &&
+       !runtime.fluxSourceCappedDirections.empty())
+        std::cout << "FLUX_SOURCE_SMOOTHING note: no direction raised; "
+                  << runtime.fluxSourceCappedDirections.size() << "/" << nSourceRays
+                  << " dips held by their own photosphere (or without one)" << std::endl;
     if(runtime.rank == 0 && !runtime.fluxSourceSmoothedDirections.empty())
     {
-        std::vector<double> factors;
-        for(size_t d : runtime.fluxSourceSmoothedDirections)
-            factors.push_back(runtime.fluxSourceRadius[d] / runtime.fluxSourceRawRadius[d]);
-        std::sort(factors.begin(), factors.end());
+        std::pair<double, double> const factor = MedianAndMaxRatio(
+            runtime.fluxSourceSmoothedDirections, runtime.fluxSourceRadius,
+            runtime.fluxSourceRawRadius);
         std::ostringstream warning;
         warning << "FLUX_SOURCE_SMOOTHING WARNING: raised the source surface in "
-                << factors.size() << "/" << nSourceRays
-                << " directions to at least " << cfg.fluxSourceSmoothingFloor
+                << runtime.fluxSourceSmoothedDirections.size() << "/" << nSourceRays
+                << " directions toward " << cfg.fluxSourceSmoothingFloor
                 << " x the median radius of their " << kSmoothingNeighbours
-                << " nearest directions (radius raised by x" << factors.front()
-                << " to x" << factors.back() << ", median x" << factors[factors.size() / 2]
-                << "). In those directions the surface is shallower than tau_eff="
+                << " nearest directions (radius raised by median x" << factor.first
+                << ", max x" << factor.second << ")";
+        if(cfg.fluxSourceSmoothingPhotosphereCap)
+            warning << "; " << runtime.fluxSourceCappedDirections.size()
+                    << " directions held below that value by their own photosphere (or not"
+                    << " raised, having none)";
+        warning << ". In raised directions the surface is shallower than tau_eff="
                 << cfg.fluxSourceThermalizationTau
                 << ", so the gas between the old and new radius is transported instead of"
                 << " treated as thermalized. Set --flux-source.smoothing-floor 0 to disable.";
         std::cout << warning.str() << std::endl;
         std::cerr << warning.str() << std::endl;
+    }
+
+    // Neighbour mapping: a cell takes the radius of its nearest direction, so
+    // lowering each direction to the smallest radius among itself and its
+    // neighbours keeps every cell between directions below all of them.
+    runtime.fluxSourceSmoothedRadius = runtime.fluxSourceRadius;
+    runtime.fluxSourceMappingNeighbours = cfg.fluxSourceMappingNeighbours;
+    std::vector<double> const noFloor;
+    runtime.fluxSourceMappedDirections = ApplyNeighbourMapping(
+        neighbours, runtime.fluxSourceRadius,
+        runtime.fluxSourceRadiusDirectlyResolved, cfg.fluxSourceMappingNeighbours,
+        mappingFloorTau > 0.0 ? runtime.fluxSourceMappingFloor : noFloor,
+        runtime.fluxSourceFloorHeldDirections);
+    if(runtime.rank == 0 && cfg.fluxSourceMappingNeighbours > 0)
+    {
+        std::pair<double, double> const factor = MedianAndMaxRatio(
+            runtime.fluxSourceMappedDirections, runtime.fluxSourceSmoothedRadius,
+            runtime.fluxSourceRadius);
+        RadiusSummary const mapped = SummarizeRadii(
+            runtime.fluxSourceRadius, runtime.fluxSourceRadiusDirectlyResolved);
+        std::cout << "FLUX_SOURCE_MAPPING neighbours=" << cfg.fluxSourceMappingNeighbours
+                  << " lowered=" << runtime.fluxSourceMappedDirections.size() << "/" << nSourceRays
+                  << " radius_lowered_by_median/max=x" << factor.first << "/x" << factor.second
+                  << " depth_floor_tau_eff=" << mappingFloorTau
+                  << " held_by_depth_floor=" << runtime.fluxSourceFloorHeldDirections.size()
+                  << "/" << nSourceRays
+                  << " surface_radius_p05/med/p95=" << mapped.p05 << "/" << mapped.median
+                  << "/" << mapped.p95 << " cm" << std::endl;
     }
 
     size_t const directCount = static_cast<size_t>(std::count(
@@ -1232,19 +1534,66 @@ void InitializeFluxSourceSurface(
         state_hdf5::WriteVector(writer, "/directions/y", dy);
         state_hdf5::WriteVector(writer, "/directions/z", dz);
         writer.WriteElement("/thermalization_tau", cfg.fluxSourceThermalizationTau);
+        writer.WriteElement("/photosphere_tau", kPhotosphereTau);
         writer.WriteElement("/smoothing_floor", cfg.fluxSourceSmoothingFloor);
+        writer.WriteElement("/smoothing_photosphere_cap", cfg.fluxSourceSmoothingPhotosphereCap ? 1 : 0);
+        writer.WriteElement("/mapping_neighbours", cfg.fluxSourceMappingNeighbours);
+        writer.WriteElement("/mapping_floor_tau", runtime.fluxSourceMappingFloorTau);
         writer.WriteElement("/surface_mode", std::string(mgSurface ? "mg-innermost" : "grey"));
+        // radius: the final surface (after smoothing and the neighbour
+        // mapping); radius_before_mapping: after smoothing only;
+        // radius_before_smoothing: as the probe found it.
         state_hdf5::WriteVector(writer, "/surface/radius", runtime.fluxSourceRadius);
+        state_hdf5::WriteVector(writer, "/surface/radius_before_mapping", runtime.fluxSourceSmoothedRadius);
         state_hdf5::WriteVector(writer, "/surface/radius_before_smoothing", runtime.fluxSourceRawRadius);
         state_hdf5::WriteVector(writer, "/surface/resolved", runtime.fluxSourceRadiusDirectlyResolved);
         state_hdf5::WriteVector(writer, "/surface/smoothed_directions", runtime.fluxSourceSmoothedDirections);
+        state_hdf5::WriteVector(writer, "/surface/capped_directions", runtime.fluxSourceCappedDirections);
+        state_hdf5::WriteVector(writer, "/surface/mapped_directions", runtime.fluxSourceMappedDirections);
+        state_hdf5::WriteVector(writer, "/surface/mapping_floor_radius", runtime.fluxSourceMappingFloor);
+        state_hdf5::WriteVector(writer, "/surface/floor_held_directions", runtime.fluxSourceFloorHeldDirections);
+        state_hdf5::WriteVector(writer, "/surface/photosphere_radius", runtime.fluxSourceSurfacePhotosphere);
         state_hdf5::WriteVector(writer, "/grey/radius", runtime.fluxSourceGreyRadius);
         state_hdf5::WriteVector(writer, "/grey/resolved", runtime.fluxSourceGreyResolved);
+        state_hdf5::WriteVector(writer, "/grey/photosphere_radius", runtime.fluxSourceGreyPhotosphere);
+        state_hdf5::WriteVector(writer, "/grey/photosphere_resolved", runtime.fluxSourceGreyPhotosphereResolved);
         state_hdf5::WriteMatrix(writer, "/groups/radius", runtime.fluxSourceGroupRadius);
         state_hdf5::WriteMatrix(writer, "/groups/resolved", runtime.fluxSourceGroupResolved);
+        state_hdf5::WriteMatrix(writer, "/groups/photosphere_radius", runtime.fluxSourceGroupPhotosphere);
+        state_hdf5::WriteMatrix(writer, "/groups/photosphere_resolved", runtime.fluxSourceGroupPhotosphereResolved);
         writer.Close();
         std::cout << "FLUX_SOURCE_SURFACE written to " << runtime.fluxSourceSurfaceFile << std::endl;
     }
+}
+
+void AttachEmissionSurfaceToObserver(
+    Config const& cfg,
+    PostprocessRuntime& runtime)
+{
+    if(!runtime.fluxSourceEnabled || !runtime.observer)
+        throw UniversalError("Emission surface requested before the flux-source surface was built");
+    std::vector<Vector3D> const& observerDirections = runtime.observer->getDirections();
+    size_t const nObservers = observerDirections.size();
+    size_t const groupCount = runtime.fluxSourceGroupRadius.size();
+    SphericalObserver::PhotosphereData data = runtime.observer->getPhotosphereData();
+    data.emissionSurfaceTau = runtime.fluxSourceTau;
+    data.emissionSurfaceRadius.assign(nObservers, -1.0);
+    data.emissionSurfaceGreyRadius.assign(nObservers, -1.0);
+    data.emissionSurfaceGroupRadius.assign(
+        groupCount > 0 ? nObservers : 0, std::vector<double>(groupCount, -1.0));
+    for(size_t obs = 0; obs < nObservers; ++obs)
+    {
+        size_t const ray = NearestObserverDirection(
+            cfg.center + observerDirections[obs], cfg.center, runtime.fluxSourceDirections);
+        if(runtime.fluxSourceRadiusDirectlyResolved[ray])
+            data.emissionSurfaceRadius[obs] = runtime.fluxSourceRadius[ray];
+        if(runtime.fluxSourceGreyResolved[ray])
+            data.emissionSurfaceGreyRadius[obs] = runtime.fluxSourceGreyRadius[ray];
+        for(size_t g = 0; g < groupCount; ++g)
+            if(runtime.fluxSourceGroupResolved[g][ray])
+                data.emissionSurfaceGroupRadius[obs][g] = runtime.fluxSourceGroupRadius[g][ray];
+    }
+    runtime.observer->setPhotosphereData(std::move(data));
 }
 
 void ConfigureFluxSourceForCurrentDecomposition(
@@ -1266,8 +1615,12 @@ void ConfigureFluxSourceForCurrentDecomposition(
         throw UniversalError("Flux-source surface was not initialized");
 
     std::vector<Vector3D> const fldFlux = ComputeGreyFldFlux(runtime);
-    std::vector<unsigned char> outside =
-        BuildOutsideSurfaceMask(cfg, runtime);
+    // The construction ray of every point, once for the surface mask, the
+    // photosphere check and the per-group volume-emission masks.
+    std::vector<size_t> const nearestDirection = BuildNearestDirectionIndex(cfg, runtime);
+    std::vector<unsigned char> outside = BuildOutsideMaskForRadii(
+        cfg, runtime, nearestDirection, runtime.fluxSourceRadius,
+        runtime.fluxSourceRadiusDirectlyResolved);
     size_t const nCells = runtime.tess.GetPointNo();
     if(runtime.cells.size() < nCells)
         throw UniversalError(
@@ -1396,6 +1749,25 @@ void ConfigureFluxSourceForCurrentDecomposition(
     double localInwardLuminosity = 0.0;
     uint64_t localBoundaryFaces = 0;
     uint64_t localEmittingFaces = 0;
+    // Photosphere check of the first setup (later setups only repartition the
+    // same faces): each face against the photosphere of the construction ray
+    // its outer cell is mapped to, grey (entry 0), per group, and the deepest
+    // one. A face is either above a photosphere that exists, or on a ray
+    // where the channel never reaches total depth 2/3 (transparent).
+    bool const checkPhotosphere = !runtime.fluxSourcePhotosphereCheck.computed &&
+        runtime.fluxSourceSurfacePhotosphere.size() == runtime.fluxSourceDirections.size();
+    size_t const checkChannels = 2 + runtime.fluxSourceGroupPhotosphere.size();  // deepest, grey, groups
+    std::vector<uint64_t> checkFaces(2 * checkChannels, 0);      // [above | transparent] per channel
+    std::vector<double> checkLuminosity(2 * checkChannels, 0.0);
+    auto checkFace = [&](size_t channel, double faceRadius, double photosphere, bool resolved,
+                         double luminosity) {
+        size_t const slot = resolved ? channel : checkChannels + channel;
+        if(!resolved || faceRadius > photosphere)
+        {
+            ++checkFaces[slot];
+            checkLuminosity[slot] += luminosity;
+        }
+    };
 
     for(size_t outerCell = 0; outerCell < nCells; ++outerCell)
     {
@@ -1483,6 +1855,19 @@ void ConfigureFluxSourceForCurrentDecomposition(
                 localLuminosity += luminosity;
                 ++localEmittingFaces;
             }
+            size_t const ray = outerCell < nearestDirection.size()
+                ? nearestDirection[outerCell] : std::numeric_limits<size_t>::max();
+            if(checkPhotosphere && ray < runtime.fluxSourceDirections.size())
+            {
+                double const faceRadius = fastabs(source.location - cfg.center);
+                double const deepest = runtime.fluxSourceSurfacePhotosphere[ray];
+                checkFace(0, faceRadius, deepest, deepest > 0.0, luminosity);
+                checkFace(1, faceRadius, runtime.fluxSourceGreyPhotosphere[ray],
+                          runtime.fluxSourceGreyPhotosphereResolved[ray] != 0, luminosity);
+                for(size_t g = 0; g + 2 < checkChannels; ++g)
+                    checkFace(2 + g, faceRadius, runtime.fluxSourceGroupPhotosphere[g][ray],
+                              runtime.fluxSourceGroupPhotosphereResolved[g][ray] != 0, luminosity);
+            }
         }
     }
 
@@ -1563,6 +1948,64 @@ void ConfigureFluxSourceForCurrentDecomposition(
         runtime.fluxSourceEmittingFaceCount = globalEmittingFaces;
     }
 
+    if(checkPhotosphere)
+    {
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, checkFaces.data(), static_cast<int>(checkFaces.size()),
+                      MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, checkLuminosity.data(), static_cast<int>(checkLuminosity.size()),
+                      MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+#endif
+        auto& check = runtime.fluxSourcePhotosphereCheck;
+        check.computed = true;
+        check.faces = globalBoundaryFaces;
+        check.luminosity = rawGlobalLuminosity;
+        check.facesAboveDeepest = checkFaces[0];
+        check.luminosityAboveDeepest = checkLuminosity[0];
+        check.facesTransparentDeepest = checkFaces[checkChannels];
+        check.luminosityTransparentDeepest = checkLuminosity[checkChannels];
+        // Per channel without the deepest entry: grey, then the groups.
+        check.facesAbove.assign(checkFaces.begin() + 1, checkFaces.begin() + checkChannels);
+        check.luminosityAbove.assign(checkLuminosity.begin() + 1, checkLuminosity.begin() + checkChannels);
+        check.facesTransparent.assign(checkFaces.begin() + checkChannels + 1, checkFaces.end());
+        check.luminosityTransparent.assign(checkLuminosity.begin() + checkChannels + 1, checkLuminosity.end());
+        if(runtime.rank == 0)
+        {
+            auto share = [&](double luminosity) {
+                return rawGlobalLuminosity > 0.0 ? luminosity / rawGlobalLuminosity : 0.0;
+            };
+            std::ostringstream line;
+            line << "FLUX_SOURCE_PHOTOSPHERE_CHECK boundary_faces=" << globalBoundaryFaces
+                 << " face_luminosity=" << rawGlobalLuminosity << " erg/s"
+                 << " (faces above the channel's photosphere on their ray / faces on rays where"
+                 << " the channel is transparent; luminosity shares in brackets)"
+                 << " deepest: " << check.facesAboveDeepest << " (" << share(check.luminosityAboveDeepest)
+                 << ") / " << check.facesTransparentDeepest << " (" << share(check.luminosityTransparentDeepest) << ")";
+            for(size_t c = 0; c < check.facesAbove.size(); ++c)
+                line << " | " << (c == 0 ? std::string("grey") : "group" + std::to_string(c - 1)) << ": "
+                     << check.facesAbove[c] << " (" << share(check.luminosityAbove[c]) << ") / "
+                     << check.facesTransparent[c] << " (" << share(check.luminosityTransparent[c]) << ")";
+            std::cout << line.str() << std::endl;
+            if(!runtime.fluxSourceSurfaceFile.empty())
+            {
+                HDF5Writer writer(runtime.fluxSourceSurfaceFile, false);
+                writer.WriteElement("/photosphere_check/boundary_faces", check.faces);
+                writer.WriteElement("/photosphere_check/face_luminosity", check.luminosity);
+                writer.WriteElement("/photosphere_check/faces_above_deepest", check.facesAboveDeepest);
+                writer.WriteElement("/photosphere_check/luminosity_above_deepest", check.luminosityAboveDeepest);
+                writer.WriteElement("/photosphere_check/faces_transparent_deepest", check.facesTransparentDeepest);
+                writer.WriteElement("/photosphere_check/luminosity_transparent_deepest",
+                                    check.luminosityTransparentDeepest);
+                state_hdf5::WriteVector(writer, "/photosphere_check/faces_above", check.facesAbove);
+                state_hdf5::WriteVector(writer, "/photosphere_check/luminosity_above", check.luminosityAbove);
+                state_hdf5::WriteVector(writer, "/photosphere_check/faces_transparent", check.facesTransparent);
+                state_hdf5::WriteVector(writer, "/photosphere_check/luminosity_transparent",
+                                        check.luminosityTransparent);
+                writer.Close();
+            }
+        }
+    }
+
     if(luminosityScale != 1.0)
     {
         for(auto& source : sources)
@@ -1614,7 +2057,7 @@ void ConfigureFluxSourceForCurrentDecomposition(
         // use one surface for every group. Cells inside the deepest surface
         // therefore emit nothing and conserve energy exactly.
         size_t const groupCount = multigroupPass ? static_cast<size_t>(ENERGY_GROUPS_NUM) : 1;
-        std::vector<size_t> const nearest = BuildNearestDirectionIndex(cfg, runtime);
+        std::vector<size_t> const& nearest = nearestDirection;
         std::vector<std::vector<unsigned char>> outsideGroup(groupCount);
         bool const perGroupRadii = multigroupPass &&
             runtime.fluxSourceGroupRadius.size() == groupCount &&

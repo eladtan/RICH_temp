@@ -64,12 +64,15 @@ struct Config
     bool polarization = true;
     bool photosphere = true;
     bool fluxSourceCompare = false;
-    double fluxSourceThermalizationTau = 5.0;
+    double fluxSourceThermalizationTau = 10.0;
     size_t fluxSourceRays = 0; // 0 means use nObservers (backward compatible)
     double fluxSourceDDMCFaceOpticalDepth = 5.0;
     FluxSourceSurfaceMode fluxSourceSurfaceMode = FluxSourceSurfaceMode::Grey;
     bool fluxSourceRemoveEnclosedOutside = true;
     double fluxSourceSmoothingFloor = 0.5;
+    bool fluxSourceSmoothingPhotosphereCap = true;
+    size_t fluxSourceMappingNeighbours = 6;
+    double fluxSourceMappingMaxDepthFactor = 3.0;
     FluxSourceSpectrumTemperature fluxSourceSpectrumTemperature = FluxSourceSpectrumTemperature::Radiation;
     FluxSourceFaceFlux fluxSourceFaceFlux = FluxSourceFaceFlux::Hydro;
     bool volumeEmissionEnabled = false;
@@ -108,6 +111,8 @@ struct Config
     size_t adaptiveSourceLearnedPhotonsPerCellBudget = 100;
     double adaptiveSourceScorePower = 0.5;
     double adaptiveSourceWeightScoreFrac = 0.85;
+    double adaptiveSourceRampStartPhotons = 1.0;
+    double adaptiveSourceRampFactor = 2.0;
     bool adaptiveObserverEquity = true;
     double adaptiveObserverExtraBudgetFrac = 2;
     double adaptiveObserverTargetNeff = 1000000;

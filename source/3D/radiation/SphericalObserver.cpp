@@ -1030,7 +1030,7 @@ SphericalObserver::PhotosphereData const& SphericalObserver::getPhotosphereData(
 
 bool SphericalObserver::hasPhotosphereData() const
 {
-    return photosphereData_.hasAny();
+    return photosphereData_.hasAny() || photosphereData_.hasEmissionSurface();
 }
 
 void SphericalObserver::resetGenerationSourceCellEscapeStats()
@@ -2471,6 +2471,12 @@ void SphericalObserver::writeHDF5(std::string const& filename,
         writer.WriteElement("/photosphere/tau_total_threshold", photosphereData_.tauThreshold);
         writer.WriteElement("/photosphere/thermalization_tau_threshold",
                             photosphereData_.thermalizationTauThreshold);
+        writer.WriteElement("/photosphere/definition", std::string(
+            "Inward from each observer: radius_tau_total where k_abs + k_scat integrates to "
+            "tau_total_threshold (the photosphere); radius_thermalization where "
+            "sqrt(3 k_abs (k_abs + k_scat)) integrates to thermalization_tau_threshold. "
+            "radius_thermalization is a diagnostic, not the surface photons are emitted from "
+            "(that is /photosphere/emission_surface)."));
         if (photosphereData_.hasMG()) {
             if (!photosphereData_.mgGroupRadiusTauTotal.empty()) {
                 writer.WriteElement("/photosphere/mg/group_radius_tau_total",
@@ -2501,6 +2507,21 @@ void SphericalObserver::writeHDF5(std::string const& filename,
             writer.WriteElement("/photosphere/grey/valid_thermalization",
                                 photosphereData_.greyValidThermalization);
         }
+    }
+    if (photosphereData_.hasEmissionSurface()) {
+        writer.WriteElement("/photosphere/emission_surface/tau", photosphereData_.emissionSurfaceTau);
+        writer.WriteElement("/photosphere/emission_surface/definition", std::string(
+            "The flux-source surface photons are emitted from, along each observer direction "
+            "(nearest construction ray): radius is the final surface the cells are tested "
+            "against; grey_radius and group_radius [observer][group] are where "
+            "sqrt(3 k_abs (k_abs + k_scat)) integrates to tau. -1: never reached."));
+        writer.WriteElement("/photosphere/emission_surface/radius",
+                            photosphereData_.emissionSurfaceRadius);
+        writer.WriteElement("/photosphere/emission_surface/grey_radius",
+                            photosphereData_.emissionSurfaceGreyRadius);
+        if (!photosphereData_.emissionSurfaceGroupRadius.empty())
+            writer.WriteElement("/photosphere/emission_surface/group_radius",
+                                photosphereData_.emissionSurfaceGroupRadius);
     }
 
     if (numGroups_ > 1) {
@@ -2974,6 +2995,20 @@ void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) c
                        photosphereData_.greyValidTauTotal, N);
         writeVtkScalar(file, "photosphere_grey_valid_thermalization",
                        photosphereData_.greyValidThermalization, N);
+    }
+
+    // photosphere_ names are shared between the passes when their VTK files
+    // are merged (PostProcessResultWriter), so these appear once.
+    if (photosphereData_.hasEmissionSurface()) {
+        writeVtkScalar(file, "photosphere_emission_surface_radius",
+                       photosphereData_.emissionSurfaceRadius, N);
+        writeVtkScalar(file, "photosphere_emission_surface_grey_radius",
+                       photosphereData_.emissionSurfaceGreyRadius, N);
+        size_t const groupCount = photosphereData_.emissionSurfaceGroupRadius.empty()
+            ? 0 : photosphereData_.emissionSurfaceGroupRadius.front().size();
+        for (size_t g = 0; g < groupCount; ++g)
+            writeVtkScalar(file, "photosphere_emission_surface_g" + std::to_string(g) + "_radius",
+                           groupColumn(photosphereData_.emissionSurfaceGroupRadius, g), N);
     }
 
 #ifdef MONTECARLO_POLARIZATION

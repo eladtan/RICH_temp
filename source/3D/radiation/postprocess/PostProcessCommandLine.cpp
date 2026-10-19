@@ -353,6 +353,9 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddDouble(options, "flux-source.thermalization-tau", "Flux-source thermalization optical depth.", c.fluxSource.thermalizationTau);
     AddSize(options, "flux-source.construction-rays", "Rays used to construct the source surface.", c.fluxSource.constructionRays);
     AddDouble(options, "flux-source.smoothing-floor", "Raise a direction's surface to at least this fraction of its 8 nearest directions' median radius (0 disables; warns when it changes the surface).", c.fluxSource.smoothingFloor);
+    AddBool(options, "flux-source.smoothing-photosphere-cap", "Never let smoothing raise a direction above its own photosphere (the deepest total-depth-2/3 radius along the same ray).", c.fluxSource.smoothingPhotosphereCap);
+    AddSize(options, "flux-source.mapping-neighbours", "A cell is inside only if below the surface of its nearest construction ray and of this many nearest neighbouring rays (0 = nearest ray only).", c.fluxSource.mappingNeighbours);
+    AddDouble(options, "flux-source.mapping-max-depth-factor", "The neighbour mapping never lowers a ray below its own tau_eff = this x thermalization-tau (0 = no floor).", c.fluxSource.mappingMaxDepthFactor);
     AddBool(options, "flux-source.remove-enclosed-outside", "Make outside regions enclosed by the source surface (packet traps) inside.", c.fluxSource.removeEnclosedOutside);
     AddDouble(options, "flux-source.ddmc-face-optical-depth", "DDMC face optical-depth threshold.", c.fluxSource.ddmcFaceOpticalDepth);
     AddFluxSourceSurfaceMode(options, c.fluxSource.surfaceMode);
@@ -391,6 +394,8 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddSize(options, "adaptive.source.learned-photons-per-cell-budget", "Average packets per learned cell per final generation.", c.adaptive.source.learnedPhotonsPerCellBudget);
     AddDouble(options, "adaptive.source.score-power", "Learned source score exponent.", c.adaptive.source.scorePower);
     AddDouble(options, "adaptive.source.weight-score-fraction", "Escaped-weight contribution to source score.", c.adaptive.source.weightScoreFraction);
+    AddDouble(options, "adaptive.source.ramp-start-photons", "Packets per learned cell in the first final-budget ramp generation (0 disables the ramp).", c.adaptive.source.rampStartPhotons);
+    AddDouble(options, "adaptive.source.ramp-factor", "Packet-budget multiplier from one ramp generation to the next (> 1).", c.adaptive.source.rampFactor);
 
     AddBool(options, "adaptive.observer.equity", "Allocate for observer-direction deficits.", c.adaptive.observer.equity);
     AddDouble(options, "adaptive.observer.extra-budget-fraction", "Extra packet budget for observer equity.", c.adaptive.observer.extraBudgetFraction);

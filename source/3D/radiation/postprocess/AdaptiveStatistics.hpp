@@ -278,6 +278,15 @@ void ApplyNeymanAllocationToControl(
     IMCPostProcessControl& control,
     SourceAllocationPlan const& plan,
     Config const& cfg);
+// Final-budget ramp (adaptive.source.ramp-*): the per-cell packet budget of
+// every ramp stage, rampStartPhotons * rampFactor^k for each stage below
+// `fullBudget`, the largest per-cell budget of the pass. Empty when the ramp
+// is off or already starts at the full budget.
+std::vector<double> FinalRampStageBudgets(Config const& cfg, double fullBudget);
+// The allocation settings of a ramp stage with per-cell budget stageBudget:
+// each cell type's budget and floor at most the stage budget, and at least 1
+// packet per learned cell (no learned cell stops emitting).
+Config RampStageAllocationConfig(Config const& allocationCfg, double stageBudget);
 void PrintSourceAllocationPlan(
     std::string const& label,
     SourceAllocationPlan const& plan,
@@ -392,7 +401,7 @@ void RecomputeOpacityScaleFactors(
 // generation on one rank. Mirrors the STORM probe allocation, with L the
 // cell's volume plus face-source luminosity: learned cells get probePhotons
 // (at least ceil(L/cap) with capLearned), other emitting cells ceil(L/cap)
-// (at most 1e7), other cells keep their burn-in count. It only has to be
+// (at most WeightBoundedPacketLimit), other cells keep their burn-in count. It only has to be
 // close: the load balance after the probe measures the real counts. Prints
 // "<label> cap_luminosity=... predicted_packets=..." on rank 0 (collective).
 struct PredictedProbePackets
@@ -400,6 +409,10 @@ struct PredictedProbePackets
     std::vector<size_t> perCell;   // local cells
     unsigned long long total = 0;  // global
 };
+// Most packets the weight bounds may split one emitting cell into, as STORM's
+// source process sets it (IMCSourceProcess.hpp): max(1e7 / N, 1e4) with N the
+// global number of emitting cells.
+double WeightBoundedPacketLimit(unsigned long long emittingCells);
 PredictedProbePackets PredictProbeSourcePackets(
     std::vector<ComputationalCell3D> const& cells,
     size_t nCells,
@@ -408,6 +421,24 @@ PredictedProbePackets PredictProbeSourcePackets(
     std::vector<size_t> const& burninPhotons,
     size_t probePhotons,
     double explorationWeightFraction,
+    bool capLearned,
+    std::string const& label,
+    int rank,
+    int mpiSize);
+// Source packets each local cell will create in a generation that runs the
+// Neyman plan `plan`, for a load balance just before it (final-budget ramp).
+// Mirrors the STORM allocation: a learned cell gets the count
+// ApplyNeymanAllocationToControl makes it emit (at least ceil(L/cap) with
+// capLearned), another emitting cell ceil(L/cap) (at least 1, at most WeightBoundedPacketLimit),
+// with L the cell's volume plus face-source luminosity and capLuminosity the
+// weight bound per unit source time (0: no bound, one packet each). Prints
+// "<label> predicted_packets=..." on rank 0 (collective).
+PredictedProbePackets PredictPlannedSourcePackets(
+    std::vector<ComputationalCell3D> const& cells,
+    size_t nCells,
+    PostprocessRuntime const& runtime,
+    SourceAllocationPlan const& plan,
+    double capLuminosity,
     bool capLearned,
     std::string const& label,
     int rank,

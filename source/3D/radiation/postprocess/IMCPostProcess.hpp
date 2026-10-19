@@ -157,7 +157,7 @@ struct PostProcessConfig
     struct FluxSource
     {
         bool enabled = false;
-        double thermalizationTau = 5.0;
+        double thermalizationTau = 10.0;
         size_t constructionRays = 0;
         double ddmcFaceOpticalDepth = 5.0;
         FluxSourceSurfaceMode surfaceMode = FluxSourceSurfaceMode::Grey;
@@ -171,6 +171,22 @@ struct PostProcessConfig
         // raised direction no longer sits at thermalizationTau, and the run
         // warns when that happens.
         double smoothingFloor = 0.5;
+        // Never let smoothing raise a direction above its own photosphere:
+        // the deepest radius, along the same construction ray, where the
+        // total optical depth of a channel the surface is built from reaches
+        // 2/3. A direction without one is not raised.
+        bool smoothingPhotosphereCap = true;
+        // A cell is inside only if it lies below the surface of its nearest
+        // construction ray and of that ray's mappingNeighbours nearest
+        // resolved rays, so a cell between rays never takes a neighbour's
+        // larger radius. 0 uses the nearest ray alone.
+        size_t mappingNeighbours = 6;
+        // The mapping never lowers a ray below the radius where its own
+        // tau_eff reaches mappingMaxDepthFactor x thermalizationTau, so it
+        // cannot expose gas far below the thermalization depth (hot,
+        // opaque cells whose gross emission dwarfs the escaping light).
+        // 0 = no floor.
+        double mappingMaxDepthFactor = 3.0;
         FluxSourceSpectrumTemperature spectrumTemperature = FluxSourceSpectrumTemperature::Radiation;
         FluxSourceFaceFlux faceFlux = FluxSourceFaceFlux::Hydro;
     } fluxSource;
@@ -268,6 +284,17 @@ struct PostProcessConfig
             size_t learnedPhotonsPerCellBudget = 100;
             double scorePower = 0.5;
             double weightScoreFraction = 0.85;
+            // Final-budget ramp between the learned-only probe and the final
+            // generations, so the packet count (and memory) grows in steps on
+            // a balanced decomposition: ramp stage k gives the learned cells
+            // rampStartPhotons * rampFactor^k packets per cell (at most each
+            // cell type's own budget, at least 1), raises the weight bounds of
+            // the extra packets by the same ratio, and is followed by a load
+            // balance on the packets the next stage's plan will create. The
+            // ramp ends when the full budgets are reached. Ramp generations
+            // only learn; they are not part of the result. 0 disables it.
+            double rampStartPhotons = 1.0;
+            double rampFactor = 2.0;
         } source;
 
         struct Observer

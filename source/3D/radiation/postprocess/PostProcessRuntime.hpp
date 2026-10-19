@@ -292,6 +292,16 @@ public:
     std::vector<int> fluxSourceGreyResolved;
     std::vector<std::vector<double>> fluxSourceGroupRadius;
     std::vector<std::vector<int>> fluxSourceGroupResolved;
+    // Photosphere (total optical depth 2/3) along each construction ray: grey,
+    // and per group in mg-innermost mode (-1 / 0 where the ray never reached
+    // it); and per ray the deepest photosphere of the channels the surface is
+    // built from (-1 if none), the smoothing ceiling and the face check's
+    // reference.
+    std::vector<double> fluxSourceGreyPhotosphere;
+    std::vector<int> fluxSourceGreyPhotosphereResolved;
+    std::vector<std::vector<double>> fluxSourceGroupPhotosphere;
+    std::vector<std::vector<int>> fluxSourceGroupPhotosphereResolved;
+    std::vector<double> fluxSourceSurfacePhotosphere;
     double fluxSourceDirectlyResolvedFraction = 0.0;
     double fluxSourceInjectedLuminosity = 0.0;
     double fluxSourceNetLuminosity = 0.0;
@@ -305,6 +315,39 @@ public:
     // per-run diagnostic file holding both (written by rank 0 at setup).
     std::vector<double> fluxSourceRawRadius;
     std::vector<size_t> fluxSourceSmoothedDirections;
+    // Radii after smoothing and before the neighbour mapping (fluxSourceRadius
+    // holds the final ones), the directions the photosphere ceiling held below
+    // the smoothing value, the directions the mapping lowered, and the
+    // neighbour count it used.
+    std::vector<double> fluxSourceSmoothedRadius;
+    std::vector<size_t> fluxSourceCappedDirections;
+    std::vector<size_t> fluxSourceMappedDirections;
+    size_t fluxSourceMappingNeighbours = 0;
+    // The mapping's depth floor per ray (radius where tau_eff reaches
+    // fluxSourceMappingFloorTau; 0 = none on that ray) and the directions it
+    // held above their neighbours' radius.
+    double fluxSourceMappingFloorTau = 0.0;
+    std::vector<double> fluxSourceMappingFloor;
+    std::vector<size_t> fluxSourceFloorHeldDirections;
+    // First source setup: boundary faces lying above the photosphere of the
+    // construction ray their outer cell is mapped to, and faces on a ray where
+    // the channel never reaches total depth 2/3 (transparent), each with their
+    // positive face luminosity. Entry 0 is grey, then one per group in
+    // mg-innermost mode; "deepest" uses fluxSourceSurfacePhotosphere.
+    struct FluxSourcePhotosphereCheck
+    {
+        bool computed = false;
+        uint64_t faces = 0;
+        double luminosity = 0.0;
+        std::vector<uint64_t> facesAbove;
+        std::vector<double> luminosityAbove;
+        std::vector<uint64_t> facesTransparent;
+        std::vector<double> luminosityTransparent;
+        uint64_t facesAboveDeepest = 0;
+        double luminosityAboveDeepest = 0.0;
+        uint64_t facesTransparentDeepest = 0;
+        double luminosityTransparentDeepest = 0.0;
+    } fluxSourcePhotosphereCheck;
     std::string fluxSourceSurfaceFile;
     bool fluxSourceEnclosedComputed = false;
     std::unordered_set<size_t> fluxSourceEnclosedCellIDs;

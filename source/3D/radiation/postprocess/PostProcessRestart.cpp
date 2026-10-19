@@ -642,6 +642,8 @@ std::vector<std::string> const& MustMatchOptions()
         "flux-source.surface-mode",
         "flux-source.remove-enclosed-outside",
         "flux-source.smoothing-floor",
+        "flux-source.smoothing-photosphere-cap",
+        "flux-source.mapping-neighbours",
         "flux-source.spectrum-temperature",
         "flux-source.face-flux",
         "volume-emission.enabled",
@@ -660,6 +662,18 @@ std::vector<std::string> const& MustMatchOptions()
         "adaptive.group.frequency-sampling",
     };
     return names;
+}
+
+// Must-match options added after earlier results were written, with the
+// value that reproduces those results. A file without the option can be
+// continued only by a run that uses that value.
+std::unordered_map<std::string, std::string> const& LegacyOptionValues()
+{
+    static std::unordered_map<std::string, std::string> const values = {
+        {"flux-source.smoothing-photosphere-cap", "false"},
+        {"flux-source.mapping-neighbours", "0"},
+    };
+    return values;
 }
 
 std::string ConfigDatasetPath(std::string name)
@@ -727,7 +741,13 @@ void CheckRestartCompatibility(
                 throw UniversalError("Restart compatibility list names unknown option " + name);
             std::string const dataset = ConfigDatasetPath(name);
             if (!reader.Exists(dataset)) {
+                auto const legacy = LegacyOptionValues().find(name);
+                if (legacy != LegacyOptionValues().end() && legacy->second == it->second)
+                    continue;
                 differences << "\n  " << name << ": missing from the restart file";
+                if (legacy != LegacyOptionValues().end())
+                    differences << " (written before the option existed; only '"
+                                << legacy->second << "' reproduces it)";
                 ++count;
                 continue;
             }
