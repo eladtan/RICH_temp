@@ -38,6 +38,7 @@
 #include "utils/debug/SmartTimer.hpp"
 #include "utils/debug/vtune.h"
 #include "runs/mc_results_dir.hpp"
+#include "utils/MPIInitializer.hpp"
 
 namespace fs = std::filesystem;
 
@@ -427,6 +428,8 @@ int main(int argc, char *argv[]) {
     rank_t rank = -1, ws = 0;
     try {
         MPI_Init(&argc, &argv);
+        // Created before any Kokkos initializer, so MPI is finalized after Kokkos at exit
+        MPIInitializer::Instance();
         MPI_Comm_rank(MPI_COMM_WORLD, &rank);
         MPI_Comm_size(MPI_COMM_WORLD, &ws);
 
@@ -827,6 +830,4 @@ int main(int argc, char *argv[]) {
             << " ===" << std::endl;
         MPI_Abort(MPI_COMM_WORLD, 1);
     }
-
-    MPI_Finalize();
 }

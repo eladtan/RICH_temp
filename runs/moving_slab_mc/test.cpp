@@ -37,6 +37,7 @@
 #include "source/newtonian/three_dimensional/SourceTerm3D.hpp"
 #include "source/3D/output/write3D.hpp"
 #include "runs/mc_results_dir.hpp"
+#include "source/utils/MPIInitializer.hpp"
 
 namespace
 {
@@ -296,6 +297,8 @@ int main(int argc, char *argv[])
     int worldSize = 1;
 #ifdef RICH_MPI
     MPI_Init(&argc, &argv);
+    // Created before any Kokkos initializer, so MPI is finalized after Kokkos at exit
+    MPIInitializer::Instance();
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &worldSize);
 #else
@@ -729,8 +732,5 @@ int main(int argc, char *argv[])
         return 1;
     }
 
-#ifdef RICH_MPI
-    MPI_Finalize();
-#endif
     return 0;
 }

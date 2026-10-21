@@ -43,6 +43,7 @@
 #include "newtonian/three_dimensional/CostCalculator3D.hpp"
 #include "utils/arguments/ArgumentParser.hpp"
 #include "runs/mc_results_dir.hpp"
+#include "utils/MPIInitializer.hpp"
 
 /*
  * Mach 2 Radiative Shock benchmark from:
@@ -269,6 +270,8 @@ int main(int argc, char *argv[])
     vtune_stop();
 
     MPI_Init(&argc, &argv);
+    // Created before any Kokkos initializer, so MPI is finalized after Kokkos at exit
+    MPIInitializer::Instance();
     MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_ARE_FATAL);
 
     int rank = 0, ws = 1;
@@ -302,7 +305,6 @@ int main(int argc, char *argv[])
         {
             if(rank == 0)
                 std::cout << arguments.help() << std::endl;
-            MPI_Finalize();
             return 0;
         }
     }
@@ -719,6 +721,5 @@ int main(int argc, char *argv[])
       MPI_Abort(MPI_COMM_WORLD, 1);
   }
 
-    MPI_Finalize();
     return 0;
 }
