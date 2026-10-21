@@ -20,16 +20,10 @@ function(find_executable_path exe_name out_var)
     endif()
 endfunction()
 
-if(STORM_WITH_GPU)
-    find_executable_path(hipcc CMAKE_CXX_COMPILER)
-    if(DEFINED GNU)
-        find_executable_path(${GNU_CC_NAME} CMAKE_C_COMPILER)
-        find_executable_path(${GNU_Fortran_NAME} CMAKE_Fortran_COMPILER)
-    elseif(DEFINED INTEL)
-        find_executable_path(${INTEL_CC_NAME} CMAKE_C_COMPILER)
-        find_executable_path(${INTEL_Fortran_NAME} CMAKE_Fortran_COMPILER)
-    endif()
-elseif(DEFINED GNU)
+# GPU builds use the same host compilers. Sources that depend on Kokkos are
+# redirected to the compiler Kokkos was built with (nvcc_wrapper, hipcc, ...)
+# by Kokkos' launch_compiler (see STORM's CMakeLists.txt).
+if(DEFINED GNU)
     find_executable_path(${GNU_CC_NAME} CMAKE_C_COMPILER)
     find_executable_path(${GNU_CXX_NAME} CMAKE_CXX_COMPILER)
     find_executable_path(${GNU_Fortran_NAME} CMAKE_Fortran_COMPILER)
@@ -47,14 +41,14 @@ if(DEFINED MPI)
     rich_select_mpi_toolchain(REQUIRED FORTRAN_REQUIRED)
     set(CMAKE_C_COMPILER "${MPI_C_COMPILER}" CACHE FILEPATH
         "C compiler from the selected MPI suite" FORCE)
-    if(STORM_WITH_GPU)
-        find_executable_path(hipcc CMAKE_CXX_COMPILER)
-        set(CMAKE_CXX_COMPILER "${CMAKE_CXX_COMPILER}" CACHE FILEPATH
-            "HIP compiler used by Kokkos" FORCE)
-    else()
+    if(NOT STORM_WITH_GPU)
         set(CMAKE_CXX_COMPILER "${MPI_CXX_COMPILER}" CACHE FILEPATH
             "C++ compiler from the selected MPI suite" FORCE)
     endif()
+    # GPU builds keep the plain C++ compiler: Kokkos-dependent sources are
+    # compiled by the Kokkos compiler on top of a plain host compiler, so MPI
+    # must come from MPI::MPI_CXX with explicit include directories and
+    # libraries, which FindMPI only records when the wrapper is not the compiler.
     set(CMAKE_Fortran_COMPILER "${MPI_Fortran_COMPILER}" CACHE FILEPATH
         "Fortran compiler from the selected MPI suite" FORCE)
 endif()

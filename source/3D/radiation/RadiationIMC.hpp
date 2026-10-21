@@ -107,6 +107,16 @@ public:
         return this->opacity_->ComptonIncludedInTransport();
     }
 
+    STORM::PortableAbsorptionLaw GetPortableAbsorptionLaw() const override
+    {
+        return this->opacity_->GetPortableAbsorptionLaw();
+    }
+
+    STORM::ThermalFrequencyLaw GetPortableThermalFrequencyLaw() const override
+    {
+        return this->opacity_->GetPortableThermalFrequencyLaw();
+    }
+
     void reseed(std::uint64_t seed) override
     {
         this->opacity_->rng_.seed(seed);
@@ -496,6 +506,13 @@ public:
     const std::vector<ComptonCellData> &getComptonData() const { return this->impl_.getComptonData(); }
     const GroupArray &getComptonGroupCenters() const { return this->impl_.getComptonGroupCenters(); }
     const GroupArray &getComptonGroupWidths() const { return this->impl_.getComptonGroupWidths(); }
+
+    // Without this, the base default (true) makes every step treat the census as
+    // modified on the host, which defeats keeping it resident in the transport executor.
+    bool requiresHostParticleAdjustment() const override
+    {
+        return this->impl_.requiresHostParticleAdjustment();
+    }
 #ifdef STORM_WITH_GPU
     bool UsesDeviceTransport() const
     {
@@ -505,6 +522,30 @@ public:
     STORM::gpu::GreyIMCViews<STORM::gpu::DeviceVec3> GetDeviceTransportViews() const
     {
         return this->impl_.GetDeviceTransportViews();
+    }
+
+    // STORM detects these by signature (gpu::HasDeviceCensusPostStep and
+    // gpu::HasDeviceSourceGeneration); without them its device emission, device comb
+    // and resident census paths are compiled out and every step round-trips the
+    // whole population through serial host code.
+    bool SupportsDeviceCensusPostStep() const
+    {
+        return this->impl_.SupportsDeviceCensusPostStep();
+    }
+
+    void postStepWithDeviceCensus(const std::vector<Particle> &hostParticles, double fullDt)
+    {
+        this->impl_.postStepWithDeviceCensus(hostParticles, fullDt);
+    }
+
+    bool SupportsDeviceSourceGeneration() const
+    {
+        return this->impl_.SupportsDeviceSourceGeneration();
+    }
+
+    std::vector<Particle> preStepOnDevice(STORM::gpu::DeviceSourceContext &context)
+    {
+        return this->impl_.preStepOnDevice(context);
     }
 #endif
 

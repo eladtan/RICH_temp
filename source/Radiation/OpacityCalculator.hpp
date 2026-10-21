@@ -9,6 +9,7 @@
 #include "3D/elementary/Vector3D.hpp"
 #include "newtonian/three_dimensional/computational_cell.hpp"
 #include "monte/particle/Particle.hpp"
+#include "monte/radiation/PortableOpacity.hpp"
 #include "misc/universal_error.hpp"
 #include "CMMC/src/units/units.hpp"
 #ifdef RICH_MPI
@@ -69,6 +70,14 @@ public:
     }
 
     virtual bool ComptonIncludedInTransport() const { return false; }
+
+    // Opt-in contracts that let STORM run multigroup transport through its portable
+    // (GPU / Kokkos) kernels; see STORM::RadiationOpacityModel. Opting in also promises
+    // isotropic, frequency-independent scattering. Unsupported keeps the host path.
+    virtual STORM::PortableAbsorptionLaw GetPortableAbsorptionLaw() const
+    { return STORM::PortableAbsorptionLaw::Unsupported; }
+    virtual STORM::ThermalFrequencyLaw GetPortableThermalFrequencyLaw() const
+    { return STORM::ThermalFrequencyLaw::Unsupported; }
 
     virtual double CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const
     { throw UniversalError("CalcDiffusionCoefficient(energy) not implemented"); }

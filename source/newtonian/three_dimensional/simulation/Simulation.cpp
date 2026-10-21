@@ -1,12 +1,19 @@
 #include "Simulation.hpp"
 #include "misc/universal_error.hpp"
 #include "misc/memory_debug.hpp"
+#ifdef RICH_WITH_KOKKOS
+#include "utils/KokkosInitializer.hpp"
+#endif
 Simulation::Simulation(Tessellation3D &tess_, const std::vector<ComputationalCell3D> &cells_, EquationOfState &eos_, bool new_start) :
      tess(tess_), cells(cells_), extensives(cells_.size()), eos(eos_), Max_ID(0), wallclockTime(0)
 #ifdef RICH_MPI
      , currentBox(tess_.GetBoxCoordinates())
 #endif // RICH_MPI
 {
+#ifdef RICH_WITH_KOKKOS
+    // RICH starts (and so owns) Kokkos before any library that uses it.
+    KokkosInitializer::Instance();
+#endif
     #ifdef RICH_MPI
         this->currentLoad = nullptr;
         MPI_Comm_rank(MPI_COMM_WORLD, &this->rank);

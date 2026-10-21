@@ -175,6 +175,13 @@ fi
 
 # ==================== Reset Build if Test Name Changed ====================
 
+# Empty a build directory, keeping nested --build-subdir builds (they have
+# their own .build_cmd) so e.g. build/<config>/gpu survives a rebuild of
+# build/<config>.
+clean_build_dir() {
+    find "$1" -mindepth 1 -maxdepth 1 ! -exec test -f '{}/.build_cmd' \; -exec rm -rf '{}' +
+}
+
 # Reset build directory if build-affecting arguments changed
 if [[ -f "$CMD_FILE" ]]; then
     OLD_CMD=$(<"$CMD_FILE")
@@ -182,7 +189,7 @@ if [[ -f "$CMD_FILE" ]]; then
     OLD_CMD="$(echo "$OLD_CMD" | tr -s '[:space:]' ' ' | sed 's/ *$//')"
     if [[ "$OLD_CMD" != "$NORMALIZED_CMD" ]]; then
         echo -e "${PURPLE}Build command changed. Cleaning $BUILD_DIR...${NC}"
-        rm -rf "$BUILD_DIR"
+        clean_build_dir "$BUILD_DIR"
     fi
 fi
 
@@ -200,7 +207,7 @@ if [[ $MIXED_DEBUG_FILES && -f "$DEBUG_FILES_FILE" ]]; then
     if ! cmp -s "$MIXED_DEBUG_FILES" "$DEBUG_FILES_FILE";
     then
         echo -e "${PURPLE}Debug files list changed. Cleaning $BUILD_DIR...${NC}"
-        rm -rf "$BUILD_DIR"
+        clean_build_dir "$BUILD_DIR"
         mkdir -p "$BUILD_DIR" || { echo -e "${RED}Failed to create $BUILD_DIR${NC}"; exit 1; }
         cd "$BUILD_DIR" || { echo -e "${RED}Failed to cd into $BUILD_DIR${NC}"; exit 1; }
     fi

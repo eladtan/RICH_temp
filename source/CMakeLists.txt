@@ -263,6 +263,7 @@ else()
     set(STORM_WITH_MPI OFF)
 endif()
 set(MADVORO_BUILD_EXAMPLES OFF)
+set(MADVORO_WITH_GPU ${STORM_WITH_GPU})
 set(MADCART_BUILD_EXAMPLES OFF)
 option(STORM_BUILD_EXAMPLES "Build STORM standalone example programs" OFF)
 set(STORM_WITH_COMPTON ON)
@@ -327,7 +328,14 @@ target_link_libraries(
 )
 target_link_options(${EXE_NAME} PRIVATE -rdynamic)
 
+# RICH's own Kokkos initializer (utils/KokkosInitializer.hpp) is used only when the
+# build has Kokkos, which today comes through STORM's GPU transport.
 if(STORM_WITH_GPU)
+    target_compile_definitions(${EXE_NAME} PRIVATE RICH_WITH_KOKKOS)
+endif()
+
+# ROCTx is AMD-only; Kokkos_DEVICES comes from find_package(Kokkos) in STORM
+if(STORM_WITH_GPU AND "HIP" IN_LIST Kokkos_DEVICES)
     set(_rocm_root "$ENV{ROCM_PATH}")
     if(NOT _rocm_root)
         set(_rocm_root "/opt/rocm")
