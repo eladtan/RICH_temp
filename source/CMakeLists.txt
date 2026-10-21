@@ -275,6 +275,48 @@ set(STORM_MADVORO_DIR "${MADVORO_DIR}")
 set(STORM_MADCART_DIR "${MADCART_DIR}")
 set(STORM_MESH_DECOMPOSER_DIR "${MESH_DECOMP_DIR}")
 
+# Find Kokkos here, before MadVoro and STORM, so that both share this
+# Kokkos::kokkos target and the HIP adjustments below reach them. If Kokkos is
+# missing, STORM reports it with a hint about Kokkos_ROOT.
+if(STORM_WITH_GPU)
+    find_package(Kokkos CONFIG QUIET COMPONENTS launch_compiler)
+endif()
+if(STORM_WITH_GPU AND Kokkos_FOUND)
+    # launch_compiler hands every compile and link that depends on Kokkos to
+    # hipcc. hipcc (clang) otherwise picks the newest GCC it finds for its
+    # libstdc++ headers and libraries, which need not be the host g++'s; with
+    # -static-libstdc++ a mismatch fails at link time or mixes two libstdc++.
+    # nvcc already uses the host g++, so CUDA needs nothing here.
+    if("HIP" IN_LIST Kokkos_DEVICES AND CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+        execute_process(
+            COMMAND ${CMAKE_CXX_COMPILER} -print-libgcc-file-name
+            OUTPUT_VARIABLE _rich_libgcc OUTPUT_STRIP_TRAILING_WHITESPACE)
+        get_filename_component(_rich_gcc_install_dir "${_rich_libgcc}" DIRECTORY)
+        message(STATUS "hipcc uses the host GCC installation: ${_rich_gcc_install_dir}")
+        set_property(TARGET Kokkos::kokkos APPEND PROPERTY
+            INTERFACE_COMPILE_OPTIONS "--gcc-install-dir=${_rich_gcc_install_dir}")
+        set_property(TARGET Kokkos::kokkos APPEND PROPERTY
+            INTERFACE_LINK_OPTIONS "--gcc-install-dir=${_rich_gcc_install_dir}")
+    endif()
+    # hipcc's -fopenmp links LLVM's libomp, which also serves the GOMP_* calls
+    # of g++-compiled objects. A second runtime (the static libgomp from
+    # compiler_flags.cmake) would give Kokkos' threads the wrong omp_get_thread_num().
+    # Run with the libomp of that hipcc: without a runpath, the loader may pick
+    # another one first (on Frontier ld.so.conf lists CCE's).
+    if("HIP" IN_LIST Kokkos_DEVICES)
+        string(REPLACE "-Wl,-Bstatic -lgomp -Wl,-Bdynamic" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+        get_filename_component(_rich_hip_bin "${Kokkos_CXX_COMPILER}" DIRECTORY)
+        find_path(RICH_HIP_LIBOMP_DIR libomp.so
+            HINTS "${_rich_hip_bin}/../lib/llvm/lib" "${_rich_hip_bin}/../llvm/lib"
+            NO_DEFAULT_PATH)
+        if(RICH_HIP_LIBOMP_DIR)
+            message(STATUS "HIP OpenMP runtime: ${RICH_HIP_LIBOMP_DIR}/libomp.so")
+            set_property(TARGET Kokkos::kokkos APPEND PROPERTY
+                INTERFACE_LINK_OPTIONS "-Wl,-rpath,${RICH_HIP_LIBOMP_DIR}")
+        endif()
+    endif()
+endif()
+
 add_subdirectory("${MPI_UTILS_DIR}" "${CMAKE_BINARY_DIR}/dependencies/mpi_utils"
                  EXCLUDE_FROM_ALL)
 add_subdirectory("${MADVORO_DIR}" "${CMAKE_BINARY_DIR}/dependencies/madvoro"
