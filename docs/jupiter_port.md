@@ -96,23 +96,15 @@ All on one booster node (288 cores).
 
 ## Open problems / next steps
 
-1. **Push.**
-   - The commits are local only. Push them with:
-     ```bash
-     git -C source/monte push origin gpu_v1
-     ```
-     ```bash
-     git push origin gpu_v1
-     ```
-   - Push STORM first: RICH's submodule pointer refers to the new STORM commits.
-2. **Uncommitted work from the parallel MadVoro session (not mine, left as is):**
-   - These submodules are on branch `gpu_v1` with commits not on any remote:
-     - `source/3D/tessellation/voronoi` (thread subdomains);
+1. **Pushed:** RICH, STORM, MadVoro, MeshDecomposer3D and spatial_ds are all on GitHub/GitLab.
+2. **MadVoro work from the parallel session:**
+   - RICH's submodule pointers for these still point at their old commits. On a new machine, check out branch `gpu_v1` in each of:
+     - `source/3D/tessellation/voronoi` (portable Voronoi kernels, thread subdomains);
      - `source/3D/tessellation/MeshDecomposer3D`;
      - `source/utils/spatial_ds`.
-   - `voronoi` and `MeshDecomposer3D` also have uncommitted edits.
+   - Uncommitted edits in `voronoi` and `MeshDecomposer3D` were saved as a snapshot on branch `gpu_v1-wip` (one commit on top of `gpu_v1`; may not build).
    - Its job scripts are in `$SCRATCH/madvoro_work/sub/` (`timeD.sh`, `checkD.sh`, `profD.sh`, `recheck.sh`).
-   - Jobs 2428974/6/7/8 are queued behind the maintenance; cancel them if they are no longer wanted.
+   - Jobs 2428974/6/7/8 are queued on JUPITER behind the maintenance; cancel them if they are no longer wanted.
    - `runs/mc_results_dir.hpp` has a JUPITER-only path change, not committed.
 3. **288×1 startup (~243 s):**
    - Probably `MPI_Init` with UCX loading CUDA transports.
