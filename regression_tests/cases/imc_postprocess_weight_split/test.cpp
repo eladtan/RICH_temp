@@ -236,6 +236,9 @@ PostProcessIMC::PostProcessScenario MakeScenario(bool plant)
     c.volumeEmission.learnedPhotonsPerCellBudget = 20;
     c.volumeEmission.learnedMinPhotons = 1;
     c.volumeEmission.learnedMaxPhotons = 200;
+    // Grey pass as the MG pass (the library defaults differ).
+    c.volumeEmission.explorationWeightFractionGrey = c.volumeEmission.explorationWeightFraction;
+    c.volumeEmission.learnedPhotonsPerCellBudgetGrey = c.volumeEmission.learnedPhotonsPerCellBudget;
     // Exercises the alpha rebuild after the limit (the synthetic scenario's
     // scale hook is a no-op, so transport is unchanged).
     c.opacityScaling.mode = OpacityScaleMode::Planck;

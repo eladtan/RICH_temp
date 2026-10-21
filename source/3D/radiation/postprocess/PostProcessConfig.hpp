@@ -82,18 +82,18 @@ struct Config
     double fluxSourceMappingMaxDepthFactor = 3.0;
     FluxSourceSpectrumTemperature fluxSourceSpectrumTemperature = FluxSourceSpectrumTemperature::Radiation;
     FluxSourceFaceFlux fluxSourceFaceFlux = FluxSourceFaceFlux::Auto;  // resolved from the snapshot
-    bool volumeEmissionEnabled = false;
+    bool volumeEmissionEnabled = false;  // set from the public config (only with the flux source)
     double volumeEmissionCutoffFraction = 1e-10;
     size_t volumeEmissionBurninPacketsTarget = 2000000;
-    bool volumeEmissionGateGroups = true;
+    bool volumeEmissionGateGroups = false;
     bool volumeEmissionBurninExact = true;
-    double volumeEmissionExplorationWeightFraction = 0.0;
-    double volumeEmissionExplorationWeightFractionGrey = 0.0;  // resolved: never negative
+    double volumeEmissionExplorationWeightFraction = 0.005;
+    double volumeEmissionExplorationWeightFractionGrey = 0.005;  // resolved: never negative
     bool volumeEmissionCapLearnedWeight = true;
-    size_t volumeEmissionLearnedPhotonsPerCellBudget = 10;
-    size_t volumeEmissionLearnedPhotonsPerCellBudgetGrey = 0;  // 0 = same as MG
+    size_t volumeEmissionLearnedPhotonsPerCellBudget = 1600;
+    size_t volumeEmissionLearnedPhotonsPerCellBudgetGrey = 500;  // 0 = same as MG
     size_t volumeEmissionLearnedMinPhotons = 1;
-    size_t volumeEmissionLearnedMaxPhotons = 5000;
+    size_t volumeEmissionLearnedMaxPhotons = 50000;
     bool volumeEmissionCoolingLimit = true;
     double volumeEmissionCoolingLimitCfl = 0.25;
     double volumeEmissionCoolingLimitDt = 0.0;  // 0 = Courant step

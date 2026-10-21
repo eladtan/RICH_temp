@@ -224,6 +224,9 @@ PostProcessIMC::PostProcessScenario MakeScenario()
     c.volumeEmission.learnedPhotonsPerCellBudget = 20;
     c.volumeEmission.learnedMinPhotons = 1;
     c.volumeEmission.learnedMaxPhotons = 200;
+    // Grey pass as the MG pass (the library defaults differ).
+    c.volumeEmission.explorationWeightFractionGrey = c.volumeEmission.explorationWeightFraction;
+    c.volumeEmission.learnedPhotonsPerCellBudgetGrey = c.volumeEmission.learnedPhotonsPerCellBudget;
     c.opacityScaling.mode = OpacityScaleMode::None;
     c.adaptive.source.enabled = true;
     c.adaptive.source.learnedPhotonsPerCellBudget = 20;

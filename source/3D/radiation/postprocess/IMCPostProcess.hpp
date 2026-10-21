@@ -230,7 +230,7 @@ struct PostProcessConfig
     // instantaneous emissivity of the frozen state, on top of the face sources.
     struct VolumeEmission
     {
-        bool enabled = false;
+        bool enabled = true;
         // A cell emits packets only if its gross luminosity is at least this
         // fraction of the escaping luminosity (last generation's observer
         // crossings; the face-source flux before the first generation).
@@ -242,7 +242,7 @@ struct PostProcessConfig
         // surface lies inside it (radial escape gate). false: every cell
         // outside the deep surface emits its full spectrum and the learned
         // allocation decides which cells matter from the crossings it sees.
-        bool gateGroups = true;
+        bool gateGroups = false;
         // true: burn-in gives every emitting cell exactly newPhotonsPerCell
         // packets instead of an energy-proportional count, so thin cells are
         // explored even when thick cells hold nearly all the emitted energy.
@@ -250,11 +250,11 @@ struct PostProcessConfig
         // Exploration packets of a cell left at zero by the allocation are
         // split so that none carries more than this fraction of the previous
         // generation's escaping energy. 0 = one packet per cell.
-        double explorationWeightFraction = 0.0;
+        double explorationWeightFraction = 0.005;
         // Grey pass fraction; negative means the same as
         // explorationWeightFraction. The grey escaping luminosity is ~5x lower
         // than the MG one, so the same fraction gives a ~5x smaller cap.
-        double explorationWeightFractionGrey = -1.0;
+        double explorationWeightFractionGrey = 0.005;
         // true: in the probe and final generations the same weight bound also
         // applies to cells the allocation gave packets: each gets at least
         // ceil(E / bound) packets, above learnedMaxPhotons if needed. Without
@@ -264,11 +264,11 @@ struct PostProcessConfig
         bool capLearnedWeight = true;
         // Neyman budget and bounds for learned volume cells (face cells keep
         // adaptive.source.learned*).
-        size_t learnedPhotonsPerCellBudget = 10;
+        size_t learnedPhotonsPerCellBudget = 1600;
         // Grey pass budget; 0 means the same as learnedPhotonsPerCellBudget.
-        size_t learnedPhotonsPerCellBudgetGrey = 0;
+        size_t learnedPhotonsPerCellBudgetGrey = 500;
         size_t learnedMinPhotons = 1;
-        size_t learnedMaxPhotons = 5000;
+        size_t learnedMaxPhotons = 50000;
         // Limit each outside cell's net emission to what the hydro's Fleck
         // step removes per hydro time, (aT^4 - E) V / (beta t_hydro). A cell
         // whose cooling time is far shorter than the hydro step stays too hot

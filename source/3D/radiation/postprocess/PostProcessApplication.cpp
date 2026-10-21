@@ -199,7 +199,9 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.fluxSourceMappingMaxDepthFactor = publicConfig.fluxSource.mappingMaxDepthFactor;
     cfg.fluxSourceSpectrumTemperature = publicConfig.fluxSource.spectrumTemperature;
     cfg.fluxSourceFaceFlux = publicConfig.fluxSource.faceFlux;
-    cfg.volumeEmissionEnabled = publicConfig.volumeEmission.enabled;
+    // Volume emission is the flux-source mode's outside emission: without
+    // the flux source it has no surface to be outside of.
+    cfg.volumeEmissionEnabled = publicConfig.volumeEmission.enabled && publicConfig.fluxSource.enabled;
     cfg.volumeEmissionCutoffFraction = publicConfig.volumeEmission.cutoffFraction;
     cfg.volumeEmissionBurninPacketsTarget = publicConfig.volumeEmission.burninPacketsTarget;
     cfg.volumeEmissionGateGroups = publicConfig.volumeEmission.gateGroups;
