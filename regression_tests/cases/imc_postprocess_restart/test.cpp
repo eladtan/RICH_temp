@@ -224,9 +224,11 @@ PostProcessIMC::PostProcessScenario MakeScenario()
     c.volumeEmission.learnedPhotonsPerCellBudget = 20;
     c.volumeEmission.learnedMinPhotons = 1;
     c.volumeEmission.learnedMaxPhotons = 200;
-    // Grey pass as the MG pass (the library defaults differ).
-    c.volumeEmission.explorationWeightFractionGrey = c.volumeEmission.explorationWeightFraction;
-    c.volumeEmission.learnedPhotonsPerCellBudgetGrey = c.volumeEmission.learnedPhotonsPerCellBudget;
+    // Grey pass follows the MG values (the library defaults set its own).
+    c.volumeEmission.explorationWeightFractionGrey = -1.0;
+    c.volumeEmission.learnedPhotonsPerCellBudgetGrey = 0;
+    // Cooling limit in temperature mode, as the checks were written for.
+    c.volumeEmission.coolingLimitMode = CoolingLimitMode::Temperature;
     c.opacityScaling.mode = OpacityScaleMode::None;
     c.adaptive.source.enabled = true;
     c.adaptive.source.learnedPhotonsPerCellBudget = 20;

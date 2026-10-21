@@ -319,7 +319,7 @@ void AddCoolingLimitMode(std::vector<Option>& options,
     options.push_back(Option{
         "volume-emission.cooling-limit-mode", "temperature|emission",
         "How a hot cell is held to the cooling cap: cooled to the temperature that gives it, "
-        "or kept at its snapshot temperature with its emission scaled (hard spectrum kept).",
+        "or kept at its snapshot temperature with its emission scaled (default; hard spectrum kept).",
         [&target](std::string const& text, std::string& error) {
             if (text == "temperature")
                 target = Mode::Temperature;

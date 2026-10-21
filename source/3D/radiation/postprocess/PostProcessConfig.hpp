@@ -97,7 +97,7 @@ struct Config
     bool volumeEmissionCoolingLimit = true;
     double volumeEmissionCoolingLimitCfl = 0.25;
     double volumeEmissionCoolingLimitDt = 0.0;  // 0 = Courant step
-    CoolingLimitMode volumeEmissionCoolingLimitMode = CoolingLimitMode::Temperature;
+    CoolingLimitMode volumeEmissionCoolingLimitMode = CoolingLimitMode::Emission;
     int polarizationManualScatterings = 128;
     double polarizationDepolarizationScatterings = 0.5;
     std::string polarizationClosure = "damped_last_scatterings";

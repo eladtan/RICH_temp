@@ -76,8 +76,8 @@ enum class MissingRadiation { Auto, ConserveEnergy, GasTemperature };
 // its net emission equals the cap (spectrum and opacity at that temperature).
 // Emission: the cell keeps its snapshot temperature (spectrum and opacity) and
 // its emission is scaled so that the net emission equals the cap, as the
-// hydro's Fleck step emits from the real temperature at a reduced rate. Cold
-// cells (net absorption capped) are heated in both modes.
+// hydro's Fleck step emits from the real temperature at a reduced rate
+// (default). Cold cells (net absorption capped) are heated in both modes.
 enum class CoolingLimitMode { Temperature, Emission };
 
 // Command-line spelling of option values, shared by the parser, the logs and
@@ -284,7 +284,7 @@ struct PostProcessConfig
         double coolingLimitCfl = 0.25;
         // Explicit hydro time step in seconds; 0 uses the Courant step.
         double coolingLimitDt = 0.0;
-        CoolingLimitMode coolingLimitMode = CoolingLimitMode::Temperature;
+        CoolingLimitMode coolingLimitMode = CoolingLimitMode::Emission;
     } volumeEmission;
 
     struct OpacityScaling
