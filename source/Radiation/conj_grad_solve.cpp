@@ -1,6 +1,8 @@
 #include "conj_grad_solve.hpp"
 #include <limits>
-#include <vectorclass.h>
+#ifdef USE_VCL_VECTORIZATION
+    #include <vectorclass.h>
+#endif // USE_VCL_VECTORIZATION
 #include "boost/math/special_functions/pow.hpp"
 #include "misc/memory_profile.hpp"
 
@@ -122,10 +124,14 @@ namespace CG
         size_t loop_number = length4 * 4;
         for(size_t i = 0; i < loop_number; i += 4)
         {
+#ifdef USE_VCL_VECTORIZATION
             Vec4d _u(sub_u[i], sub_u[i+1], sub_u[i+2], sub_u[i+3]);
             Vec4d _v(sub_v[i], sub_v[i+1], sub_v[i+2], sub_v[i+3]);
             Vec4d _uv = _u * _v;
             sub_prod += ((_uv[0] + _uv[1]) + (_uv[2] + _uv[3]));
+#else // USE_VCL_VECTORIZATION
+            sub_prod += ((sub_u[i] * sub_v[i] + sub_u[i+1] * sub_v[i+1]) + (sub_u[i+2] * sub_v[i+2] + sub_u[i+3] * sub_v[i+3]));
+#endif // USE_VCL_VECTORIZATION
         }
         for(size_t i = loop_number; i < length; i++)
             sub_prod += sub_u[i] * sub_v[i];

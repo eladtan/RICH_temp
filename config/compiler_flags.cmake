@@ -105,7 +105,10 @@ if(DEFINED GNU)
             "-fstrict-aliasing"
             "-Wno-deprecated-copy"
             "-Wno-double-promotion"
-            "-Wno-shadow")
+            "-Wno-shadow"
+            # GCC fuses a*b+c into FMA by default where the ISA has it (always on aarch64),
+            # which breaks the exact-arithmetic Delaunay predicates in MadVoro
+            "-ffp-contract=off")
 
     list(APPEND CMAKE_Fortran_FLAGS
             "-fall-intrinsics"
@@ -127,9 +130,13 @@ if(DEFINED GNU)
             "-Wextra"
             "-Wsurprising"
             "-Wpedantic"
-            "-Wno-uninitialized"
-            "-mcmodel=medium")
-       
+            "-Wno-uninitialized")
+
+    # -mcmodel=medium exists only on x86-64; gfortran on aarch64 rejects it
+    if(CMAKE_HOST_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64")
+        list(APPEND CMAKE_Fortran_FLAGS "-mcmodel=medium")
+    endif()
+
     list(APPEND CMAKE_Fortran_FLAGS_DEBUG
             "-O0"
             "-fcheck=all"

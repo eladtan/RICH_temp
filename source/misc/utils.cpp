@@ -2,7 +2,7 @@
 #if defined(_MSC_VER)
 /* Microsoft C/C++-compatible compiler */
 #include <intrin.h>
-#else
+#elif defined(__x86_64__) || defined(__i386__)
 #include <x86intrin.h>
 #endif
 #include <cfloat>
@@ -76,8 +76,13 @@ double fastsqrt(double x)
 {
   if (x<static_cast<double>(FLT_MIN) || x > static_cast<double>(FLT_MAX))
 		return std::sqrt(x);
+#if defined(_MSC_VER) || defined(__x86_64__) || defined(__i386__)
 	double res = static_cast<double>(_mm_cvtss_f32(_mm_rsqrt_ss(_mm_set_ss(static_cast<float>(x)))));
 	return x*res*(1.5 - 0.5*res*res*x);
+#else
+	// No SSE rsqrt estimate on this architecture (e.g. aarch64)
+	return std::sqrt(x);
+#endif
 }
 
 double Interpolate2DTable(double const x, double const y, std::vector<double> const& x_vec, std::vector<double> const& y_vec, std::vector<std::vector<double>> const& data,
