@@ -292,6 +292,15 @@ public:
     (void)periodicZ;
   }
 
+  /*! \brief Asks for each rank's mesh to be built from `count` thread subdomains,
+   *  built in parallel on the rank's host threads (0, the default, builds each rank as
+   *  one domain). Tessellations without them ignore it.
+   */
+  virtual void SetThreadSubdomains(size_t count)
+  {
+    (void)count;
+  }
+
   /*! \brief Returns periodicity flags for x, y, and z. */
   virtual std::array<bool, 3> GetPeriodic() const
   {

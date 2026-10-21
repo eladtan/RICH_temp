@@ -39,6 +39,7 @@
 #include "utils/debug/vtune.h"
 #include "runs/mc_results_dir.hpp"
 #include "utils/MPIInitializer.hpp"
+#include "runs/voronoi_subdomains.hpp"
 
 namespace fs = std::filesystem;
 
@@ -466,7 +467,7 @@ int main(int argc, char *argv[]) {
             std::cerr << "Usage: " << argv[0]
                 << " <N_base> [new_per_cell] [max_per_cell] [--2d] [--p2p] "
                 "[--ibv] [--new_ibv] [--new-rdma] [--mpi-rma]"
-                << " [--hold-small-idle-flushes] [--no-output]"
+                << " [--hold-small-idle-flushes] [--no-output] [--voronoi-subdomains <N|auto>]"
                 << " [--resume <dump_number>]" << std::endl;
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
@@ -485,6 +486,7 @@ int main(int argc, char *argv[]) {
         bool useNewIbv = false;
         bool holdSmallIdleFlushes = true;
         bool noOutput = false;
+        size_t voronoiSubdomains = 0;
         std::vector<std::string> positionalArgs;
         for(int a = 2; a < argc; a++)
         {
@@ -505,6 +507,8 @@ int main(int argc, char *argv[]) {
                 holdSmallIdleFlushes = true;
             else if(arg == "--no-output")
                 noOutput = true; // skip VTK/checkpoint dumps; keep the final line-out
+            else if(arg == "--voronoi-subdomains" and a + 1 < argc)
+                voronoiSubdomains = ParseVoronoiSubdomains(argv[++a]);
             else if(arg == "--idle-flush-holdoff")
             {
                 if(rank == 0)
@@ -597,6 +601,9 @@ int main(int argc, char *argv[]) {
         }
 
         Voronoi3D tess(ll, ur);
+        tess.SetThreadSubdomains(voronoiSubdomains);
+        if(rank == 0 and voronoiSubdomains > 0)
+            std::cout << "Voronoi thread subdomains per rank: " << voronoiSubdomains << std::endl;
         std::vector<ComputationalCell3D> initialCells;
         size_t startCycle = 0;
 

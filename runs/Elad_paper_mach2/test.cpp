@@ -44,6 +44,7 @@
 #include "utils/arguments/ArgumentParser.hpp"
 #include "runs/mc_results_dir.hpp"
 #include "utils/MPIInitializer.hpp"
+#include "runs/voronoi_subdomains.hpp"
 
 /*
  * Mach 2 Radiative Shock benchmark from:
@@ -290,6 +291,8 @@ int main(int argc, char *argv[])
     arguments.addFlag("resume", "resume from the checkpoint if it exists");
     arguments.addOption<std::string>("profile", "mach2_analytic_ic2.dat", "analytic profile file for initialization");
     arguments.addOption<double>("cfl-scale", 1.0, "multiplier of the baseline hydro CFL (0.3)");
+    arguments.addOption<std::string>("voronoi-subdomains", "0",
+                                     "thread subdomains per rank for the Voronoi builds (0: one domain; auto: one per thread)");
     arguments.addOption<std::string>("manager", "new-rdma-auto", "Monte Carlo communication manager")
         .choices({"new-rdma-auto", "new-rdma-ibv", "p2p"})
         .flagAlias("new-rdma", "new-rdma-auto")
@@ -440,6 +443,10 @@ int main(int argc, char *argv[])
 
     // --- Generate mesh & initial conditions (skipped on resume) ---
     Voronoi3D tess(ll, ur);
+    const size_t voronoiSubdomains = ParseVoronoiSubdomains(arguments.get<std::string>("voronoi-subdomains"));
+    tess.SetThreadSubdomains(voronoiSubdomains);
+    if(rank == 0 and voronoiSubdomains > 0)
+        std::cout << "Voronoi thread subdomains per rank: " << voronoiSubdomains << std::endl;
 #ifdef RICH_MPI
     tess.PresetLoadBalancer(std::make_shared<OneDimensionalLoadBalancer<Vector3D>>(ll, ur, Axis::X));
 #endif

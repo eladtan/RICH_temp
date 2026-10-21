@@ -3,7 +3,8 @@
 # GPU: each rank gets the GCD next to its CCD. Submit from this directory:
 #   sbatch submit_frontier.sh                      # GPU build (build/gnuReleaseMPI/mach2-hip)
 #   sbatch --export=ALL,MODE=cpu submit_frontier.sh # CPU build (build/gnuReleaseMPI/mach2-cpu)
-# RICH_BIN overrides the binary, RUN_TAG suffixes the output directory.
+# RICH_BIN overrides the binary, RUN_TAG suffixes the output directory, EXTRA_ARGS adds
+# driver options (e.g. EXTRA_ARGS="--voronoi-subdomains auto").
 #SBATCH --job-name=mach2
 #SBATCH --account=ast246
 #SBATCH --partition=service
@@ -38,7 +39,7 @@ echo "Mode $MODE, binary $RICH_BIN, ranks $SLURM_NTASKS, output $RICH_OUTPUT_DIR
 
 # Same arguments as the JUPITER runs (submit_gpu.sh)
 mpirun -np "$SLURM_NTASKS" --map-by ppr:1:l3cache:pe=7 --bind-to core \
-    "${launch[@]}" "$RICH_BIN" 1024 "$RICH_OUTPUT_DIR/mach2"
+    "${launch[@]}" "$RICH_BIN" 1024 "$RICH_OUTPUT_DIR/mach2" ${EXTRA_ARGS:-}
 status=$?
 echo "mpirun exit status: $status"
 exit $status

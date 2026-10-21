@@ -239,6 +239,11 @@ public:
         engine_.SetPeriodicBoundaries(periodicX, periodicY, periodicZ);
     }
 
+    void SetThreadSubdomains(size_t count) override
+    {
+        engine_.SetThreadSubdomains(count);
+    }
+
     std::array<bool, 3> GetPeriodic() const override
     {
         return engine_.GetPeriodicBoundaries();
