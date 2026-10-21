@@ -435,6 +435,19 @@ int main(int argc, char *argv[]) {
 
         MPI_Comm_set_errhandler(MPI_COMM_WORLD, MPI_ERRORS_ARE_FATAL);
 
+        // Start-up stage timing (rank 0 prints; the barrier makes each stage's
+        // time the slowest rank's).
+        auto stageStart = std::chrono::high_resolution_clock::now();
+        auto startupStage = [&](const char *stage)
+        {
+            MPI_Barrier(MPI_COMM_WORLD);
+            const auto now = std::chrono::high_resolution_clock::now();
+            if(rank == 0)
+                std::cout << "[startup] " << stage << ": "
+                    << std::chrono::duration<double>(now - stageStart).count() << " s" << std::endl;
+            stageStart = now;
+        };
+
         // char hostname[MPI_MAX_PROCESSOR_NAME];
         // int name_len;
         // MPI_Get_processor_name(hostname, &name_len);
@@ -443,13 +456,14 @@ int main(int argc, char *argv[]) {
         //         << " pid=" << getpid() << std::endl;
 
         ensureCleanNode();
+        startupStage("clean-node check");
 
         if(rank == 0 and argc < 2)
         {
             std::cerr << "Usage: " << argv[0]
                 << " <N_base> [new_per_cell] [max_per_cell] [--2d] [--p2p] "
                 "[--ibv] [--new_ibv] [--new-rdma] [--mpi-rma]"
-                << " [--hold-small-idle-flushes]"
+                << " [--hold-small-idle-flushes] [--no-output]"
                 << " [--resume <dump_number>]" << std::endl;
             MPI_Abort(MPI_COMM_WORLD, 1);
         }
@@ -467,6 +481,7 @@ int main(int argc, char *argv[]) {
         bool useNewRdma = false;
         bool useNewIbv = false;
         bool holdSmallIdleFlushes = true;
+        bool noOutput = false;
         std::vector<std::string> positionalArgs;
         for(int a = 2; a < argc; a++)
         {
@@ -485,6 +500,8 @@ int main(int argc, char *argv[]) {
                 useNewIbv = true;
             else if(arg == "--hold-small-idle-flushes")
                 holdSmallIdleFlushes = true;
+            else if(arg == "--no-output")
+                noOutput = true; // skip VTK/checkpoint dumps; keep the final line-out
             else if(arg == "--idle-flush-holdoff")
             {
                 if(rank == 0)
@@ -589,6 +606,7 @@ int main(int argc, char *argv[]) {
         {
             initialCells = Initialize(tess, eos, N_base, T_init, mode2d);
         }
+        startupStage("mesh generation and build");
 
         // --- Simulation ---
         Simulation sim(tess, initialCells, eos);
@@ -635,6 +653,7 @@ int main(int argc, char *argv[]) {
             std::cout << "Small-idle flush handling is automatic in the current communication manager." << std::endl;
         }
 
+        startupStage("simulation and physics setup");
         std::vector<Particle3D> initialParticles;
         auto mcStep = std::make_shared<RadiationMCStep>(
             tess, cells, extensives, physics, popControl, boundaryCond,
@@ -651,6 +670,7 @@ int main(int argc, char *argv[]) {
             nullptr, monteCarloConfig
 #endif
         );
+        startupStage("Monte Carlo step and communication setup");
         sim.addPhysics(mcStep);
 #ifdef RICH_MPI
         mcStep->setCost(std::make_shared<HohlraumCostCalculator>(
@@ -706,12 +726,17 @@ int main(int argc, char *argv[]) {
                 << std::endl;
         }
 
-        WriteSimulation(sim, prefix + "latest_sim.h5");
-
-        if(resumeDump < 0)
+        startupStage("remaining setup");
+        if(!noOutput)
         {
-            WriteVTK(tess, cells, physics, prefix + "init.vtu");
+            WriteSimulation(sim, prefix + "latest_sim.h5");
+
+            if(resumeDump < 0)
+            {
+                WriteVTK(tess, cells, physics, prefix + "init.vtu");
+            }
         }
+        startupStage("initial output");
 
         // --- Main time-stepping loop ---
         auto startWall = std::chrono::high_resolution_clock::now();
@@ -754,7 +779,7 @@ int main(int argc, char *argv[]) {
                     << "  ETA=" << etaMin << "m" << etaSec << "s" << std::endl;
             }
 
-            if(stepsSinceLastDump >= dumpInterval)
+            if(!noOutput && stepsSinceLastDump >= dumpInterval)
             {
                 stepsSinceLastDump = 0;
                 char buf[512];
@@ -788,8 +813,11 @@ int main(int argc, char *argv[]) {
 
         // --- Final output ---
         WriteProfile(tess, cells, prefix + "final.txt", simTime * 1e9, N_base,mode2d);
-        WriteVTK(tess, cells, physics, prefix + "final.vtu");
-        WriteSimulation(sim, prefix + "latest_sim.h5");
+        if(!noOutput)
+        {
+            WriteVTK(tess, cells, physics, prefix + "final.vtu");
+            WriteSimulation(sim, prefix + "latest_sim.h5");
+        }
     } catch (const UniversalError &e) {
         std::cerr << "=== UniversalError on rank " << rank << " ===" << std::endl;
         reportError(e, std::cerr);

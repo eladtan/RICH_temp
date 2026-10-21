@@ -144,6 +144,17 @@ public:
         return cell.density < 0.5 * rho_slab_;
     }
 
+    // Constant absorption within each group and no scattering: eligible for STORM's
+    // portable (GPU / Kokkos) transport, with the same laws as STORM's moving slab.
+    STORM::PortableAbsorptionLaw GetPortableAbsorptionLaw() const override
+    {
+        return STORM::PortableAbsorptionLaw::PiecewiseConstant;
+    }
+    STORM::ThermalFrequencyLaw GetPortableThermalFrequencyLaw() const override
+    {
+        return STORM::ThermalFrequencyLaw::LinearInGroup;
+    }
+
     double CalcPlanckOpacity(const ComputationalCell3D &cell) const override
     {
         return CalcPlanckOpacityAtTemperature(cell, cell.temperature);
