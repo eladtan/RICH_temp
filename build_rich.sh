@@ -124,6 +124,10 @@ for arg in "${@:2}"; do
         --with-gpu)
             CMAKE_FLAGS+=" -DSTORM_WITH_GPU=ON "
             ;;
+        --voronoi-on-host)
+            # With --with-gpu: MadVoro's geometry on Kokkos host threads, STORM on the GPU
+            CMAKE_FLAGS+=" -DMADVORO_GEOMETRY_ON_HOST=ON "
+            ;;
         --build-subdir=*)
             BUILD_SUBDIR="${arg#--build-subdir=}"
             ;;
@@ -168,7 +172,7 @@ CMAKE_ERR="$BUILD_DIR/${CONFIG}_cmake.err"
 # ==================== Validate arguments ====================
 
 if [[ $# -lt 2 || -z "$TEST_NAME" ]]; then
-    echo -e "${RED}Usage: $0 <config> --test_name=<name> [--with_asan] [--energy_groups_num=<N>] [--mc_debug] [--mc_trace_debug=<N>] [--shared] [--high-res] [--memory_debug] [--memory_profile] [--assert] [--timing] [--montecarlo-polarization] [--with-gpu] [--build-subdir=<name>] [--jobs=<N>]${NC}"
+    echo -e "${RED}Usage: $0 <config> --test_name=<name> [--with_asan] [--energy_groups_num=<N>] [--mc_debug] [--mc_trace_debug=<N>] [--shared] [--high-res] [--memory_debug] [--memory_profile] [--assert] [--timing] [--montecarlo-polarization] [--with-gpu] [--voronoi-on-host] [--build-subdir=<name>] [--jobs=<N>]${NC}"
     exit 1
 fi
 
