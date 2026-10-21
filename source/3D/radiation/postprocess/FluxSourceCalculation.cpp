@@ -1,4 +1,5 @@
 #include "FluxSourceCalculation.hpp"
+#include "CoolingLimit.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -7,6 +8,7 @@
 #include <functional>
 #include <string>
 #include <cmath>
+#include <iomanip>
 #include <iostream>
 #include <sstream>
 #include <limits>
@@ -619,7 +621,10 @@ std::vector<unsigned char> BuildOutsideSurfaceMask(
         runtime.fluxSourceRadius, runtime.fluxSourceRadiusDirectlyResolved);
 }
 
-std::vector<Vector3D> ComputeGreyFldFlux(PostprocessRuntime& runtime)
+// The grey FLD flux of every cell from `cells` (the owned cells, possibly with
+// other temperatures than runtime.cells); MPI ghosts included.
+std::vector<Vector3D> ComputeGreyFldFlux(PostprocessRuntime& runtime,
+                                         std::vector<ComputationalCell3D> const& cells)
 {
     size_t const nCells = runtime.tess.GetPointNo();
     std::vector<double> radiationEnergy(nCells, 0.0);
@@ -627,9 +632,9 @@ std::vector<Vector3D> ComputeGreyFldFlux(PostprocessRuntime& runtime)
     double localRadiationEnergy = 0.0;
     for(size_t i = 0; i < nCells; ++i)
     {
-        radiationEnergy[i] = runtime.cells[i].density * runtime.cells[i].Erad;
+        radiationEnergy[i] = cells[i].density * cells[i].Erad;
         diffusionCoefficient[i] =
-            runtime.greyOpacity->CalcDiffusionCoefficient(runtime.cells[i]);
+            runtime.greyOpacity->CalcDiffusionCoefficient(cells[i]);
         if(!std::isfinite(radiationEnergy[i]) || radiationEnergy[i] < 0.0 ||
            !std::isfinite(diffusionCoefficient[i]) ||
            diffusionCoefficient[i] < 0.0)
@@ -705,11 +710,12 @@ std::vector<Vector3D> ComputeGreyFldFlux(PostprocessRuntime& runtime)
 
 // Point-indexed copies of the owned cells with the MPI ghosts appended, so a
 // CER face whose interior neighbour is a ghost sees that cell's state.
-std::vector<ComputationalCell3D> PointCellsWithGhosts(PostprocessRuntime const& runtime)
+std::vector<ComputationalCell3D> PointCellsWithGhosts(PostprocessRuntime const& runtime,
+                                                      std::vector<ComputationalCell3D> const& owned)
 {
     size_t const nCells = runtime.tess.GetPointNo();
-    std::vector<ComputationalCell3D> cells(runtime.cells.begin(),
-                                           runtime.cells.begin() + static_cast<std::ptrdiff_t>(nCells));
+    std::vector<ComputationalCell3D> cells(owned.begin(),
+                                           owned.begin() + static_cast<std::ptrdiff_t>(nCells));
 #ifdef RICH_MPI
     MPI_exchange_data(runtime.tess, cells, true);
 #endif
@@ -772,6 +778,81 @@ double HydroFldFaceLuminosity(
     double const limiter = CG::CalcSingleFluxLimiter(gradient, faceD, 0.5 * (energyInner + energyOuter));
     double const geometry = ScalarProd(centres, separation) / (separationLength * centres2);
     return limiter * faceD * geometry * difference * area;
+}
+
+enum class HydroMultigroupFaceStatus { Computed, NoGroupEnergy, InvalidDiffusionCoefficient };
+
+// The hydro's multigroup FLD luminosity of each group from innerCell to
+// outerCell across one face (MultigroupDiffusion.cpp, matrix assembly): as
+// HydroFldFaceLuminosity, with the group energy density rho E_g and the group
+// diffusion coefficient D_g of `opacity` (CalcDiffusionCoefficient(cell,
+// energy)) at the face temperature, their harmonic mean and the flux limiter
+// per group. Left out: Compton's group-transfer term in D_g (it only lowers
+// D_g) and, as in the grey version, the raising of tiny gradients before the
+// limiter. Fills `luminosity` (positive outward) when Computed; a face whose
+// cells carry no group energies, or where a D_g is not positive and finite,
+// is reported and left out. Diagnostics only.
+HydroMultigroupFaceStatus HydroMultigroupFaceLuminosity(
+    PostprocessRuntime const& runtime,
+    std::vector<ComputationalCell3D> const& pointCells,
+    OpacityCalculator const& opacity,
+    size_t innerCell,
+    size_t outerCell,
+    size_t face,
+    std::vector<double>& luminosity)
+{
+    if(innerCell >= pointCells.size() || outerCell >= pointCells.size())
+        throw UniversalError("Flux-source hydro group face flux is missing a cell (ghost exchange)");
+    size_t const groups = luminosity.size();
+    ComputationalCell3D inner = pointCells[innerCell];
+    ComputationalCell3D outer = pointCells[outerCell];
+    if(inner.Eg.size() != groups || outer.Eg.size() != groups ||
+       opacity.energy_groups_center.size() != groups)
+        return HydroMultigroupFaceStatus::NoGroupEnergy;
+    Vector3D const centres = runtime.tess.GetCellCM(innerCell) - runtime.tess.GetCellCM(outerCell);
+    Vector3D const separation = runtime.tess.GetMeshPoint(innerCell) - runtime.tess.GetMeshPoint(outerCell);
+    double const centres2 = ScalarProd(centres, centres);
+    double const separationLength = abs(separation);
+    double const area = runtime.tess.GetArea(face);
+    double const t4 = 0.5 * (std::pow(inner.temperature, 4) + std::pow(outer.temperature, 4));
+    if(!(centres2 > 0.0) || !std::isfinite(centres2) || !(separationLength > 0.0) ||
+       !(area > 0.0) || !std::isfinite(area) || !(t4 > 0.0) || !std::isfinite(t4))
+    {
+        UniversalError eo("Flux-source hydro group face flux has invalid geometry or temperatures");
+        eo.addEntry("Inner cell ID", inner.ID);
+        eo.addEntry("Outer cell ID", outer.ID);
+        throw eo;
+    }
+    double const faceTemperature = std::pow(t4, 0.25);
+    inner.temperature = faceTemperature;
+    outer.temperature = faceTemperature;
+    double const geometry = ScalarProd(centres, separation) / (separationLength * centres2);
+    std::vector<double> faceD(groups, 0.0);
+    for(size_t g = 0; g < groups; ++g)
+    {
+        double const energy = opacity.energy_groups_center[g];
+        double const dInner = opacity.CalcDiffusionCoefficient(inner, energy);
+        double const dOuter = opacity.CalcDiffusionCoefficient(outer, energy);
+        if(!(dInner > 0.0) || !std::isfinite(dInner) || !(dOuter > 0.0) || !std::isfinite(dOuter))
+            return HydroMultigroupFaceStatus::InvalidDiffusionCoefficient;
+        faceD[g] = 2.0 * dInner * dOuter / (dInner + dOuter);
+    }
+    for(size_t g = 0; g < groups; ++g)
+    {
+        double const energyInner = inner.density * inner.Eg[g];
+        double const energyOuter = outer.density * outer.Eg[g];
+        double const difference = energyInner - energyOuter;
+        double const mean = 0.5 * (energyInner + energyOuter);
+        if(difference == 0.0 || !(mean > 0.0))
+        {
+            luminosity[g] = 0.0;
+            continue;
+        }
+        Vector3D const gradient = centres * (difference / centres2);
+        double const limiter = CG::CalcSingleFluxLimiter(gradient, faceD[g], mean);
+        luminosity[g] = limiter * faceD[g] * geometry * difference * area;
+    }
+    return HydroMultigroupFaceStatus::Computed;
 }
 
 // ---------------------------------------------------------------------------
@@ -1603,6 +1684,8 @@ void ConfigureFluxSourceForCurrentDecomposition(
     OpacityCalculator const& emissionOpacity,
     bool multigroupPass)
 {
+    if(cfg.fluxSourceCompare && cfg.fluxSourceFaceFlux == FluxSourceFaceFlux::Auto)
+        throw UniversalError("Flux-source face flux auto was not resolved from the snapshot");
     if(!cfg.fluxSourceCompare)
     {
         physics.clearPostProcessExternalSources();
@@ -1614,7 +1697,29 @@ void ConfigureFluxSourceForCurrentDecomposition(
     if(!runtime.fluxSourceEnabled || runtime.fluxSourceRadius.empty())
         throw UniversalError("Flux-source surface was not initialized");
 
-    std::vector<Vector3D> const fldFlux = ComputeGreyFldFlux(runtime);
+    // The face fluxes are computed once, at the first setup, from the snapshot
+    // temperatures (the cooling limit changes the cells' temperatures after
+    // the surface is built and before this setup); every later setup, after
+    // any repartition and in the grey pass, reads runtime.fluxSourceFaceTable.
+    bool const firstSetup = runtime.fluxSourceFaceTable.empty();
+    std::vector<ComputationalCell3D> faceCells;
+    std::vector<Vector3D> fldFlux;
+    if(firstSetup)
+    {
+        size_t const owned = runtime.tess.GetPointNo();
+        if(runtime.cells.size() < owned)
+            throw UniversalError("Flux-source setup has fewer owned cells than tessellation points");
+        faceCells.assign(runtime.cells.begin(), runtime.cells.begin() + static_cast<std::ptrdiff_t>(owned));
+        if(!runtime.fluxSourceSnapshotTemperature.empty())
+        {
+            if(runtime.fluxSourceSnapshotTemperature.size() != owned)
+                throw UniversalError("Flux-source snapshot temperatures do not match the owned cells "
+                                     "(repartitioned before the first source setup)");
+            for(size_t i = 0; i < owned; ++i)
+                faceCells[i].temperature = runtime.fluxSourceSnapshotTemperature[i];
+        }
+        fldFlux = ComputeGreyFldFlux(runtime, faceCells);
+    }
     // The construction ray of every point, once for the surface mask, the
     // photosphere check and the per-group volume-emission masks.
     std::vector<size_t> const nearestDirection = BuildNearestDirectionIndex(cfg, runtime);
@@ -1734,9 +1839,36 @@ void ConfigureFluxSourceForCurrentDecomposition(
 
     std::vector<RadiationIMC::PostProcessExternalSource> sources;
     runtime.fluxSourceCellLuminosity.assign(nCells, 0.0);
+    // FLUX_SOURCE_GROUPS (first multigroup setup): face luminosity per group
+    // split by a Planck spectrum at the spectrum temperature and by the snapshot's
+    // own group energies of the outer cell would split it, plus the
+    // luminosity of faces whose outer cell has no group energies; and the
+    // hydro's own multigroup FLD flux across the same faces.
+    std::vector<double> const& groupEdges = emissionOpacity.energy_groups_boundary;
+    size_t const spectrumGroups = static_cast<size_t>(ENERGY_GROUPS_NUM);
+    bool const reportGroups = multigroupPass && !runtime.fluxSourceGroupsReported &&
+        groupEdges.size() == spectrumGroups + 1;
+    std::vector<double> localFaceGroups(reportGroups ? 2 * spectrumGroups + 2 : 0, 0.0);
+    // [net per group | outward per group | faces without group energies |
+    //  faces with an invalid group diffusion coefficient]
+    std::vector<double> localHydroGroups(reportGroups ? 2 * spectrumGroups + 2 : 0, 0.0);
+    std::vector<double> faceGroupLuminosity(reportGroups ? spectrumGroups : 0, 0.0);
+    // Signed face luminosity per channel: per group for hydro-multigroup
+    // faces, one grey value otherwise (runtime.fluxSourceFaceTable).
+    bool const multigroupFaces = cfg.fluxSourceFaceFlux == FluxSourceFaceFlux::HydroMultigroup;
+    size_t const faceChannels = multigroupFaces ? spectrumGroups : 1;
+    if(firstSetup && multigroupFaces && !runtime.opacity)
+        throw UniversalError("flux-source.face-flux hydro-multigroup: the multigroup opacity is not available "
+                             "to build the face table");
+    if(!firstSetup && runtime.fluxSourceFaceTable.channels != faceChannels)
+        throw UniversalError("Flux-source face table was built for a different face-flux mode");
+    std::vector<uint64_t> tableIDs;       // (outer, interior) cell IDs of this rank's faces
+    std::vector<double> tableValues;      // their signed luminosities, faceChannels each
+    std::vector<double> faceValues(faceChannels, 0.0);
     std::vector<ComputationalCell3D> const pointCells =
-        cfg.fluxSourceFaceFlux == FluxSourceFaceFlux::Hydro
-            ? PointCellsWithGhosts(runtime) : std::vector<ComputationalCell3D>();
+        firstSetup || reportGroups
+            ? PointCellsWithGhosts(runtime, firstSetup ? faceCells : runtime.cells)
+            : std::vector<ComputationalCell3D>();
     // Spectrum temperature of each source (outer) cell, by cell ID, and the
     // face-luminosity weighted diagnostics of the FLUX_SOURCE_SPECTRUM line.
     std::unordered_map<size_t, double> spectrumTemperature;
@@ -1783,7 +1915,7 @@ void ConfigureFluxSourceForCurrentDecomposition(
         {
             size_t const innerCell = neighbors[j];
             if(runtime.tess.IsPointOutsideBox(innerCell) ||
-               innerCell >= fldFlux.size() || innerCell >= outside.size() ||
+               innerCell >= outside.size() ||
                innerCell >= pointCellIDs.size() ||
                outside[innerCell] != 0)
                 continue;
@@ -1797,21 +1929,6 @@ void ConfigureFluxSourceForCurrentDecomposition(
                 throw UniversalError("Flux-source surface has invalid face geometry");
             normal *= 1.0 / distance;
 
-            double signedLuminosity = 0.0;
-            if(cfg.fluxSourceFaceFlux == FluxSourceFaceFlux::Hydro)
-                signedLuminosity = HydroFldFaceLuminosity(runtime, pointCells, innerCell, outerCell, faces[j]);
-            else
-            {
-                Vector3D const faceFlux = 0.5 *
-                    (fldFlux[outerCell] + fldFlux[innerCell]);
-                signedLuminosity = ScalarProd(faceFlux, normal) * area;
-            }
-            if(!std::isfinite(signedLuminosity))
-                throw UniversalError("Flux-source surface has non-finite face flux");
-            double const luminosity = std::max(0.0, signedLuminosity);
-            localNetLuminosity += signedLuminosity;
-            localInwardLuminosity += std::max(0.0, -signedLuminosity);
-
             size_t const interiorCellID = pointCellIDs[innerCell];
             if(interiorCellID == invalidCellID)
             {
@@ -1821,6 +1938,60 @@ void ConfigureFluxSourceForCurrentDecomposition(
                 eo.addEntry("Exterior point index", outerCell);
                 throw eo;
             }
+
+            double signedLuminosity = 0.0;
+            double luminosity = 0.0;      // emitted (outward) face luminosity
+            double inwardLuminosity = 0.0;
+            uint64_t const outerID = static_cast<uint64_t>(runtime.cells[outerCell].ID);
+            if(firstSetup)
+            {
+                if(multigroupFaces)
+                {
+                    HydroMultigroupFaceStatus const status = HydroMultigroupFaceLuminosity(
+                        runtime, pointCells, *runtime.opacity, innerCell, outerCell, faces[j], faceValues);
+                    if(status != HydroMultigroupFaceStatus::Computed)
+                    {
+                        UniversalError eo(status == HydroMultigroupFaceStatus::NoGroupEnergy
+                            ? "flux-source.face-flux hydro-multigroup needs the snapshot's group energies E_g"
+                            : "flux-source.face-flux hydro-multigroup: invalid group diffusion coefficient");
+                        eo.addEntry("Outer cell ID", outerID);
+                        eo.addEntry("Interior cell ID", interiorCellID);
+                        throw eo;
+                    }
+                }
+                else if(cfg.fluxSourceFaceFlux == FluxSourceFaceFlux::Hydro)
+                    faceValues[0] = HydroFldFaceLuminosity(runtime, pointCells, innerCell, outerCell, faces[j]);
+                else
+                    faceValues[0] = ScalarProd(0.5 * (fldFlux[outerCell] + fldFlux[innerCell]), normal) * area;
+                tableIDs.push_back(outerID);
+                tableIDs.push_back(static_cast<uint64_t>(interiorCellID));
+                tableValues.insert(tableValues.end(), faceValues.begin(), faceValues.end());
+            }
+            else
+            {
+                double const* stored = runtime.fluxSourceFaceTable.Find(outerID, interiorCellID);
+                if(stored == nullptr)
+                {
+                    UniversalError eo("Flux-source CER face is missing from the face table "
+                                      "(surface changed after the first setup)");
+                    eo.addEntry("Outer cell ID", outerID);
+                    eo.addEntry("Interior cell ID", interiorCellID);
+                    throw eo;
+                }
+                std::copy(stored, stored + faceChannels, faceValues.begin());
+            }
+            // Each group's (or the grey) outward flux is emitted; inward flux
+            // is reported, not emitted.
+            for(double const value : faceValues)
+            {
+                signedLuminosity += value;
+                luminosity += std::max(0.0, value);
+                inwardLuminosity += std::max(0.0, -value);
+            }
+            if(!std::isfinite(signedLuminosity) || !std::isfinite(luminosity))
+                throw UniversalError("Flux-source surface has non-finite face flux");
+            localNetLuminosity += signedLuminosity;
+            localInwardLuminosity += inwardLuminosity;
             RadiationIMC::PostProcessExternalSource source;
             source.faceIndex = faces[j];
             source.cellID = runtime.cells[outerCell].ID;
@@ -1828,6 +1999,12 @@ void ConfigureFluxSourceForCurrentDecomposition(
             source.location = runtime.tess.FaceCM(faces[j]);
             source.outwardNormal = normal;
             source.luminosity = luminosity;
+            if(multigroupFaces && multigroupPass)
+            {
+                source.groupLuminosity.resize(faceValues.size());
+                for(size_t g = 0; g < faceValues.size(); ++g)
+                    source.groupLuminosity[g] = std::max(0.0, faceValues[g]);
+            }
             sources.push_back(source);
             runtime.fluxSourceCellLuminosity[outerCell] += luminosity;
             {
@@ -1846,6 +2023,50 @@ void ConfigureFluxSourceForCurrentDecomposition(
                 spectrumTemperature[outer.ID] = radiationT;
                 if(outer.temperature > 10.0 * radiationT)
                     localHotLuminosity += luminosity;
+                if(reportGroups && luminosity > 0.0)
+                {
+                    double const Tspectrum =
+                        cfg.fluxSourceSpectrumTemperature == FluxSourceSpectrumTemperature::Radiation
+                            ? radiationT : outer.temperature;
+                    double const aT4 = CG::radiation_constant * std::pow(Tspectrum, 4);
+                    double snapshotTotal = 0.0;
+                    if(cfg.snapshotGroupEnergyUsable && outer.Eg.size() == spectrumGroups)
+                        for(size_t g = 0; g < spectrumGroups; ++g)
+                            snapshotTotal += std::max(0.0, outer.Eg[g]);
+                    for(size_t g = 0; g < spectrumGroups; ++g)
+                    {
+                        localFaceGroups[g] += luminosity *
+                            planck_integral::planck_energy_density_group_integral(
+                                groupEdges[g], groupEdges[g + 1], Tspectrum) / aT4;
+                        if(snapshotTotal > 0.0)
+                            localFaceGroups[spectrumGroups + g] +=
+                                luminosity * std::max(0.0, outer.Eg[g]) / snapshotTotal;
+                    }
+                    if(!(snapshotTotal > 0.0))
+                        localFaceGroups[2 * spectrumGroups] += luminosity;
+                    localFaceGroups[2 * spectrumGroups + 1] =
+                        std::max(localFaceGroups[2 * spectrumGroups + 1], Tspectrum);
+                }
+                if(reportGroups && cfg.snapshotGroupEnergyUsable)
+                {
+                    // Hydro-multigroup faces already hold this face's group fluxes.
+                    HydroMultigroupFaceStatus status = HydroMultigroupFaceStatus::Computed;
+                    if(multigroupFaces)
+                        faceGroupLuminosity = faceValues;
+                    else
+                        status = HydroMultigroupFaceLuminosity(
+                            runtime, pointCells, emissionOpacity, innerCell, outerCell, faces[j],
+                            faceGroupLuminosity);
+                    if(status == HydroMultigroupFaceStatus::Computed)
+                        for(size_t g = 0; g < spectrumGroups; ++g)
+                        {
+                            localHydroGroups[g] += faceGroupLuminosity[g];
+                            localHydroGroups[spectrumGroups + g] += std::max(0.0, faceGroupLuminosity[g]);
+                        }
+                    else
+                        localHydroGroups[2 * spectrumGroups +
+                                         (status == HydroMultigroupFaceStatus::NoGroupEnergy ? 0 : 1)] += 1.0;
+                }
                 localLogRadiationT += luminosity * std::log(radiationT);
                 localLogGasT += luminosity * std::log(outer.temperature);
             }
@@ -1871,10 +2092,152 @@ void ConfigureFluxSourceForCurrentDecomposition(
         }
     }
 
+    // FLUX_SOURCE_GROUPS (first multigroup setup): the hydro's own multigroup
+    // and grey FLD luminosity through the observer sphere, summed over the
+    // faces between a cell whose generator is inside cfg.radius and one
+    // outside it (each face once: from its owned inside cell). Layout:
+    // [net per group | outward per group | grey net | faces | faces without
+    //  group energies | faces with an invalid group D].
+    std::vector<double> localSphereGroups(reportGroups ? 2 * spectrumGroups + 4 : 0, 0.0);
+    if(reportGroups)
+    {
+        std::vector<double> sphereFaceGroups(spectrumGroups, 0.0);
+        for(size_t inner = 0; inner < nCells; ++inner)
+        {
+            if(!(fastabs(runtime.tess.GetMeshPoint(inner) - cfg.center) < cfg.radius))
+                continue;
+            auto const& faces = runtime.tess.GetCellFaces(inner);
+            runtime.tess.GetNeighbors(inner, neighbors);
+            for(size_t j = 0; j < neighbors.size(); ++j)
+            {
+                size_t const outer = neighbors[j];
+                if(runtime.tess.IsPointOutsideBox(outer) || outer >= pointCells.size() ||
+                   fastabs(runtime.tess.GetMeshPoint(outer) - cfg.center) < cfg.radius)
+                    continue;
+                localSphereGroups[2 * spectrumGroups + 1] += 1.0;
+                localSphereGroups[2 * spectrumGroups] +=
+                    HydroFldFaceLuminosity(runtime, pointCells, inner, outer, faces[j]);
+                if(!cfg.snapshotGroupEnergyUsable)
+                    continue;
+                HydroMultigroupFaceStatus const status = HydroMultigroupFaceLuminosity(
+                    runtime, pointCells, emissionOpacity, inner, outer, faces[j], sphereFaceGroups);
+                if(status != HydroMultigroupFaceStatus::Computed)
+                {
+                    localSphereGroups[2 * spectrumGroups +
+                                      (status == HydroMultigroupFaceStatus::NoGroupEnergy ? 2 : 3)] += 1.0;
+                    continue;
+                }
+                for(size_t g = 0; g < spectrumGroups; ++g)
+                {
+                    localSphereGroups[g] += sphereFaceGroups[g];
+                    localSphereGroups[spectrumGroups + g] += std::max(0.0, sphereFaceGroups[g]);
+                }
+            }
+        }
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, localSphereGroups.data(), static_cast<int>(localSphereGroups.size()),
+                      MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+#endif
+    }
+
+    if(firstSetup)
+    {
+        // Every rank keeps the whole surface's table: after a repartition a
+        // face may belong to any rank.
+        std::vector<uint64_t> allIDs = tableIDs;
+        std::vector<double> allValues = tableValues;
+#ifdef RICH_MPI
+        int const faceCount = static_cast<int>(tableIDs.size() / 2);
+        std::vector<int> faceCounts(static_cast<size_t>(runtime.mpiSize), 0);
+        MPI_Allgather(&faceCount, 1, MPI_INT, faceCounts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+        std::vector<int> idCounts(faceCounts.size()), idDispls(faceCounts.size());
+        std::vector<int> valueCounts(faceCounts.size()), valueDispls(faceCounts.size());
+        long long idTotal = 0;
+        long long valueTotal = 0;
+        for(size_t r = 0; r < faceCounts.size(); ++r)
+        {
+            idCounts[r] = 2 * faceCounts[r];
+            valueCounts[r] = faceCounts[r] * static_cast<int>(faceChannels);
+            idDispls[r] = static_cast<int>(idTotal);
+            valueDispls[r] = static_cast<int>(valueTotal);
+            idTotal += idCounts[r];
+            valueTotal += valueCounts[r];
+        }
+        if(valueTotal > static_cast<long long>(std::numeric_limits<int>::max()) ||
+           idTotal > static_cast<long long>(std::numeric_limits<int>::max()))
+            throw UniversalError("Flux-source face table too large to gather");
+        allIDs.assign(static_cast<size_t>(idTotal), 0);
+        allValues.assign(static_cast<size_t>(valueTotal), 0.0);
+        MPI_Allgatherv(tableIDs.data(), idCounts[static_cast<size_t>(runtime.rank)], MPI_UINT64_T,
+                       allIDs.data(), idCounts.data(), idDispls.data(), MPI_UINT64_T, MPI_COMM_WORLD);
+        MPI_Allgatherv(tableValues.data(), valueCounts[static_cast<size_t>(runtime.rank)], MPI_DOUBLE,
+                       allValues.data(), valueCounts.data(), valueDispls.data(), MPI_DOUBLE, MPI_COMM_WORLD);
+#endif
+        if(allIDs.empty())
+            throw UniversalError("Flux-source CER has no faces");
+        runtime.fluxSourceFaceTable.Build(faceChannels, allIDs, allValues);
+        // Only the first setup needs the snapshot temperatures.
+        std::vector<double>().swap(runtime.fluxSourceSnapshotTemperature);
+    }
+
     double spectrumSums[3] = {localHotLuminosity, localLogRadiationT, localLogGasT};
 #ifdef RICH_MPI
     MPI_Allreduce(MPI_IN_PLACE, spectrumSums, 3, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    if(reportGroups)
+    {
+        double maxSpectrumT = localFaceGroups.back();
+        MPI_Allreduce(MPI_IN_PLACE, localFaceGroups.data(), static_cast<int>(localFaceGroups.size() - 1),
+                      MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &maxSpectrumT, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        localFaceGroups.back() = maxSpectrumT;
+        MPI_Allreduce(MPI_IN_PLACE, localHydroGroups.data(), static_cast<int>(localHydroGroups.size()),
+                      MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    }
 #endif
+    if(reportGroups)
+    {
+        runtime.fluxSourceGroupsReported = true;
+        if(runtime.rank == 0)
+        {
+            auto list = [&](std::vector<double> const& values, size_t offset) {
+                std::ostringstream out;
+                out << std::setprecision(4) << "[";
+                double total = 0.0;
+                for(size_t g = 0; g < spectrumGroups; ++g)
+                {
+                    out << (g ? "," : "") << values[offset + g];
+                    total += values[offset + g];
+                }
+                out << "] (sum " << total << ")";
+                return out.str();
+            };
+            // Per-group values from the snapshot's E_g only where they are
+            // the hydro's own groups (or LTE radiation built for them).
+            bool const groupEnergy = cfg.snapshotGroupEnergyUsable;
+            auto groupList = [&](std::vector<double> const& values, size_t offset) {
+                return groupEnergy ? list(values, offset) : std::string("n/a (snapshot type)");
+            };
+            std::ostringstream line;
+            line << std::setprecision(4)
+                 << "FLUX_SOURCE_GROUPS emitted="
+                 << (multigroupFaces ? "hydro_mg_face_flux_outward" : "planck_split")
+                 << " planck_split=" << list(localFaceGroups, 0)
+                 << " snapshot_group_energy_split=" << groupList(localFaceGroups, spectrumGroups)
+                 << " erg/s luminosity_without_group_energy=" << localFaceGroups[2 * spectrumGroups]
+                 << " T_spectrum_max=" << localFaceGroups[2 * spectrumGroups + 1] << " K\n"
+                 << "FLUX_SOURCE_GROUPS hydro_mg_face_flux_net=" << groupList(localHydroGroups, 0)
+                 << " hydro_mg_face_flux_outward=" << groupList(localHydroGroups, spectrumGroups)
+                 << " erg/s faces_without_group_energy=" << localHydroGroups[2 * spectrumGroups]
+                 << " faces_invalid_group_D=" << localHydroGroups[2 * spectrumGroups + 1] << "\n"
+                 << "FLUX_SOURCE_GROUPS hydro_mg_sphere_flux_net=" << groupList(localSphereGroups, 0)
+                 << " hydro_mg_sphere_flux_outward=" << groupList(localSphereGroups, spectrumGroups)
+                 << " hydro_grey_sphere_flux_net=" << localSphereGroups[2 * spectrumGroups]
+                 << " erg/s radius=" << cfg.radius << " cm faces=" << localSphereGroups[2 * spectrumGroups + 1]
+                 << " faces_without_group_energy=" << localSphereGroups[2 * spectrumGroups + 2]
+                 << " faces_invalid_group_D=" << localSphereGroups[2 * spectrumGroups + 3];
+            std::cout << line.str() << std::endl;
+        }
+    }
     double rawGlobalLuminosity = localLuminosity;
     double globalNetLuminosity = localNetLuminosity;
     double globalInwardLuminosity = localInwardLuminosity;
@@ -2106,6 +2469,9 @@ void ConfigureFluxSourceForCurrentDecomposition(
         double localHydroGross = 0.0;
         double localHydroAbsorbed = 0.0;
         uint64_t localOutside = 0;
+        // Emission-mode cooling limit: per local cell factor on the emission.
+        bool const emissionScaling = !runtime.coolingLimitEmissionCaps.empty();
+        std::vector<double> emissionScale(emissionScaling ? nCells : 0, 1.0);
         for(size_t i = 0; i < nCells; ++i)
         {
             if(groupBits[i] == 0)
@@ -2139,8 +2505,24 @@ void ConfigureFluxSourceForCurrentDecomposition(
                 double const aT4 = aRad * T * T * T * T;
                 double const kappaP = aT4 > 0.0 ? grossAll / (cLight * aT4 * volume) : 0.0;
                 double const radiationEnergyDensity = cell.density * cell.Erad;
+                double absorbed = 0.0;
                 if(std::isfinite(radiationEnergyDensity) && radiationEnergyDensity > 0.0)
-                    localHydroAbsorbed += cLight * kappaP * radiationEnergyDensity * volume;
+                    absorbed = cLight * kappaP * radiationEnergyDensity * volume;
+                if(emissionScaling)
+                {
+                    // The cell keeps its temperature; its emission is scaled
+                    // so that its net emission, with this pass's opacity, is
+                    // its cooling cap. The scale is the cell's Fleck-like
+                    // factor on its full (all-group) emission, as in the
+                    // hydro; with volume-emission.gate-groups the gated
+                    // groups are then dropped as they are without the limit
+                    // (the temperature mode does the same).
+                    double const scale = CoolingLimitEmissionScale(runtime, cell.ID, grossAll, absorbed);
+                    emissionScale[i] = scale;
+                    luminosity *= scale;
+                    grossAll *= scale;
+                }
+                localHydroAbsorbed += absorbed;
                 localHydroGross += grossAll;
             }
             if(!std::isfinite(luminosity) || luminosity < 0.0)
@@ -2199,6 +2581,8 @@ void ConfigureFluxSourceForCurrentDecomposition(
             if(mask[i])
                 runtime.volumeEmissionCellLuminosity[i] = cellLuminosity[i];
         physics.setPostProcessVolumeEmission(std::move(mask), std::move(groupBits), 1.0, 0);
+        if(emissionScaling)
+            physics.setPostProcessVolumeEmissionScale(std::move(emissionScale));
         physics.setPostProcessVolumeEmissionExactBase(cfg.volumeEmissionBurninExact);
         if(runtime.rank == 0 && (changed || !runtime.volumeEmissionReported))
         {
@@ -2241,7 +2625,7 @@ void ConfigureFluxSourceForCurrentDecomposition(
                   << (rawGlobalLuminosity > 0.0
                       ? globalInwardLuminosity / rawGlobalLuminosity : 0.0)
                   << " face_flux="
-                  << (cfg.fluxSourceFaceFlux == FluxSourceFaceFlux::Hydro ? "hydro" : "cell-average")
+                  << PostProcessIMC::OptionValueName(cfg.fluxSourceFaceFlux)
                   << " erg/s" << std::endl;
     if(runtime.rank == 0 && rawGlobalLuminosity > 0.0)
         std::cout << "FLUX_SOURCE_SPECTRUM temperature="

@@ -381,6 +381,16 @@ std::unordered_map<size_t, std::array<double, ENERGY_GROUPS_NUM>> BuildGroupScor
 std::unordered_map<size_t, double> BuildCombinedSourceScoresForIMC(
     AdaptiveSourceState const& integratedState,
     AdaptiveGroupSourceState const& groupState);
+// The opacity scale factor alpha of one cell at its temperature, before the
+// alpha bounds: the factor on its group absorption that reproduces the grey
+// Planck (mode Planck) or Rosseland (mode Rosseland) mean. `opacity` must be
+// unscaled. False when it cannot be formed (no temperature, no grey mean).
+bool ComputeOpacityScaleFactor(
+    OpacityCalculator const& opacity,
+    OpacityCalculator const& greyOpacity,
+    ComputationalCell3D const& cell,
+    OpacityScaleMode mode,
+    double& alpha);
 void RecomputeOpacityScaleFactors(
     OpacityCalculator& opacity,
     OpacityCalculator const& greyOpacity,

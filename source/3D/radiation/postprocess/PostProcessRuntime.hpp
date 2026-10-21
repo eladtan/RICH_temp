@@ -43,6 +43,9 @@ class STAMGopacityMC : public OpacityCalculator
 private:
     std::vector<double> rho_, T_;
     std::vector<std::vector<std::vector<double>>> planck_, scatter_;
+    // Total (absorption + scattering) group Rosseland opacity, for the hydro's
+    // group diffusion coefficient (CalcDiffusionCoefficient(cell, energy)).
+    std::vector<std::vector<std::vector<double>>> rosseland_;
     std::unordered_map<size_t, double> rosselandScale_;
 
 public:
@@ -76,23 +79,66 @@ public:
 
         planck_.resize(Ng);
         scatter_.resize(Ng);
+        rosseland_.resize(Ng);
         for (size_t i = 0; i < Ng; ++i)
         {
             auto temp_planck = read_vector(file_directory + "sigma_absorption_rossland_" + std::to_string(i + 1) + ".txt");
             auto temp_scatter = read_vector(file_directory + "sigma_scattering_planck_" + std::to_string(i + 1) + ".txt");
+            auto temp_rosseland = read_vector(file_directory + "sigma_rossland_" + std::to_string(i + 1) + ".txt");
+            if (temp_rosseland.size() != Nrho * Nt)
+                throw UniversalError("STAMGopacityMC: sigma_rossland_" + std::to_string(i + 1) +
+                                     ".txt does not match the rho x T table size");
             planck_[i].resize(Nrho);
             scatter_[i].resize(Nrho);
+            rosseland_[i].resize(Nrho);
             for (size_t j = 0; j < Nrho; ++j)
             {
                 planck_[i][j].resize(Nt);
                 scatter_[i][j].resize(Nt);
+                rosseland_[i][j].resize(Nt);
                 for (size_t k = 0; k < Nt; ++k)
                 {
                     planck_[i][j][k] = std::log(temp_planck[j * Nt + k]) + rho_[j];
                     scatter_[i][j][k] = std::log(temp_scatter[j * Nt + k]) + rho_[j];
+                    rosseland_[i][j][k] = std::log(temp_rosseland[j * Nt + k]) + rho_[j];
                 }
             }
         }
+    }
+
+    // The hydro's group diffusion coefficient c / (3 sigma_Ross,g), as the
+    // multigroup RHD runs compute it (runs/BaseTDECompton STAMGopacity, used by
+    // MultigroupDiffusion): total group Rosseland table, temperature clamped
+    // to the table, linear in density beyond it, and below the table's lowest
+    // density at least c / (3 sigma_scattering). Without the post-process
+    // opacity scale factors and without Compton's group-transfer term. The
+    // transport does not use it; the flux-source diagnostics do.
+    double CalcDiffusionCoefficient(ComputationalCell3D const& cell, double energy) const override
+    {
+        size_t const group = findGroup(energy);
+        double T = std::log(cell.temperature);
+        double d = std::log(cell.density);
+        double d_ratio = 1;
+        if (T < T_[0])
+            T = T_[0];
+        if (T > T_.back())
+            T = T_.back();
+        bool const belowTable = d < rho_[0];
+        if (belowTable)
+        {
+            d_ratio = cell.density / std::exp(rho_[0]);
+            d = rho_[0];
+        }
+        if (d > rho_.back())
+        {
+            d_ratio = cell.density / std::exp(rho_.back());
+            d = rho_.back();
+        }
+        double sigma = std::exp(BiLinearInterpolation(rho_, T_, rosseland_[group], d, T)) * d_ratio;
+        if (belowTable)
+            sigma = std::max(sigma, CalcScatteringOpacityAtTemperature(
+                cell, energy_groups_center[group], cell.temperature));
+        return CG::speed_of_light / (3.0 * sigma);
     }
 
     double CalcAbsorptionOpacity(const ComputationalCell3D &cell, double energy) const override
@@ -371,6 +417,68 @@ public:
     // ConfigureFluxSourceForCurrentDecomposition call.
     std::vector<double> fluxSourceCellLuminosity;
     bool volumeEmissionReported = false;
+    // FLUX_SOURCE_GROUPS is printed at the first multigroup source setup.
+    bool fluxSourceGroupsReported = false;
+    // Signed luminosity of every CER face of the whole surface (erg/s), per
+    // group for flux-source.face-flux hydro-multigroup, one grey value
+    // otherwise, keyed by (outer cell ID, interior cell ID). Built at the
+    // first source setup from the snapshot temperatures (with the multigroup
+    // opacity, which the grey pass releases) and read by every later setup,
+    // so both passes and every repartition emit the same faces. Flat, sorted
+    // arrays: every rank holds the whole table.
+    struct FluxSourceFaceTable
+    {
+        size_t channels = 0;
+        std::vector<std::pair<uint64_t, uint64_t>> keys;  // sorted
+        std::vector<double> values;                      // channels per key, in key order
+
+        bool empty() const { return keys.empty(); }
+
+        // ids: (outer, interior) pairs flattened; values: channels per face.
+        void Build(size_t channelCount, std::vector<uint64_t> const& ids, std::vector<double> const& faceValues)
+        {
+            size_t const faces = ids.size() / 2;
+            if(channelCount == 0 || ids.size() != 2 * faces || faceValues.size() != faces * channelCount)
+                throw UniversalError("Flux-source face table: inconsistent face data");
+            std::vector<size_t> order(faces);
+            for(size_t f = 0; f < faces; ++f)
+                order[f] = f;
+            std::sort(order.begin(), order.end(), [&ids](size_t a, size_t b) {
+                return std::make_pair(ids[2 * a], ids[2 * a + 1]) < std::make_pair(ids[2 * b], ids[2 * b + 1]);
+            });
+            channels = channelCount;
+            keys.resize(faces);
+            values.resize(faces * channelCount);
+            for(size_t k = 0; k < faces; ++k)
+            {
+                size_t const f = order[k];
+                keys[k] = std::make_pair(ids[2 * f], ids[2 * f + 1]);
+                if(k > 0 && keys[k] == keys[k - 1])
+                {
+                    UniversalError eo("Duplicate CER face in the flux-source face table");
+                    eo.addEntry("Outer cell ID", keys[k].first);
+                    eo.addEntry("Interior cell ID", keys[k].second);
+                    throw eo;
+                }
+                std::copy(faceValues.begin() + static_cast<std::ptrdiff_t>(f * channelCount),
+                          faceValues.begin() + static_cast<std::ptrdiff_t>((f + 1) * channelCount),
+                          values.begin() + static_cast<std::ptrdiff_t>(k * channelCount));
+            }
+        }
+
+        // The face's channels values, or nullptr when it is not in the table.
+        double const* Find(uint64_t outer, uint64_t interior) const
+        {
+            auto const key = std::make_pair(outer, interior);
+            auto const it = std::lower_bound(keys.begin(), keys.end(), key);
+            if(it == keys.end() || *it != key)
+                return nullptr;
+            return values.data() + static_cast<size_t>(it - keys.begin()) * channels;
+        }
+    } fluxSourceFaceTable;
+    // Temperatures of the owned cells before the cooling limit, for the face
+    // fluxes of the first source setup (then released).
+    std::vector<double> fluxSourceSnapshotTemperature;
     // Escaping (observer-crossing) luminosity of the last transported
     // generation, erg/s; 0 before the first one. Reference for the volume
     // emission cutoff.
@@ -394,6 +502,11 @@ public:
         double netEmissionAfter = 0.0;
         double maxRelativeTemperatureChange = 0.0;
     } coolingLimit;
+    // volume-emission.cooling-limit-mode emission: (cell ID, cap on the net
+    // emission in erg/s) of every hot-limited cell of the whole snapshot,
+    // sorted by ID. The cells keep their temperature; each source setup turns
+    // the cap into an emission scale (CoolingLimitEmissionScale).
+    std::vector<std::pair<size_t, double>> coolingLimitEmissionCaps;
     // Escape-origin diagnostic: (cell ID, class) of every volume cell at or
     // beyond the flux-source surface hotter than 1e5 K after the cooling limit
     // (class 2 [1e5,1e6) K, 3 [1e6,1e7) K, 4 >= 1e7 K), sorted by ID, the same

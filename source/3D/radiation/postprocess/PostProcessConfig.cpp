@@ -53,7 +53,7 @@ void printLegacyUsage(int rank)
               << "  --polarization-closure NAME\n"
               << "  --no-measured-lb         Disable first-generation measured load balance\n"
               << "  --no-opacity-scale       Disable MG absorption scaling\n"
-              << "  --opacity-scale-mode M   Normalization mode: planck (default) or rosseland\n"
+              << "  --opacity-scale-mode M   Normalization mode: auto (default; from the snapshot), planck, rosseland or none\n"
               << "  --adaptive-source-cells  Learn escaping source cells across generations\n"
               << "  --no-adaptive-source-cells\n"
               << "  --adaptive-source-burnin N       Legacy flag accepted; fixed adaptive cadence ignores it\n"
@@ -293,10 +293,11 @@ bool ValidateConfig(Config &cfg, int rank)
         else if (arg == "--no-rosseland-scale" || arg == "--no-opacity-scale") { cfg.opacityScaleMode = OpacityScaleMode::None; }
         else if (arg == "--opacity-scale-mode" && i + 1 < argc) {
             std::string m = argv[++i];
-            if (m == "planck") cfg.opacityScaleMode = OpacityScaleMode::Planck;
+            if (m == "auto") cfg.opacityScaleMode = OpacityScaleMode::Auto;
+            else if (m == "planck") cfg.opacityScaleMode = OpacityScaleMode::Planck;
             else if (m == "rosseland") cfg.opacityScaleMode = OpacityScaleMode::Rosseland;
             else if (m == "none") cfg.opacityScaleMode = OpacityScaleMode::None;
-            else { if (rank == 0) std::cerr << "Unknown opacity-scale-mode: " << m << " (planck|rosseland|none)\n"; return false; }
+            else { if (rank == 0) std::cerr << "Unknown opacity-scale-mode: " << m << " (auto|planck|rosseland|none)\n"; return false; }
         }
         else { if (rank == 0) std::cerr << "Unknown argument: " << arg << "\n"; return false; }
     }

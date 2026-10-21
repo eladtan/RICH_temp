@@ -65,6 +65,7 @@
 #include "GreyCalculation.hpp"
 #include "FluxSourceCalculation.hpp"
 #include "CoolingLimit.hpp"
+#include "SnapshotRadiation.hpp"
 
 using namespace imc_postprocess_tde;
 
@@ -151,6 +152,7 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.opacityDir = publicConfig.input.multigroupOpacityDirectory;
     cfg.greyOpacityDir = publicConfig.input.greyOpacityDirectory;
     cfg.eosDir = publicConfig.input.eosDirectory;
+    cfg.inputMissingRadiation = publicConfig.input.missingRadiation;
     cfg.restartFrom = publicConfig.restart.from;
     cfg.restartInPlace = publicConfig.restart.inPlace;
     cfg.radius = publicConfig.observer.radius;
@@ -218,6 +220,7 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.volumeEmissionCoolingLimit = publicConfig.volumeEmission.coolingLimit;
     cfg.volumeEmissionCoolingLimitCfl = publicConfig.volumeEmission.coolingLimitCfl;
     cfg.volumeEmissionCoolingLimitDt = publicConfig.volumeEmission.coolingLimitDt;
+    cfg.volumeEmissionCoolingLimitMode = publicConfig.volumeEmission.coolingLimitMode;
     cfg.polarizationManualScatterings =
         publicConfig.polarization.manualScatteringsAfterAcceleration;
     cfg.polarizationDepolarizationScatterings =
@@ -233,6 +236,9 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
         break;
     case PostProcessIMC::OpacityScaleMode::Planck:
         cfg.opacityScaleMode = OpacityScaleMode::Planck;
+        break;
+    case PostProcessIMC::OpacityScaleMode::Auto:
+        cfg.opacityScaleMode = OpacityScaleMode::Auto;
         break;
     }
     cfg.opacityScaleAlphaMin = publicConfig.opacityScaling.alphaMin;
@@ -634,7 +640,12 @@ int PostProcessIMC::RunPostProcessMain(
                           ? std::string("no")
                           : cfg.volumeEmissionCoolingLimitDt > 0.0
                               ? "yes (hydro dt " + std::to_string(cfg.volumeEmissionCoolingLimitDt) + " s)"
-                              : "yes (Courant hydro dt, CFL " + std::to_string(cfg.volumeEmissionCoolingLimitCfl) + ")") << "\n"
+                              : "yes (Courant hydro dt, CFL " + std::to_string(cfg.volumeEmissionCoolingLimitCfl) + ")")
+                      << (cfg.volumeEmissionEnabled && cfg.volumeEmissionCoolingLimit
+                          ? (cfg.volumeEmissionCoolingLimitMode == CoolingLimitMode::Emission
+                             ? ", hot cells keep their temperature, emission scaled"
+                             : ", hot cells cooled")
+                          : "") << "\n"
                       << "Flux source surface: "
                       << (cfg.fluxSourceSurfaceMode == FluxSourceSurfaceMode::MultigroupInnermost
                           ? "innermost per-group thermalization radius (mg-innermost)"
@@ -650,9 +661,14 @@ int PostProcessIMC::RunPostProcessMain(
                                 : std::string(", no depth floor"))
                           : std::string(" only")) << "\n"
                       << "Flux source faces: "
-                      << (cfg.fluxSourceFaceFlux == FluxSourceFaceFlux::Hydro
-                          ? "hydro FLD face flux" : "mean of cell FLD fluxes")
-                      << ", spectrum at the outer cell's "
+                      << (cfg.fluxSourceFaceFlux == FluxSourceFaceFlux::Auto
+                          ? std::string("auto (from the snapshot, SNAPSHOT_RADIATION below); Planck spectrum at the outer cell's ")
+                          : cfg.fluxSourceFaceFlux == FluxSourceFaceFlux::HydroMultigroup
+                          ? std::string("hydro multigroup FLD face flux per group (luminosity and spectrum; "
+                                        "log-uniform within a group), re-emission Planck at the outer cell's ")
+                          : std::string(cfg.fluxSourceFaceFlux == FluxSourceFaceFlux::Hydro
+                                        ? "hydro FLD face flux" : "mean of cell FLD fluxes") +
+                            ", spectrum at the outer cell's ")
                       << (cfg.fluxSourceSpectrumTemperature == FluxSourceSpectrumTemperature::Radiation
                           ? "radiation temperature" : "gas temperature") << "\n"
                       << "Flux source DDMC face tau: "
@@ -670,7 +686,9 @@ int PostProcessIMC::RunPostProcessMain(
                       << " (on the next generation's planned packets when ramping), then after final steps 1 and 2 and every "
                       << (cfg.measuredLBFinalPeriod > 0 ? cfg.measuredLBFinalPeriod : 10) << " final steps before the last\n"
                       << "Opacity scale:   " << (cfg.opacityScaleMode == imc_postprocess_tde::OpacityScaleMode::Planck ? "planck" :
-                                                  cfg.opacityScaleMode == imc_postprocess_tde::OpacityScaleMode::Rosseland ? "rosseland" : "disabled")
+                                                  cfg.opacityScaleMode == imc_postprocess_tde::OpacityScaleMode::Rosseland ? "rosseland" :
+                                                  cfg.opacityScaleMode == imc_postprocess_tde::OpacityScaleMode::Auto
+                                                      ? "auto (from the snapshot, SNAPSHOT_RADIATION below)" : "disabled")
                       << " alpha bounds [" << cfg.opacityScaleAlphaMin << ", "
                       << (cfg.opacityScaleAlphaMax > 0.0 ? std::to_string(cfg.opacityScaleAlphaMax) : std::string("inf")) << "]\n"
                       << "Adaptive source: " << (cfg.adaptiveSourceCells ? "enabled" : "disabled") << "\n"
@@ -806,6 +824,61 @@ int PostProcessIMC::RunPostProcessMain(
 
         if (rank == 0)
             std::cout << "Converted snapshot to CGS." << std::endl;
+
+        // The snapshot's radiation decides the opacity treatment and the
+        // face flux (auto settings), and a snapshot without any gets LTE
+        // radiation, before anything reads E_rad. The resolved values go into
+        // the effective configuration, so restarts and the result file see
+        // them rather than "auto".
+        {
+            size_t const tableGroups = opacity->energy_groups_boundary.size() - 1;
+            SnapshotRadiationInfo const radiationInfo = ClassifySnapshotRadiation(
+                snapshot.cells, CountSnapshotGroupDatasets(cfg.inputPath, rank), tableGroups);
+            SnapshotRadiationRequest request;
+            request.scaling = cfg.opacityScaleMode;
+            request.faceFlux = cfg.fluxSourceFaceFlux;
+            request.missingRadiation = cfg.inputMissingRadiation;
+            request.fluxSource = cfg.fluxSourceCompare;
+            SnapshotRadiationResolution const resolved = ResolveSnapshotRadiation(radiationInfo, request);
+            std::ostringstream line;
+            line << "SNAPSHOT_RADIATION type=" << SnapshotRadiationTypeName(radiationInfo.type)
+                 << " snapshot_groups=" << radiationInfo.snapshotGroups
+                 << " table_groups=" << radiationInfo.tableGroups
+                 << " from_file=" << (radiationInfo.fromFile ? 1 : 0)
+                 << " max_erad_vs_sum_eg=" << radiationInfo.groupSumMismatch;
+            if (resolved.lteRadiation != MissingRadiation::Auto) {
+                LteRadiationSummary local = BuildLteRadiation(
+                    snapshot.cells, *eos, resolved.lteRadiation,
+                    tableGroups > 1 ? opacity->energy_groups_boundary : std::vector<double>());
+                double sums[2] = {static_cast<double>(local.cells), local.sumRelativeChange};
+                double extremes[3] = {-local.minRelativeChange, local.maxRelativeChange, local.maxEnergyError};
+                if (local.cells == 0)
+                    extremes[0] = extremes[1] = -std::numeric_limits<double>::max();
+#ifdef RICH_MPI
+                MPI_Allreduce(MPI_IN_PLACE, sums, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+                MPI_Allreduce(MPI_IN_PLACE, extremes, 3, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+                line << " lte=" << PostProcessIMC::OptionValueName(resolved.lteRadiation)
+                     << " lte_cells=" << sums[0]
+                     << " dT_over_T_min/mean/max=" << -extremes[0] << "/"
+                     << (sums[0] > 0.0 ? sums[1] / sums[0] : 0.0) << "/" << extremes[1]
+                     << " max_energy_error=" << extremes[2];
+            }
+            line << " opacity_scaling=" << PostProcessIMC::OptionValueName(resolved.scaling)
+                 << (cfg.opacityScaleMode == OpacityScaleMode::Auto ? "(auto)" : "")
+                 << " face_flux=" << PostProcessIMC::OptionValueName(resolved.faceFlux)
+                 << (cfg.fluxSourceFaceFlux == FluxSourceFaceFlux::Auto ? "(auto)" : "")
+                 << " group_energy_usable=" << (resolved.groupEnergyUsable ? 1 : 0);
+            cfg.opacityScaleMode = resolved.scaling;
+            cfg.fluxSourceFaceFlux = resolved.faceFlux;
+            cfg.snapshotGroupEnergyUsable = resolved.groupEnergyUsable;
+            scenario.defaults.opacityScaling.mode = resolved.scaling;
+            scenario.defaults.fluxSource.faceFlux = resolved.faceFlux;
+            if (resolved.lteRadiation != MissingRadiation::Auto)
+                scenario.defaults.input.missingRadiation = resolved.lteRadiation;
+            if (rank == 0)
+                std::cout << line.str() << std::endl;
+        }
 
         if (!cfg.restartFrom.empty()) {
             CheckRestartCompatibility(
@@ -1181,6 +1254,12 @@ int PostProcessIMC::RunPostProcessMain(
         if (cfg.fluxSourceCompare) {
             InitializeFluxSourceSurface(cfg, runtime);
             AttachEmissionSurfaceToObserver(cfg, runtime);
+            ReportVolumeSourceGroups(cfg, runtime, *opacity, "snapshot");
+            // The face fluxes of the first source setup use the snapshot
+            // temperatures, not the limited ones.
+            runtime.fluxSourceSnapshotTemperature.resize(Ncells);
+            for (size_t i = 0; i < Ncells; ++i)
+                runtime.fluxSourceSnapshotTemperature[i] = cells[i].temperature;
             // After the surface, the FLD luminosity and the photospheres
             // (all from the snapshot temperatures), before any source setup.
             ApplyVolumeEmissionCoolingLimit(cfg, runtime);
@@ -1189,8 +1268,12 @@ int PostProcessIMC::RunPostProcessMain(
             // the limited temperatures before any source setup or transport
             // (the surface and FLD above keep the snapshot-temperature alpha).
             // The counts are global, so every rank takes the same branch.
+            // Rosseland scaling clears the factors for the limit (it
+            // evaluates them at the limited temperatures itself).
             if (cfg.opacityScaleMode != imc_postprocess_tde::OpacityScaleMode::None &&
-                runtime.coolingLimit.hotLimitedCells + runtime.coolingLimit.coldLimitedCells > 0) {
+                (runtime.coolingLimit.hotLimitedCells + runtime.coolingLimit.coldLimitedCells > 0 ||
+                 (cfg.opacityScaleMode == imc_postprocess_tde::OpacityScaleMode::Rosseland &&
+                  runtime.coolingLimit.applied))) {
                 RecomputeOpacityScaleFactors(
                     *opacity, *greyOpacity, cells, Ncells, rank,
                     cfg.opacityScaleMode,
@@ -1199,6 +1282,8 @@ int PostProcessIMC::RunPostProcessMain(
                     "after cooling limit");
             }
 #endif
+            if (runtime.coolingLimit.applied)
+                ReportVolumeSourceGroups(cfg, runtime, *opacity, "cooling_limited");
             ConfigureFluxSourceForCurrentDecomposition(cfg, runtime, *physics, *opacity, true);
             if (cfg.volumeEmissionEnabled) {
                 // After the first source setup (it fills fluxSourceCellIDs).

@@ -13,9 +13,11 @@
 namespace imc_postprocess_tde {
 
 using OpacityScaleMode = PostProcessIMC::OpacityScaleMode;
+using CoolingLimitMode = PostProcessIMC::CoolingLimitMode;
 using FluxSourceSurfaceMode = PostProcessIMC::FluxSourceSurfaceMode;
 using FluxSourceSpectrumTemperature = PostProcessIMC::FluxSourceSpectrumTemperature;
 using FluxSourceFaceFlux = PostProcessIMC::FluxSourceFaceFlux;
+using MissingRadiation = PostProcessIMC::MissingRadiation;
 
 //! \brief Monte Carlo particle-exchange engine selection
 enum class CommunicationMode
@@ -34,6 +36,11 @@ struct Config
     std::string opacityDir;
     std::string greyOpacityDir;
     std::string eosDir;
+    MissingRadiation inputMissingRadiation = MissingRadiation::Auto;
+    // Set by ResolveSnapshotRadiation after the snapshot is read: the cells'
+    // group energies E_g are the hydro's own (multigroup snapshot) or were
+    // built as LTE radiation, so per-group uses of them are valid.
+    bool snapshotGroupEnergyUsable = false;
     // Result file to continue (empty: fresh run) and whether the output may
     // replace it.
     std::string restartFrom;
@@ -74,7 +81,7 @@ struct Config
     size_t fluxSourceMappingNeighbours = 6;
     double fluxSourceMappingMaxDepthFactor = 3.0;
     FluxSourceSpectrumTemperature fluxSourceSpectrumTemperature = FluxSourceSpectrumTemperature::Radiation;
-    FluxSourceFaceFlux fluxSourceFaceFlux = FluxSourceFaceFlux::Hydro;
+    FluxSourceFaceFlux fluxSourceFaceFlux = FluxSourceFaceFlux::Auto;  // resolved from the snapshot
     bool volumeEmissionEnabled = false;
     double volumeEmissionCutoffFraction = 1e-10;
     size_t volumeEmissionBurninPacketsTarget = 2000000;
@@ -90,11 +97,12 @@ struct Config
     bool volumeEmissionCoolingLimit = true;
     double volumeEmissionCoolingLimitCfl = 0.25;
     double volumeEmissionCoolingLimitDt = 0.0;  // 0 = Courant step
+    CoolingLimitMode volumeEmissionCoolingLimitMode = CoolingLimitMode::Temperature;
     int polarizationManualScatterings = 128;
     double polarizationDepolarizationScatterings = 0.5;
     std::string polarizationClosure = "damped_last_scatterings";
     bool measuredLoadBalance = true;
-    OpacityScaleMode opacityScaleMode = OpacityScaleMode::Planck;
+    OpacityScaleMode opacityScaleMode = OpacityScaleMode::Auto;  // resolved from the snapshot
     double opacityScaleAlphaMin = 0.0;  // 0 = unbounded
     double opacityScaleAlphaMax = 0.0;  // 0 = unbounded
     bool adaptiveSourceCells = false;

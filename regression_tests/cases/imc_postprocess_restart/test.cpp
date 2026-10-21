@@ -213,6 +213,8 @@ PostProcessIMC::PostProcessScenario MakeScenario()
     c.fluxSource.constructionRays = 256;
     c.fluxSource.ddmcFaceOpticalDepth = 5.0;
     c.fluxSource.surfaceMode = FluxSourceSurfaceMode::MultigroupInnermost;
+    // Multigroup snapshot (E_g set) with the grey hydro face flux.
+    c.fluxSource.faceFlux = FluxSourceFaceFlux::Hydro;
     c.volumeEmission.enabled = true;
     c.volumeEmission.cutoffFraction = 1e-10;
     c.volumeEmission.burninPacketsTarget = 20000;

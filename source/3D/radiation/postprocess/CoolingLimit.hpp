@@ -64,7 +64,9 @@ CoolingLimitOutcome LimitCellCooling(
     CoolingLimitMaterial const& material);
 
 // Applies LimitCellCooling to every owned cell at or beyond the flux-source
-// surface, with the grey Planck opacity and the scenario EOS, and records the
+// surface, with the Planck opacity the multigroup transport emits with (the
+// grey table with opacity scaling, the Planck mean of the unscaled group
+// opacities without) and the scenario EOS, and records the
 // summary in runtime.coolingLimit. t_hydro is cfg.volumeEmissionCoolingLimitDt
 // when positive, else the RICH Courant step (CFL
 // cfg.volumeEmissionCoolingLimitCfl, face velocities from the gas). Call once,
@@ -79,6 +81,31 @@ void ApplyVolumeEmissionCoolingLimit(
 void BuildEscapeOriginHotCells(
     Config const& cfg,
     PostprocessRuntime& runtime);
+
+// Emission scale of a cell under the emission-mode cooling limit
+// (runtime.coolingLimitEmissionCaps): the factor on its gross emission
+// `gross` (erg/s) at which its net emission, gross x scale - absorbed, equals
+// its cap, where `absorbed` is its absorption of the snapshot radiation with
+// the same Planck mean. At most 1; 1 for a cell without a cap.
+double CoolingLimitEmissionScale(
+    PostprocessRuntime const& runtime,
+    size_t cellID,
+    double gross,
+    double absorbed);
+
+// Multigroup source-spectrum diagnostic of the volume emission, over the cells
+// at or beyond the flux-source surface at their current temperatures: per
+// group the gross emission c kappa_g u_g(T) V, the absorption of the
+// snapshot's own group radiation c kappa_g rho E_g V and their difference
+// (SOURCE_GROUP_VOLUME), and per temperature decade the cells, their gross
+// emission and the part of it above 0.3 keV (SOURCE_GROUP_VOLUME_T). `stage`
+// labels the lines (before or after the cooling limit). No-op without volume
+// emission or with a single group. Collective; rank 0 prints.
+void ReportVolumeSourceGroups(
+    Config const& cfg,
+    PostprocessRuntime& runtime,
+    OpacityCalculator const& opacity,
+    std::string const& stage);
 
 // The DDMC comoving-frame shift compresses (or expands) a packet for as long
 // as it stays in the frozen flow, so it can drift up across the top of its

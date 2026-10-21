@@ -22,7 +22,11 @@ struct ComputationalCell3D;
 
 namespace PostProcessIMC {
 
-enum class OpacityScaleMode { None, Rosseland, Planck };
+// Multigroup absorption normalization. Auto (default) follows the snapshot:
+// none for a multigroup snapshot (the hydro's own group opacities), planck
+// for a grey one or one whose group count differs from the table; see
+// ResolveSnapshotRadiation.
+enum class OpacityScaleMode { None, Rosseland, Planck, Auto };
 
 //! \brief Monte Carlo particle-exchange engine.  TwoSided has the smaller memory
 //! footprint; Rdma is usually faster where the fabric supports it; Auto tries
@@ -50,8 +54,37 @@ enum class FluxSourceSpectrumTemperature { Radiation, Gas };
 // mean, flux limiter on the face gradient; Diffusion.cpp), or the arithmetic
 // mean of the two cells' cell-centred FLD fluxes (the original formula; in
 // snap_109 it gives 0.85 of the hydro's positive face luminosity, 3.86e42
-// against 4.56e42 erg/s).
-enum class FluxSourceFaceFlux { Hydro, CellAverage };
+// against 4.56e42 erg/s). HydroMultigroup: the hydro's multigroup FLD flux
+// across the face (MultigroupDiffusion.cpp: group energy rho E_g, group
+// diffusion coefficient at the face temperature, harmonic mean, flux limiter
+// per group); each group's outward flux is that group's face luminosity, so it
+// sets both the luminosity and the spectrum of the face (the grey pass emits
+// the sum over groups). Needs the snapshot's group energies.
+// Auto (default) is HydroMultigroup for a multigroup snapshot and Hydro
+// otherwise (ResolveSnapshotRadiation).
+enum class FluxSourceFaceFlux { Hydro, CellAverage, HydroMultigroup, Auto };
+
+// A snapshot without radiation (Erad and E_g zero everywhere) is given LTE
+// radiation before the post-process. ConserveEnergy (Auto): each cell's gas
+// and radiation share its snapshot internal energy at one temperature,
+// rho e_snap = rho e_gas(T) + a T^4. GasTemperature: T_rad = T_gas (adds
+// energy). Setting either for a snapshot with radiation is an error.
+enum class MissingRadiation { Auto, ConserveEnergy, GasTemperature };
+
+// How the cooling limit caps a hot cell's net emission at the hydro's
+// per-step rate. Temperature: the cell is cooled to the temperature at which
+// its net emission equals the cap (spectrum and opacity at that temperature).
+// Emission: the cell keeps its snapshot temperature (spectrum and opacity) and
+// its emission is scaled so that the net emission equals the cap, as the
+// hydro's Fleck step emits from the real temperature at a reduced rate. Cold
+// cells (net absorption capped) are heated in both modes.
+enum class CoolingLimitMode { Temperature, Emission };
+
+// Command-line spelling of option values, shared by the parser, the logs and
+// the error messages.
+std::string OptionValueName(OpacityScaleMode mode);
+std::string OptionValueName(FluxSourceFaceFlux mode);
+std::string OptionValueName(MissingRadiation mode);
 
 struct PostProcessConfig
 {
@@ -61,6 +94,7 @@ struct PostProcessConfig
         std::string multigroupOpacityDirectory;
         std::string greyOpacityDirectory;
         std::string eosDirectory;
+        MissingRadiation missingRadiation = MissingRadiation::Auto;
     } input;
 
     struct Output
@@ -188,7 +222,7 @@ struct PostProcessConfig
         // 0 = no floor.
         double mappingMaxDepthFactor = 3.0;
         FluxSourceSpectrumTemperature spectrumTemperature = FluxSourceSpectrumTemperature::Radiation;
-        FluxSourceFaceFlux faceFlux = FluxSourceFaceFlux::Hydro;
+        FluxSourceFaceFlux faceFlux = FluxSourceFaceFlux::Auto;
     } fluxSource;
 
     // Thermal emission from every cell outside the flux-source surface at its
@@ -241,18 +275,21 @@ struct PostProcessConfig
         // in the hydro (the Fleck factor spreads its cooling over several
         // steps), so its snapshot temperature overstates the emission by about
         // t_hydro / t_cool. The cell's temperature is lowered to the value that
-        // gives the limited net emission; transport keeps Fleck factor 1.
+        // gives the limited net emission, or (coolingLimitMode Emission) its
+        // emission is scaled at its own temperature; transport keeps Fleck
+        // factor 1.
         bool coolingLimit = true;
         // Courant number for t_hydro (RICH CourantFriedrichsLewy, face
         // velocities from the gas as on a Lagrangian mesh).
         double coolingLimitCfl = 0.25;
         // Explicit hydro time step in seconds; 0 uses the Courant step.
         double coolingLimitDt = 0.0;
+        CoolingLimitMode coolingLimitMode = CoolingLimitMode::Temperature;
     } volumeEmission;
 
     struct OpacityScaling
     {
-        OpacityScaleMode mode = OpacityScaleMode::Planck;
+        OpacityScaleMode mode = OpacityScaleMode::Auto;
         // Bounds on the per-cell scale factor alpha (multigroup absorption
         // multiplied to match the grey mean). 0 means unbounded. Cells whose
         // ratio falls outside are clamped, so the multigroup opacity there no

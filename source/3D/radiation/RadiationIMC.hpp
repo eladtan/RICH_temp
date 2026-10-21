@@ -686,6 +686,13 @@ public:
             target.location = source.location;
             target.outwardNormal = source.outwardNormal;
             target.luminosity = source.luminosity;
+            if(!source.groupLuminosity.empty())
+            {
+                if(source.groupLuminosity.size() != target.groupLuminosity.size())
+                    throw UniversalError("External source group luminosities do not match ENERGY_GROUPS_NUM");
+                std::copy(source.groupLuminosity.begin(), source.groupLuminosity.end(),
+                          target.groupLuminosity.begin());
+            }
             converted.push_back(target);
         }
         this->impl_.setPostProcessExternalSources(std::move(converted));
@@ -742,6 +749,10 @@ public:
     void setPostProcessVolumeEmissionSubsample(double subsampleFraction, std::uint64_t seed)
     {
         this->impl_.setPostProcessVolumeEmissionSubsample(subsampleFraction, seed);
+    }
+    void setPostProcessVolumeEmissionScale(std::vector<double> scale)
+    {
+        this->impl_.setPostProcessVolumeEmissionScale(std::move(scale));
     }
     void clearPostProcessVolumeEmission()
     {

@@ -18,6 +18,9 @@ struct IMCPostProcessExternalSource
     Vector3D location = Vector3D(0.0, 0.0, 0.0);
     Vector3D outwardNormal = Vector3D(0.0, 0.0, 1.0);
     double luminosity = 0.0;
+    // Luminosity per group (erg/s), summing to `luminosity`; empty for a
+    // Planck spectrum at the face's spectrum temperature.
+    std::vector<double> groupLuminosity;
 };
 
 struct IMCSourceAllocationSummary

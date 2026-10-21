@@ -3197,6 +3197,58 @@ double SolvePlanckAlpha(
     return kappaPGrey / mgPlanck;
 }
 
+bool ComputeOpacityScaleFactor(
+    OpacityCalculator const& opacity,
+    OpacityCalculator const& greyOpacity,
+    ComputationalCell3D const& cell,
+    OpacityScaleMode mode,
+    double& alpha)
+{
+  size_t const Ng = opacity.energy_groups_boundary.size() - 1;
+  bool const usePlanck = (mode == OpacityScaleMode::Planck);
+  double const kT = CG::boltzmann_constant * cell.temperature;
+  if (kT <= 0.0 || !std::isfinite(kT)) return false;
+
+  std::vector<double> fWeight(Ng);
+  double fTotal = 0.0;
+  for (size_t g = 0; g < Ng; ++g) {
+    double a = opacity.energy_groups_boundary[g] / kT;
+    double b = opacity.energy_groups_boundary[g + 1] / kT;
+    if (a >= b || a > 500.0) {
+      fWeight[g] = 0.0;
+      continue;
+    }
+    b = std::min(b, 500.0);
+    fWeight[g] = usePlanck ? PlanckWeightFraction(a, b)
+                           : RosselandWeightFraction(a, b);
+    fTotal += fWeight[g];
+  }
+  if (fTotal <= 0.0) return false;
+  for (double& f : fWeight) f /= fTotal;
+
+  std::vector<double> sigA(Ng);
+  for (size_t g = 0; g < Ng; ++g)
+    sigA[g] = opacity.CalcAbsorptionOpacity(cell, opacity.energy_groups_center[g]);
+
+  if (usePlanck) {
+    double const kappaPGrey = greyOpacity.CalcPlanckOpacity(cell);
+    if (kappaPGrey <= 0.0 || !std::isfinite(kappaPGrey)) return false;
+    // No ad hoc prefactor: alpha is the plain ratio of the grey Planck mean
+    // to the Planck-weighted multigroup absorption, so the scaled MG opacity
+    // integrates back to the grey value.
+    alpha = SolvePlanckAlpha(sigA, fWeight, kappaPGrey);
+  } else {
+    std::vector<double> sigS(Ng);
+    for (size_t g = 0; g < Ng; ++g)
+      sigS[g] = opacity.CalcScatteringOpacity(cell, opacity.energy_groups_center[g]);
+    double const D_grey = greyOpacity.CalcDiffusionCoefficient(cell);
+    if (D_grey <= 0.0 || !std::isfinite(D_grey)) return false;
+    double const kappaRGrey = CG::speed_of_light / (3.0 * D_grey);
+    alpha = SolveRosselandAlpha(sigA, sigS, fWeight, kappaRGrey);
+  }
+  return true;
+}
+
 void RecomputeOpacityScaleFactors(
     OpacityCalculator& opacity,
     OpacityCalculator const& greyOpacity,
@@ -3212,12 +3264,13 @@ void RecomputeOpacityScaleFactors(
 {
   if (!applyScaleFactors)
     throw UniversalError("Post-process opacity scaling policy is not configured");
+  if (mode == OpacityScaleMode::Auto)
+    throw UniversalError("Opacity scaling mode auto was not resolved from the snapshot");
   // The scale-factor map is rank-local and keyed by cell.ID.  Clear it first so
   // CalcAbsorptionOpacity below samples the unscaled MG opacity, then rebuild it
   // for the cells currently owned by this rank.
   applyScaleFactors(std::unordered_map<size_t, double>());
 
-  size_t const Ng = opacity.energy_groups_boundary.size() - 1;
   std::unordered_map<size_t, double> scaleFactors;
   scaleFactors.reserve(Ncells);
 
@@ -3229,50 +3282,9 @@ void RecomputeOpacityScaleFactors(
   size_t alphaClampedLow = 0;
   size_t alphaClampedHigh = 0;
 
-  bool const usePlanck = (mode == OpacityScaleMode::Planck);
-
   for (size_t i = 0; i < Ncells; ++i) {
-    double const kT = CG::boltzmann_constant * cells[i].temperature;
-    if (kT <= 0.0 || !std::isfinite(kT)) continue;
-
-    std::vector<double> fWeight(Ng);
-    double fTotal = 0.0;
-    for (size_t g = 0; g < Ng; ++g) {
-      double a = opacity.energy_groups_boundary[g] / kT;
-      double b = opacity.energy_groups_boundary[g + 1] / kT;
-      if (a >= b || a > 500.0) {
-        fWeight[g] = 0.0;
-        continue;
-      }
-      b = std::min(b, 500.0);
-      fWeight[g] = usePlanck ? PlanckWeightFraction(a, b)
-                             : RosselandWeightFraction(a, b);
-      fTotal += fWeight[g];
-    }
-    if (fTotal <= 0.0) continue;
-    for (double& f : fWeight) f /= fTotal;
-
-    std::vector<double> sigA(Ng);
-    for (size_t g = 0; g < Ng; ++g)
-      sigA[g] = opacity.CalcAbsorptionOpacity(cells[i], opacity.energy_groups_center[g]);
-
     double alpha;
-    if (usePlanck) {
-      double const kappaPGrey = greyOpacity.CalcPlanckOpacity(cells[i]);
-      if (kappaPGrey <= 0.0 || !std::isfinite(kappaPGrey)) continue;
-      // No ad hoc prefactor: alpha is the plain ratio of the grey Planck mean
-      // to the Planck-weighted multigroup absorption, so the scaled MG opacity
-      // integrates back to the grey value.
-      alpha = SolvePlanckAlpha(sigA, fWeight, kappaPGrey);
-    } else {
-      std::vector<double> sigS(Ng);
-      for (size_t g = 0; g < Ng; ++g)
-        sigS[g] = opacity.CalcScatteringOpacity(cells[i], opacity.energy_groups_center[g]);
-      double const D_grey = greyOpacity.CalcDiffusionCoefficient(cells[i]);
-      if (D_grey <= 0.0 || !std::isfinite(D_grey)) continue;
-      double const kappaRGrey = CG::speed_of_light / (3.0 * D_grey);
-      alpha = SolveRosselandAlpha(sigA, sigS, fWeight, kappaRGrey);
-    }
+    if (!ComputeOpacityScaleFactor(opacity, greyOpacity, cells[i], mode, alpha)) continue;
 
     if (alphaMin > 0.0 && alpha < alphaMin) {
       alpha = alphaMin;
@@ -3313,7 +3325,7 @@ void RecomputeOpacityScaleFactors(
 #endif
 
   if (rank == 0) {
-    char const* modeStr = usePlanck ? "Planck" : "Rosseland";
+    char const* modeStr = mode == OpacityScaleMode::Planck ? "Planck" : "Rosseland";
     double const alphaMean = (globalCount > 0) ? globalSum / static_cast<double>(globalCount) : 1.0;
     std::cout << modeStr << " scale " << label << ": alpha min=" << globalMin
               << " max=" << globalMax << " mean=" << alphaMean

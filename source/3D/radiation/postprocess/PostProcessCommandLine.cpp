@@ -15,6 +15,39 @@
 
 namespace PostProcessIMC
 {
+
+std::string OptionValueName(OpacityScaleMode mode)
+{
+    switch (mode) {
+    case OpacityScaleMode::None: return "none";
+    case OpacityScaleMode::Rosseland: return "rosseland";
+    case OpacityScaleMode::Planck: return "planck";
+    case OpacityScaleMode::Auto: return "auto";
+    }
+    return "unknown";
+}
+
+std::string OptionValueName(FluxSourceFaceFlux mode)
+{
+    switch (mode) {
+    case FluxSourceFaceFlux::Hydro: return "hydro";
+    case FluxSourceFaceFlux::CellAverage: return "cell-average";
+    case FluxSourceFaceFlux::HydroMultigroup: return "hydro-multigroup";
+    case FluxSourceFaceFlux::Auto: return "auto";
+    }
+    return "unknown";
+}
+
+std::string OptionValueName(MissingRadiation mode)
+{
+    switch (mode) {
+    case MissingRadiation::Auto: return "auto";
+    case MissingRadiation::ConserveEnergy: return "conserve-energy";
+    case MissingRadiation::GasTemperature: return "gas-temperature";
+    }
+    return "unknown";
+}
+
 namespace
 {
 
@@ -257,49 +290,99 @@ void AddFluxSourceFaceFlux(std::vector<Option>& options,
 {
     using Mode = PostProcessIMC::FluxSourceFaceFlux;
     options.push_back(Option{
-        "flux-source.face-flux", "hydro|cell-average",
-        "CER face luminosity: the hydro's FLD flux across the face, or the mean of the two cells' FLD fluxes.",
+        "flux-source.face-flux", "auto|hydro|cell-average|hydro-multigroup",
+        "CER face luminosity: the hydro's grey FLD flux across the face, the mean of the two cells' FLD fluxes, "
+        "or the hydro's multigroup FLD flux per group (sets the face luminosity and spectrum). "
+        "auto: hydro-multigroup for a multigroup snapshot, hydro otherwise.",
         [&target](std::string const& text, std::string& error) {
-            if (text == "hydro")
+            if (text == "auto")
+                target = Mode::Auto;
+            else if (text == "hydro")
                 target = Mode::Hydro;
             else if (text == "cell-average")
                 target = Mode::CellAverage;
+            else if (text == "hydro-multigroup")
+                target = Mode::HydroMultigroup;
             else {
-                error = "expected hydro or cell-average";
+                error = "expected auto, hydro, cell-average or hydro-multigroup";
+                return false;
+            }
+            return true;
+        },
+        [&target]() { return OptionValueName(target); }});
+}
+
+void AddCoolingLimitMode(std::vector<Option>& options,
+                         PostProcessIMC::CoolingLimitMode& target)
+{
+    using Mode = PostProcessIMC::CoolingLimitMode;
+    options.push_back(Option{
+        "volume-emission.cooling-limit-mode", "temperature|emission",
+        "How a hot cell is held to the cooling cap: cooled to the temperature that gives it, "
+        "or kept at its snapshot temperature with its emission scaled (hard spectrum kept).",
+        [&target](std::string const& text, std::string& error) {
+            if (text == "temperature")
+                target = Mode::Temperature;
+            else if (text == "emission")
+                target = Mode::Emission;
+            else {
+                error = "expected temperature or emission";
                 return false;
             }
             return true;
         },
         [&target]() {
-            return std::string(target == Mode::Hydro ? "hydro" : "cell-average");
+            return std::string(target == Mode::Temperature ? "temperature" : "emission");
         }});
+}
+
+void AddMissingRadiation(std::vector<Option>& options,
+                         PostProcessIMC::MissingRadiation& target)
+{
+    using Mode = PostProcessIMC::MissingRadiation;
+    options.push_back(Option{
+        "input.missing-radiation", "auto|conserve-energy|gas-temperature",
+        "LTE radiation for a snapshot without any (E_rad and E_g zero everywhere): conserve-energy "
+        "(auto) shares each cell's internal energy between gas and radiation at one temperature, "
+        "gas-temperature sets T_rad = T_gas. Refused for a snapshot with radiation.",
+        [&target](std::string const& text, std::string& error) {
+            if (text == "auto")
+                target = Mode::Auto;
+            else if (text == "conserve-energy")
+                target = Mode::ConserveEnergy;
+            else if (text == "gas-temperature")
+                target = Mode::GasTemperature;
+            else {
+                error = "expected auto, conserve-energy or gas-temperature";
+                return false;
+            }
+            return true;
+        },
+        [&target]() { return OptionValueName(target); }});
 }
 
 void AddOpacityMode(std::vector<Option>& options, OpacityScaleMode& target)
 {
     options.push_back(Option{
-        "opacity-scaling.mode", "none|rosseland|planck",
-        "Multigroup absorption normalization.",
+        "opacity-scaling.mode", "auto|none|rosseland|planck",
+        "Multigroup absorption normalization. auto: none for a multigroup snapshot (the hydro's group opacities), "
+        "planck for a grey one or one with a different group count; a mismatch with the snapshot is refused.",
         [&target](std::string const& text, std::string& error) {
-            if (text == "none")
+            if (text == "auto")
+                target = OpacityScaleMode::Auto;
+            else if (text == "none")
                 target = OpacityScaleMode::None;
             else if (text == "rosseland")
                 target = OpacityScaleMode::Rosseland;
             else if (text == "planck")
                 target = OpacityScaleMode::Planck;
             else {
-                error = "expected none, rosseland, or planck";
+                error = "expected auto, none, rosseland, or planck";
                 return false;
             }
             return true;
         },
-        [&target]() {
-            if (target == OpacityScaleMode::None)
-                return std::string("none");
-            if (target == OpacityScaleMode::Rosseland)
-                return std::string("rosseland");
-            return std::string("planck");
-        }});
+        [&target]() { return OptionValueName(target); }});
 }
 
 std::vector<Option> MakeRegistry(PostProcessConfig& c)
@@ -311,6 +394,7 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddString(options, "input.multigroup-opacity-directory", "STA multigroup opacity tables.", c.input.multigroupOpacityDirectory);
     AddString(options, "input.grey-opacity-directory", "STA grey opacity tables.", c.input.greyOpacityDirectory);
     AddString(options, "input.eos-directory", "Equation-of-state tables.", c.input.eosDirectory);
+    AddMissingRadiation(options, c.input.missingRadiation);
     AddString(options, "output.stem", "Output path without .h5 or .vtk.", c.output.stem);
     AddBool(options, "output.write-vtk", "Write the observer VTK map.", c.output.writeVtk);
     AddString(options, "restart.from", "Result HDF5 to continue; transport.generations are then added to it (burn-in skipped).", c.restart.from);
@@ -376,6 +460,7 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddBool(options, "volume-emission.cooling-limit", "Limit each outside cell's net emission to the hydro's Fleck-limited cooling rate (aT^4 - E) V / (beta t_hydro).", c.volumeEmission.coolingLimit);
     AddDouble(options, "volume-emission.cooling-limit-cfl", "Courant number for the hydro time step of the cooling limit, in (0, 1).", c.volumeEmission.coolingLimitCfl);
     AddDouble(options, "volume-emission.cooling-limit-dt", "Hydro time step [s] for the cooling limit; 0 uses the Courant step.", c.volumeEmission.coolingLimitDt);
+    AddCoolingLimitMode(options, c.volumeEmission.coolingLimitMode);
     AddOpacityMode(options, c.opacityScaling.mode);
     AddDouble(options, "opacity-scaling.alpha-min", "Lower bound on the per-cell multigroup scale factor (0 = none).", c.opacityScaling.alphaMin);
     AddDouble(options, "opacity-scaling.alpha-max", "Upper bound on the per-cell multigroup scale factor (0 = none).", c.opacityScaling.alphaMax);

@@ -164,8 +164,7 @@ SyntheticSnapshot MakeSnapshot(bool plant)
                 cell.pressure = (kGamma - 1.0) * cell.density * cell.internal_energy;
                 cell.velocity = Vector3D(0.0, 0.0, 0.0);
                 cell.Erad = a * std::pow(radiationTemperature, 4) / cell.density;
-                for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
-                    cell.Eg[g] = cell.Erad / static_cast<double>(ENERGY_GROUPS_NUM);
+                // Grey snapshot (no E_g): planck opacity scaling.
                 cell.ID = snapshot.cells.size();
                 snapshot.mesh_points.push_back(point);
                 snapshot.cells.push_back(cell);

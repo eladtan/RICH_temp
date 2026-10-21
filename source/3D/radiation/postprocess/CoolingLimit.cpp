@@ -9,8 +9,10 @@
 #include <limits>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
+#include "AdaptiveStatistics.hpp"
 #include "FluxSourceCalculation.hpp"
 #include "source/newtonian/three_dimensional/CourantFriedrichsLewy.hpp"
 #include "source/newtonian/three_dimensional/SourceTerm3D.hpp"
@@ -258,6 +260,29 @@ void ApplyVolumeEmissionCoolingLimit(
         throw UniversalError("Cooling limit applied twice to the same snapshot");
     if(!runtime.eos || !runtime.greyOpacity)
         throw UniversalError("Cooling limit needs the EOS and the grey opacity");
+    if(cfg.opacityScaleMode == OpacityScaleMode::Auto)
+        throw UniversalError("Cooling limit: opacity scaling mode auto was not resolved from the snapshot");
+    // The cell's net emission is c kappa_P (aT^4 - E) V with the Planck mean
+    // the multigroup transport emits with. With opacity scaling the group
+    // opacities reproduce the grey Planck mean, so the grey table gives it.
+    // Without scaling (post-processing a multigroup hydro run) it is the
+    // Planck mean of the unscaled group opacities, typically far below the
+    // grey one; the grey table would then over-cool the cells.
+    // With Rosseland scaling the scaled group opacities match the grey
+    // Rosseland mean, not the Planck one: the Planck mean is the scaled group
+    // one, alpha(T') times the unscaled mean at T'. The scale factors are
+    // cleared for the limit and rebuilt after it.
+    bool const multigroupPlanck = ENERGY_GROUPS_NUM > 1 && cfg.opacityScaleMode == OpacityScaleMode::None;
+    bool const rosselandScaled = ENERGY_GROUPS_NUM > 1 && cfg.opacityScaleMode == OpacityScaleMode::Rosseland;
+    if((multigroupPlanck || rosselandScaled) && !runtime.opacity)
+        throw UniversalError("Cooling limit with multigroup Planck opacity needs the multigroup opacity");
+    if(rosselandScaled)
+    {
+        if(!runtime.applyOpacityScaleFactors)
+            throw UniversalError("Cooling limit with Rosseland scaling needs the opacity scaling policy");
+        runtime.applyOpacityScaleFactors(std::unordered_map<size_t, double>());
+    }
+    OpacityCalculator const& planckOpacity = (multigroupPlanck || rosselandScaled) ? *runtime.opacity : *runtime.greyOpacity;
     size_t const nCells = runtime.tess.GetPointNo();
     if(runtime.cells.size() < nCells)
         throw UniversalError("Cooling limit: fewer cells than tessellation points");
@@ -277,6 +302,9 @@ void ApplyVolumeEmissionCoolingLimit(
     uint64_t counts[3] = {0, 0, 0};  // outside, hot limited, cold limited
     double sums[2] = {0.0, 0.0};      // net before, net after
     double maxChange = 0.0;
+    bool const emissionMode = cfg.volumeEmissionCoolingLimitMode == CoolingLimitMode::Emission;
+    std::vector<uint64_t> capIDs;     // emission mode: hot-limited cells and their caps
+    std::vector<double> capValues;
     for(size_t i = 0; i < nCells; ++i)
     {
         if(i >= outside.size() || outside[i] == 0)
@@ -284,8 +312,29 @@ void ApplyVolumeEmissionCoolingLimit(
         ComputationalCell3D& cell = runtime.cells[i];
         double const rho = cell.density;
         CoolingLimitMaterial material;
+        // Rosseland scaling: the cell at the trial temperature, copied once.
+        ComputationalCell3D atTemperature;
+        if(rosselandScaled)
+            atTemperature = cell;
         material.planckOpacity = [&](double temperature) {
-            return runtime.greyOpacity->CalcPlanckOpacityAtTemperature(cell, temperature);
+            double scale = 1.0;
+            if(rosselandScaled)
+            {
+                atTemperature.temperature = temperature;
+                if(!ComputeOpacityScaleFactor(*runtime.opacity, *runtime.greyOpacity, atTemperature,
+                                              OpacityScaleMode::Rosseland, scale))
+                {
+                    UniversalError eo("Cooling limit: no Rosseland opacity scale factor");
+                    eo.addEntry("Cell ID", cell.ID);
+                    eo.addEntry("Temperature", temperature);
+                    throw eo;
+                }
+                if(cfg.opacityScaleAlphaMin > 0.0)
+                    scale = std::max(scale, cfg.opacityScaleAlphaMin);
+                if(cfg.opacityScaleAlphaMax > 0.0)
+                    scale = std::min(scale, cfg.opacityScaleAlphaMax);
+            }
+            return scale * planckOpacity.CalcPlanckOpacityAtTemperature(cell, temperature);
         };
         material.internalEnergyDensity = [&](double temperature) {
             return rho * runtime.eos->dT2e(rho, temperature, cell.tracers, ComputationalCell3D::tracerNames);
@@ -310,6 +359,14 @@ void ApplyVolumeEmissionCoolingLimit(
         if(outcome.kind == CoolingLimitKind::Unchanged)
             continue;
         ++counts[outcome.kind == CoolingLimitKind::Hot ? 1 : 2];
+        if(emissionMode && outcome.kind == CoolingLimitKind::Hot)
+        {
+            // The cell keeps its temperature; its emission is scaled at each
+            // source setup so that its net emission equals the cap.
+            capIDs.push_back(static_cast<uint64_t>(cell.ID));
+            capValues.push_back(outcome.netAfter);
+            continue;
+        }
         maxChange = std::max(maxChange, std::abs(outcome.temperature - cell.temperature) / cell.temperature);
         // The post-process transport reads only the temperature (it never
         // recomputes it from the internal energy).
@@ -320,6 +377,45 @@ void ApplyVolumeEmissionCoolingLimit(
     MPI_Allreduce(MPI_IN_PLACE, sums, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
     MPI_Allreduce(MPI_IN_PLACE, &maxChange, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif
+    if(emissionMode)
+    {
+        std::vector<uint64_t> allIDs = capIDs;
+        std::vector<double> allCaps = capValues;
+#ifdef RICH_MPI
+        int const localCount = static_cast<int>(capIDs.size());
+        std::vector<int> capCounts(static_cast<size_t>(runtime.mpiSize), 0), displs(capCounts.size(), 0);
+        MPI_Allgather(&localCount, 1, MPI_INT, capCounts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+        long long total = 0;
+        for(size_t r = 0; r < capCounts.size(); ++r)
+        {
+            displs[r] = static_cast<int>(total);
+            total += capCounts[r];
+        }
+        if(total > static_cast<long long>(std::numeric_limits<int>::max()))
+            throw UniversalError("Cooling limit: too many limited cells to gather");
+        allIDs.assign(static_cast<size_t>(total), 0);
+        allCaps.assign(static_cast<size_t>(total), 0.0);
+        MPI_Allgatherv(capIDs.data(), localCount, MPI_UINT64_T,
+                       allIDs.data(), capCounts.data(), displs.data(), MPI_UINT64_T, MPI_COMM_WORLD);
+        MPI_Allgatherv(capValues.data(), localCount, MPI_DOUBLE,
+                       allCaps.data(), capCounts.data(), displs.data(), MPI_DOUBLE, MPI_COMM_WORLD);
+#endif
+        runtime.coolingLimitEmissionCaps.clear();
+        runtime.coolingLimitEmissionCaps.reserve(allIDs.size());
+        for(size_t k = 0; k < allIDs.size(); ++k)
+        {
+            if(!(allCaps[k] > 0.0) || !std::isfinite(allCaps[k]))
+            {
+                UniversalError eo("Cooling limit: a hot-limited cell has an invalid cap");
+                eo.addEntry("Cell ID", allIDs[k]);
+                eo.addEntry("Cap", allCaps[k]);
+                throw eo;
+            }
+            runtime.coolingLimitEmissionCaps.emplace_back(static_cast<size_t>(allIDs[k]), allCaps[k]);
+        }
+        std::sort(runtime.coolingLimitEmissionCaps.begin(), runtime.coolingLimitEmissionCaps.end());
+    }
+
     summary.applied = true;
     summary.outsideCells = counts[0];
     summary.hotLimitedCells = counts[1];
@@ -342,7 +438,10 @@ void ApplyVolumeEmissionCoolingLimit(
                  << " courant_cell_T=" << summary.courantCellTemperature;
         else
             line << " source=explicit";
-        line << " outside_cells=" << summary.outsideCells
+        line << " planck_opacity=" << (multigroupPlanck ? "multigroup"
+                                       : rosselandScaled ? "multigroup-rosseland-scaled" : "grey")
+             << " mode=" << (emissionMode ? "emission" : "temperature")
+             << " outside_cells=" << summary.outsideCells
              << " hot_limited=" << summary.hotLimitedCells
              << " cold_limited=" << summary.coldLimitedCells
              << " net_emission_before=" << summary.netEmissionBefore
@@ -409,6 +508,134 @@ void BuildEscapeOriginHotCells(
                   << " hot_cells_1e6_1e7K=" << perClass[3]
                   << " hot_cells_ge1e7K=" << perClass[4] << std::endl;
     }
+}
+
+double CoolingLimitEmissionScale(
+    PostprocessRuntime const& runtime,
+    size_t cellID,
+    double gross,
+    double absorbed)
+{
+    auto const& caps = runtime.coolingLimitEmissionCaps;
+    if(caps.empty() || !(gross > 0.0))
+        return 1.0;
+    auto const it = std::lower_bound(caps.begin(), caps.end(), std::make_pair(cellID, -1.0));
+    if(it == caps.end() || it->first != cellID)
+        return 1.0;
+    double const scale = (it->second + std::max(0.0, absorbed)) / gross;
+    if(!std::isfinite(scale))
+    {
+        UniversalError eo("Cooling limit: invalid emission scale");
+        eo.addEntry("Cell ID", cellID);
+        eo.addEntry("Gross emission", gross);
+        eo.addEntry("Absorbed", absorbed);
+        throw eo;
+    }
+    return std::min(1.0, scale);
+}
+
+void ReportVolumeSourceGroups(
+    Config const& cfg,
+    PostprocessRuntime& runtime,
+    OpacityCalculator const& opacity,
+    std::string const& stage)
+{
+    if(!cfg.fluxSourceCompare || !cfg.volumeEmissionEnabled)
+        return;
+    size_t const groups = static_cast<size_t>(ENERGY_GROUPS_NUM);
+    std::vector<double> const& edges = opacity.energy_groups_boundary;
+    if(groups < 2 || edges.size() != groups + 1 || opacity.energy_groups_center.size() != groups)
+        return;
+    double constexpr cLight = 2.99792458e10;
+    double constexpr hardEdge = 0.999 * 0.3 * 1.602176634e-9;  // 0.3 keV in erg
+    size_t constexpr kBins = 5;  // T < 1e4, [1e4, 1e5), [1e5, 1e6), [1e6, 1e7), >= 1e7 K
+
+    std::vector<unsigned char> const outside = BuildOutsideFluxSourceMask(cfg, runtime);
+    size_t const nCells = runtime.tess.GetPointNo();
+    // [gross per group | snapshot absorbed per group | cells per T bin |
+    //  gross per T bin | gross above 0.3 keV per T bin | cells without E_g]
+    std::vector<double> sums(2 * groups + 3 * kBins + 1, 0.0);
+    double maxT = 0.0;
+    for(size_t i = 0; i < nCells && i < outside.size(); ++i)
+    {
+        if(outside[i] == 0)
+            continue;
+        ComputationalCell3D const& cell = runtime.cells[i];
+        double const T = cell.temperature;
+        double const volume = runtime.tess.GetVolume(i);
+        size_t const bin = T < 1e4 ? 0 : (T < 1e5 ? 1 : (T < 1e6 ? 2 : (T < 1e7 ? 3 : 4)));
+        maxT = std::max(maxT, T);
+        bool const hasGroups = cfg.snapshotGroupEnergyUsable && cell.Eg.size() == groups;
+        if(!hasGroups)
+            sums.back() += 1.0;
+        double gross = 0.0;
+        double hard = 0.0;
+        std::vector<double> emission(groups, 0.0);
+        for(size_t g = 0; g < groups; ++g)
+        {
+            double const kappa = opacity.CalcAbsorptionOpacity(cell, opacity.energy_groups_center[g]);
+            emission[g] = cLight * kappa *
+                planck_integral::planck_energy_density_group_integral(edges[g], edges[g + 1], T) * volume;
+            if(hasGroups)
+                sums[groups + g] += cLight * kappa * cell.density * cell.Eg[g] * volume;
+            gross += emission[g];
+        }
+        // Emission-mode cooling limit: the emission is scaled, with the
+        // absorption of the snapshot radiation at the same Planck mean.
+        double const aT4 = CG::radiation_constant * std::pow(T, 4);
+        double const radiationEnergy = cell.density * cell.Erad;
+        double const absorbed = aT4 > 0.0 && std::isfinite(radiationEnergy) && radiationEnergy > 0.0
+            ? gross * radiationEnergy / aT4 : 0.0;
+        double const scale = CoolingLimitEmissionScale(runtime, cell.ID, gross, absorbed);
+        gross *= scale;
+        for(size_t g = 0; g < groups; ++g)
+        {
+            sums[g] += emission[g] * scale;
+            if(edges[g] >= hardEdge)
+                hard += emission[g] * scale;
+        }
+        sums[2 * groups + bin] += 1.0;
+        sums[2 * groups + kBins + bin] += gross;
+        sums[2 * groups + 2 * kBins + bin] += hard;
+    }
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, sums.data(), static_cast<int>(sums.size()), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &maxT, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+    if(runtime.rank != 0)
+        return;
+    size_t const none = std::numeric_limits<size_t>::max();
+    // sums[offset + k], minus sums[subtract + k] unless subtract is none.
+    auto list = [&](size_t offset, size_t count, size_t subtract) {
+        std::ostringstream out;
+        out << std::setprecision(4) << "[";
+        for(size_t k = 0; k < count; ++k)
+            out << (k ? "," : "")
+                << sums[offset + k] - (subtract == none ? 0.0 : sums[subtract + k]);
+        out << "]";
+        return out.str();
+    };
+    double outsideCells = 0.0;
+    for(size_t b = 0; b < kBins; ++b)
+        outsideCells += sums[2 * groups + b];
+    std::ostringstream line;
+    line << std::setprecision(4)
+         << "SOURCE_GROUP_VOLUME stage=" << stage
+         << " outside_cells=" << outsideCells
+         << " T_max=" << maxT << " K"
+         << " cells_without_group_energy=" << sums.back()
+         << " gross=" << list(0, groups, none)
+         << " snapshot_absorbed="
+         << (cfg.snapshotGroupEnergyUsable ? list(groups, groups, none) : std::string("n/a (snapshot type)"))
+         << " net=" << (cfg.snapshotGroupEnergyUsable ? list(0, groups, groups) : std::string("n/a (snapshot type)"))
+         << " erg/s\n"
+         << "SOURCE_GROUP_VOLUME_T stage=" << stage
+         << " T_bins=[<1e4,1e4-1e5,1e5-1e6,1e6-1e7,>=1e7]K"
+         << " cells=" << list(2 * groups, kBins, none)
+         << " gross=" << list(2 * groups + kBins, kBins, none)
+         << " gross_ge_0.3keV=" << list(2 * groups + 2 * kBins, kBins, none)
+         << " erg/s";
+    std::cout << line.str() << std::endl;
 }
 
 void PrintCompressionReport(

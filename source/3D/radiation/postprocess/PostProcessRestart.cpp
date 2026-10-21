@@ -652,7 +652,9 @@ std::vector<std::string> const& MustMatchOptions()
         "volume-emission.cooling-limit",
         "volume-emission.cooling-limit-cfl",
         "volume-emission.cooling-limit-dt",
+        "volume-emission.cooling-limit-mode",
         "opacity-scaling.mode",
+        "input.missing-radiation",
         "opacity-scaling.alpha-min",
         "opacity-scaling.alpha-max",
         // The learned state's structure depends on these.
@@ -672,6 +674,8 @@ std::unordered_map<std::string, std::string> const& LegacyOptionValues()
     static std::unordered_map<std::string, std::string> const values = {
         {"flux-source.smoothing-photosphere-cap", "false"},
         {"flux-source.mapping-neighbours", "0"},
+        {"volume-emission.cooling-limit-mode", "temperature"},
+        {"input.missing-radiation", "auto"},
     };
     return values;
 }

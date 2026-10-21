@@ -19,6 +19,7 @@
 //        limited, the net emission before and after matches the formula, and
 //        the grey escaping luminosity drops back to E0's within its errors
 //        while H0 is brighter by about the hot cells' net emission.
+// The snapshot is grey (no E_g): planck opacity scaling.
 
 #include <array>
 #include <cmath>
@@ -168,8 +169,6 @@ SyntheticSnapshot MakeSnapshot(bool plant)
                 cell.pressure = (kGamma - 1.0) * cell.density * cell.internal_energy;
                 cell.velocity = Vector3D(0.0, 0.0, 0.0);
                 cell.Erad = a * std::pow(radiationTemperature, 4) / cell.density;
-                for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
-                    cell.Eg[g] = cell.Erad / static_cast<double>(ENERGY_GROUPS_NUM);
                 cell.ID = snapshot.cells.size();
                 snapshot.mesh_points.push_back(point);
                 snapshot.cells.push_back(cell);
@@ -421,12 +420,18 @@ int main(int argc, char* argv[])
                     if (h.planted[i] == Planted::Hot)
                         hotNet += outcome.netBefore;
                 }
+                // The other outside cells are not limited (the PASS on the
+                // limited counts), so their net emission, nearly but not
+                // exactly zero depending on where the surface leaves the core
+                // edge, is the same before and after the limit.
+                double const unplanted = H1.coolingLimit.netEmissionBefore - before;
                 metrics << "planted_net_before " << before << " " << H1.coolingLimit.netEmissionBefore << "\n";
                 metrics << "planted_net_after " << after << " " << H1.coolingLimit.netEmissionAfter << "\n";
+                metrics << "unplanted_net " << unplanted << "\n";
                 check(RelDiff(before, H1.coolingLimit.netEmissionBefore) < 1e-9,
                       "planted: net emission before the limit matches the formula");
-                check(RelDiff(after, H1.coolingLimit.netEmissionAfter) < 1e-9,
-                      "planted: net emission after the limit matches the formula");
+                check(RelDiff(after + unplanted, H1.coolingLimit.netEmissionAfter) < 1e-9,
+                      "planted: net emission after the limit matches the formula plus the unchanged other cells");
 
                 double const sigmaOn = std::hypot(H1.grey.crossingLuminosityStderr, E0.grey.crossingLuminosityStderr);
                 double const excessOff = H0.grey.crossingLuminosity - E0.grey.crossingLuminosity;

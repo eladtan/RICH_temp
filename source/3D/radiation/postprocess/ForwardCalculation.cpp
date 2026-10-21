@@ -13,6 +13,7 @@
 #include <limits>
 #include <memory>
 #include <numeric>
+#include <sstream>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -1061,6 +1062,24 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     polSummary.luminosityWeightedDegree;
                 result.polarizedObserverCount = polSummary.observerCount;
 
+                // Crossing luminosity per group, summed over observers.
+                std::string groupLuminosityLine;
+                {
+                    std::vector<std::vector<double>> const perObserver =
+                        observer->getGroupLuminosity(cfg.sourceDt);
+                    std::vector<double> perGroup;
+                    for (std::vector<double> const& row : perObserver) {
+                        perGroup.resize(std::max(perGroup.size(), row.size()), 0.0);
+                        for (size_t g = 0; g < row.size(); ++g)
+                            perGroup[g] += row[g];
+                    }
+                    std::ostringstream line;
+                    line << "[";
+                    for (size_t g = 0; g < perGroup.size(); ++g)
+                        line << (g ? "," : "") << perGroup[g];
+                    line << "]";
+                    groupLuminosityLine = line.str();
+                }
                 std::cout << "\n=== TDE Post-Processing Results ===\n"
                           << "Generations:              " << mgFinalGenerations << "\n"
                           << "Final included generations: " << mgIncludedFinalGenerations << "\n"
@@ -1073,6 +1092,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                           << "Total crossing luminosity: " << totalLum << " +/- "
                           << observer->getTotalLuminosityStderrGen(cfg.sourceDt)
                           << " erg/s (rel=" << observer->getTotalLuminosityRelErrGen(cfg.sourceDt) << ")\n"
+                          << "Group crossing luminosity: " << groupLuminosityLine << " erg/s\n"
                           << "Total FLD luminosity:     " << runtime.totalFldLuminosity << " erg/s\n"
                           << "Emitted energy:           " << diag.emittedEnergy << " erg\n"
                           << "Absorbed energy:          " << diag.absorbedEnergy << " erg\n"

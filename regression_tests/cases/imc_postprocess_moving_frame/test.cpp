@@ -14,17 +14,21 @@
 //
 // Each flow is run with explicit IMC and with DDMC in the envelope (its cells
 // are thick enough for the DDMC threshold set below), in both the multigroup and grey
-// passes. DDMC must also match IMC at the same flow: it carries radiation
-// with the gas through its advection leaks. These cases run with the DDMC
-// compression shift unlimited (transport.ddmc-compression-max-dynamical-times
-// = inf), as IMC's Doppler shifts are.
+// passes. These cases run with the production compression clock of one local
+// dynamical time (transport.ddmc-compression-max-dynamical-times = 1). In the
+// outflow DDMC must match IMC: it carries radiation with the gas through its
+// advection leaks. In the inflow the clock stops DDMC's compression, which
+// IMC's Doppler shifts never do, so DDMC gains energy but less than IMC. (An
+// unlimited clock is not usable here: the neighbour-mapped source surface
+// leaves static, very opaque core cells outside, and the frozen-flow shift of
+// a packet trapped in one grows without bound.)
 //
 // The frozen-flow compression clock: DDMC reports the pdV work of its shift
 // (diagnostics/compression_work). It is zero without DDMC and in the static
 // envelope, positive in the inflow, negative in the outflow. In the inflow a
 // packet's shift stops once it has spent the given number of local dynamical
 // times min(1/|div v|, r/|v|) in the flow, so the work is exactly zero with a
-// limit of 0 and grows with the limit up to the unlimited case.
+// limit of 0 and grows with the limit (0.25, then the 1 used above).
 
 #include <cmath>
 #include <cstddef>
@@ -209,7 +213,7 @@ PostProcessIMC::PostProcessScenario MakeScenario(int flowSign, bool ddmc)
     c.transport.useCellVelocities = true;
     c.transport.ddmc = ddmc;
     c.transport.ddmcMinCellOpticalDepth = 3.0;
-    c.transport.ddmcCompressionMaxDynamicalTimes = std::numeric_limits<double>::infinity();
+    c.transport.ddmcCompressionMaxDynamicalTimes = 1.0;
     c.transport.randomWalk = false;
     c.transport.compton.enabled = false;
     c.polarization.enabled = true;
@@ -219,6 +223,8 @@ PostProcessIMC::PostProcessScenario MakeScenario(int flowSign, bool ddmc)
     c.fluxSource.constructionRays = 256;
     c.fluxSource.ddmcFaceOpticalDepth = 3.0;
     c.fluxSource.surfaceMode = FluxSourceSurfaceMode::MultigroupInnermost;
+    // Multigroup snapshot (E_g set) with the grey hydro face flux.
+    c.fluxSource.faceFlux = FluxSourceFaceFlux::Hydro;
     c.volumeEmission.enabled = false;
     c.opacityScaling.mode = OpacityScaleMode::None;
     c.adaptive.source.enabled = false;
@@ -350,8 +356,8 @@ int main()
             }
         }
         // The compression clock in the DDMC inflow: no shift with a limit of 0,
-        // a partial one with 0.25 local dynamical times, the full one with no
-        // limit (ddmcIn above).
+        // a smaller one with 0.25 local dynamical times than with the limit of
+        // 1 used above (ddmcIn).
         {
             auto limited = [](double maxTimes) {
                 return [maxTimes](PostProcessIMC::PostProcessConfig& c) {
@@ -369,7 +375,7 @@ int main()
                         << tag << "_work_unlimited " << wInf << "\n";
                 check(w0 == 0.0, tag + ": no compression work with a limit of 0");
                 check(wq > 0.0 && wq < wInf,
-                      tag + ": the 0.25 limit gives part of the unlimited work (" +
+                      tag + ": the 0.25 limit gives part of the work of the limit of 1 (" +
                       std::to_string(wq) + " of " + std::to_string(wInf) + ")");
             }
         }
@@ -385,22 +391,29 @@ int main()
             check(std::abs(kernelStill.grey - 1.0) < 1e-6,
                   "ddmc_kernel_grey: static envelope conserves energy (G-1=" + std::to_string(kernelStill.grey - 1.0) + ")");
         }
-        // DDMC carries radiation with the gas (advection leaks) and does the
-        // work term, so it reproduces IMC up to the first-order upwind
-        // smearing of the advection, ~1.5 beta tau_cell of the diffusion
-        // (0.15 here). Inflow, where radiation is pushed against its gradient,
-        // shows it most: G_ddmc - G_imc = -0.10 on this 12^3 mesh and -0.05
-        // on an 18^3 one. The gate is relative to the energy change itself.
+        // In the outflow DDMC carries radiation with the gas (advection leaks)
+        // and does the work term, so it reproduces IMC up to the first-order
+        // upwind smearing of the advection, ~1.5 beta tau_cell of the
+        // diffusion (0.15 here). The gate is relative to the energy change.
         for (auto const& [tag, imc, ddmc] : {
                  std::tuple<std::string, double, double>{"outflow_forward", imcOut.forward, ddmcOut.forward},
-                 std::tuple<std::string, double, double>{"outflow_grey", imcOut.grey, ddmcOut.grey},
-                 std::tuple<std::string, double, double>{"inflow_forward", imcIn.forward, ddmcIn.forward},
-                 std::tuple<std::string, double, double>{"inflow_grey", imcIn.grey, ddmcIn.grey}}) {
+                 std::tuple<std::string, double, double>{"outflow_grey", imcOut.grey, ddmcOut.grey}}) {
             metrics << "ddmc_minus_imc_" << tag << " " << (ddmc - imc) << "\n";
             check(std::abs(ddmc - imc) <= 0.2 * std::abs(imc - 1.0),
                   "DDMC matches IMC within 20% of the energy change, " + tag +
                   " (G_ddmc - G_imc=" + std::to_string(ddmc - imc) +
                   ", G_imc - 1=" + std::to_string(imc - 1.0) + ")");
+        }
+        // In the inflow the clock of one dynamical time stops the DDMC shift
+        // that IMC's Doppler shifts continue: DDMC gains energy, but no more
+        // than IMC.
+        for (auto const& [tag, imc, ddmc] : {
+                 std::tuple<std::string, double, double>{"inflow_forward", imcIn.forward, ddmcIn.forward},
+                 std::tuple<std::string, double, double>{"inflow_grey", imcIn.grey, ddmcIn.grey}}) {
+            metrics << "ddmc_minus_imc_" << tag << " " << (ddmc - imc) << "\n";
+            check(ddmc > 1.0 && ddmc <= imc,
+                  "DDMC with the clock gains energy but no more than IMC, " + tag +
+                  " (G_ddmc=" + std::to_string(ddmc) + ", G_imc=" + std::to_string(imc) + ")");
         }
     } catch (UniversalError const& eo) {
         std::cout << "FAIL exception: " << eo.getErrorMessage() << std::endl;
