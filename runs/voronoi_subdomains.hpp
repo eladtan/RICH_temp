@@ -4,18 +4,19 @@
 #include <cstddef>
 #include <stdexcept>
 #include <string>
-#ifdef _OPENMP
+#if defined(_OPENMP) && defined(RICH_WITH_KOKKOS)
 #include <omp.h>
 #endif
 
 // The number of thread subdomains asked for with --voronoi-subdomains: a number (0 builds
 // each rank as one domain), or "auto" for one per OpenMP thread of the rank, the threads
-// MadVoro's Kokkos host execution space runs on.
+// MadVoro's Kokkos host execution space runs on. Without Kokkos MadVoro builds subdomains
+// one after another, so "auto" is 1 (and such builds need not link an OpenMP runtime).
 inline std::size_t ParseVoronoiSubdomains(const std::string &value)
 {
     if(value == "auto")
     {
-#ifdef _OPENMP
+#if defined(_OPENMP) && defined(RICH_WITH_KOKKOS)
         return static_cast<std::size_t>(omp_get_max_threads());
 #else
         return 1;
