@@ -63,6 +63,28 @@ void RigidWallGenerator3D::operator()(const Tessellation3D& tess,
 				eo.addEntry("ID", cells[tess.GetFaceNeighbors(ghosts[indeces2[i]].first).second].ID);
 			else
 				eo.addEntry("ID", cells[tess.GetFaceNeighbors(ghosts[indeces2[i]].first).first].ID);
+			// The ghost point is the outside neighbor of more than one boundary face: list those faces
+			size_t const duplicate = temp[indeces2[i]].first;
+			Vector3D const ghost_point = tess.GetMeshPoint(duplicate);
+			eo.addEntry("ghost index", static_cast<double>(duplicate));
+			eo.addEntry("ghost x", ghost_point.x);
+			eo.addEntry("ghost y", ghost_point.y);
+			eo.addEntry("ghost z", ghost_point.z);
+			for (size_t j = 0; j < N; ++j)
+			{
+				if (temp[j].first != duplicate)
+					continue;
+				size_t const face = ghosts[j].first;
+				size_t const real = ghosts[j].second == 1 ? tess.GetFaceNeighbors(face).second : tess.GetFaceNeighbors(face).first;
+				Vector3D const real_point = tess.GetMeshPoint(real);
+				eo.addEntry("face", static_cast<double>(face));
+				eo.addEntry("face area", tess.GetArea(face));
+				eo.addEntry("real ID", static_cast<double>(cells[real].ID));
+				eo.addEntry("real x", real_point.x);
+				eo.addEntry("real y", real_point.y);
+				eo.addEntry("real z", real_point.z);
+				eo.addEntry("real volume", tess.GetVolume(real));
+			}
 			throw eo;
 		}
 	}
