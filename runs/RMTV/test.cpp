@@ -6,6 +6,7 @@
 #include "source/3D/radiation/IMCCostCalculator.hpp"
 #endif
 #include <algorithm>
+#include <chrono>
 #include <filesystem>
 #include <iomanip>
 #include <iostream>
@@ -34,6 +35,8 @@
 #include "utils/arguments/ArgumentParser.hpp"
 #include "RMTVReference.hpp"
 #include "RMTVOpacity.hpp"
+#include "utils/MPIInitializer.hpp"
+#include "runs/voronoi_subdomains.hpp"
 #ifdef RICH_MPI
 #endif
 
@@ -53,6 +56,7 @@ struct Options
            costStepScale = 1.0, costParticleScale = 5.0;
     size_t lbInterval = 1;
     std::string mcManager = "rdma";
+    std::string voronoiSubdomains = "0";
     double lbTolerance = 3.0;
     std::string motion = "eulerian";
     double roundChi = 1.25, roundEta = 0.02;
@@ -94,6 +98,8 @@ Options parse(int argc, char **argv, int rank)
     arguments.addOption<double>("round-eta", o.roundEta, "RoundCells3D activation threshold");
     arguments.addOption<std::string>("mc-manager", o.mcManager,
                                      "MC transport backend: rdma, rdma-ibv, mpi-rma or p2p");
+    arguments.addOption<std::string>("voronoi-subdomains", o.voronoiSubdomains,
+                                     "thread subdomains per rank for the Voronoi builds (0: one domain; auto: one per thread)");
     arguments.addOption<size_t>("lb-interval", o.lbInterval,
                                 "MC steps between load balance checks, 0 to never check");
     arguments.addOption<double>("lb-tolerance", o.lbTolerance,
@@ -144,6 +150,7 @@ Options parse(int argc, char **argv, int rank)
     o.roundChi = arguments.get<double>("round-chi");
     o.roundEta = arguments.get<double>("round-eta");
     o.mcManager = arguments.get<std::string>("mc-manager");
+    o.voronoiSubdomains = arguments.get<std::string>("voronoi-subdomains");
     o.lbInterval = arguments.get<size_t>("lb-interval");
     o.lbTolerance = arguments.get<double>("lb-tolerance");
     o.costStepScale = arguments.get<double>("cost-step-scale");
@@ -395,6 +402,12 @@ void run(const Options &o, int rank, int size)
     const double L = o.box * o.scales.length, lower = o.octant ? 0 : -L, dx = (L - lower) / o.n;
     const double t0 = o.scales.age(o.rf0), tend = o.scales.age(o.rf1);
     Voronoi3D tess(Vector3D(lower, lower, lower), Vector3D(L, L, L));
+    const size_t voronoiSubdomains = ParseVoronoiSubdomains(o.voronoiSubdomains);
+    tess.SetThreadSubdomains(voronoiSubdomains);
+    if(rank == 0 and voronoiSubdomains > 0)
+    {
+        std::cout << "Voronoi thread subdomains per rank: " << voronoiSubdomains << std::endl;
+    }
     std::vector<Vector3D> points;
     if(rank == 0)
     {
@@ -670,6 +683,8 @@ void run(const Options &o, int rank, int size)
         return;
     }
     double radiationDt = std::numeric_limits<double>::max();
+    const auto loopStart = std::chrono::steady_clock::now();
+    const size_t loopFirstCycle = sim.GetCycle();
     while(sim.GetTime() < tend && sim.GetCycle() < size_t(o.maxSteps))
     {
         // Sum of directional acoustic rates is conservative for a 3D grid.
@@ -765,6 +780,16 @@ void run(const Options &o, int rank, int size)
                       << std::endl;
         }
     }
+    double loopSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - loopStart).count();
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &loopSeconds, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+    if(rank == 0)
+    {
+        const size_t loopCycles = sim.GetCycle() - loopFirstCycle;
+        std::cout << "RMTV timing: cycles=" << loopCycles << " wall=" << loopSeconds << " s per_cycle="
+                  << (loopCycles > 0 ? loopSeconds / loopCycles : 0.0) << " s" << std::endl;
+    }
     snapshot(o, "final", rank, tess, cells, sim.GetTime(), ref);
     if(rank == 0)
     {
@@ -784,6 +809,8 @@ int main(int argc, char **argv)
     int rank = 0, size = 1;
 #ifdef RICH_MPI
     MPI_Init(&argc, &argv);
+    // Created before any Kokkos initializer, so MPI is finalized after Kokkos at exit
+    MPIInitializer::Instance();
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &size);
 #endif
@@ -819,7 +846,6 @@ int main(int argc, char **argv)
     {
         MPI_Abort(MPI_COMM_WORLD, code);
     }
-    MPI_Finalize();
 #endif
     return code;
 }
