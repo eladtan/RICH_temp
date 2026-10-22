@@ -9,6 +9,7 @@
 #include "../common/equation_of_state.hpp"
 #include "SpatialReconstruction3D.hpp"
 #include <cmath>
+#include <functional>
 #include "../../misc/universal_error.hpp"
 #include "Ghost3D.hpp"
 
@@ -64,6 +65,13 @@ public:
 
 	void BuildSlopes(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, double time) override;
 
+	/*! \brief Faces for which the predicate returns true are limited by the Barth-Jespersen bound alone (no blend with
+	    the shock limiter), so values reconstructed there stay inside the neighbor range even in shocked cells.
+	    Empty by default. Wedge runs use it for the wall faces, whose mirror neighbor equals the cell and would
+	    otherwise switch every shocked cell to first order.
+	*/
+	void SetLimiterFaceSkip(std::function<bool(Tessellation3D const&, size_t)> skip) { limiter_face_skip_ = std::move(skip); }
+
 	/*! \brief Compute per-cell dissipation without materializing face pairs.
 	    Precondition: BuildSlopes(tess, cells, time) must have been called
 	    for the same tessellation/cells/time before this method.
@@ -92,6 +100,7 @@ private:
 	mutable vector<size_t> to_skip_;
 	const bool pressure_calc_;
 	const bool apply_principal_limit_;
+	std::function<bool(Tessellation3D const&, size_t)> limiter_face_skip_;
 
 	LinearGauss3D(const LinearGauss3D& origin);
 
