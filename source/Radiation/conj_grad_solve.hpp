@@ -88,6 +88,10 @@ namespace CG
          * @return A double representing the length scale.
          */
         virtual double GetLengthScale() const {return 1.0;}
+        /*! \brief BiCGSTAB judges each cell's residual and update against |x_j| + floor * max|x|; cells far below
+            floor * max|x| are not resolved. 4e-5 is the long-standing value; a driver may ask for a tighter floor.
+        */
+        virtual double GetConvergenceFloorFactor() const {return 4e-5;}
 
         virtual void BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_indeces, std::vector<ComputationalCell3D> const& cells,
             double const dt, std::vector<double>& b, std::vector<double>& x0, double const current_time) const = 0;
