@@ -128,15 +128,19 @@ double WedgeGeometry3D::FullRevolutionFactor(void) const {
 }
 
 WedgeVoronoi3D::WedgeVoronoi3D(WedgeGeometry3D const& Geometry, bool InPlaneGhostSearch)
+    : WedgeVoronoi3D(Geometry, InPlaneGhostSearch ? WedgeMesh::InPlaneSearch : WedgeMesh::Generic) {}
+
+WedgeVoronoi3D::WedgeVoronoi3D(WedgeGeometry3D const& Geometry, WedgeMesh Mesh)
     : Voronoi3D(Geometry.GetLowerLeft(), Geometry.GetUpperRight()), Geometry_(Geometry) {
     // Constructing from the bounding box keeps MadVoro's MPI Hilbert manager on a non-degenerate box; the wedge
     // faces replace the six box faces and are pushed to the engine at the next build.
     ModifyBoxFaces() = Geometry.BuildBoxFaces();
-    if (InPlaneGhostSearch) {
+    if (Mesh != WedgeMesh::Generic) {
         // Every generator is on z = 0 and is bounded by exactly its own two wall mirrors and its in-plane neighbors
         engine().SetGeneratorPlane(Vector3D(0, 0, 1), 0);
         engine().SetAlwaysMirroredFaces(Geometry.WallFaceIndices());
     }
+    engine().SetPlaneFaces(Mesh == WedgeMesh::PlaneFaces);
 }
 
 double WedgeVoronoi3D::GetWidth(size_t Index) const {

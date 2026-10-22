@@ -80,10 +80,21 @@ private:
   With InPlaneGhostSearch (default) MadVoro mirrors every local generator across both walls up front and looks for MPI
   ghosts with the circles where the tetrahedra's circumspheres meet z = 0. Without it the search spheres have radius
   ~ y tan(alpha) and the ghost search grows with the wedge height (34 s per step for 2D_h1 at tan(alpha) = 0.05).
+  WedgeMesh::PlaneFaces also builds the faces from each cell's in-plane polygon extended between the walls, which is
+  the exact cell; the faces from the tetrahedra have slivers towards other cells' mirrors and an error that grows as
+  tan(alpha) shrinks.
 */
+enum class WedgeMesh {
+    Generic,        //!< MadVoro's generic 3D build
+    InPlaneSearch,  //!< walls always mirrored, ghost search with the circles on z = 0
+    PlaneFaces      //!< InPlaneSearch, with the faces from the in-plane polygons
+};
+
 class WedgeVoronoi3D : public Voronoi3D {
 public:
     explicit WedgeVoronoi3D(WedgeGeometry3D const& Geometry, bool InPlaneGhostSearch = true);
+
+    WedgeVoronoi3D(WedgeGeometry3D const& Geometry, WedgeMesh Mesh);
 
     double GetWidth(size_t Index) const override;
 
