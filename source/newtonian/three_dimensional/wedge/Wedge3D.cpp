@@ -140,7 +140,8 @@ WedgeVoronoi3D::WedgeVoronoi3D(WedgeGeometry3D const& Geometry, WedgeMesh Mesh)
         engine().SetGeneratorPlane(Vector3D(0, 0, 1), 0);
         engine().SetAlwaysMirroredFaces(Geometry.WallFaceIndices());
     }
-    engine().SetPlaneFaces(Mesh == WedgeMesh::PlaneFaces);
+    engine().SetPlaneFaces(Mesh == WedgeMesh::PlaneFaces || Mesh == WedgeMesh::PlaneMesh);
+    engine().SetPlaneMesh(Mesh == WedgeMesh::PlaneMesh);
 }
 
 double WedgeVoronoi3D::GetWidth(size_t Index) const {

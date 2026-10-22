@@ -82,12 +82,14 @@ private:
   ~ y tan(alpha) and the ghost search grows with the wedge height (34 s per step for 2D_h1 at tan(alpha) = 0.05).
   WedgeMesh::PlaneFaces also builds the faces from each cell's in-plane polygon extended between the walls, which is
   the exact cell; the faces from the tetrahedra have slivers towards other cells' mirrors and an error that grows as
-  tan(alpha) shrinks.
+  tan(alpha) shrinks. WedgeMesh::PlaneMesh also triangulates in 2D: the 3D Delaunay of the points and their wall mirrors
+  has six cospherical points per in-plane triangle and was ~70% of the build (h1, 2026-10-22).
 */
 enum class WedgeMesh {
     Generic,        //!< MadVoro's generic 3D build
     InPlaneSearch,  //!< walls always mirrored, ghost search with the circles on z = 0
-    PlaneFaces      //!< InPlaneSearch, with the faces from the in-plane polygons
+    PlaneFaces,     //!< InPlaneSearch, with the faces from the in-plane polygons
+    PlaneMesh       //!< PlaneFaces, with a 2D Delaunay of the in-plane points instead of the 3D one with the wall mirrors
 };
 
 class WedgeVoronoi3D : public Voronoi3D {
