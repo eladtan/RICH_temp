@@ -31,6 +31,7 @@
 #include "source/misc/universal_error.hpp"
 #include "source/misc/utils.hpp"
 #include "source/3D/radiation/StateHdf5IO.hpp"
+#include "source/3D/radiation/PolarizationStatistics.hpp"
 #include "PostProcessConfig.hpp"
 #include "source/monte/particle/StepResult.hpp"
 #include "source/monte/particle/ParticleStatus.hpp"
@@ -2637,6 +2638,11 @@ void ConfigureFluxSourceForCurrentDecomposition(
                   << " K" << std::endl;
 }
 
+char const* const kLuminosityWeightedDegreeDefinition =
+    "sum_i I_i sqrt(max(0, P_i^2 - sigma_P,i^2)) / sum_i I_i over observers i: the luminosity-weighted "
+    "mean of the per-observer degrees, each debiased by its packet-level sigma_P^2 = sigma_q^2 + "
+    "sigma_u^2; observers with fewer than 10 effective packets keep their raw degree";
+
 FluxSourcePolarizationSummary ComputeFluxSourcePolarizationSummary(
     SphericalObserver::ObserverQualitySnapshot const& snapshot)
 {
@@ -2647,6 +2653,9 @@ FluxSourcePolarizationSummary ComputeFluxSourcePolarizationSummary(
     size_t const count = std::min(
         snapshot.energy.size(),
         std::min(snapshot.stokesQ.size(), snapshot.stokesU.size()));
+    bool const moments = snapshot.polarizationWeightSq.size() >= count &&
+        snapshot.sumKW2Q.size() >= count && snapshot.sumKW2QQ.size() >= count &&
+        snapshot.sumKW2U.size() >= count && snapshot.sumKW2UU.size() >= count;
     double totalEnergy = 0.0;
     double polarizedEnergy = 0.0;
     for(size_t i = 0; i < count; ++i)
@@ -2658,8 +2667,22 @@ FluxSourcePolarizationSummary ComputeFluxSourcePolarizationSummary(
            !std::isfinite(q) || !std::isfinite(u))
             continue;
         totalEnergy += energy;
-        polarizedEnergy += std::sqrt(q * q + u * u);
         ++result.observerCount;
+        polarization_statistics::Quality const quality = moments
+            ? polarization_statistics::ComputeQuality(
+                energy, q, u, snapshot.polarizationWeightSq[i], snapshot.sumKW2Q[i],
+                snapshot.sumKW2QQ[i], snapshot.sumKW2U[i], snapshot.sumKW2UU[i])
+            : polarization_statistics::Quality{};
+        if(quality.uncertaintyValid)
+        {
+            double const debiased2 = quality.degree * quality.degree - quality.sigmaP * quality.sigmaP;
+            polarizedEnergy += energy * std::sqrt(std::max(0.0, debiased2));
+        }
+        else
+        {
+            polarizedEnergy += std::sqrt(q * q + u * u);
+            ++result.undebiasedObserverCount;
+        }
     }
     if(totalEnergy > 0.0)
         result.luminosityWeightedDegree = std::clamp(

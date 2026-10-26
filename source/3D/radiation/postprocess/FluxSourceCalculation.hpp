@@ -8,11 +8,22 @@
 
 namespace imc_postprocess_tde {
 
+// Luminosity-weighted mean of the observers' noise-debiased polarization
+// degrees, sum_i I_i sqrt(max(0, P_i^2 - sigma_P,i^2)) / sum_i I_i, with the
+// packet-level sigma_P^2 = sigma_q^2 + sigma_u^2 (the noise floor of P^2).
+// Q and U of different observers are in different sky bases, so they are not
+// summed. An observer without a packet-level uncertainty (fewer than
+// polarization_statistics::kMinEffectivePackets effective packets) keeps its
+// raw degree and is counted in undebiasedObserverCount.
 struct FluxSourcePolarizationSummary
 {
     double luminosityWeightedDegree = 0.0;
     uint64_t observerCount = 0;
+    uint64_t undebiasedObserverCount = 0;
 };
+
+// Definition string written next to the summary degrees in the result file.
+extern char const* const kLuminosityWeightedDegreeDefinition;
 
 void InitializeFluxSourceSurface(
     Config const& cfg,

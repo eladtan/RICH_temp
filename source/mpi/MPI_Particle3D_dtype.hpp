@@ -23,7 +23,7 @@ private:
     {
         Particle3D dummy{};
 
-        constexpr int base_count = 19;
+        constexpr int base_count = 21;
         #ifdef MONTECARLO_POLARIZATION
         constexpr int polarization_count = 5;
         #else
@@ -77,6 +77,8 @@ private:
         add_field(dummy.radiationState.flags, MPI_UINT8_T);
         add_field(dummy.radiationState.pendingFlux.x, MPI_DOUBLE, 3);
         add_field(dummy.radiationState.bypassCellID, MPI_UINT64_T);
+        add_field(dummy.splitFactor, MPI_FLOAT);
+        add_field(dummy.compressionClock, MPI_DOUBLE);
         #ifdef MONTECARLO_POLARIZATION
         add_field(dummy.stokesQ, MPI_DOUBLE);
         add_field(dummy.stokesU, MPI_DOUBLE);

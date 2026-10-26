@@ -18,3 +18,8 @@ subsequent RNG values must match uninterrupted streams.
 Missing RNG fields in the former datatype allowed migration to leave the
 receiver's default or stale RNG state in place. This regression also covers
 source-cell identity, radiation transport state, and optional polarization.
+
+Particles also carry a non-default weight-window split factor and compression
+clock, which both the datatype and the STORM P2P packed wire
+(`PackParticle`/`UnpackParticle`) must preserve: before they were carried, a
+packet crossing ranks over P2P arrived with split factor 1 and clock 0.

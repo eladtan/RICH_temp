@@ -1,6 +1,7 @@
 #include "PostProcessResultWriter.hpp"
 
 #include "PostProcessCommandLine.hpp"
+#include "FluxSourceCalculation.hpp"
 #include "source/3D/radiation/StateHdf5IO.hpp"
 
 #include "utils/hdf5/HDF5Writer.hpp"
@@ -392,6 +393,8 @@ void MergeHdf5(
     writer.WriteElement("/comparison/forward_to_grey_luminosity_ratio", ratio);
     writer.WriteElement("/comparison/forward_polarization_degree", forward.luminosityWeightedPolarizationDegree);
     writer.WriteElement("/comparison/grey_polarization_degree", grey.luminosityWeightedPolarizationDegree);
+    writer.WriteElement("/comparison/polarization_degree_definition",
+                        std::string(kLuminosityWeightedDegreeDefinition));
     writer.WriteElement("/diagnostics/source_allocation/forward_source_luminosity", forward.sourceLuminosity);
     writer.WriteElement("/diagnostics/source_allocation/grey_source_luminosity", grey.sourceLuminosity);
     writer.WriteElement("/diagnostics/estimator_warning", std::string("none"));

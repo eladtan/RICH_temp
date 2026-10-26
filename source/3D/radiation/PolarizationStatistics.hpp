@@ -6,6 +6,10 @@
 
 namespace polarization_statistics {
 
+// Fewest effective packets (I^2 / kw2) for which ComputeQuality reports an
+// uncertainty and an SNR.
+constexpr double kMinEffectivePackets = 10.0;
+
 struct Quality
 {
     bool intensityValid = false;
@@ -67,6 +71,12 @@ inline Quality ComputeQuality(
         result.effectivePackets = 0.0;
         return result;
     }
+    // Below kMinEffectivePackets the packet variance is no estimate: one
+    // packet gives exactly zero (rounding leaves ~1e-20, an SNR of ~1e9), a
+    // few dominant ones far too little. The bin keeps its degree and angle
+    // but has no uncertainty: sigma and SNR 0, uncertaintyValid false.
+    if (result.effectivePackets < kMinEffectivePackets)
+        return result;
 
     double const invI2 = 1.0 / (intensity * intensity);
     double const varQ = std::max(

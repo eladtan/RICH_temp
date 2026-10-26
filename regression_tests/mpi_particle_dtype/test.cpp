@@ -1,4 +1,5 @@
 #include "mpi/MPI_Particle3D_dtype.hpp"
+#include "monte/gpu/DeviceParticle.hpp"
 #include "monte/utils/CounterRNG.hpp"
 #include <array>
 #include <cstring>
@@ -27,6 +28,9 @@ Particle3D makeParticle(int rank, int slot)
     p.radiationState.pendingFlux = Vector3D(tag + 3, tag + 4, tag + 5);
     p.radiationState.bypassCellID = tag + 200;
     p.steps = 17;
+    // Weight-window split product and compression clock (non-default values).
+    p.splitFactor = 2.5f + static_cast<float>(slot);
+    p.compressionClock = 0.375 + static_cast<double>(tag);
     p.on_track = p.sent = 1;
 #ifdef MONTECARLO_POLARIZATION
     p.stokesQ = 0.125;
@@ -89,6 +93,20 @@ int main(int argc, char **argv)
             MPI_Sendrecv(send.data(), 3, dtype, 1-rank, pass,
                          receive.data(), 3, dtype, 1-rank, pass, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
             for(int i = 0; i < 3; ++i) check(receive[i], makeParticle(1-rank, i));
+        }
+        // The P2P engine's packed wire (DeviceParticle + DeviceParticleCold)
+        // must carry the split factor and compression clock too.
+        for(int i = 0; i < 3; ++i)
+        {
+            Particle3D const original = makeParticle(rank, i);
+            STORM::gpu::DeviceParticle hot;
+            STORM::gpu::DeviceParticleCold cold;
+            STORM::gpu::PackParticle(original, hot, cold);
+            Particle3D unpacked;
+            STORM::gpu::UnpackParticle(hot, cold, unpacked);
+            if(unpacked.splitFactor != original.splitFactor ||
+               unpacked.compressionClock != original.compressionClock)
+                throw std::runtime_error("P2P packed wire lost the split factor or compression clock");
         }
         if(rank == 0) std::cout << "Particle MPI state and RNG continuation preserved in fresh/reused buffers\n";
     }

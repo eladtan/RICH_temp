@@ -1093,6 +1093,9 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                           << observer->getTotalLuminosityStderrGen(cfg.sourceDt)
                           << " erg/s (rel=" << observer->getTotalLuminosityRelErrGen(cfg.sourceDt) << ")\n"
                           << "Group crossing luminosity: " << groupLuminosityLine << " erg/s\n"
+                          << "Polarization degree:      " << polSummary.luminosityWeightedDegree
+                          << " (L-weighted, noise-debiased; " << polSummary.observerCount << " observers, "
+                          << polSummary.undebiasedObserverCount << " with < 10 effective packets kept raw)\n"
                           << "Total FLD luminosity:     " << runtime.totalFldLuminosity << " erg/s\n"
                           << "Emitted energy:           " << diag.emittedEnergy << " erg\n"
                           << "Absorbed energy:          " << diag.absorbedEnergy << " erg\n"

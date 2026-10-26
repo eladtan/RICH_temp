@@ -1007,6 +1007,9 @@ ForwardPostprocessResult RunGreyPostprocess(
                           << "Total crossing luminosity: " << greyTotalLum << " +/- "
                           << greyObserver->getTotalLuminosityStderrGen(cfg.sourceDt)
                           << " erg/s (rel=" << greyObserver->getTotalLuminosityRelErrGen(cfg.sourceDt) << ")\n"
+                          << "Polarization degree:      " << greyPol.luminosityWeightedDegree
+                          << " (L-weighted, noise-debiased; " << greyPol.observerCount << " observers, "
+                          << greyPol.undebiasedObserverCount << " with < 10 effective packets kept raw)\n"
                           << "Total FLD luminosity:     " << totalFldLum << " erg/s\n"
                           << "Emitted energy:           " << greyEmitted << " erg\n"
                           << "Absorbed energy:          " << greyAbsorbed << " erg\n"

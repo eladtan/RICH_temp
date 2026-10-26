@@ -3355,8 +3355,13 @@ void PrintPolarizationSummary(
     size_t const observerCount = snap.energy.size();
     std::vector<double> degree;
     std::vector<double> snr;
+    // Noise-debiased degree sqrt(max(0, P^2 - sigma_P^2)), observers with a
+    // packet-level uncertainty only (the raw median sits above the true one
+    // by up to ~sigma_P at low SNR).
+    std::vector<double> debiasedDegree;
     degree.reserve(observerCount);
     snr.reserve(observerCount);
+    debiasedDegree.reserve(observerCount);
 
     size_t activeObservers = 0;
     for (size_t i = 0; i < observerCount; ++i) {
@@ -3375,8 +3380,11 @@ void PrintPolarizationSummary(
 
         ++activeObservers;
         degree.push_back(quality.degree);
-        if (quality.uncertaintyValid)
+        if (quality.uncertaintyValid) {
             snr.push_back(quality.snr);
+            debiasedDegree.push_back(std::sqrt(std::max(
+                0.0, quality.degree * quality.degree - quality.sigmaP * quality.sigmaP)));
+        }
     }
 
     std::cout << label << " polarization summary: active_observers="
@@ -3390,7 +3398,10 @@ void PrintPolarizationSummary(
     } else {
         std::cout << " snr_p05/med/p95=" << Percentile(snr, 0.05)
                   << "/" << Percentile(snr, 0.50)
-                  << "/" << Percentile(snr, 0.95);
+                  << "/" << Percentile(snr, 0.95)
+                  << " debiased_degree_p05/med/p95=" << Percentile(debiasedDegree, 0.05)
+                  << "/" << Percentile(debiasedDegree, 0.50)
+                  << "/" << Percentile(debiasedDegree, 0.95);
     }
     std::cout << std::endl;
 }

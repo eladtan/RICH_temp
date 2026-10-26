@@ -345,10 +345,17 @@ public:
     // accumulates them (rank 0).
     struct GenerationPolarizationError
     {
-        double sigmaP = 0.0;
+        double sigmaP = 0.0;        // sqrt(sigmaQ^2 + sigmaU^2)
         double snr = 0.0;
         double generationNeff = 0.0;
         bool measured = false;
+        // Generation errors of q = sum Q / sum I and u (delta method), and to
+        // first order of P = |(q, u)| and of the angle (radians), without the
+        // q-u covariance (not accumulated); 0 when P = 0.
+        double sigmaQ = 0.0;
+        double sigmaU = 0.0;
+        double sigmaDegree = 0.0;
+        double sigmaAngle = 0.0;
     };
     static constexpr double kMinGenerationNeff = 5.0;
     // group = numGroups for the observer total.

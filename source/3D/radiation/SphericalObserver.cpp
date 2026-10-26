@@ -350,6 +350,14 @@ void writeMatrixStatErrors(HDF5Writer& writer, std::string const& path,
     writer.WriteElement(path + "_relerr_gen", relativeError(mean, stderr));
 }
 
+template<typename Values>
+void writeGenerationErrors(HDF5Writer& writer, std::string const& path,
+                           Values const& mean, Values const& stderr)
+{
+    writer.WriteElement(path + "_stderr_gen", stderr);
+    writer.WriteElement(path + "_relerr_gen", relativeError(mean, stderr));
+}
+
 void writeScalarStatErrors(HDF5Writer& writer, std::string const& path,
                            SphericalObserver::RunningScalarStats const& stat,
                            double mean,
@@ -1477,6 +1485,9 @@ void SphericalObserver::accumulateCurrentTalliesForStatistics(double sourceDt)
         }
         addVectorStat(generationStats_.stokesQ, observerStokesQ_);
         addVectorStat(generationStats_.stokesU, observerStokesU_);
+        // The per-generation q, u, P and angle stay in the statistics (and the
+        // restart state) but give no reported error: those are delta-method
+        // errors of the summed tallies (getGenerationPolarizationError).
         addVectorStat(generationStats_.q, q);
         addVectorStat(generationStats_.u, u);
         addVectorStat(generationStats_.stokesQLuminosity, qLum);
@@ -1930,7 +1941,15 @@ SphericalObserver::getGenerationPolarizationError(size_t observer, size_t group)
     if (!(varQ >= 0.0) || !(varU >= 0.0))
         return result;
     result.sigmaP = std::sqrt(varQ + varU);
+    result.sigmaQ = std::sqrt(varQ);
+    result.sigmaU = std::sqrt(varU);
     double const degree = std::hypot(sumQ, sumU) / sumI;
+    if (degree > 0.0) {
+        double const q = sumQ / sumI;
+        double const u = sumU / sumI;
+        result.sigmaDegree = std::sqrt(q * q * varQ + u * u * varU) / degree;
+        result.sigmaAngle = 0.5 * std::sqrt(u * u * varQ + q * q * varU) / (degree * degree);
+    }
     result.snr = (result.sigmaP > 0.0) ? degree / result.sigmaP : 0.0;
     result.generationNeff = (sumI2 > 0.0) ? sumI * sumI / sumI2 : 0.0;
     result.measured = result.generationNeff >= kMinGenerationNeff && result.sigmaP > 0.0;
@@ -2790,18 +2809,30 @@ void SphericalObserver::writeHDF5(std::string const& filename,
                                   generationStats_.stokesQ, observerStokesQ_, samples);
             writeVectorStatErrors(writer, "/tally/observer_stokes_U",
                                   generationStats_.stokesU, observerStokesU_, samples);
-            writeVectorStatErrors(writer, "/tally/observer_q",
-                                  generationStats_.q, qNorm, samples);
-            writeVectorStatErrors(writer, "/tally/observer_u",
-                                  generationStats_.u, uNorm, samples);
             writeVectorStatErrors(writer, "/tally/observer_Q_luminosity",
                                   generationStats_.stokesQLuminosity, qLum, samples);
             writeVectorStatErrors(writer, "/tally/observer_U_luminosity",
                                   generationStats_.stokesULuminosity, uLum, samples);
-            writeVectorStatErrors(writer, "/tally/observer_polarization_degree",
-                                  generationStats_.polarizationDegree, polDegree, samples);
-            writeVectorStatErrors(writer, "/tally/observer_polarization_angle",
-                                  generationStats_.polarizationAngle, polAngle, samples);
+            // q, u, P and the angle are ratios of the summed tallies, so their
+            // generation errors come from the delta method
+            // (getGenerationPolarizationError). The scatter of the
+            // per-generation ratios is noise-biased for P and wraps at +-90
+            // degrees for the angle.
+            {
+                std::vector<double> qErr(numObservers_, 0.0), uErr(numObservers_, 0.0);
+                std::vector<double> degreeErr(numObservers_, 0.0), angleErr(numObservers_, 0.0);
+                for (size_t i = 0; i < numObservers_; ++i) {
+                    GenerationPolarizationError const e = getGenerationPolarizationError(i, numGroups_);
+                    qErr[i] = e.sigmaQ;
+                    uErr[i] = e.sigmaU;
+                    degreeErr[i] = e.sigmaDegree;
+                    angleErr[i] = e.sigmaAngle;
+                }
+                writeGenerationErrors(writer, "/tally/observer_q", qNorm, qErr);
+                writeGenerationErrors(writer, "/tally/observer_u", uNorm, uErr);
+                writeGenerationErrors(writer, "/tally/observer_polarization_degree", polDegree, degreeErr);
+                writeGenerationErrors(writer, "/tally/observer_polarization_angle", polAngle, angleErr);
+            }
             if (numGroups_ > 1) {
                 std::vector<std::vector<double>> gQ(numObservers_, std::vector<double>(numGroups_, 0.0));
                 std::vector<std::vector<double>> gU(numObservers_, std::vector<double>(numGroups_, 0.0));
@@ -2822,18 +2853,26 @@ void SphericalObserver::writeHDF5(std::string const& filename,
                                       generationStats_.groupStokesQ, groupStokesQ_, samples);
                 writeMatrixStatErrors(writer, "/tally/multigroup/group_stokes_U",
                                       generationStats_.groupStokesU, groupStokesU_, samples);
-                writeMatrixStatErrors(writer, "/tally/multigroup/group_q",
-                                      generationStats_.groupQ, gQ, samples);
-                writeMatrixStatErrors(writer, "/tally/multigroup/group_u",
-                                      generationStats_.groupU, gU, samples);
                 writeMatrixStatErrors(writer, "/tally/multigroup/group_Q_luminosity",
                                       generationStats_.groupQLuminosity, gQLum, samples);
                 writeMatrixStatErrors(writer, "/tally/multigroup/group_U_luminosity",
                                       generationStats_.groupULuminosity, gULum, samples);
-                writeMatrixStatErrors(writer, "/tally/multigroup/group_polarization_degree",
-                                      generationStats_.groupPolarizationDegree, gDegree, samples);
-                writeMatrixStatErrors(writer, "/tally/multigroup/group_polarization_angle",
-                                      generationStats_.groupPolarizationAngle, gAngle, samples);
+                // Delta-method generation errors, as for the observer totals.
+                std::vector<std::vector<double>> gQErr(numObservers_, std::vector<double>(numGroups_, 0.0));
+                std::vector<std::vector<double>> gUErr = gQErr, gDegreeErr = gQErr, gAngleErr = gQErr;
+                for (size_t i = 0; i < numObservers_; ++i) {
+                    for (size_t g = 0; g < numGroups_; ++g) {
+                        GenerationPolarizationError const e = getGenerationPolarizationError(i, g);
+                        gQErr[i][g] = e.sigmaQ;
+                        gUErr[i][g] = e.sigmaU;
+                        gDegreeErr[i][g] = e.sigmaDegree;
+                        gAngleErr[i][g] = e.sigmaAngle;
+                    }
+                }
+                writeGenerationErrors(writer, "/tally/multigroup/group_q", gQ, gQErr);
+                writeGenerationErrors(writer, "/tally/multigroup/group_u", gU, gUErr);
+                writeGenerationErrors(writer, "/tally/multigroup/group_polarization_degree", gDegree, gDegreeErr);
+                writeGenerationErrors(writer, "/tally/multigroup/group_polarization_angle", gAngle, gAngleErr);
             }
         }
 #endif
@@ -3173,8 +3212,20 @@ void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) c
             }
             auto stokesQStderr = vectorStderr(generationStats_.stokesQ, samples);
             auto stokesUStderr = vectorStderr(generationStats_.stokesU, samples);
-            auto polDegreeStderr = vectorStderr(generationStats_.polarizationDegree, samples);
-            auto polAngleStderr = vectorStderr(generationStats_.polarizationAngle, samples);
+            // Delta-method errors of the summed-tally P and angle (see the
+            // HDF5 output), and sigma_P = sqrt(sigma_q^2 + sigma_u^2) with
+            // P / sigma_P.
+            std::vector<double> polDegreeStderr(N, 0.0), polAngleStderr(N, 0.0);
+            std::vector<double> sigmaPGen(N, 0.0), snrGen(N, 0.0);
+            for (size_t i = 0; i < N; ++i) {
+                GenerationPolarizationError const e = getGenerationPolarizationError(i, numGroups_);
+                polDegreeStderr[i] = e.sigmaDegree;
+                polAngleStderr[i] = e.sigmaAngle;
+                sigmaPGen[i] = e.sigmaP;
+                snrGen[i] = e.snr;
+            }
+            writeScalarVtk(file, "polarization_sigma_p_gen", sigmaPGen);
+            writeScalarVtk(file, "polarization_snr_gen", snrGen);
             writeScalarVtk(file, "stokes_Q_stderr_gen", stokesQStderr);
             writeScalarVtk(file, "stokes_Q_relerr_gen", relativeError(observerStokesQ_, stokesQStderr));
             writeScalarVtk(file, "stokes_U_stderr_gen", stokesUStderr);
