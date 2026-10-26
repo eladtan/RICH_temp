@@ -3084,7 +3084,7 @@ void AMR3D::operator() (Simulation &sim)
 	sort_index(ToRefine.first, indeces);
 	sort(ToRefine.first.begin(), ToRefine.first.end());
 	if (!ToRefine.second.empty())
-		VectorValues(ToRefine.second, indeces);
+		ToRefine.second = VectorValues(ToRefine.second, indeces);
 	// remove neighboring refine/remove
 	RemoveRefineNeighborRemove(tess, ToRemove.first, removal_targets,
 		ToRefine.first, ToRefine.second);

@@ -327,12 +327,26 @@ Face ConvexHullFace(const Face &face)
     });
 
     const double CoordinateTolerance = 128.0 * std::numeric_limits<double>::epsilon() * Scale;
-    Projected.erase(std::unique(Projected.begin(), Projected.end(),
-        [CoordinateTolerance](const ProjectedPoint &First, const ProjectedPoint &Second)
+    // Merge near-duplicates against every kept point, not only the previous one: a clip cap collects each vertex from
+    // both adjacent faces with roundoff, and when distinct points share almost the same X (mirror-symmetric pairs) the
+    // copies interleave in the sorted order, std::unique misses them, and the hull below collapses to nothing.
+    std::vector<ProjectedPoint> UniqueProjected;
+    UniqueProjected.reserve(Projected.size());
+    for(const ProjectedPoint &Candidate : Projected)
+    {
+        bool Duplicate = false;
+        for(const ProjectedPoint &Kept : UniqueProjected)
         {
-            return std::abs(First.X - Second.X) <= CoordinateTolerance &&
-                std::abs(First.Y - Second.Y) <= CoordinateTolerance;
-        }), Projected.end());
+            if(std::abs(Kept.X - Candidate.X) <= CoordinateTolerance && std::abs(Kept.Y - Candidate.Y) <= CoordinateTolerance)
+            {
+                Duplicate = true;
+                break;
+            }
+        }
+        if(!Duplicate)
+            UniqueProjected.push_back(Candidate);
+    }
+    Projected.swap(UniqueProjected);
     if(Projected.size() < 3)
         return result;
 

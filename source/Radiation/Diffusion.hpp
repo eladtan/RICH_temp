@@ -217,6 +217,8 @@ public:
 
     double GetLengthScale() const override {return length_scale_;}
 
+    double GetConvergenceFloorFactor() const override {return convergence_floor_factor_;}
+
     bool prestep(Tessellation3D const& tess,
                  std::vector<ComputationalCell3D> const& cells) const override;
 
@@ -268,6 +270,14 @@ public:
     mutable CG::BiCGSTABWorkspace cg_workspace_;
     bool const cooling_time_limiter_on_;
     double const max_planck_opacity_factor_;
+    //! \brief Solver convergence floor (see CG::MatrixBuilder::GetConvergenceFloorFactor); 4e-5 keeps the old behavior
+    double convergence_floor_factor_ = 4e-5;
+    /*! \brief Off by default. When set, a negative conservative solution (new_Er_full = x + r/V) whose magnitude is
+        below the solver's floor (convergence_floor_factor_ * max E_rad, i.e. a value the solve does not resolve) is
+        replaced by the clamped solver value new_Er. Such cells otherwise get a negative stored E_rad, which PostCG
+        rejects at every retry. One rank-0 line per step reports the number of cells and the summed change.
+    */
+    bool clamp_conservative_negative_ = false;
 };
 
 //! D=D0*rho^alpha*T^beta, sigma_planck=sigma_planck0*rho^alpha_planck*T^beta_planck

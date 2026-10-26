@@ -595,7 +595,7 @@ std::vector<double> conj_grad_solver(const double tolerance, int &total_iters,
         // this loop must be serial b/c CG is an iterative method
 
         sub_p = sub_r;
-        double max0_factor = 4e-5;
+        double max0_factor = matrix_builder.GetConvergenceFloorFactor();
         if(ENERGY_GROUPS_NUM > 1)
             max0_factor *= 3;
         double max_sub_x = 0;

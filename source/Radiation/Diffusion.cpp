@@ -267,6 +267,38 @@ bool Diffusion::step(double const tolerance,
             min_index = i;
         }
     }
+    if(clamp_conservative_negative_)
+    {
+        // Same guard for the conservative result PostCG stores; counts reduce with sums, one example cell
+        double clamped[2] = {0, 0};   // number of cells, clamped energy density sum (cgs)
+        bool have_example = false;
+        size_t example_id = 0;
+        double example_value = 0;
+        for(std::size_t i = 0; i < N; ++i)
+        {
+            if(new_Er_full[i] < 0.0 && std::abs(new_Er_full[i]) < convergence_floor_factor_ * max_Er)
+            {
+                if(!have_example)
+                {
+                    have_example = true;
+                    example_id = cells[i].ID;
+                    example_value = new_Er_full[i];
+                }
+                clamped[0] += 1;
+                clamped[1] += new_Er[i] - new_Er_full[i];
+                new_Er_full[i] = new_Er[i];
+            }
+        }
+        // One line per step: global counts from MPI sums, the example from the lowest rank that has one
+        int example_rank = have_example ? rank : std::numeric_limits<int>::max();
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, clamped, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &example_rank, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+#endif
+        if(clamped[0] > 0 && rank == example_rank)
+            std::cout << "rad_clamp cells=" << clamped[0] << " dEr_sum=" << clamped[1] << " max_Er=" << max_Er << " example_id=" << example_id
+                      << " example_value=" << example_value << std::endl;
+    }
 
 #ifdef RICH_MPI
 		MPI_Allreduce(MPI_IN_PLACE, &minErData, 1, MPI_DOUBLE_INT, MPI_MINLOC, MPI_COMM_WORLD);

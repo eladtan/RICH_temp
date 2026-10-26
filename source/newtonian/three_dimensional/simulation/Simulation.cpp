@@ -176,6 +176,11 @@ void Simulation::step(void)
             // }
 
             std::string LB = physics->getRequiredLB();
+            // A step that requires no particular load balance ("", e.g. RadiationStep without a cost calculator) runs on the
+            // current one. Switching to "" and back made the next step restore its balance every cycle: SetLoadBalancer
+            // exchanges all points and rebuilds the mesh (4.3 s per step in 2D_h1, more than the physics).
+            if(LB.empty())
+                LB = this->currentLB;
             bool firstTime = false;
 
             if(this->currentLB != LB)

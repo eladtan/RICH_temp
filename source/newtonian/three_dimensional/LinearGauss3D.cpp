@@ -404,7 +404,7 @@ namespace
 		string const& skip_key, Tessellation3D const& tess,
 		size_t cell_index, face_vec const& faces, EquationOfState const& eos,
 		vector<Vector3D> const& face_cms_cache, bool apply_principal_limit_flag,
-		vector<double> &psi_buf)
+		vector<double> &psi_buf, std::function<bool(Tessellation3D const&, size_t)> const& face_skip)
 	{
 		ReplaceComputationalCell(cmax, cell);
 		ReplaceComputationalCell(cmin, cell);
@@ -488,6 +488,9 @@ namespace
 
 		for (size_t i = 0; i < nedges; i++)
 		{
+			// Faces selected by face_skip are limited by the Barth-Jespersen bound alone (no shock blend), so values
+			// reconstructed there stay inside the neighbor range even in shocked cells
+			bool const skip_shock = face_skip && face_skip(tess, faces[i]);
 			if (i > 0)
 			{
 				ReplaceComputationalCell(centroid_val, cell);
@@ -510,7 +513,7 @@ namespace
 					if (std::abs(dphi.density) > 1e-9*cell.density)
 						psi_sh = std::max(diffusecoeff*(neighbors[i].density - cell.density) / dphi.density, 0.0);
 				}
-				psi[0] = std::min(psi[0], w1*psi_bj + w*psi_sh);
+				psi[0] = std::min(psi[0], skip_shock ? psi_bj : w1*psi_bj + w*psi_sh);
 			}
 			// pressure
 			{
@@ -527,7 +530,7 @@ namespace
 					if (std::abs(dphi.pressure) > 1e-9*cell.pressure)
 						psi_sh = std::max(diffusecoeff*(neighbors[i].pressure - cell.pressure) / dphi.pressure, 0.0);
 				}
-				psi[1] = std::min(psi[1], blend_psi(psi_bj, psi_sh));
+				psi[1] = std::min(psi[1], (skip_shock ? psi_bj : blend_psi(psi_bj, psi_sh)));
 			}
 			// internal_energy
 			{
@@ -544,7 +547,7 @@ namespace
 					if (std::abs(dphi.internal_energy) > 1e-9*cell.internal_energy)
 						psi_sh = std::max(diffusecoeff*(neighbors[i].internal_energy - cell.internal_energy) / dphi.internal_energy, 0.0);
 				}
-				psi[5] = std::min(psi[5], blend_psi(psi_bj, psi_sh));
+				psi[5] = std::min(psi[5], (skip_shock ? psi_bj : blend_psi(psi_bj, psi_sh)));
 			}
 			// velocity
 			if (has_frame)
@@ -571,7 +574,7 @@ namespace
 						if (std::abs(dv1) > 1e-9*std::abs(cell_v1))
 							psi_sh = std::max(diffusecoeff*(nv1 - cell_v1) / dv1, 0.0);
 					}
-					psi_v1 = std::min(psi_v1, blend_psi(psi_bj, psi_sh));
+					psi_v1 = std::min(psi_v1, (skip_shock ? psi_bj : blend_psi(psi_bj, psi_sh)));
 				}
 				// v2
 				{
@@ -588,7 +591,7 @@ namespace
 						if (std::abs(dv2) > 1e-9*std::abs(cell_v2))
 							psi_sh = std::max(diffusecoeff*(nv2 - cell_v2) / dv2, 0.0);
 					}
-					psi_v2 = std::min(psi_v2, blend_psi(psi_bj, psi_sh));
+					psi_v2 = std::min(psi_v2, (skip_shock ? psi_bj : blend_psi(psi_bj, psi_sh)));
 				}
 				// v3
 				{
@@ -605,7 +608,7 @@ namespace
 						if (std::abs(dv3) > 1e-9*std::abs(cell_v3))
 							psi_sh = std::max(diffusecoeff*(nv3 - cell_v3) / dv3, 0.0);
 					}
-					psi_v3 = std::min(psi_v3, blend_psi(psi_bj, psi_sh));
+					psi_v3 = std::min(psi_v3, (skip_shock ? psi_bj : blend_psi(psi_bj, psi_sh)));
 				}
 			}
 			else
@@ -625,7 +628,7 @@ namespace
 						if (std::abs(dphi.velocity.x) > 1e-9*std::abs(cell.velocity.x))
 							psi_sh = std::max(diffusecoeff*(neighbors[i].velocity.x - cell.velocity.x) / dphi.velocity.x, 0.0);
 					}
-					psi[2] = std::min(psi[2], blend_psi(psi_bj, psi_sh));
+					psi[2] = std::min(psi[2], (skip_shock ? psi_bj : blend_psi(psi_bj, psi_sh)));
 				}
 				// vy
 				{
@@ -642,7 +645,7 @@ namespace
 						if (std::abs(dphi.velocity.y) > 1e-9*std::abs(cell.velocity.y))
 							psi_sh = std::max(diffusecoeff*(neighbors[i].velocity.y - cell.velocity.y) / dphi.velocity.y, 0.0);
 					}
-					psi[3] = std::min(psi[3], blend_psi(psi_bj, psi_sh));
+					psi[3] = std::min(psi[3], (skip_shock ? psi_bj : blend_psi(psi_bj, psi_sh)));
 				}
 				// vz
 				{
@@ -659,7 +662,7 @@ namespace
 						if (std::abs(dphi.velocity.z) > 1e-9*std::abs(cell.velocity.z))
 							psi_sh = std::max(diffusecoeff*(neighbors[i].velocity.z - cell.velocity.z) / dphi.velocity.z, 0.0);
 					}
-					psi[4] = std::min(psi[4], blend_psi(psi_bj, psi_sh));
+					psi[4] = std::min(psi[4], (skip_shock ? psi_bj : blend_psi(psi_bj, psi_sh)));
 				}
 			}
 			// tracers
@@ -681,7 +684,7 @@ namespace
 					if (std::abs(dphi.tracers[j]) > std::abs(1e-9*cell_tracer))
 						psi_sh = std::max(diffusecoeff*(neighbors[i].tracers[j] - cell_tracer) / dphi.tracers[j], 0.0);
 				}
-				psi[6 + j] = std::min(psi[6 + j], blend_psi(psi_bj, psi_sh));
+				psi[6 + j] = std::min(psi[6 + j], (skip_shock ? psi_bj : blend_psi(psi_bj, psi_sh)));
 			}
 		}
 		psi[1] = std::min(psi[1], psi[5]);
@@ -771,7 +774,7 @@ namespace
  string const& skip_key,
 		std::vector<Vector3D> &c_ij, vector<ComputationalCell3D> &neighbor_list,
 		vector<Vector3D>& face_cms_cache, vector<double>& face_areas_cache, bool apply_principal_limit_flag,
-		vector<double>& psi_buf)
+		vector<double>& psi_buf, std::function<bool(Tessellation3D const&, size_t)> const& face_skip)
 	{
 		face_vec const& faces = tess.GetCellFaces(cell_index);
 		GetNeighborMesh(tess, cell_index, neighbor_mesh_list, faces);
@@ -835,7 +838,7 @@ namespace
 						neighbor_list, pressure_ratio,
 						eos.de2c(cell.density, cell.internal_energy, cell.tracers, ComputationalCell3D::tracerNames));
 					blended_slope_limit(cell, tess.GetCellCM(cell_index), neighbor_list, res, temp2, temp3, temp4, temp5,
-						diffusecoeff, sw, skip_key, tess, cell_index, faces, eos, face_cms_cache, apply_principal_limit_flag, psi_buf);
+						diffusecoeff, sw, skip_key, tess, cell_index, faces, eos, face_cms_cache, apply_principal_limit_flag, psi_buf, face_skip);
 				}
 				if(!std::isfinite( res.xderivative.density))
 				{
@@ -949,7 +952,7 @@ void LinearGauss3D::BuildSlopes(Tessellation3D const& tess, std::vector<Computat
 		calc_slope(tess, new_cells_, mpiGhostMask, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_, eos_,
 			calc_tracers_, naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
 			neighbor_mesh_list, neighbor_cm_list, skip_key_, c_ij, neighbor_list,
-			face_cms_cache, face_areas_cache, apply_principal_limit_, psi_buf0);
+			face_cms_cache, face_areas_cache, apply_principal_limit_, psi_buf0, limiter_face_skip_);
 	}
 #ifdef RICH_MPI
 	// communicate ghost slopes
@@ -1032,7 +1035,7 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 		calc_slope(tess, new_cells_, mpiGhostMask, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_, eos_,
 			calc_tracers_, naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
 			neighbor_mesh_list, neighbor_cm_list, skip_key_, c_ij, neighbor_list,
-			face_cms_cache, face_areas_cache, apply_principal_limit_, psi_buf);
+			face_cms_cache, face_areas_cache, apply_principal_limit_, psi_buf, limiter_face_skip_);
 		face_vec const& faces = tess.GetCellFaces(i);
 		const size_t nloop = faces.size();
 		// Use pre-computed cell CM - avoid repeated lookups
