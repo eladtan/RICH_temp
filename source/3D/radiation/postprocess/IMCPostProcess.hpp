@@ -285,6 +285,14 @@ struct PostProcessConfig
         // Explicit hydro time step in seconds; 0 uses the Courant step.
         double coolingLimitDt = 0.0;
         CoolingLimitMode coolingLimitMode = CoolingLimitMode::Emission;
+        // Limit each pass with the Planck mean it emits with. The multigroup
+        // pass's limit uses the unscaled group opacities when post-processing
+        // a multigroup hydro run (or alpha-scaled ones with Rosseland
+        // scaling); the grey pass then redoes the limit from the snapshot
+        // temperatures with the grey table. false: the grey pass inherits the
+        // multigroup pass's limited temperatures and capped cells (results
+        // written before this option).
+        bool coolingLimitPerPass = true;
     } volumeEmission;
 
     struct OpacityScaling
@@ -497,6 +505,10 @@ struct PostProcessResult
     PostProcessPassResult forward;
     PostProcessPassResult grey;
     PostProcessCoolingLimitResult coolingLimit;
+    // The grey pass's own limit (volumeEmission.coolingLimitPerPass) when the
+    // multigroup one used the group opacities; applied = false when the grey
+    // pass uses coolingLimit's.
+    PostProcessCoolingLimitResult greyCoolingLimit;
     std::string hdf5Path;
     std::string vtkPath;
 };

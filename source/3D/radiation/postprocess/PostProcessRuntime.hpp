@@ -501,7 +501,17 @@ public:
         double netEmissionBefore = 0.0;    // erg/s, c kappa_P (aT^4 - E) V summed
         double netEmissionAfter = 0.0;
         double maxRelativeTemperatureChange = 0.0;
+        // The limit used the grey table's Planck mean, the one the grey pass
+        // emits with (false: the group opacities, unscaled or alpha-scaled).
+        bool greyPlanckOpacity = true;
     } coolingLimit;
+    // The grey pass's own limit (ApplyGreyPassCoolingLimit), when the
+    // multigroup one did not use the grey table; applied = false otherwise.
+    CoolingLimitSummary greyCoolingLimit;
+    // (cell ID, snapshot temperature) of every cell, in the whole snapshot,
+    // whose temperature the multigroup limit changed, sorted by ID. Kept only
+    // when the grey pass redoes the limit, which starts from these.
+    std::vector<std::pair<size_t, double>> coolingLimitSnapshotTemperatures;
     // volume-emission.cooling-limit-mode emission: (cell ID, cap on the net
     // emission in erg/s) of every hot-limited cell of the whole snapshot,
     // sorted by ID. The cells keep their temperature; each source setup turns

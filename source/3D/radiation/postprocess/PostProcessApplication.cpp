@@ -223,6 +223,7 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.volumeEmissionCoolingLimitCfl = publicConfig.volumeEmission.coolingLimitCfl;
     cfg.volumeEmissionCoolingLimitDt = publicConfig.volumeEmission.coolingLimitDt;
     cfg.volumeEmissionCoolingLimitMode = publicConfig.volumeEmission.coolingLimitMode;
+    cfg.volumeEmissionCoolingLimitPerPass = publicConfig.volumeEmission.coolingLimitPerPass;
     cfg.polarizationManualScatterings =
         publicConfig.polarization.manualScatteringsAfterAcceleration;
     cfg.polarizationDepolarizationScatterings =
@@ -647,7 +648,10 @@ int PostProcessIMC::RunPostProcessMain(
                           ? (cfg.volumeEmissionCoolingLimitMode == CoolingLimitMode::Emission
                              ? ", hot cells keep their temperature, emission scaled"
                              : ", hot cells cooled")
-                          : "") << "\n"
+                            + std::string(cfg.volumeEmissionCoolingLimitPerPass
+                             ? ", each pass with its own Planck mean"
+                             : ", grey pass inherits the multigroup limit")
+                          : std::string()) << "\n"
                       << "Flux source surface: "
                       << (cfg.fluxSourceSurfaceMode == FluxSourceSurfaceMode::MultigroupInnermost
                           ? "innermost per-group thermalization radius (mg-innermost)"
@@ -1310,15 +1314,20 @@ int PostProcessIMC::RunPostProcessMain(
         if (embeddedResultSink != nullptr) {
             embeddedResultSink->forward = ToPublicResult(forwardResult);
             embeddedResultSink->grey = ToPublicResult(greyResult);
-            PostprocessRuntime::CoolingLimitSummary const& limit = runtime.coolingLimit;
-            embeddedResultSink->coolingLimit.applied = limit.applied;
-            embeddedResultSink->coolingLimit.hydroTime = limit.hydroTime;
-            embeddedResultSink->coolingLimit.hydroTimeFromCourant = limit.hydroTimeFromCourant;
-            embeddedResultSink->coolingLimit.outsideCells = limit.outsideCells;
-            embeddedResultSink->coolingLimit.hotLimitedCells = limit.hotLimitedCells;
-            embeddedResultSink->coolingLimit.coldLimitedCells = limit.coldLimitedCells;
-            embeddedResultSink->coolingLimit.netEmissionBefore = limit.netEmissionBefore;
-            embeddedResultSink->coolingLimit.netEmissionAfter = limit.netEmissionAfter;
+            auto toPublic = [](PostprocessRuntime::CoolingLimitSummary const& limit) {
+                PostProcessIMC::PostProcessCoolingLimitResult out;
+                out.applied = limit.applied;
+                out.hydroTime = limit.hydroTime;
+                out.hydroTimeFromCourant = limit.hydroTimeFromCourant;
+                out.outsideCells = limit.outsideCells;
+                out.hotLimitedCells = limit.hotLimitedCells;
+                out.coldLimitedCells = limit.coldLimitedCells;
+                out.netEmissionBefore = limit.netEmissionBefore;
+                out.netEmissionAfter = limit.netEmissionAfter;
+                return out;
+            };
+            embeddedResultSink->coolingLimit = toPublic(runtime.coolingLimit);
+            embeddedResultSink->greyCoolingLimit = toPublic(runtime.greyCoolingLimit);
             embeddedResultSink->hdf5Path = cfg.outputPath;
             embeddedResultSink->vtkPath = BaseVtkOutputPath(cfg);
         }

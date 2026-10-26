@@ -250,58 +250,77 @@ CoolingLimitOutcome LimitCellCooling(
     return outcome;
 }
 
-void ApplyVolumeEmissionCoolingLimit(
-    Config const& cfg,
-    PostprocessRuntime& runtime)
+namespace {
+
+// Global counters of one limit sweep.
+struct LimitSweep
 {
-    if(!cfg.fluxSourceCompare || !cfg.volumeEmissionEnabled || !cfg.volumeEmissionCoolingLimit)
-        return;
-    if(runtime.coolingLimit.applied)
-        throw UniversalError("Cooling limit applied twice to the same snapshot");
-    if(!runtime.eos || !runtime.greyOpacity)
-        throw UniversalError("Cooling limit needs the EOS and the grey opacity");
-    if(cfg.opacityScaleMode == OpacityScaleMode::Auto)
-        throw UniversalError("Cooling limit: opacity scaling mode auto was not resolved from the snapshot");
-    // The cell's net emission is c kappa_P (aT^4 - E) V with the Planck mean
-    // the multigroup transport emits with. With opacity scaling the group
-    // opacities reproduce the grey Planck mean, so the grey table gives it.
-    // Without scaling (post-processing a multigroup hydro run) it is the
-    // Planck mean of the unscaled group opacities, typically far below the
-    // grey one; the grey table would then over-cool the cells.
-    // With Rosseland scaling the scaled group opacities match the grey
-    // Rosseland mean, not the Planck one: the Planck mean is the scaled group
-    // one, alpha(T') times the unscaled mean at T'. The scale factors are
-    // cleared for the limit and rebuilt after it.
-    bool const multigroupPlanck = ENERGY_GROUPS_NUM > 1 && cfg.opacityScaleMode == OpacityScaleMode::None;
-    bool const rosselandScaled = ENERGY_GROUPS_NUM > 1 && cfg.opacityScaleMode == OpacityScaleMode::Rosseland;
-    if((multigroupPlanck || rosselandScaled) && !runtime.opacity)
-        throw UniversalError("Cooling limit with multigroup Planck opacity needs the multigroup opacity");
-    if(rosselandScaled)
+    uint64_t counts[3] = {0, 0, 0};  // outside, hot limited, cold limited
+    double sums[2] = {0.0, 0.0};      // net before, net after
+    double maxChange = 0.0;
+};
+
+// (ID, value) pairs of every rank, sorted by ID. Collective.
+std::vector<std::pair<size_t, double>> GatherSortedByID(
+    std::vector<uint64_t> const& ids,
+    std::vector<double> const& values,
+    char const* what)
+{
+    std::vector<uint64_t> allIDs = ids;
+    std::vector<double> allValues = values;
+#ifdef RICH_MPI
+    int size = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &size);
+    int const localCount = static_cast<int>(ids.size());
+    std::vector<int> counts(static_cast<size_t>(size), 0), displs(counts.size(), 0);
+    MPI_Allgather(&localCount, 1, MPI_INT, counts.data(), 1, MPI_INT, MPI_COMM_WORLD);
+    long long total = 0;
+    for(size_t r = 0; r < counts.size(); ++r)
     {
-        if(!runtime.applyOpacityScaleFactors)
-            throw UniversalError("Cooling limit with Rosseland scaling needs the opacity scaling policy");
-        runtime.applyOpacityScaleFactors(std::unordered_map<size_t, double>());
+        displs[r] = static_cast<int>(total);
+        total += counts[r];
     }
-    OpacityCalculator const& planckOpacity = (multigroupPlanck || rosselandScaled) ? *runtime.opacity : *runtime.greyOpacity;
+    if(total > static_cast<long long>(std::numeric_limits<int>::max()))
+        throw UniversalError(std::string("Cooling limit: too many ") + what + " to gather");
+    allIDs.assign(static_cast<size_t>(total), 0);
+    allValues.assign(static_cast<size_t>(total), 0.0);
+    MPI_Allgatherv(ids.data(), localCount, MPI_UINT64_T,
+                   allIDs.data(), counts.data(), displs.data(), MPI_UINT64_T, MPI_COMM_WORLD);
+    MPI_Allgatherv(values.data(), localCount, MPI_DOUBLE,
+                   allValues.data(), counts.data(), displs.data(), MPI_DOUBLE, MPI_COMM_WORLD);
+#else
+    (void)what;
+#endif
+    std::vector<std::pair<size_t, double>> sorted;
+    sorted.reserve(allIDs.size());
+    for(size_t k = 0; k < allIDs.size(); ++k)
+        sorted.emplace_back(static_cast<size_t>(allIDs[k]), allValues[k]);
+    std::sort(sorted.begin(), sorted.end());
+    return sorted;
+}
+
+// LimitCellCooling on every owned cell at or beyond the flux-source surface
+// with the Planck mean of `planckOpacity` (times alpha(T') with Rosseland
+// scaling, whose factors the caller has cleared). A cell whose temperature
+// changes (every limited cell in temperature mode, cold ones in emission mode)
+// takes the limited temperature, and `changedTemperatures`, when given,
+// receives its ID and previous temperature. Emission mode: hot-limited cells
+// keep their temperature and runtime.coolingLimitEmissionCaps becomes their
+// caps. Collective.
+LimitSweep LimitOutsideCells(
+    Config const& cfg,
+    PostprocessRuntime& runtime,
+    double hydroTime,
+    OpacityCalculator const& planckOpacity,
+    bool rosselandScaled,
+    std::vector<std::pair<uint64_t, double>>* changedTemperatures)
+{
     size_t const nCells = runtime.tess.GetPointNo();
     if(runtime.cells.size() < nCells)
         throw UniversalError("Cooling limit: fewer cells than tessellation points");
 
-    PostprocessRuntime::CoolingLimitSummary summary;
-    CourantCell courantCell;
-    summary.hydroTimeFromCourant = !(cfg.volumeEmissionCoolingLimitDt > 0.0);
-    summary.hydroTime = summary.hydroTimeFromCourant
-        ? CourantHydroTime(cfg, runtime, courantCell)
-        : cfg.volumeEmissionCoolingLimitDt;
-    summary.courantCellID = courantCell.id;
-    summary.courantCellRadius = courantCell.radius;
-    summary.courantCellDensity = courantCell.density;
-    summary.courantCellTemperature = courantCell.temperature;
-
     std::vector<unsigned char> const outside = BuildOutsideFluxSourceMask(cfg, runtime);
-    uint64_t counts[3] = {0, 0, 0};  // outside, hot limited, cold limited
-    double sums[2] = {0.0, 0.0};      // net before, net after
-    double maxChange = 0.0;
+    LimitSweep sweep;
     bool const emissionMode = cfg.volumeEmissionCoolingLimitMode == CoolingLimitMode::Emission;
     std::vector<uint64_t> capIDs;     // emission mode: hot-limited cells and their caps
     std::vector<double> capValues;
@@ -345,7 +364,7 @@ void ApplyVolumeEmissionCoolingLimit(
         try
         {
             outcome = LimitCellCooling(
-                cell.temperature, rho * cell.Erad, runtime.tess.GetVolume(i), summary.hydroTime, material);
+                cell.temperature, rho * cell.Erad, runtime.tess.GetVolume(i), hydroTime, material);
         }
         catch(UniversalError& eo)
         {
@@ -353,12 +372,12 @@ void ApplyVolumeEmissionCoolingLimit(
             eo.addEntry("Density", rho);
             throw;
         }
-        ++counts[0];
-        sums[0] += outcome.netBefore;
-        sums[1] += outcome.netAfter;
+        ++sweep.counts[0];
+        sweep.sums[0] += outcome.netBefore;
+        sweep.sums[1] += outcome.netAfter;
         if(outcome.kind == CoolingLimitKind::Unchanged)
             continue;
-        ++counts[outcome.kind == CoolingLimitKind::Hot ? 1 : 2];
+        ++sweep.counts[outcome.kind == CoolingLimitKind::Hot ? 1 : 2];
         if(emissionMode && outcome.kind == CoolingLimitKind::Hot)
         {
             // The cell keeps its temperature; its emission is scaled at each
@@ -367,88 +386,211 @@ void ApplyVolumeEmissionCoolingLimit(
             capValues.push_back(outcome.netAfter);
             continue;
         }
-        maxChange = std::max(maxChange, std::abs(outcome.temperature - cell.temperature) / cell.temperature);
+        sweep.maxChange = std::max(sweep.maxChange, std::abs(outcome.temperature - cell.temperature) / cell.temperature);
+        if(changedTemperatures)
+            changedTemperatures->emplace_back(static_cast<uint64_t>(cell.ID), cell.temperature);
         // The post-process transport reads only the temperature (it never
         // recomputes it from the internal energy).
         cell.temperature = outcome.temperature;
     }
 #ifdef RICH_MPI
-    MPI_Allreduce(MPI_IN_PLACE, counts, 3, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, sums, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, &maxChange, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, sweep.counts, 3, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, sweep.sums, 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &sweep.maxChange, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif
     if(emissionMode)
     {
-        std::vector<uint64_t> allIDs = capIDs;
-        std::vector<double> allCaps = capValues;
-#ifdef RICH_MPI
-        int const localCount = static_cast<int>(capIDs.size());
-        std::vector<int> capCounts(static_cast<size_t>(runtime.mpiSize), 0), displs(capCounts.size(), 0);
-        MPI_Allgather(&localCount, 1, MPI_INT, capCounts.data(), 1, MPI_INT, MPI_COMM_WORLD);
-        long long total = 0;
-        for(size_t r = 0; r < capCounts.size(); ++r)
+        runtime.coolingLimitEmissionCaps = GatherSortedByID(capIDs, capValues, "limited cells");
+        for(auto const& cap : runtime.coolingLimitEmissionCaps)
         {
-            displs[r] = static_cast<int>(total);
-            total += capCounts[r];
-        }
-        if(total > static_cast<long long>(std::numeric_limits<int>::max()))
-            throw UniversalError("Cooling limit: too many limited cells to gather");
-        allIDs.assign(static_cast<size_t>(total), 0);
-        allCaps.assign(static_cast<size_t>(total), 0.0);
-        MPI_Allgatherv(capIDs.data(), localCount, MPI_UINT64_T,
-                       allIDs.data(), capCounts.data(), displs.data(), MPI_UINT64_T, MPI_COMM_WORLD);
-        MPI_Allgatherv(capValues.data(), localCount, MPI_DOUBLE,
-                       allCaps.data(), capCounts.data(), displs.data(), MPI_DOUBLE, MPI_COMM_WORLD);
-#endif
-        runtime.coolingLimitEmissionCaps.clear();
-        runtime.coolingLimitEmissionCaps.reserve(allIDs.size());
-        for(size_t k = 0; k < allIDs.size(); ++k)
-        {
-            if(!(allCaps[k] > 0.0) || !std::isfinite(allCaps[k]))
+            if(!(cap.second > 0.0) || !std::isfinite(cap.second))
             {
                 UniversalError eo("Cooling limit: a hot-limited cell has an invalid cap");
-                eo.addEntry("Cell ID", allIDs[k]);
-                eo.addEntry("Cap", allCaps[k]);
+                eo.addEntry("Cell ID", cap.first);
+                eo.addEntry("Cap", cap.second);
                 throw eo;
             }
-            runtime.coolingLimitEmissionCaps.emplace_back(static_cast<size_t>(allIDs[k]), allCaps[k]);
         }
-        std::sort(runtime.coolingLimitEmissionCaps.begin(), runtime.coolingLimitEmissionCaps.end());
     }
+    return sweep;
+}
 
+void StoreSweep(LimitSweep const& sweep, PostprocessRuntime::CoolingLimitSummary& summary)
+{
     summary.applied = true;
-    summary.outsideCells = counts[0];
-    summary.hotLimitedCells = counts[1];
-    summary.coldLimitedCells = counts[2];
-    summary.netEmissionBefore = sums[0];
-    summary.netEmissionAfter = sums[1];
-    summary.maxRelativeTemperatureChange = maxChange;
-    runtime.coolingLimit = summary;
+    summary.outsideCells = sweep.counts[0];
+    summary.hotLimitedCells = sweep.counts[1];
+    summary.coldLimitedCells = sweep.counts[2];
+    summary.netEmissionBefore = sweep.sums[0];
+    summary.netEmissionAfter = sweep.sums[1];
+    summary.maxRelativeTemperatureChange = sweep.maxChange;
+}
 
-    if(runtime.rank == 0)
+// Rank 0 prints the VOLUME_EMISSION_COOLING_LIMIT line; `pass` is empty for
+// the multigroup pass's limit (the line it has always printed).
+void PrintCoolingLimit(
+    Config const& cfg,
+    PostprocessRuntime const& runtime,
+    PostprocessRuntime::CoolingLimitSummary const& summary,
+    std::string const& pass,
+    std::string const& planckOpacity)
+{
+    if(runtime.rank != 0)
+        return;
+    std::ostringstream line;
+    line << std::setprecision(4) << "VOLUME_EMISSION_COOLING_LIMIT";
+    if(!pass.empty())
+        line << " pass=" << pass;
+    line << " hydro_time=" << summary.hydroTime << " s";
+    if(summary.hydroTimeFromCourant)
+        line << " source=courant cfl=" << cfg.volumeEmissionCoolingLimitCfl
+             << " courant_cell_id=" << summary.courantCellID
+             << " courant_cell_r=" << summary.courantCellRadius
+             << " courant_cell_rho=" << summary.courantCellDensity
+             << " courant_cell_T=" << summary.courantCellTemperature;
+    else
+        line << " source=explicit";
+    line << " planck_opacity=" << planckOpacity
+         << " mode=" << (cfg.volumeEmissionCoolingLimitMode == CoolingLimitMode::Emission ? "emission" : "temperature")
+         << " outside_cells=" << summary.outsideCells
+         << " hot_limited=" << summary.hotLimitedCells
+         << " cold_limited=" << summary.coldLimitedCells
+         << " net_emission_before=" << summary.netEmissionBefore
+         << " net_emission_after=" << summary.netEmissionAfter << " erg/s"
+         << " max_relative_dT=" << summary.maxRelativeTemperatureChange;
+    std::cout << line.str() << std::endl;
+}
+
+} // namespace
+
+void ApplyVolumeEmissionCoolingLimit(
+    Config const& cfg,
+    PostprocessRuntime& runtime)
+{
+    if(!cfg.fluxSourceCompare || !cfg.volumeEmissionEnabled || !cfg.volumeEmissionCoolingLimit)
+        return;
+    if(runtime.coolingLimit.applied)
+        throw UniversalError("Cooling limit applied twice to the same snapshot");
+    if(!runtime.eos || !runtime.greyOpacity)
+        throw UniversalError("Cooling limit needs the EOS and the grey opacity");
+    if(cfg.opacityScaleMode == OpacityScaleMode::Auto)
+        throw UniversalError("Cooling limit: opacity scaling mode auto was not resolved from the snapshot");
+    // The cell's net emission is c kappa_P (aT^4 - E) V with the Planck mean
+    // the multigroup transport emits with. With opacity scaling the group
+    // opacities reproduce the grey Planck mean, so the grey table gives it.
+    // Without scaling (post-processing a multigroup hydro run) it is the
+    // Planck mean of the unscaled group opacities, typically far below the
+    // grey one; the grey table would then over-cool the cells.
+    // With Rosseland scaling the scaled group opacities match the grey
+    // Rosseland mean, not the Planck one: the Planck mean is the scaled group
+    // one, alpha(T') times the unscaled mean at T'. The scale factors are
+    // cleared for the limit and rebuilt after it.
+    // In the last two cases the grey pass, which emits with the grey table,
+    // redoes the limit with it (ApplyGreyPassCoolingLimit).
+    bool const multigroupPlanck = ENERGY_GROUPS_NUM > 1 && cfg.opacityScaleMode == OpacityScaleMode::None;
+    bool const rosselandScaled = ENERGY_GROUPS_NUM > 1 && cfg.opacityScaleMode == OpacityScaleMode::Rosseland;
+    if((multigroupPlanck || rosselandScaled) && !runtime.opacity)
+        throw UniversalError("Cooling limit with multigroup Planck opacity needs the multigroup opacity");
+    if(rosselandScaled)
     {
-        std::ostringstream line;
-        line << std::setprecision(4)
-             << "VOLUME_EMISSION_COOLING_LIMIT hydro_time=" << summary.hydroTime << " s";
-        if(summary.hydroTimeFromCourant)
-            line << " source=courant cfl=" << cfg.volumeEmissionCoolingLimitCfl
-                 << " courant_cell_id=" << summary.courantCellID
-                 << " courant_cell_r=" << summary.courantCellRadius
-                 << " courant_cell_rho=" << summary.courantCellDensity
-                 << " courant_cell_T=" << summary.courantCellTemperature;
-        else
-            line << " source=explicit";
-        line << " planck_opacity=" << (multigroupPlanck ? "multigroup"
-                                       : rosselandScaled ? "multigroup-rosseland-scaled" : "grey")
-             << " mode=" << (emissionMode ? "emission" : "temperature")
-             << " outside_cells=" << summary.outsideCells
-             << " hot_limited=" << summary.hotLimitedCells
-             << " cold_limited=" << summary.coldLimitedCells
-             << " net_emission_before=" << summary.netEmissionBefore
-             << " net_emission_after=" << summary.netEmissionAfter << " erg/s"
-             << " max_relative_dT=" << summary.maxRelativeTemperatureChange;
-        std::cout << line.str() << std::endl;
+        if(!runtime.applyOpacityScaleFactors)
+            throw UniversalError("Cooling limit with Rosseland scaling needs the opacity scaling policy");
+        runtime.applyOpacityScaleFactors(std::unordered_map<size_t, double>());
     }
+    OpacityCalculator const& planckOpacity = (multigroupPlanck || rosselandScaled) ? *runtime.opacity : *runtime.greyOpacity;
+
+    PostprocessRuntime::CoolingLimitSummary summary;
+    CourantCell courantCell;
+    summary.hydroTimeFromCourant = !(cfg.volumeEmissionCoolingLimitDt > 0.0);
+    summary.hydroTime = summary.hydroTimeFromCourant
+        ? CourantHydroTime(cfg, runtime, courantCell)
+        : cfg.volumeEmissionCoolingLimitDt;
+    summary.courantCellID = courantCell.id;
+    summary.courantCellRadius = courantCell.radius;
+    summary.courantCellDensity = courantCell.density;
+    summary.courantCellTemperature = courantCell.temperature;
+    summary.greyPlanckOpacity = !(multigroupPlanck || rosselandScaled);
+
+    // The grey pass's limit starts from the snapshot temperatures.
+    bool const keepSnapshotTemperatures = cfg.volumeEmissionCoolingLimitPerPass && !summary.greyPlanckOpacity;
+    std::vector<std::pair<uint64_t, double>> changed;
+    LimitSweep const sweep = LimitOutsideCells(
+        cfg, runtime, summary.hydroTime, planckOpacity, rosselandScaled,
+        keepSnapshotTemperatures ? &changed : nullptr);
+    runtime.coolingLimitSnapshotTemperatures.clear();
+    if(keepSnapshotTemperatures)
+    {
+        std::vector<uint64_t> ids;
+        std::vector<double> temperatures;
+        ids.reserve(changed.size());
+        temperatures.reserve(changed.size());
+        for(auto const& entry : changed)
+        {
+            ids.push_back(entry.first);
+            temperatures.push_back(entry.second);
+        }
+        runtime.coolingLimitSnapshotTemperatures = GatherSortedByID(ids, temperatures, "changed cells");
+    }
+    StoreSweep(sweep, summary);
+    runtime.coolingLimit = summary;
+    runtime.greyCoolingLimit = PostprocessRuntime::CoolingLimitSummary();
+    PrintCoolingLimit(cfg, runtime, summary, "",
+                      multigroupPlanck ? "multigroup" : rosselandScaled ? "multigroup-rosseland-scaled" : "grey");
+}
+
+void ApplyGreyPassCoolingLimit(
+    Config const& cfg,
+    PostprocessRuntime& runtime)
+{
+    PostprocessRuntime::CoolingLimitSummary const& transport = runtime.coolingLimit;
+    if(!transport.applied || transport.greyPlanckOpacity || !cfg.volumeEmissionCoolingLimitPerPass)
+        return;
+    if(runtime.greyCoolingLimit.applied)
+        throw UniversalError("Grey-pass cooling limit applied twice");
+    if(!runtime.eos || !runtime.greyOpacity)
+        throw UniversalError("Grey-pass cooling limit needs the EOS and the grey opacity");
+
+    // Back to the snapshot temperatures. The cells may have migrated since the
+    // multigroup limit, so they are found by ID.
+    auto const& snapshot = runtime.coolingLimitSnapshotTemperatures;
+    size_t const nCells = runtime.tess.GetPointNo();
+    if(runtime.cells.size() < nCells)
+        throw UniversalError("Grey-pass cooling limit: fewer cells than tessellation points");
+    uint64_t restored = 0;
+    for(size_t i = 0; i < nCells; ++i)
+    {
+        size_t const id = runtime.cells[i].ID;
+        auto const it = std::lower_bound(
+            snapshot.begin(), snapshot.end(), std::make_pair(id, -std::numeric_limits<double>::infinity()));
+        if(it == snapshot.end() || it->first != id)
+            continue;
+        runtime.cells[i].temperature = it->second;
+        ++restored;
+    }
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &restored, 1, MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
+#endif
+    if(restored != snapshot.size())
+    {
+        UniversalError eo("Grey-pass cooling limit: not every cell the multigroup limit changed is owned by a rank");
+        eo.addEntry("Changed cells", snapshot.size());
+        eo.addEntry("Restored cells", restored);
+        throw eo;
+    }
+
+    PostprocessRuntime::CoolingLimitSummary summary;
+    summary.hydroTime = transport.hydroTime;
+    summary.hydroTimeFromCourant = transport.hydroTimeFromCourant;
+    summary.courantCellID = transport.courantCellID;
+    summary.courantCellRadius = transport.courantCellRadius;
+    summary.courantCellDensity = transport.courantCellDensity;
+    summary.courantCellTemperature = transport.courantCellTemperature;
+    summary.greyPlanckOpacity = true;
+    StoreSweep(LimitOutsideCells(cfg, runtime, summary.hydroTime, *runtime.greyOpacity, false, nullptr), summary);
+    runtime.greyCoolingLimit = summary;
+    runtime.coolingLimitSnapshotTemperatures.clear();
+    runtime.coolingLimitSnapshotTemperatures.shrink_to_fit();
+    PrintCoolingLimit(cfg, runtime, summary, "grey", "grey");
 }
 
 void BuildEscapeOriginHotCells(

@@ -461,6 +461,7 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddDouble(options, "volume-emission.cooling-limit-cfl", "Courant number for the hydro time step of the cooling limit, in (0, 1).", c.volumeEmission.coolingLimitCfl);
     AddDouble(options, "volume-emission.cooling-limit-dt", "Hydro time step [s] for the cooling limit; 0 uses the Courant step.", c.volumeEmission.coolingLimitDt);
     AddCoolingLimitMode(options, c.volumeEmission.coolingLimitMode);
+    AddBool(options, "volume-emission.cooling-limit-per-pass", "Limit each pass with the Planck mean it emits with: the grey pass redoes the limit from the snapshot temperatures with the grey table when the multigroup limit used group opacities (false: the grey pass inherits the multigroup limit).", c.volumeEmission.coolingLimitPerPass);
     AddOpacityMode(options, c.opacityScaling.mode);
     AddDouble(options, "opacity-scaling.alpha-min", "Lower bound on the per-cell multigroup scale factor (0 = none).", c.opacityScaling.alphaMin);
     AddDouble(options, "opacity-scaling.alpha-max", "Upper bound on the per-cell multigroup scale factor (0 = none).", c.opacityScaling.alphaMax);

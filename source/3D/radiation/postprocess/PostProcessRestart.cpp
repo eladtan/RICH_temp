@@ -653,6 +653,7 @@ std::vector<std::string> const& MustMatchOptions()
         "volume-emission.cooling-limit-cfl",
         "volume-emission.cooling-limit-dt",
         "volume-emission.cooling-limit-mode",
+        "volume-emission.cooling-limit-per-pass",
         "opacity-scaling.mode",
         "input.missing-radiation",
         "opacity-scaling.alpha-min",
@@ -675,6 +676,7 @@ std::unordered_map<std::string, std::string> const& LegacyOptionValues()
         {"flux-source.smoothing-photosphere-cap", "false"},
         {"flux-source.mapping-neighbours", "0"},
         {"volume-emission.cooling-limit-mode", "temperature"},
+        {"volume-emission.cooling-limit-per-pass", "false"},
         {"input.missing-radiation", "auto"},
     };
     return values;

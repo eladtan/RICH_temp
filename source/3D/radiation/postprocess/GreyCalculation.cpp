@@ -92,6 +92,13 @@ ForwardPostprocessResult RunGreyPostprocess(
             if (rank == 0)
                 std::cout << "\n=== Starting Grey IMC run (" << nGreyGens << " generations) ===" << std::endl;
 
+            // The grey pass's own cooling limit, with the grey Planck mean,
+            // when the multigroup one used the group opacities; the
+            // escape-origin classes follow its temperatures.
+            ApplyGreyPassCoolingLimit(cfg, runtime);
+            if (runtime.greyCoolingLimit.applied)
+                BuildEscapeOriginHotCells(cfg, runtime);
+
             auto greyObserver = std::make_shared<SphericalObserver>(
                 cfg.center, cfg.radius, cfg.nObservers, std::vector<double>());
             if (hasGreyPhotosphere)

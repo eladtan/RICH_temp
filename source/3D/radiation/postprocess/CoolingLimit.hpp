@@ -65,14 +65,30 @@ CoolingLimitOutcome LimitCellCooling(
 
 // Applies LimitCellCooling to every owned cell at or beyond the flux-source
 // surface, with the Planck opacity the multigroup transport emits with (the
-// grey table with opacity scaling, the Planck mean of the unscaled group
-// opacities without) and the scenario EOS, and records the
-// summary in runtime.coolingLimit. t_hydro is cfg.volumeEmissionCoolingLimitDt
-// when positive, else the RICH Courant step (CFL
-// cfg.volumeEmissionCoolingLimitCfl, face velocities from the gas). Call once,
+// grey table with Planck scaling, the Planck mean of the unscaled group
+// opacities without scaling, alpha(T') times it with Rosseland scaling) and
+// the scenario EOS, and records the summary in runtime.coolingLimit. t_hydro
+// is cfg.volumeEmissionCoolingLimitDt when positive, else the RICH Courant
+// step (CFL cfg.volumeEmissionCoolingLimitCfl, face velocities from the gas).
+// When that opacity is not the grey table and
+// cfg.volumeEmissionCoolingLimitPerPass is set, the snapshot temperatures of
+// the cells it changes are kept for ApplyGreyPassCoolingLimit. Call once,
 // after InitializeFluxSourceSurface and before the first
 // ConfigureFluxSourceForCurrentDecomposition. Collective.
 void ApplyVolumeEmissionCoolingLimit(
+    Config const& cfg,
+    PostprocessRuntime& runtime);
+
+// The grey pass emits with the grey table's Planck mean. When the multigroup
+// limit used another one (and cfg.volumeEmissionCoolingLimitPerPass), restores
+// the snapshot temperatures of the cells it changed and limits every outside
+// cell again with the grey table and the same t_hydro: temperatures and, in
+// emission mode, runtime.coolingLimitEmissionCaps are replaced; the summary
+// goes to runtime.greyCoolingLimit (rank 0 prints
+// VOLUME_EMISSION_COOLING_LIMIT pass=grey). No-op otherwise. Call once, after
+// the multigroup pass and before the grey pass's first source setup.
+// Collective.
+void ApplyGreyPassCoolingLimit(
     Config const& cfg,
     PostprocessRuntime& runtime);
 
