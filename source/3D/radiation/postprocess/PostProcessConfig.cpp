@@ -392,6 +392,10 @@ bool ValidateConfig(Config &cfg, int rank)
         if (rank == 0) std::cerr << "--load-balance.clamp-factor must be 0 (built-in) or >= 1\n";
         return false;
     }
+    if (!(cfg.weightCutoffFraction > 0.0) || !(cfg.weightCutoffFraction < 1.0)) {
+        if (rank == 0) std::cerr << "--transport.weight-cutoff-fraction must lie in (0, 1)\n";
+        return false;
+    }
     if (!(cfg.volumeEmissionCoolingLimitCfl > 0.0) || !(cfg.volumeEmissionCoolingLimitCfl < 1.0)) {
         if (rank == 0) std::cerr << "--volume-emission.cooling-limit-cfl must lie in (0, 1)\n";
         return false;

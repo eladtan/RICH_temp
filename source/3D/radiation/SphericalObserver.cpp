@@ -676,6 +676,10 @@ SphericalObserver::SphericalObserver(Vector3D center, double radius,
     heavyCrossingByBin_.assign(numObservers_ * numGroups_, HeavyCrossing{});
     escapeOriginEnergy_.assign(kEscapeOriginClasses * numGroups_, 0.0);
     escapeOriginConvertedEnergy_.assign(numGroups_, 0.0);
+    escapeWeightEnergy_.assign(numGroups_ * kEscapeWeightBins, 0.0);
+    escapeWeightCount_.assign(numGroups_ * kEscapeWeightBins, 0.0);
+    escapeWeightEnergySum_.assign(numGroups_ * kEscapeWeightBins, 0.0);
+    escapeWeightCountSum_.assign(numGroups_ * kEscapeWeightBins, 0.0);
 #ifdef MONTECARLO_POLARIZATION
     observerStokesQ_.assign(numObservers_, 0.0);
     observerStokesU_.assign(numObservers_, 0.0);
@@ -1158,6 +1162,13 @@ void SphericalObserver::recordHeavyCrossing(size_t obs, size_t group,
     }
     growthBinEnergy_[bin] += w;
     growthBinCount_[bin] += 1.0;
+    size_t weightBin = kEscapeWeightBins - 1;  // w0 unknown
+    if (rec.initialWeight > 0.0)
+        weightBin = static_cast<size_t>(
+            std::upper_bound(kEscapeWeightEdges.begin(), kEscapeWeightEdges.end(), w / rec.initialWeight) -
+            kEscapeWeightEdges.begin());
+    escapeWeightEnergy_[group * kEscapeWeightBins + weightBin] += w;
+    escapeWeightCount_[group * kEscapeWeightBins + weightBin] += 1.0;
     if (escapeOriginFaceCells_ != nullptr || escapeOriginHotCells_ != nullptr) {
         escapeOriginEnergy_[escapeOriginClass(rec.sourceCellID) * numGroups_ + group] += rec.weight;
         if (rec.compressionConverted)
@@ -1399,11 +1410,57 @@ void SphericalObserver::printEscapeOriginReport(std::string const& label, size_t
     std::cout << line.str() << std::endl;
 }
 
+void SphericalObserver::printEscapeWeightSummary(std::string const& label) const
+{
+    int rank = 0;
+#ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+    if (rank != 0 || escapeWeightGenerations_ == 0)
+        return;
+    std::ostringstream bins;
+    bins << "<" << kEscapeWeightEdges.front();
+    for (size_t k = 0; k + 1 < kEscapeWeightEdges.size(); ++k)
+        bins << "," << kEscapeWeightEdges[k] << "-" << kEscapeWeightEdges[k + 1];
+    bins << ",>=" << kEscapeWeightEdges.back() << ",unknown_w0";
+    std::cout << "ESCAPE_WEIGHT " << label << " generations=" << escapeWeightGenerations_
+              << " w/w0 bins=[" << bins.str() << "]" << std::endl;
+    // Bins entirely below 1e-3 (the default weight cutoff fraction): bin b
+    // spans [edge b-1, edge b), so the bins up to the one ending at 1e-3.
+    size_t const belowMilli = static_cast<size_t>(
+        std::upper_bound(kEscapeWeightEdges.begin(), kEscapeWeightEdges.end(), 1e-3) - kEscapeWeightEdges.begin());
+    for (size_t g = 0; g < numGroups_; ++g) {
+        double total = 0.0;
+        double below = 0.0;
+        for (size_t b = 0; b < kEscapeWeightBins; ++b) {
+            double const e = escapeWeightEnergySum_[g * kEscapeWeightBins + b];
+            total += e;
+            if (b < belowMilli)
+                below += e;
+        }
+        if (!(total > 0.0))
+            continue;
+        std::ostringstream line;
+        line << std::setprecision(4) << "ESCAPE_WEIGHT " << label << " group=" << g
+             << " energy_per_gen=" << total / static_cast<double>(escapeWeightGenerations_)
+             << " erg below_1e-3=" << below / total << " energy_shares=[";
+        for (size_t b = 0; b < kEscapeWeightBins; ++b)
+            line << (b ? "," : "") << escapeWeightEnergySum_[g * kEscapeWeightBins + b] / total;
+        line << "] crossings=[";
+        for (size_t b = 0; b < kEscapeWeightBins; ++b)
+            line << (b ? "," : "") << escapeWeightCountSum_[g * kEscapeWeightBins + b];
+        line << "]";
+        std::cout << line.str() << std::endl;
+    }
+}
+
 void SphericalObserver::resetTallies()
 {
     std::fill(heavyCrossingByBin_.begin(), heavyCrossingByBin_.end(), HeavyCrossing{});
     std::fill(escapeOriginEnergy_.begin(), escapeOriginEnergy_.end(), 0.0);
     std::fill(escapeOriginConvertedEnergy_.begin(), escapeOriginConvertedEnergy_.end(), 0.0);
+    std::fill(escapeWeightEnergy_.begin(), escapeWeightEnergy_.end(), 0.0);
+    std::fill(escapeWeightCount_.begin(), escapeWeightCount_.end(), 0.0);
     growthBinEnergy_.fill(0.0);
     growthBinCount_.fill(0.0);
     maxWeightGrowth_ = 0.0;
@@ -1447,10 +1504,18 @@ void SphericalObserver::resetTallies()
 void SphericalObserver::clearGenerationStatistics()
 {
     generationStats_ = GenerationStatistics{};
+    std::fill(escapeWeightEnergySum_.begin(), escapeWeightEnergySum_.end(), 0.0);
+    std::fill(escapeWeightCountSum_.begin(), escapeWeightCountSum_.end(), 0.0);
+    escapeWeightGenerations_ = 0;
 }
 
 void SphericalObserver::accumulateCurrentTalliesForStatistics(double sourceDt)
 {
+    for (size_t k = 0; k < escapeWeightEnergy_.size(); ++k) {
+        escapeWeightEnergySum_[k] += escapeWeightEnergy_[k];
+        escapeWeightCountSum_[k] += escapeWeightCount_[k];
+    }
+    ++escapeWeightGenerations_;
     double const invDt = (sourceDt > 0.0) ? 1.0 / sourceDt : 0.0;
     double const fourPi = 4.0 * M_PI;
     std::vector<double> lum = scaleVector(observerEnergy_, invDt);
@@ -1729,6 +1794,10 @@ void SphericalObserver::writeStatisticsState(HDF5Writer& writer, std::string con
     writeVectorRunning(writer, prefix + "/flux", s.flux);
     writeMatrixRunning(writer, prefix + "/group_energy", s.groupEnergy);
     writeMatrixRunning(writer, prefix + "/group_luminosity", s.groupLuminosity);
+    // The w / w0 escape histogram of the included generations.
+    writer.WriteElement(prefix + "/escape_weight_energy_sum", escapeWeightEnergySum_);
+    writer.WriteElement(prefix + "/escape_weight_count_sum", escapeWeightCountSum_);
+    writer.WriteElement(prefix + "/escape_weight_generations", escapeWeightGenerations_);
 #ifdef MONTECARLO_POLARIZATION
     writeVectorRunning(writer, prefix + "/stokes_q", s.stokesQ);
     writeVectorRunning(writer, prefix + "/stokes_u", s.stokesU);
@@ -1807,6 +1876,26 @@ void SphericalObserver::readStatisticsState(HDF5Reader const& reader, std::strin
 #endif
     if (storedPolarization != buildPolarization)
         throw UniversalError("Restart observer statistics were written by a build with a different MONTECARLO_POLARIZATION setting");
+
+    // A file written before the w / w0 histogram existed has none: it then
+    // covers this run's generations only, as its generation count records.
+    std::fill(escapeWeightEnergySum_.begin(), escapeWeightEnergySum_.end(), 0.0);
+    std::fill(escapeWeightCountSum_.begin(), escapeWeightCountSum_.end(), 0.0);
+    escapeWeightGenerations_ = 0;
+    if (reader.Exists(prefix + "/escape_weight_energy_sum")) {
+        std::vector<double> energy, count;
+        reader.ReadElement(prefix + "/escape_weight_energy_sum", energy);
+        reader.ReadElement(prefix + "/escape_weight_count_sum", count);
+        if (energy.size() != escapeWeightEnergySum_.size() || count.size() != escapeWeightCountSum_.size()) {
+            UniversalError eo("Restart w/w0 escape histogram has a different size");
+            eo.addEntry("stored bins", static_cast<double>(energy.size()));
+            eo.addEntry("bins", static_cast<double>(escapeWeightEnergySum_.size()));
+            throw eo;
+        }
+        escapeWeightEnergySum_ = energy;
+        escapeWeightCountSum_ = count;
+        reader.ReadElement(prefix + "/escape_weight_generations", escapeWeightGenerations_);
+    }
 
     size_t const n = numObservers_;
     size_t const g = numGroups_;
@@ -2343,6 +2432,13 @@ void SphericalObserver::mpiReduceToRank0()
         cutoffEnergy_ = scalarRecv[4];
         compressionWork_ = scalarRecv[5];
     }
+    for (auto* histogram : {&escapeWeightEnergy_, &escapeWeightCount_}) {
+        std::vector<double> histogramRecv(histogram->size(), 0.0);
+        MPI_Reduce(histogram->data(), histogramRecv.data(), static_cast<int>(histogram->size()),
+                   MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        if (rank == 0)
+            *histogram = histogramRecv;
+    }
 #endif
 }
 
@@ -2543,6 +2639,29 @@ void SphericalObserver::writeHDF5(std::string const& filename,
                                 photosphereData_.emissionSurfaceGroupRadius);
     }
 
+    {
+        // w / w0 of the escaping packets (printEscapeWeightSummary): energy per
+        // generation and crossings over the included generations, [group][bin].
+        std::vector<std::vector<double>> energy(numGroups_, std::vector<double>(kEscapeWeightBins, 0.0));
+        std::vector<std::vector<double>> count = energy;
+        double const invGenerations = escapeWeightGenerations_ > 0 ? 1.0 / static_cast<double>(escapeWeightGenerations_) : 0.0;
+        for (size_t g = 0; g < numGroups_; ++g) {
+            for (size_t b = 0; b < kEscapeWeightBins; ++b) {
+                energy[g][b] = escapeWeightEnergySum_[g * kEscapeWeightBins + b] * invGenerations;
+                count[g][b] = escapeWeightCountSum_[g * kEscapeWeightBins + b];
+            }
+        }
+        writer.WriteElement("/tally/escape_weight_ratio/lower_edges",
+                            std::vector<double>(kEscapeWeightEdges.begin(), kEscapeWeightEdges.end()));
+        writer.WriteElement("/tally/escape_weight_ratio/energy_per_generation", energy);
+        writer.WriteElement("/tally/escape_weight_ratio/crossings", count);
+        writer.WriteElement("/tally/escape_weight_ratio/generations", static_cast<int>(escapeWeightGenerations_));
+        writer.WriteElement("/tally/escape_weight_ratio/definition", std::string(
+            "Escaping packets binned by w/w0 (weight at the crossing over the emission weight): bin 0 below "
+            "lower_edges[0], bin k in [lower_edges[k-1], lower_edges[k]), bin size(lower_edges) at or above the "
+            "last edge, the final bin w0 unknown. Over the generations counted in generations (a restart from a "
+            "file without the histogram starts it anew)."));
+    }
     if (numGroups_ > 1) {
         writer.WriteElement("/tally/multigroup/group_boundaries", groupBoundaries_);
 

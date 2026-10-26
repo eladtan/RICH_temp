@@ -322,6 +322,18 @@ public:
         std::vector<std::pair<size_t, unsigned char>> const* hotCells);
     // Collective (call before mpiReduceToRank0); rank 0 prints ESCAPE_ORIGIN.
     void printEscapeOriginReport(std::string const& label, size_t generation) const;
+    // Escaping packets' weight relative to their emission weight, w / w0, per
+    // group, in log bins with lower edges kEscapeWeightEdges (bin 0 below the
+    // first edge) and a last bin for an unknown w0. Packets die below
+    // transport.weight-cutoff-fraction of w0, so the bins below it stay
+    // empty; the energy just above it is what a lower cutoff could add.
+    // Summed over the generations included in the statistics (rank 0) and
+    // written as /tally/escape_weight_ratio/*; carried in the restart state.
+    static constexpr std::array<double, 8> kEscapeWeightEdges = {
+        1e-6, 1e-5, 1e-4, 1e-3, 1e-2, 1e-1, 0.5, 1.01};
+    static constexpr size_t kEscapeWeightBins = kEscapeWeightEdges.size() + 2;
+    // Rank 0 prints ESCAPE_WEIGHT lines from the included generations.
+    void printEscapeWeightSummary(std::string const& label) const;
     void clearGenerationStatistics();
     void accumulateCurrentTalliesForStatistics(double sourceDt);
     void loadStatisticalMeanTallies();
@@ -453,6 +465,13 @@ private:
     std::unordered_set<size_t> const* escapeOriginFaceCells_ = nullptr;
     std::vector<std::pair<size_t, unsigned char>> const* escapeOriginHotCells_ = nullptr;
     std::vector<double> escapeOriginEnergy_;  // class * numGroups_ + group
+    // w / w0 histogram (group * kEscapeWeightBins + bin): the current
+    // generation, and its sums over the included generations.
+    std::vector<double> escapeWeightEnergy_;
+    std::vector<double> escapeWeightCount_;
+    std::vector<double> escapeWeightEnergySum_;
+    std::vector<double> escapeWeightCountSum_;
+    size_t escapeWeightGenerations_ = 0;
     // Crossing energy per group of packets converted by the DDMC compression
     // cutoff (any class).
     std::vector<double> escapeOriginConvertedEnergy_;

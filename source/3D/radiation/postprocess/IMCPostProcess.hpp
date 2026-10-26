@@ -134,6 +134,11 @@ struct PostProcessConfig
         // a few; 15 is very conservative and leaves mid-depth cells to
         // explicit random walks.
         double ddmcMinCellOpticalDepth = 15.0;
+        // A packet is killed once its weight falls below this fraction of its
+        // emission weight (STORM's weightCutoffFraction; the killed weight is
+        // tallied as cutoff energy). Absorption alone takes it there after
+        // ln(1 / fraction) optical depths: 6.9 at the default 1e-3.
+        double weightCutoffFraction = 1e-3;
         // Moving-interface weight correction on IMC -> DDMC entry (STORM's
         // ddmcUseMovingInterfaceCorrection). Only acts with cell velocities.
         bool ddmcMovingInterfaceCorrection = true;

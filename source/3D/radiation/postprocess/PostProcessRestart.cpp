@@ -623,6 +623,7 @@ std::vector<std::string> const& MustMatchOptions()
         "transport.ddmc",
         "transport.random-walk",
         "transport.ddmc-min-cell-optical-depth",
+        "transport.weight-cutoff-fraction",
         "transport.ddmc-moving-interface-correction",
         "transport.ddmc-advection",
         "transport.ddmc-max-cell-advection-peclet",
@@ -677,6 +678,7 @@ std::unordered_map<std::string, std::string> const& LegacyOptionValues()
         {"flux-source.mapping-neighbours", "0"},
         {"volume-emission.cooling-limit-mode", "temperature"},
         {"volume-emission.cooling-limit-per-pass", "false"},
+        {"transport.weight-cutoff-fraction", "0.001"},
         {"input.missing-radiation", "auto"},
     };
     return values;

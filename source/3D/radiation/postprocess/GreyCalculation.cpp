@@ -117,6 +117,7 @@ ForwardPostprocessResult RunGreyPostprocess(
             greyParams.rwMinCellOpticalDepth = 15;
             greyParams.withDDMC = cfg.ddmc;
             greyParams.ddmcMinCellOpticalDepth = cfg.ddmcMinCellOpticalDepth;
+            greyParams.weightCutoffFraction = cfg.weightCutoffFraction;
             greyParams.ddmcUseMovingInterfaceCorrection = cfg.ddmcMovingInterfaceCorrection;
             greyParams.ddmcAdvection = cfg.ddmcAdvection;
             greyParams.ddmcMaxCellAdvectionPeclet = cfg.ddmcMaxCellAdvectionPeclet;
@@ -1022,6 +1023,7 @@ ForwardPostprocessResult RunGreyPostprocess(
                           << "Grey VTK written to:      " << greyVtk << "\n"
                           << std::endl;
             }
+            greyObserver->printEscapeWeightSummary("grey");
 
     runtime.nCells = Ncells;
     return result;

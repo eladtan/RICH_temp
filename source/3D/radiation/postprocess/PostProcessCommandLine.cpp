@@ -413,6 +413,7 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddBool(options, "transport.ddmc", "Enable DDMC acceleration.", c.transport.ddmc);
     AddBool(options, "transport.random-walk", "Enable random-walk acceleration.", c.transport.randomWalk);
     AddDouble(options, "transport.ddmc-min-cell-optical-depth", "Per-group cell optical depth above which DDMC is used.", c.transport.ddmcMinCellOpticalDepth);
+    AddDouble(options, "transport.weight-cutoff-fraction", "Kill a packet once its weight falls below this fraction of its emission weight, in (0, 1).", c.transport.weightCutoffFraction);
     AddBool(options, "transport.ddmc-moving-interface-correction", "Apply the moving-interface weight correction when packets enter DDMC.", c.transport.ddmcMovingInterfaceCorrection);
     AddBool(options, "transport.ddmc-advection", "Advect DDMC radiation with the gas (cell velocities).", c.transport.ddmcAdvection);
     AddDouble(options, "transport.split-observer-fraction", "Weight window: split packets in cells that escape, so none exceeds this fraction of the average observer energy per generation (0 = off).", c.transport.splitObserverFraction);

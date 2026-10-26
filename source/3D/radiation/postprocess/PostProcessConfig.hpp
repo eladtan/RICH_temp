@@ -58,6 +58,7 @@ struct Config
     bool ddmc = true;
     bool randomWalk = true;
     double ddmcMinCellOpticalDepth = 15.0;
+    double weightCutoffFraction = 1e-3;
     bool ddmcMovingInterfaceCorrection = true;
     bool ddmcAdvection = true;
     double ddmcMaxCellAdvectionPeclet = std::numeric_limits<double>::infinity();

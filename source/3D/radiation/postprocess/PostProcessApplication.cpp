@@ -168,6 +168,7 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.ddmc = publicConfig.transport.ddmc;
     cfg.randomWalk = publicConfig.transport.randomWalk;
     cfg.ddmcMinCellOpticalDepth = publicConfig.transport.ddmcMinCellOpticalDepth;
+    cfg.weightCutoffFraction = publicConfig.transport.weightCutoffFraction;
     cfg.ddmcMovingInterfaceCorrection = publicConfig.transport.ddmcMovingInterfaceCorrection;
     cfg.ddmcAdvection = publicConfig.transport.ddmcAdvection;
     cfg.ddmcMaxCellAdvectionPeclet = publicConfig.transport.ddmcMaxCellAdvectionPeclet;
@@ -612,6 +613,7 @@ int PostProcessIMC::RunPostProcessMain(
                       << "Center:          (" << cfg.center.x << ", " << cfg.center.y << ", " << cfg.center.z << ")\n"
                       << "Compton:         " << (cfg.compton ? "yes" : "no") << "\n"
                       << "DDMC min cell tau: " << cfg.ddmcMinCellOpticalDepth << "\n"
+                      << "Weight cutoff:   " << cfg.weightCutoffFraction << " of the emission weight\n"
                       << "DDMC moving-interface correction: " << (cfg.ddmcMovingInterfaceCorrection ? "yes" : "no") << "\n"
                       << "DDMC advection:  " << (cfg.ddmcAdvection ? "yes" : "no") << "\n"
                       << "DDMC:            "
@@ -1147,6 +1149,7 @@ int PostProcessIMC::RunPostProcessMain(
         params.rwMinCellOpticalDepth = 15;
         params.withDDMC = cfg.ddmc;
         params.ddmcMinCellOpticalDepth = cfg.ddmcMinCellOpticalDepth;
+        params.weightCutoffFraction = cfg.weightCutoffFraction;
         params.ddmcUseMovingInterfaceCorrection = cfg.ddmcMovingInterfaceCorrection;
         params.ddmcAdvection = cfg.ddmcAdvection;
         params.ddmcMaxCellAdvectionPeclet = cfg.ddmcMaxCellAdvectionPeclet;

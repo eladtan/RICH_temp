@@ -1108,6 +1108,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                           << "Output written to:        " << cfg.outputPath << "\n"
                           << std::endl;
             }
+            observer->printEscapeWeightSummary("MG");
     result.ran = true;
     result.finalGenerationsAdded = mgIncludedFinalGenerations;
     result.finalGenerationsTotal = mgCompletedFinalGenerations + mgIncludedFinalGenerations;
