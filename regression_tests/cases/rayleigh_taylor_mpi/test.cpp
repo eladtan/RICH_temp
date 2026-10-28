@@ -1,8 +1,13 @@
 #include <algorithm>
+#include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iostream>
+#include <string>
 #include <vector>
+#include "runs/voronoi_subdomains.hpp"
+#include "utils/MPIInitializer.hpp"
 #include "source/3D/GeometryCommon/RoundGrid3D.hpp"
 #include "source/3D/output/write3D.hpp"
 #include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
@@ -32,6 +37,15 @@ static const double PERTURBATION_AMP = 0.03;
 static const double T_END = 3.0;
 static const int LOG_INTERVAL = 10;
 
+// Benchmark settings from the environment; unset, the test runs as before:
+//   RT_SUBDOMAINS   Voronoi thread subdomains per rank (a number, or "auto" for one per thread)
+//   RT_MAX_CYCLES   stop after this many cycles, before T_END
+static std::string EnvOr(const char *name, const std::string &fallback)
+{
+    const char *value = std::getenv(name);
+    return value != nullptr ? std::string(value) : fallback;
+}
+
 int main(void)
 {
     Vector3D ll(0, 0, 0), ur(1, 1, 2);
@@ -39,6 +53,8 @@ int main(void)
     int world_size = 1;
 #ifdef RICH_MPI
     MPI_Init(NULL, NULL);
+    // Created before any Kokkos initializer, so MPI is finalized after Kokkos at exit
+    MPIInitializer::Instance();
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
     MPI_Comm_size(MPI_COMM_WORLD, &world_size);
 #endif
@@ -52,6 +68,12 @@ int main(void)
 #endif
 
     Voronoi3D tess(ll, ur);
+    const size_t subdomains = ParseVoronoiSubdomains(EnvOr("RT_SUBDOMAINS", "0"));
+    tess.SetThreadSubdomains(subdomains);
+    const size_t max_cycles = std::stoul(EnvOr("RT_MAX_CYCLES", "0"));
+    if (rank == 0 && subdomains > 0) {
+        std::cout << "Voronoi thread subdomains per rank: " << subdomains << std::endl;
+    }
     try {
 #ifdef RICH_MPI
         tess.BuildParallel(points);
@@ -135,7 +157,10 @@ int main(void)
     }
 
     double old_time = simulation.GetTime();
-    while (simulation.GetTime() < T_END) {
+    size_t const first_cycle = simulation.GetCycle();
+    auto const loop_start = std::chrono::steady_clock::now();
+    while (simulation.GetTime() < T_END &&
+           (max_cycles == 0 || simulation.GetCycle() - first_cycle < max_cycles)) {
         try {
             if (simulation.GetCycle() % LOG_INTERVAL == 0) {
                 double local_ekz = 0.0;
@@ -171,7 +196,14 @@ int main(void)
         }
     }
 
+#ifdef RICH_MPI
+    MPI_Barrier(MPI_COMM_WORLD);
+#endif
     if (rank == 0) {
+        size_t const cycles = simulation.GetCycle() - first_cycle;
+        double const wall = std::chrono::duration<double>(std::chrono::steady_clock::now() - loop_start).count();
+        std::cout << "RT timing: cycles=" << cycles << " wall=" << wall << " s per_cycle="
+                  << (cycles > 0 ? wall / cycles : 0.0) << " s" << std::endl;
         ek_file.close();
     }
 
@@ -237,9 +269,5 @@ int main(void)
 #endif
 
     WriteSnapshot3D(sim, "rt_final.h5");
-
-#ifdef RICH_MPI
-    MPI_Finalize();
-#endif
     return 0;
 }
