@@ -5,6 +5,10 @@
 #include "LinearGauss3D.hpp"
 #include "../common/equation_of_state.hpp"
 #include "misc/utils.hpp"
+#include <memory>
+
+// The flat arrays of the update (ConditionExtensiveUpdater3D.cpp)
+struct ConditionExtensiveUpdaterArrays;
 
 //! \brief Updates the extensives based on a series of conditions and actions. Does a normal update of all cells before going into the conditions check
 class ConditionExtensiveUpdater3D : public ExtensiveUpdater3D
@@ -55,6 +59,11 @@ public:
 	*/
 	explicit ConditionExtensiveUpdater3D(const vector<pair<const Condition3D*, const Action3D*> >& sequence);
 
+	/*! \brief Runs the update on Kokkos' default execution space (e.g. a GPU); otherwise, and by default, on the host's threads
+	\param onDevice Whether to use the device
+	*/
+	void RunOnDevice(bool onDevice);
+
 	~ConditionExtensiveUpdater3D(void) override;
 
 	void operator()(const vector<Conserved3D>& fluxes,const Tessellation3D& tess,const double dt,
@@ -64,6 +73,8 @@ public:
 
 private:
 	const vector<pair<const Condition3D*, const Action3D*> > sequence_;
+	bool onDevice_;
+	mutable std::shared_ptr<ConditionExtensiveUpdaterArrays> arrays_;
 };
 
 //! \brief Class that returns true for all cells
