@@ -4,6 +4,7 @@
 #include "misc/memory_debug.hpp"
 #include "misc/memory_profile.hpp"
 #include "spherical_symmetry/SphericalShellProjector3D.hpp"
+#include "utils/Portable.hpp"
 
 
 namespace
@@ -297,7 +298,7 @@ namespace
 	{
 		size_t N = tess.GetTotalFacesNumber();
 		res.resize(N);
-		for (size_t i = 0; i < N; ++i)
+		portable::HostParallelForOrdered(N, [&](size_t i)
 		{
 			if (tess.BoundaryFace(i))
 				res[i] = Vector3D();
@@ -312,7 +313,7 @@ namespace
 					throw;
 				}
 			}
-		}
+		});
 	}
 
 	void MovePoints(Tessellation3D& tess, std::vector<Vector3D> const& point_vel, double const dt)

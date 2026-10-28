@@ -1,5 +1,6 @@
 #include "RoundCells3D.hpp"
 #include "../../misc/utils.hpp"
+#include "utils/Portable.hpp"
 #ifdef RICH_MPI
 #include "../../mpi/mpi_commands.hpp"
 #endif
@@ -68,9 +69,9 @@ namespace
 		// check that we don't go outside grid
 		size_t const n = tess.GetPointNo();
 		const double inv_dt = 1.0 / dt;
-		std::vector<size_t> neighbors;
-		for (size_t i = 0; i < n; ++i)
+		portable::HostParallelFor(n, [&](size_t i)
 		{
+			thread_local std::vector<size_t> neighbors;
 			Vector3D const point(tess.GetMeshPoint(i));
 			tess.GetNeighbors(i, neighbors);
 			size_t const Nneighbors = neighbors.size();
@@ -89,12 +90,12 @@ namespace
 					}
 				}
 			}
-		}
+		});
 		return;
 	}
 }
 
-void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& tess, const vector<ComputationalCell3D>& cells, const vector<Vector3D> & velocities, vector<char> const& nomove) const
+void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& tess, const vector<ComputationalCell3D>& cells, const vector<Vector3D> & velocities, vector<char> const& nomove, vector<size_t> &neigh) const
 {
 	const Vector3D r = tess.GetMeshPoint(i);
 	const Vector3D s = tess.GetCellCM(i);
@@ -107,8 +108,7 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 	try
 	{
 #endif
-	tess.GetNeighbors(i, calc_dw_neigh_buf_);
-	vector<size_t> &neigh = calc_dw_neigh_buf_;
+	tess.GetNeighbors(i, neigh);
 	size_t N = neigh.size();
 	for (size_t j = 0; j < N; ++j)
 	{
@@ -154,7 +154,7 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 }
 
 void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& tess, double dt, vector<ComputationalCell3D> const& cells,
- vector<Vector3D> & velocities, vector<char> const& nomove)const
+ vector<Vector3D> & velocities, vector<char> const& nomove, vector<size_t> &neigh)const
 {
 	const Vector3D r = tess.GetMeshPoint(i);
 	const Vector3D s = tess.GetCellCM(i);
@@ -162,8 +162,7 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 	const double R = tess.GetWidth(i);
 	if (d < 0.9*eta_*R)
 		return;
-	tess.GetNeighbors(i, calc_dw2_neigh_buf_);
-	vector<size_t> &neigh = calc_dw2_neigh_buf_;
+	tess.GetNeighbors(i, neigh);
 	size_t N = neigh.size();
 	double cs = 0;
 	double min_R = R;
@@ -288,25 +287,28 @@ void RoundCells3D::ApplyFix(Tessellation3D const& tess, vector<ComputationalCell
 	MPI_exchange_data(tess, nomove, true);
 #endif
 
+	// Each cell's correction is its own (on the host's threads when the equation of state allows it)
 	if (cold_)
 	{
-		for (size_t i = 0; i < n; ++i)
+		portable::HostParallelForOrdered(n, [&](size_t i)
 		{
+			thread_local vector<size_t> neigh;
 			if (nomove[i] == 0)
-				calc_dw(velocities.at(i), i, tess, dt, cells, velocities, nomove);
+				calc_dw(velocities.at(i), i, tess, dt, cells, velocities, nomove, neigh);
 			else
 				velocities.at(i) = Vector3D();
-		}
+		}, eos_.ThreadSafe());
 	}
 	else
 	{
-		for (size_t i = 0; i < n; ++i)
+		portable::HostParallelForOrdered(n, [&](size_t i)
 		{
+			thread_local vector<size_t> neigh;
 			if (nomove[i] == 0)
-				calc_dw(velocities.at(i), i, tess, cells, velocities, nomove);
+				calc_dw(velocities.at(i), i, tess, cells, velocities, nomove, neigh);
 			else
 				velocities.at(i) = Vector3D();
-		}
+		}, eos_.ThreadSafe());
 	}
 #ifdef RICH_MPI
 	MPI_exchange_data(tess, velocities, true);

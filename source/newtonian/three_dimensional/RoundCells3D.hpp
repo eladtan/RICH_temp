@@ -38,11 +38,12 @@ public:
 		double dt, vector<Vector3D> &velocities)const override;
 private:
 
+	// neigh: a buffer for the cell's neighbors (one per thread)
 	void calc_dw(Vector3D &velocty, size_t i, const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
-		const vector<Vector3D> & velocities, vector<char> const& nomove) const;
+		const vector<Vector3D> & velocities, vector<char> const& nomove, vector<size_t> &neigh) const;
 
 	void calc_dw(Vector3D &velocty, size_t i, const Tessellation3D& tess, double dt, vector<ComputationalCell3D> const& cells,
-		vector<Vector3D> & velocities, vector<char> const& nomove)const;
+		vector<Vector3D> & velocities, vector<char> const& nomove, vector<size_t> &neigh)const;
 
 	const PointMotion3D& pm_;
 	const EquationOfState& eos_;
@@ -54,8 +55,6 @@ private:
 	const vector<std::string> no_move_;
 	const double max_velocity_;
 	mutable vector<size_t> slowdown_neigh_buf_;
-	mutable vector<size_t> calc_dw_neigh_buf_;
-	mutable vector<size_t> calc_dw2_neigh_buf_;
 };
 
 #endif // ROUND_CELLS3D_HPP

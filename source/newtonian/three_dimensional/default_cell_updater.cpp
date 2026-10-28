@@ -1,5 +1,6 @@
 #include "default_cell_updater.hpp"
 #include "../../misc/utils.hpp"
+#include "utils/Portable.hpp"
 #ifdef RICH_MPI
 #include "../../mpi/mpi_commands.hpp"
 #endif
@@ -65,8 +66,17 @@ namespace
 		extensive.energy = extensive.mass*(energy*gamma + gamma - 1) - res.pressure*vol;
 	}
 
+	/* The cells the density floor changed, with their mass and momentum before it: a cell's neighbors after it in
+	   the loop over cells one after another were not floored yet when it read them */
+	struct Unfloored
+	{
+		vector<char> floored;
+		vector<double> mass;
+		vector<Vector3D> momentum;
+	};
+
 	bool HighRelativeKineticEnergy(Tessellation3D const& tess, size_t index, vector<Conserved3D> const& cells,
-		Conserved3D const& cell, double &maxDV)
+		Conserved3D const& cell, double &maxDV, Unfloored const& unfloored)
 	{
 		std::vector<size_t> neigh;
 		tess.GetNeighbors(index, neigh);
@@ -85,7 +95,8 @@ namespace
 			{
 				auto const r_ij = normalize(r_i - tess.GetMeshPoint(neighbor_j));
 				double const A_ij = tess.GetArea(faces[i]);
-				Vector3D velocity_j = cells.at(neighbor_j).momentum / cells[neighbor_j].mass;
+				Vector3D velocity_j = neighbor_j > index && neighbor_j < unfloored.floored.size() && unfloored.floored[neighbor_j] ?
+					unfloored.momentum[neighbor_j] / unfloored.mass[neighbor_j] : cells.at(neighbor_j).momentum / cells[neighbor_j].mass;
 				div_V -= 0.5*ScalarProd(Vcell+velocity_j, r_ij) * A_ij;
 				maxDV = std::max(maxDV, abs(Vcell - velocity_j));
 			}
@@ -103,26 +114,45 @@ namespace
 		size_t Nloop = tess.GetPointNo();
 		size_t print_id = -1;
 		size_t Ntracers = ComputationalCell3D::tracerNames.size();
-		for (size_t i = 0; i < Nloop; ++i)
+		// The density floor of every cell first (the cells' updates below may then run on the host's threads)
+		Unfloored unfloored;
+		if (entropy_index < ComputationalCell3D::tracerNames.size())
+		{
+			unfloored.floored.assign(Nloop, 0);
+			unfloored.mass.resize(Nloop);
+			unfloored.momentum.resize(Nloop);
+		}
+		portable::HostParallelFor(Nloop, [&](size_t i)
+		{
+			if(res[i].ID == print_id)
+				std::cout<<"Entered cell update "<<res[i]<<std::endl;
+			Conserved3D& extensive = extensives[i];
+			const double vol = tess.GetVolume(i);
+			res[i].density = extensive.mass / vol;
+			double d_factor = 1;
+			if(res[i].density > 0 && res[i].density < 2e-21)
+			{
+				if (not unfloored.floored.empty())
+				{
+					unfloored.floored[i] = 1;
+					unfloored.mass[i] = extensive.mass;
+					unfloored.momentum[i] = extensive.momentum;
+				}
+				d_factor = 2e-21 / res[i].density;
+				res[i].density = 2e-21;
+				extensive.mass *= d_factor;
+				extensive.momentum *= d_factor;
+				extensive.internal_energy *= d_factor;
+				for (size_t j = 0; j < Ntracers; ++j)
+					extensive.tracers[j] *= d_factor;
+			}
+		});
+		portable::HostParallelForOrdered(Nloop, [&](size_t i)
 		{
 			try
 			{
-				if(res[i].ID == print_id)
-					std::cout<<"Entered cell update "<<res[i]<<std::endl;
 				Conserved3D& extensive = extensives[i];
 				const double vol = tess.GetVolume(i);
-				res[i].density = extensive.mass / vol;
-				double d_factor = 1;
-				if(res[i].density > 0 && res[i].density < 2e-21)
-				{
-					d_factor = 2e-21 / res[i].density;
-					res[i].density = 2e-21;
-					extensive.mass *= d_factor;
-					extensive.momentum *= d_factor;
-					extensive.internal_energy *= d_factor;
-					for (size_t j = 0; j < Ntracers; ++j)
-						extensive.tracers[j] *= d_factor;
-				}
 				double const old_etherm = res[i].internal_energy;
 				res[i].velocity = extensive.momentum / extensive.mass;
 				double energy = extensive.internal_energy / extensive.mass;
@@ -163,7 +193,7 @@ namespace
 							double maxDV;
 							// Is the kinetic energy small?
 							if ((energy*extensive.mass < 0.005*extensive.energy) &&
-								HighRelativeKineticEnergy(tess, i, extensives, extensive, maxDV))
+								HighRelativeKineticEnergy(tess, i, extensives, extensive, maxDV, unfloored))
 							{
 								if(print_id == res[i].ID)
 									std::cout<<"Entered entropy fix2"<<std::endl;
@@ -287,7 +317,7 @@ namespace
 				eo.addEntry("Cell energy", extensives[i].energy);
 				throw eo;
 			}
-		}
+		}, eos.ThreadSafe());
 	}
 
 	void regular_updateSR(std::vector<ComputationalCell3D> &res, std::vector<Conserved3D> & extensives,
@@ -296,7 +326,7 @@ namespace
 	{
 		size_t Nloop = tess.GetPointNo();
 		size_t Ntracers = ComputationalCell3D::tracerNames.size();
-		for (size_t i = 0; i < Nloop; ++i)
+		portable::HostParallelForOrdered(Nloop, [&](size_t i)
 		{
 			try
 			{
@@ -370,7 +400,7 @@ namespace
 				eo.addEntry("Entropy index", static_cast<double>(entropy_index));
 				throw;
 			}
-		}
+		}, eos.ThreadSafe());
 	}
 
 }

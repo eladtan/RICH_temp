@@ -1,6 +1,7 @@
 #include "CourantFriedrichsLewy.hpp"
 #include "../../misc/utils.hpp"
 #include "../../misc/lazy_list.hpp"
+#include "utils/Portable.hpp"
 #include <limits>
 #ifdef RICH_MPI
 #include <mpi.h>
@@ -25,12 +26,16 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 		no_calc_indeces[i] = binary_index_find(ComputationalCell3D::stickerNames, no_calc_[i]);
 	if (N > 0)
 	{
-		for (size_t i = 0; i < N; ++i)
+		// Each cell's time step on the host's threads, then the smallest, in order, as one loop over the cells finds it
+		vector<double> cell_dt(N);
+		vector<char> skipped(N, 0);
+		portable::HostParallelForOrdered(N, [&](size_t i)
 		{
 			const ComputationalCell3D &cell = cells[i];
 			if(std::any_of(no_calc_indeces.cbegin(), no_calc_indeces.cend(), [&cell](const size_t &idx){return cell.stickers[idx];}))
 			{
-				continue;
+				skipped[i] = 1;
+				return;
 			}
 			double res_temp = 0;
 			double c = 0;
@@ -60,10 +65,13 @@ double CourantFriedrichsLewy::operator()(const Tessellation3D& tess, const vecto
 				max_face_area = std::max(max_face_area, tess.GetArea(faces[j]));
 			}
 			double cell_effective_radius = std::min(tess.GetWidth(i), tess.GetVolume(i) / max_face_area);
-			res_temp = cell_effective_radius / res_temp;
-			if (res_temp < res)
+			cell_dt[i] = cell_effective_radius / res_temp;
+		}, eos.ThreadSafe());
+		for (size_t i = 0; i < N; ++i)
+		{
+			if (skipped[i] == 0 && cell_dt[i] < res)
 			{
-				res = res_temp;
+				res = cell_dt[i];
 				loc = i;
 			}
 		}
