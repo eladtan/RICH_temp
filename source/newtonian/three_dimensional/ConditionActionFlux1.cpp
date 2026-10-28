@@ -1,4 +1,17 @@
 #include "ConditionActionFlux1.hpp"
+#include "Hllc3D.hpp"
+#include "HllcKernels.hpp"
+#include "LinearGauss3D.hpp"
+#include "LinearGaussArrays.hpp"
+#include "utils/Portable.hpp"
+
+// The flat arrays of the flux kernel, kept between calls
+struct ConditionActionFluxArrays
+{
+	portable::Buffer<double> normals, faceVelocities, soundSpeeds, fluxes;
+	portable::Buffer<std::uint8_t> action, aux, sideStatus, status;
+	std::vector<std::uint8_t> actionKinds; // per action in the sequence: what the kernel does with it (FaceKind)
+};
 
 ConditionActionFlux1::ConditionActionFlux1(const vector<pair<const Condition3D*, const Action3D*> >& sequence,
 	SpatialReconstruction3D const& interp) :
@@ -55,6 +68,253 @@ namespace
 	}
 }
 
+namespace
+{
+	// What the kernel does with a face's action: nothing (the face is computed on the host), RegularFlux3D or RigidWallFlux3D
+	enum FaceKind : std::uint8_t
+	{
+		HostFace = 0,
+		BulkFace,
+		WallFace
+	};
+
+	constexpr std::size_t maxKernelActions = 8;
+	constexpr std::uint8_t noAction = 255;
+
+	// Each face's flux by HLLC, as RegularFlux3D and RigidWallFlux3D with Hllc3D compute it
+	struct FaceFluxes
+	{
+		static constexpr bool onDevice = true;
+		const double *values = nullptr; // LinearGauss3D's face sides, `fields` each
+		std::size_t fields = 0;
+		const std::uint8_t *sideStatus = nullptr; // per side: not 0 if the side or its sound speed is missing
+		const double *soundSpeeds = nullptr; // per side
+		const double *normals = nullptr; // 3 per face
+		const double *faceVelocities = nullptr; // 3 per face
+		const std::uint8_t *action = nullptr; // per face: its index in the sequence
+		const std::uint8_t *aux = nullptr; // per face: the condition's auxiliary flag
+		std::uint8_t kinds[maxKernelActions] = {};
+		double gammas[maxKernelActions] = {};
+		double *fluxes = nullptr; // 5 per face: mass, momentum, energy
+		std::uint8_t *status = nullptr; // per face: 0 if computed here
+
+		RICH_INLINE_FUNCTION hllc::Primitive Side(std::size_t face, std::size_t side) const
+		{
+			const double *v = this->values + (2 * face + side) * this->fields;
+			return hllc::Primitive{v[gauss::Density], v[gauss::Pressure], v[gauss::InternalEnergy], v[gauss::VelocityX],
+				v[gauss::VelocityY], v[gauss::VelocityZ]};
+		}
+
+		RICH_INLINE_FUNCTION void operator()(std::size_t face) const
+		{
+			this->status[face] = 1;
+			const std::uint8_t a = this->action[face];
+			if(a >= maxKernelActions or this->kinds[a] == HostFace)
+			{
+				return;
+			}
+			const double nx = this->normals[3 * face], ny = this->normals[3 * face + 1], nz = this->normals[3 * face + 2];
+			hllc::Primitive left, right;
+			double cl = 0, cr = 0;
+			if(this->kinds[a] == WallFace)
+			{
+				// the face's own side on both sides of the wall, mirrored on the ghost's
+				const std::size_t own = this->aux[face] ? 0 : 1;
+				if(this->sideStatus[2 * face + own] != 0)
+				{
+					return;
+				}
+				hllc::Primitive mirror = this->Side(face, own);
+				hllc::Reflect(mirror.vx, mirror.vy, mirror.vz, nx, ny, nz);
+				left = own == 0 ? this->Side(face, 0) : mirror;
+				right = own == 0 ? mirror : this->Side(face, 1);
+				cl = this->soundSpeeds[2 * face + own];
+				cr = cl;
+			}
+			else
+			{
+				if(this->sideStatus[2 * face] != 0 or this->sideStatus[2 * face + 1] != 0)
+				{
+					return;
+				}
+				left = this->Side(face, 0);
+				right = this->Side(face, 1);
+				cl = this->soundSpeeds[2 * face];
+				cr = this->soundSpeeds[2 * face + 1];
+			}
+			const double velocity = hllc::NormalVelocity(nx, ny, nz, this->faceVelocities[3 * face],
+				this->faceVelocities[3 * face + 1], this->faceVelocities[3 * face + 2]);
+			hllc::Flux flux;
+			hllc::Primitive local_left, local_right;
+			hllc::WaveSpeeds ws;
+			double frame_velocity = 0;
+			if(hllc::Solve(left, right, velocity, nx, ny, nz, cl, cr, this->gammas[a], flux, local_left, local_right, ws,
+				frame_velocity) != hllc::Ok)
+			{
+				return;
+			}
+			double *out = this->fluxes + 5 * face;
+			out[0] = flux.mass;
+			out[1] = flux.mx;
+			out[2] = flux.my;
+			out[3] = flux.mz;
+			out[4] = flux.energy;
+			this->status[face] = 0;
+		}
+	};
+}
+
+const ConditionActionFluxArrays *ConditionActionFlux1::KernelFluxes(const Tessellation3D& tess,
+	const vector<Vector3D>& face_velocities, const vector<ComputationalCell3D>& cells, const EquationOfState& eos) const
+{
+	const LinearGauss3D *gauss = dynamic_cast<const LinearGauss3D*>(&interp_);
+	LinearGaussArrays *sides = gauss != nullptr ? gauss->GetArrays() : nullptr;
+	const size_t faces = tess.GetTotalFacesNumber();
+	if(sides == nullptr or sides->sr or sides->facesNum != faces or face_velocities.size() < faces)
+	{
+		return nullptr;
+	}
+	// The actions the kernel computes
+	FaceFluxes kernel;
+	bool any = false;
+	for(size_t i = 0; i < sequence_.size() and i < maxKernelActions; ++i)
+	{
+		const RiemannSolver3D *rs = nullptr;
+		if(const RegularFlux3D *regular = dynamic_cast<const RegularFlux3D*>(sequence_[i].second))
+		{
+			rs = &regular->GetRiemannSolver();
+			kernel.kinds[i] = BulkFace;
+		}
+		else if(const RigidWallFlux3D *wall = dynamic_cast<const RigidWallFlux3D*>(sequence_[i].second))
+		{
+			rs = &wall->GetRiemannSolver();
+			kernel.kinds[i] = WallFace;
+		}
+		const Hllc3D *hllc = dynamic_cast<const Hllc3D*>(rs);
+		if(hllc == nullptr)
+		{
+			kernel.kinds[i] = HostFace;
+			continue;
+		}
+		kernel.gammas[i] = hllc->GetIterationFactor();
+		any = true;
+	}
+	if(not any)
+	{
+		return nullptr;
+	}
+	if(not arrays_)
+	{
+		arrays_ = std::make_shared<ConditionActionFluxArrays>();
+	}
+	ConditionActionFluxArrays &data = *arrays_;
+
+	data.actionKinds.assign(kernel.kinds, kernel.kinds + maxKernelActions);
+
+	// Each face's action, as choose_action finds it; on the host's threads if the conditions only read the
+	// tessellation (IsBoundaryFace3D, IsBulkFace3D), otherwise one face after another
+	vector<std::uint8_t> &action = data.action.Host();
+	vector<std::uint8_t> &aux = data.aux.Host();
+	action.assign(faces, noAction);
+	aux.assign(faces, 0);
+	const auto findAction = [&](size_t face)
+	{
+		for(size_t i = 0; i < sequence_.size(); ++i)
+		{
+			const pair<bool, bool> flag_aux = (*sequence_[i].first)(face, tess, cells);
+			if(flag_aux.first)
+			{
+				action[face] = i < maxKernelActions ? static_cast<std::uint8_t>(i) : noAction;
+				aux[face] = flag_aux.second ? 1 : 0;
+				break;
+			}
+		}
+	};
+	bool parallelConditions = true;
+	for(const pair<const Condition3D*, const Action3D*> &step : sequence_)
+	{
+		if(dynamic_cast<const IsBoundaryFace3D*>(step.first) == nullptr and dynamic_cast<const IsBulkFace3D*>(step.first) == nullptr)
+		{
+			parallelConditions = false;
+		}
+	}
+	if(parallelConditions)
+	{
+		portable::HostParallelFor(faces, findAction);
+	}
+	else
+	{
+		for(size_t face = 0; face < faces; ++face)
+		{
+			findAction(face);
+		}
+	}
+	vector<double> &normals = data.normals.Host();
+	vector<double> &velocities = data.faceVelocities.Host();
+	normals.resize(3 * faces);
+	velocities.resize(3 * faces);
+	portable::HostParallelFor(faces, [&](size_t face)
+	{
+		const Vector3D normal = normalize(tess.Normal(face));
+		normals[3 * face] = normal.x;
+		normals[3 * face + 1] = normal.y;
+		normals[3 * face + 2] = normal.z;
+		velocities[3 * face] = face_velocities[face].x;
+		velocities[3 * face + 1] = face_velocities[face].y;
+		velocities[3 * face + 2] = face_velocities[face].z;
+	});
+
+	// The sides' sound speeds (a side LinearGauss3D did not compute stays missing)
+	const portable::Where where = sides->faceValuesWhere == portable::Where::Device and eos.RunsOnDevice() ?
+		portable::Where::Device : portable::Where::Host;
+	data.sideStatus.Host() = sides->faceStatus.Host();
+	data.soundSpeeds.Host().resize(2 * faces);
+	data.fluxes.Host().resize(5 * faces);
+	data.status.Host().resize(faces);
+	if(where == portable::Where::Device)
+	{
+		data.action.ToDevice();
+		data.aux.ToDevice();
+		data.normals.ToDevice();
+		data.faceVelocities.ToDevice();
+		data.sideStatus.ToDevice();
+		data.soundSpeeds.AllocateDevice();
+		data.fluxes.AllocateDevice();
+		data.status.AllocateDevice();
+	}
+	const size_t fields = sides->config.fields;
+	double *values = sides->faceValues.Data(where);
+	EosArrays arrays;
+	arrays.n = 2 * faces;
+	arrays.stride = fields;
+	arrays.density = values + gauss::Density;
+	arrays.second = values + gauss::Pressure;
+	arrays.tracers = sides->config.tracers > 0 ? values + gauss::FirstTracer : nullptr;
+	arrays.tracersNum = sides->config.tracers;
+	arrays.tracerNames = &ComputationalCell3D::tracerNames;
+	arrays.result = data.soundSpeeds.Data(where);
+	arrays.status = data.sideStatus.Data(where);
+	eos.dp2cArrays(arrays, where);
+
+	kernel.values = values;
+	kernel.fields = fields;
+	kernel.sideStatus = data.sideStatus.Data(where);
+	kernel.soundSpeeds = data.soundSpeeds.Data(where);
+	kernel.normals = data.normals.Data(where);
+	kernel.faceVelocities = data.faceVelocities.Data(where);
+	kernel.action = data.action.Data(where);
+	kernel.aux = data.aux.Data(where);
+	kernel.fluxes = data.fluxes.Data(where);
+	kernel.status = data.status.Data(where);
+	portable::ParallelFor(where, "ConditionActionFlux1::FaceFluxes", faces, kernel);
+	if(where == portable::Where::Device)
+	{
+		data.fluxes.ToHost();
+		data.status.ToHost();
+	}
+	return &data;
+}
+
 std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > ConditionActionFlux1::operator()(vector<Conserved3D> &fluxes, const Tessellation3D& tess, const vector<Vector3D>& face_velocities,
 													   const vector<ComputationalCell3D>& cells, const vector<Conserved3D>& /*extensives*/, const EquationOfState& eos,
 	const double time, const double /*dt*/) const
@@ -70,14 +330,52 @@ void ConditionActionFlux1::Calculate(vector<Conserved3D> &fluxes, const Tessella
 {
 	for (size_t i = 0; i < sequence_.size(); ++i)
 		sequence_[i].second->Reset();
-	face_values.clear();
+	// LinearGauss3D rewrites every face value, so the vector keeps its elements between steps
+	if (dynamic_cast<const LinearGauss3D*>(&interp_) == nullptr)
+		face_values.clear();
 	interp_(tess, cells, time, face_values);
 	fluxes.resize(tess.GetTotalFacesNumber());
 	size_t Nloop = fluxes.size();
-	for (size_t i = 0; i < Nloop; ++i)
+	const ConditionActionFluxArrays *flat = this->KernelFluxes(tess, face_velocities, cells, eos);
+	/* The faces the kernel computed get their fluxes here, on the host's threads (they cannot throw). The loop
+	   below then goes through the others in order: bad inputs (thrown) and faces left to the actions. */
+	enum : std::uint8_t { KernelDone = 0, BadInput, HostAction };
+	vector<std::uint8_t> remaining(Nloop);
+	portable::HostParallelFor(Nloop, [&](size_t i)
 	{
 		if (face_values[i].first.density < 0 ||  face_values[i].first.internal_energy < 0
 			|| face_values[i].second.density < 0  || face_values[i].second.internal_energy < 0)
+		{
+			remaining[i] = BadInput;
+			return;
+		}
+		if (flat == nullptr || flat->status.Host()[i] != 0)
+		{
+			remaining[i] = HostAction;
+			return;
+		}
+		remaining[i] = KernelDone;
+		// a wall's two sides advect the face's own side
+		const double *f = flat->fluxes.Host().data() + 5 * i;
+		Conserved3D &res = fluxes[i];
+		res = Conserved3D();
+		res.mass = f[0];
+		res.momentum = Vector3D(f[1], f[2], f[3]);
+		res.energy = f[4];
+		res.internal_energy = 0;
+		if (flat->actionKinds[flat->action.Host()[i]] == WallFace)
+		{
+			const ComputationalCell3D &own = flat->aux.Host()[i] ? face_values[i].first : face_values[i].second;
+			AddTracers3D(own, own, res);
+		}
+		else
+			AddTracers3D(face_values[i].first, face_values[i].second, res);
+	});
+	for (size_t i = 0; i < Nloop; ++i)
+	{
+		if (remaining[i] == KernelDone)
+			continue;
+		if (remaining[i] == BadInput)
 		{
 			UniversalError eo("Bad input to flux calculator");
 			eo.addEntry("Face", static_cast<double>(i));
@@ -138,7 +436,7 @@ namespace
 {
 	void reflect(ComputationalCell3D & cell, Vector3D const& normal)
 	{
-		cell.velocity -= 2 * ScalarProd(cell.velocity, normal)*normal;
+		hllc::Reflect(cell.velocity.x, cell.velocity.y, cell.velocity.z, normal.x, normal.y, normal.z);
 	}
 
 	void rigid_wall_states(std::pair<ComputationalCell3D, ComputationalCell3D> &res,

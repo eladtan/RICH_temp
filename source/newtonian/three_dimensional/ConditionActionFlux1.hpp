@@ -12,6 +12,10 @@
 #include "../../misc/utils.hpp"
 #include "SpatialReconstruction3D.hpp"
 #include "../common/LagrangianHLLC3D.hpp"
+#include <memory>
+
+// The flat arrays of the flux kernel (ConditionActionFlux1.cpp)
+struct ConditionActionFluxArrays;
 
 //using namespace std;
 
@@ -91,6 +95,12 @@ public:
 private:
 	const vector<pair<const Condition3D*, const Action3D*> > sequence_;
 	SpatialReconstruction3D const& interp_;
+	mutable std::shared_ptr<ConditionActionFluxArrays> arrays_;
+
+	/* Computes the faces' fluxes in the kernel where it can: the reconstruction is LinearGauss3D and the face's
+	   action is RegularFlux3D or RigidWallFlux3D with Hllc3D. Returns the arrays, or null if no face qualifies. */
+	const ConditionActionFluxArrays *KernelFluxes(const Tessellation3D& tess, const vector<Vector3D>& face_velocities,
+		const vector<ComputationalCell3D>& cells, const EquationOfState& eos) const;
 };
 
 //! \brief Calculates flux between two regular bulk cells
@@ -102,6 +112,9 @@ public:
 	\param rs Riemann solver
 	*/
 	explicit RegularFlux3D(const RiemannSolver3D& rs);
+
+	//! \brief The Riemann solver
+	const RiemannSolver3D &GetRiemannSolver(void) const { return rs_; }
 
 	void operator()(size_t face_index, const Tessellation3D& tess, const Vector3D& face_velocity,
 		const vector<ComputationalCell3D>& cells, const EquationOfState& eos, const bool aux, Conserved3D &res,
@@ -122,6 +135,9 @@ public:
 	\param rs Riemann solver
 	*/
 	explicit RigidWallFlux3D(const RiemannSolver3D& rs);
+
+	//! \brief The Riemann solver
+	const RiemannSolver3D &GetRiemannSolver(void) const { return rs_; }
 
 	void operator()(size_t face_index, const Tessellation3D& tess, const Vector3D& face_velocity,
 		const vector<ComputationalCell3D>& cells, const EquationOfState& eos, const bool aux, Conserved3D &res,
