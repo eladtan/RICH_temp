@@ -161,6 +161,7 @@ void Simulation::step(void)
     MEMORY_DEBUG_PRINT("Simulation::step START cycle=" + std::to_string(this->tracker.getCycle()));
     this->lastPhysicsTimes.clear();
     auto stepWallStart = std::chrono::high_resolution_clock::now();
+    double loadBalanceSwitchSeconds = 0; // switching between the physics' load balances
     double next_time_step = std::numeric_limits<double>::max();
     // double dt = std::numeric_limits<double>::max();
     #ifdef RICH_MPI
@@ -192,7 +193,9 @@ void Simulation::step(void)
                 if(it != this->loads.cend())
                 {
                     if(this->rank == 0) std::cout << "Load balance restored" << std::endl;
+                    const auto switchStart = std::chrono::high_resolution_clock::now();
                     this->setCurrentLoadBalance(LB);
+                    loadBalanceSwitchSeconds += std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - switchStart).count();
                 }
                 else
                 {
@@ -349,6 +352,8 @@ void Simulation::step(void)
 
     double stepWallSec = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - stepWallStart).count();
     this->wallclockTime += stepWallSec;
+    if(this->rank == 0)
+        std::cout << "Step wall time: " << stepWallSec << " s (load balance switches " << loadBalanceSwitchSeconds << " s)" << std::endl;
 }
 
 #ifdef RICH_MPI
@@ -389,8 +394,15 @@ void Simulation::setCurrentLoadBalance(const std::string &name)
     }
     else
     {
+        const auto switchStart = std::chrono::high_resolution_clock::now();
         this->tess.SetLoadBalancer(it->second);
+        const auto tessDone = std::chrono::high_resolution_clock::now();
         this->buildDataTransfer();
+        const auto transferDone = std::chrono::high_resolution_clock::now();
+        if(this->rank == 0)
+            std::cout << "Load balance switch to " << name << ": tess.SetLoadBalancer "
+                      << std::chrono::duration<double>(tessDone - switchStart).count() << " s, buildDataTransfer "
+                      << std::chrono::duration<double>(transferDone - tessDone).count() << " s" << std::endl;
     }
 
     std::shared_ptr<LoadBalancer<Vector3D>> load = this->tess.GetLoadBalancer();
