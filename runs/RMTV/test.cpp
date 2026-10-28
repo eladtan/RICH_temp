@@ -685,6 +685,7 @@ void run(const Options &o, int rank, int size)
     double radiationDt = std::numeric_limits<double>::max();
     const auto loopStart = std::chrono::steady_clock::now();
     const size_t loopFirstCycle = sim.GetCycle();
+    double simStepSeconds = 0;
     while(sim.GetTime() < tend && sim.GetCycle() < size_t(o.maxSteps))
     {
         // Sum of directional acoustic rates is conservative for a 3D grid.
@@ -712,7 +713,9 @@ void run(const Options &o, int rank, int size)
         }
         const double before = totalEnergy();
         sim.SetTimeStep(dt);
+        const auto simStepStart = std::chrono::steady_clock::now();
         sim.step();
+        simStepSeconds += std::chrono::duration<double>(std::chrono::steady_clock::now() - simStepStart).count();
         if(!o.hydroOnly)
         {
             {
@@ -788,7 +791,9 @@ void run(const Options &o, int rank, int size)
     {
         const size_t loopCycles = sim.GetCycle() - loopFirstCycle;
         std::cout << "RMTV timing: cycles=" << loopCycles << " wall=" << loopSeconds << " s per_cycle="
-                  << (loopCycles > 0 ? loopSeconds / loopCycles : 0.0) << " s" << std::endl;
+                  << (loopCycles > 0 ? loopSeconds / loopCycles : 0.0) << " s (rank 0: Simulation::step "
+                  << (loopCycles > 0 ? simStepSeconds / loopCycles : 0.0) << " s, rest of the cycle "
+                  << (loopCycles > 0 ? (loopSeconds - simStepSeconds) / loopCycles : 0.0) << " s)" << std::endl;
     }
     snapshot(o, "final", rank, tess, cells, sim.GetTime(), ref);
     if(rank == 0)
