@@ -542,7 +542,6 @@ void HDSim3D::timeAdvance2(void)
 	point_vel.clear();
 	face_vel.clear();
 	fluxes.clear();
-	face_values.clear();
 	pm_(tess_, cells_, time, point_vel);
 #ifdef RICH_MPI
 	Vector3D vdummy;
@@ -669,7 +668,6 @@ void HDSim3D::timeAdvanceLagrangian1D(
 	point_vel.clear();
 	face_vel.clear();
 	fluxes.clear();
-	face_values.clear();
 
 	std::pair<Vector3D, Vector3D> orig_box = tess_.GetBoxCoordinates();
 	Vector3D orig_ll = orig_box.first;
@@ -833,7 +831,6 @@ void HDSim3D::timeAdvance(void)
 	point_vel.clear();
 	face_vel.clear();
 	fluxes.clear();
-	face_values.clear();
 	pm_(tess_, cells_, time, point_vel);
 #ifdef RICH_MPI
 	Vector3D vdummy;
@@ -896,7 +893,6 @@ void HDSim3D::timeAdvance3(void)
 	point_vel.clear();
 	face_vel.clear();
 	fluxes.clear();
-	face_values.clear();
 	pm_(tess_, cells_, time, point_vel);
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, point_vel, true);
@@ -1019,7 +1015,6 @@ void HDSim3D::timeAdvance33(void)
 	point_vel.clear();
 	face_vel.clear();
 	fluxes.clear();
-	face_values.clear();
 	pm_(tess_, cells_, time, point_vel);
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, point_vel, true);
@@ -1152,7 +1147,6 @@ void HDSim3D::timeAdvance32(void)
 	point_vel.clear();
 	face_vel.clear();
 	fluxes.clear();
-	face_values.clear();
 	pm_(tess_, cells_, time, point_vel);
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, point_vel, true);
@@ -1256,7 +1250,6 @@ void HDSim3D::timeAdvance4(void)
 	point_vel.clear();
 	face_vel.clear();
 	fluxes.clear();
-	face_values.clear();
 	pm_(tess_, cells_, time, point_vel);
 #ifdef RICH_MPI
 	MPI_exchange_data(tess_, point_vel, true);
