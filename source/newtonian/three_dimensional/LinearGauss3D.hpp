@@ -9,8 +9,12 @@
 #include "../common/equation_of_state.hpp"
 #include "SpatialReconstruction3D.hpp"
 #include <cmath>
+#include <memory>
 #include "../../misc/universal_error.hpp"
 #include "Ghost3D.hpp"
+
+// The flat arrays the slopes and face values are computed in (LinearGauss3D.cpp)
+struct LinearGaussArrays;
 
 //! \brief Linear gauss interpolation
 class LinearGauss3D : public SpatialReconstruction3D
@@ -34,6 +38,17 @@ public:
 	LinearGauss3D(EquationOfState const& eos, Ghost3D const& ghost,bool slf = true,double delta_v = 0.2,
 		double theta = 0.5,double delta_P = 0.7,bool SR=false,const vector<string>& calc_tracers = vector<string>(),
 		const string& skip_key = string(),bool pressure_calc=true, bool apply_principal_limit=false);
+
+	/*! \brief Runs the slopes and face values on Kokkos' default execution space (e.g. a GPU), when the equation of
+	    state runs there too (EquationOfState::RunsOnDevice); otherwise, and by default, on the host's threads
+	\param onDevice Whether to use the device
+	*/
+	void RunOnDevice(bool onDevice);
+
+	/*! \brief The flat arrays of the last call, or null before the first (the flux kernels read the face values)
+	\return The arrays
+	*/
+	LinearGaussArrays *GetArrays(void) const { return arrays_.get(); }
 
 	void operator()(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells, double time,
 		vector<pair<ComputationalCell3D, ComputationalCell3D> > &res) const override;
@@ -92,6 +107,8 @@ private:
 	mutable vector<size_t> to_skip_;
 	const bool pressure_calc_;
 	const bool apply_principal_limit_;
+	bool onDevice_;
+	mutable std::shared_ptr<LinearGaussArrays> arrays_;
 
 	LinearGauss3D(const LinearGauss3D& origin);
 
