@@ -42,7 +42,6 @@
 #include "newtonian/three_dimensional/simulation/steps/RadiationMCStep.hpp"
 #include "newtonian/three_dimensional/CostCalculator3D.hpp"
 #include "utils/arguments/ArgumentParser.hpp"
-#include "runs/mc_results_dir.hpp"
 #include "utils/MPIInitializer.hpp"
 #include "runs/voronoi_subdomains.hpp"
 
@@ -62,6 +61,8 @@
  * Runtime:     5 ns
  *
  * Usage: mpirun -np N ./test [options] [Np] [prefix] [new/cell] [max/cell]
+ *   --output DIR   write the VTK and HDF5 (checkpoint) outputs, and the text profiles, under DIR;
+ *                  without it no VTK or HDF5 is written and the profiles go to [prefix]
  */
 
 namespace fs = std::filesystem;
@@ -288,7 +289,10 @@ int main(int argc, char *argv[])
     arguments.addPositional<std::string>("prefix", "mach2_mc", "output prefix");
     arguments.addPositional<size_t>("new_photons_per_cell", 25, "new photons per cell per step");
     arguments.addPositional<size_t>("max_photons_per_cell", 100, "population-control photon cap per cell");
-    arguments.addFlag("resume", "resume from the checkpoint if it exists");
+    arguments.addOption<std::string>("output", "",
+                                     "directory for the VTK and HDF5 (checkpoint) outputs and the profiles; "
+                                     "without it no VTK or HDF5 is written");
+    arguments.addFlag("resume", "resume from the checkpoint in --output if it exists");
     arguments.addOption<std::string>("profile", "mach2_analytic_ic2.dat", "analytic profile file for initialization");
     arguments.addOption<double>("cfl-scale", 1.0, "multiplier of the baseline hydro CFL (0.3)");
     arguments.addOption<std::string>("voronoi-subdomains", "0",
@@ -323,17 +327,28 @@ int main(int argc, char *argv[])
 
     size_t Np = arguments.get<size_t>("Np");
     std::string prefix = arguments.get<std::string>("prefix");
-    if(prefix.find('/') == std::string::npos)
+    // VTK and HDF5 are written only to a directory the user named
+    const std::string outputDir = arguments.get<std::string>("output");
+    const bool writeFiles = !outputDir.empty();
+    if(writeFiles)
     {
-        prefix = McResultsDirectory("Mach2") + "/" + prefix;
+        std::string stem = fs::path(prefix).filename().string();
+        prefix = (fs::path(outputDir) / (stem.empty() ? std::string("mach2_mc") : stem)).string();
     }
-    EnsureParentDirectory(prefix, rank);
+    if(rank == 0 && fs::path(prefix).has_parent_path())
+    {
+        fs::create_directories(fs::path(prefix).parent_path());
+    }
 #ifdef RICH_MPI
     MPI_Barrier(MPI_COMM_WORLD);
 #endif
     size_t newPhotonsPerCell = arguments.get<size_t>("new_photons_per_cell");
     size_t maxPhotonsPerCell = arguments.get<size_t>("max_photons_per_cell");
     bool doResume = arguments.get<bool>("resume");
+    if(doResume && !writeFiles)
+    {
+        throw std::invalid_argument("--resume reads the checkpoint from the --output directory; give --output");
+    }
     std::string profileFile = arguments.get<std::string>("profile");
     std::string managerName = arguments.get<std::string>("manager");
     const double cflScale = arguments.get<double>("cfl-scale");
@@ -627,6 +642,7 @@ int main(int argc, char *argv[])
                   << ", CFL=" << 0.3 * cflScale
                   << ", t_final=" << t_final * 1e9 << " ns"
                   << ", prefix=" << prefix
+                  << (writeFiles ? ", VTK/HDF5 outputs in " + outputDir : std::string(", no VTK/HDF5 outputs (no --output)"))
                   << ", manager=" << managerName
                   << "\n  radiation boundary temperatures (left, right)="
                   << analyticProfile.front().T_rad_K / units::kev_kelvin << ", "
@@ -642,7 +658,8 @@ int main(int argc, char *argv[])
     if(!doResume)
     {
         WriteProfile(tess, cells, physics, prefix + "_init.txt", 0, Np);
-        WriteVTK(tess, cells, physics, prefix + "_init.vtu");
+        if(writeFiles)
+            WriteVTK(tess, cells, physics, prefix + "_init.vtu");
     }
 
     // ===== Main time-stepping loop =====
@@ -693,7 +710,7 @@ int main(int argc, char *argv[])
             WriteProfile(tess, cells, physics, buf, simTime * 1e9, Np);
         }
 
-        if(cycle % vtkInterval == 0)
+        if(writeFiles && cycle % vtkInterval == 0)
         {
             char buf[512];
             std::snprintf(buf, sizeof(buf), "%s_%05zu.vtu", prefix.c_str(), cycle / vtkInterval);
@@ -712,8 +729,11 @@ int main(int argc, char *argv[])
 
     // --- Final output ---
     WriteProfile(tess, cells, physics, prefix + "_final.txt", simTime * 1e9, Np);
-    WriteVTK(tess, cells, physics, prefix + "_final.vtu");
-    WriteSimulation(sim, simFile);
+    if(writeFiles)
+    {
+        WriteVTK(tess, cells, physics, prefix + "_final.vtu");
+        WriteSimulation(sim, simFile);
+    }
 
   }
   catch(const UniversalError &e)
