@@ -5,7 +5,9 @@
 
 #include <mpi.h>
 #include <unistd.h>
+#include <array>
 #include <cstdio>
+#include <fstream>
 #include <set>
 #include <sstream>
 #include <string>
@@ -21,6 +23,39 @@ struct RogueProcess
     std::string stat;
     std::string command;
 };
+
+// Daemons that launch and manage the ranks (Open MPI's PRRTE, MPICH's Hydra, Slurm).
+// ps reports CPU averaged over a process's lifetime, so a launcher that has just
+// started the job often shows more than the threshold.
+const std::set<std::string> launcherCommands = {
+    "prte", "prted", "prterun", "orted", "mpirun", "mpiexec", "hydra_pmi_proxy", "srun", "slurmstepd"};
+
+// This process and the processes that started it (e.g. perf, timeout, a binding
+// script), nearest first; unused entries are 0.
+constexpr int maxLineage = 16;
+
+std::array<int, maxLineage> processLineage()
+{
+    std::array<int, maxLineage> lineage{};
+    int pid = static_cast<int>(getpid());
+    for (int i = 0; i < maxLineage and pid > 1; ++i)
+    {
+        lineage[i] = pid;
+        // /proc/<pid>/stat: "pid (comm) state ppid ...", comm may contain spaces
+        std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
+        std::string content((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
+        const size_t close = content.rfind(')');
+        if (close == std::string::npos)
+            break;
+        std::istringstream rest(content.substr(close + 1));
+        char state;
+        int parent = 0;
+        if (!(rest >> state >> parent))
+            break;
+        pid = parent;
+    }
+    return lineage;
+}
 
 std::vector<RogueProcess> findRogueProcesses(const std::set<int> &knownPids,
                                               double cpuThreshold)
@@ -41,7 +76,7 @@ std::vector<RogueProcess> findRogueProcesses(const std::set<int> &knownPids,
         if (rp.command.empty())
             continue;
 
-        if (knownPids.count(rp.pid))
+        if (knownPids.count(rp.pid) or launcherCommands.count(rp.command))
             continue;
 
         if (rp.cpuPercent > cpuThreshold)
@@ -69,9 +104,9 @@ void ensureCleanNode(MPI_Comm comm, int checkCount, int sleepSeconds)
     // so nodeRank 0 is the process with the smallest global rank on this node.
     const bool isMaster = (nodeRank == 0);
 
-    int pidInt = static_cast<int>(getpid());
-    std::vector<int> allPids(isMaster ? nodeSize : 0);
-    MPI_Gather(&pidInt, 1, MPI_INT, allPids.data(), 1, MPI_INT, 0, nodeComm);
+    const std::array<int, maxLineage> lineage = processLineage();
+    std::vector<int> allPids(isMaster ? nodeSize * maxLineage : 0);
+    MPI_Gather(lineage.data(), maxLineage, MPI_INT, allPids.data(), maxLineage, MPI_INT, 0, nodeComm);
 
     if (isMaster)
     {

@@ -7,7 +7,8 @@
 //! Check that no foreign processes are using significant CPU on this node.
 //! Each node elects a master (lowest global rank), collects PIDs from all
 //! local ranks, then the master repeatedly polls `ps` for rogue processes
-//! (CPU > 20%, excluding known PIDs).  Throws UniversalError if any found.
+//! (CPU > 20%, excluding the ranks, the processes that started them and
+//! MPI/Slurm launcher daemons).  Throws UniversalError if any found.
 void ensureCleanNode(MPI_Comm comm = MPI_COMM_WORLD, int checkCount = 3, int sleepSeconds = 2);
 
 #endif // RICH_MPI
