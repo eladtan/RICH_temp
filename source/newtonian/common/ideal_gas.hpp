@@ -9,6 +9,56 @@
 #include "equation_of_state.hpp"
 #include "../../misc/utils.hpp"
 
+//! \brief The ideal gas formulas, shared by IdealGas's scalar and array forms. Each returns false where IdealGas throws.
+namespace ideal_gas
+{
+	RICH_INLINE_FUNCTION bool dp2e(double g, double d, double p, double &e)
+	{
+#ifdef RICH_DEBUG
+		if(!(g > 0) || !(p > 0) || !(d > 0))
+		{
+			return false;
+		}
+#endif // RICH_DEBUG
+		e = p / d / (g - 1);
+		return true;
+	}
+
+	RICH_INLINE_FUNCTION bool de2p(double g, double d, double e, double &p)
+	{
+#ifdef RICH_DEBUG
+		if(!(g > 0) || !(e > 0) || !(d > 0))
+		{
+			return false;
+		}
+#endif // RICH_DEBUG
+		if(e < 0)
+		{
+			return false;
+		}
+		p = (g - 1) * e * d;
+		return true;
+	}
+
+	RICH_INLINE_FUNCTION bool dp2c(double g, double d, double p, double &c)
+	{
+#ifdef RICH_DEBUG
+		if(!(g > 0) || !(p > 0) || !(d > 0))
+		{
+			return false;
+		}
+#endif // RICH_DEBUG
+		c = portable::Sqrt(g * p / d);
+		return true;
+	}
+
+	RICH_INLINE_FUNCTION bool de2c(double g, double d, double e, double &c)
+	{
+		double p = 0;
+		return de2p(g, d, e, p) and dp2c(g, d, p, c);
+	}
+} // namespace ideal_gas
+
 //! \brief Ideal gas equation of state
 class IdealGas: public EquationOfState
 {
@@ -53,6 +103,18 @@ public:
   double de2T(double const d, double const T, tvector const& tracers, vector<string> const& tracernames) const override;
 
   double dT2e(double const d, double const T, tvector const& tracers, vector<string> const& tracernames) const override;
+
+  void dp2eArrays(EosArrays const& arrays, portable::Where where) const override;
+
+  void de2pArrays(EosArrays const& arrays, portable::Where where) const override;
+
+  void dp2cArrays(EosArrays const& arrays, portable::Where where) const override;
+
+  void de2cArrays(EosArrays const& arrays, portable::Where where) const override;
+
+  bool RunsOnDevice(void) const override;
+
+  bool ThreadSafe(void) const override;
 };
 
 #endif // IDEAL_GAS_HPP
