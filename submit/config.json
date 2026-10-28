@@ -1,0 +1,68 @@
+{
+  "repo_root": "..",
+  "runs_dir": "runs",
+  "jobs_dir": "submit/jobs",
+  "feature_manifests": [
+    "submit/features/rich.json",
+    "submit/features/storm.json",
+    "submit/features/madvoro.json"
+  ],
+  "build": {
+    "script": "build_rich.sh",
+    "build_dir": "build",
+    "configs": ["gnuReleaseMPI", "gnuDebugMPI", "gnuMixedMPI", "gnuRelease", "gnuDebug",
+                "intelReleaseMPI", "intelDebugMPI", "intelMixedMPI", "intelRelease", "intelDebug"],
+    "default_config": "gnuReleaseMPI",
+    "jobs": 32,
+    "variables": {
+      "kokkos": {
+        "help": "Kokkos backend of the build: none (no Kokkos), host (OpenMP-only Kokkos), device (GPU Kokkos, with OpenMP on the host)",
+        "values": {
+          "none": {"flags": [], "label": "without Kokkos"},
+          "host": {"flags": ["--with-gpu"], "label": "with Kokkos on CPU threads"},
+          "device": {"flags": ["--with-gpu"], "label": "with Kokkos on the GPU"}
+        }
+      },
+      "geometry_on_host": {
+        "help": "MadVoro geometry on Kokkos host threads while the rest of a device build stays on the GPU",
+        "values": {
+          "off": {"flags": [], "label": "MadVoro geometry on the GPU"},
+          "on": {"flags": ["--voronoi-on-host"], "requires": {"kokkos": ["device"]}, "label": "MadVoro geometry on CPU threads"}
+        }
+      }
+    }
+  },
+  "sites": {
+    "frontier": {
+      "match_cluster": "frontier",
+      "account": "ast246",
+      "env_examples": {"RICH_OUTPUT_DIR": "/lustre/orion/{account}/scratch/$USER/{benchmark}/$SLURM_JOB_ID"},
+      "partition_rules": {
+        "service": {
+          "max_nodes": 1,
+          "reason": "Jobs in the service partition get no Slingshot network (see runs/frontier_env.sh), so MPI ranks on different nodes cannot reach each other."
+        }
+      },
+      "launcher": "mpirun",
+      "env_setup": ["source {repo}/runs/frontier_env.sh {kokkos_variant}"],
+      "kokkos_variants": {"none": "hip", "host": "omp", "device": "hip"},
+      "gpu_visible_env": "ROCR_VISIBLE_DEVICES",
+      "gpu_order": [4, 5, 2, 3, 6, 7, 0, 1],
+      "request_gpus": false,
+      "sbatch_args": ["--exclusive"],
+      "env": {"OMP_PROC_BIND": "close", "OMP_PLACES": "cores"}
+    },
+    "generic": {
+      "env_examples": {"RICH_OUTPUT_DIR": "$HOME/rich_results/{benchmark}/$SLURM_JOB_ID"},
+      "partition_rules": {},
+      "launcher": "srun",
+      "env_setup": [],
+      "kokkos_variants": {"none": "", "host": "", "device": ""},
+      "gpu_visible_env": "CUDA_VISIBLE_DEVICES",
+      "gpu_order": [],
+      "request_gpus": true,
+      "sbatch_args": [],
+      "env": {"OMP_PROC_BIND": "close", "OMP_PLACES": "cores"}
+    }
+  }
+}

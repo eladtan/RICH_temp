@@ -1,0 +1,42 @@
+#!/bin/bash
+# RICH run submission. With no command (or `gui`) it serves the web GUI; see --help.
+#   submit/rich-submit [gui|partitions|benchmarks|features|plan|submit] ...
+# Needs Python 3.7 or newer (standard library only). RICH_SUBMIT_PYTHON picks the
+# interpreter. Without it, when no python3 on PATH fits, the modules in
+# RICH_SUBMIT_PYTHON_MODULES are tried (on Frontier the system python3 is 3.6).
+set -euo pipefail
+here=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
+needs='import sys; sys.exit(sys.version_info < (3, 7))'
+
+find_python() {
+    local candidate
+    for candidate in python3 python3.13 python3.12 python3.11 python3.10 python3.9 python3.8 python3.7; do
+        if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c "$needs" 2>/dev/null; then
+            command -v "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
+python=${RICH_SUBMIT_PYTHON:-}
+if [[ -z "$python" ]] && ! python=$(find_python); then
+    python=""
+    if declare -F module >/dev/null 2>&1; then
+        set +u  # Lmod reads unset variables
+        for mod in ${RICH_SUBMIT_PYTHON_MODULES:-python/3.10-miniforge3 miniforge3}; do
+            if module load "$mod" >/dev/null 2>&1 && python=$(find_python); then
+                break
+            fi
+            python=""
+        done
+        set -u
+    fi
+fi
+if [[ -z "$python" ]]; then
+    echo "rich-submit: needs Python 3.7 or newer" \
+         "(e.g. module load python/3.10-miniforge3, or set RICH_SUBMIT_PYTHON)" >&2
+    exit 1
+fi
+PYTHONPATH="$here${PYTHONPATH:+:$PYTHONPATH}" exec "$python" -m richsubmit "$@"

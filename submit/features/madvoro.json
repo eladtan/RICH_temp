@@ -1,0 +1,45 @@
+{
+  "project": "madvoro",
+  "title": "MadVoro Voronoi tessellation",
+  "features": [
+    {
+      "id": "madvoro.build",
+      "title": "Voronoi build (Delaunay, merge, distributed builder)",
+      "description": "Host loops of the Delaunay cell builder, the merge and the DistributedBuilder (HostParallelFor): the Kokkos host thread pool in Kokkos builds, serial otherwise.",
+      "default": "serial",
+      "backends": {
+        "serial": {"threads": "global"},
+        "openmp": {"build": [{"kokkos": "host"}, {"kokkos": "device"}], "threads": "global"}
+      },
+      "subfeatures": [
+        {
+          "id": "madvoro.build.subdomains",
+          "title": "Thread subdomains",
+          "description": "Splits each rank's domain into subdomains built concurrently on host threads, one serial geometry per subdomain. Host threads only, even in device builds.",
+          "default": "serial",
+          "backends": {
+            "serial": {"args": {"voronoi-subdomains": "0"}, "threads": "feature"},
+            "openmp": {"build": [{"kokkos": "host"}, {"kokkos": "device"}], "threads": "feature",
+                       "args": {"voronoi-subdomains": "{threads}"}}
+          }
+        },
+        {
+          "id": "madvoro.build.geometry",
+          "title": "Geometry (volumes, centroids, faces, clipping)",
+          "description": "KokkosGeometryExecutor on the device in device builds, HostGeometryExecutor otherwise (or with --voronoi-on-host).",
+          "default": "inherit",
+          "backends": {
+            "inherit": {"build": [{"kokkos": "none"}, {"kokkos": "host"}, {"kokkos": "device", "geometry_on_host": "on"}]},
+            "gpu": {"build": [{"kokkos": "device", "geometry_on_host": "off"}], "max_gpus": 1}
+          }
+        }
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "when": {"madvoro.build.subdomains": ["openmp"], "madvoro.build.geometry": ["gpu"]},
+      "message": "Thread subdomains build their geometry serially on the host even in device builds; consider the geometry on the host (docs/madvoro_thread_subdomains_mpi.md, section 4.6)."
+    }
+  ]
+}

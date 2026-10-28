@@ -1,0 +1,15 @@
+{
+  "partition": "batch",
+  "time_limit": "02:00:00",
+  "account": "ast246",
+  "benchmark": "RMTV",
+  "program_args": "--octant --n 96 --quadrature 8 --dt-fraction .005 --photons 16 --initial-photons 16 --max-photons 32 --dump 100000 --max-steps 30 --ddmc-min-tau 3 --lb-interval 1 --motion lagrangian --jitter 1e-6 --lb-tolerance 3 --output /lustre/orion/ast246/scratch/$USER/RMTV/submit_$SLURM_JOB_ID",
+  "build_config": "gnuReleaseMPI",
+  "build_mode": "in_job",
+  "resources": {"ntasks": 56, "cores_per_task": 7, "min_memory_per_rank_mb": 16000},
+  "features": {
+    "storm.transport": {"backend": "gpu", "gpus": 1},
+    "madvoro.build": {"backend": "openmp", "threads": 7},
+    "madvoro.build.subdomains": {"backend": "openmp", "threads": 7}
+  }
+}

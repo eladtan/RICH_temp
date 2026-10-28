@@ -1,0 +1,52 @@
+{
+  "project": "rich",
+  "title": "RICH hydrodynamics",
+  "features": [
+    {
+      "id": "rich.hydro",
+      "title": "Hydro host loops",
+      "description": "CFL, RoundCells3D, cell updater and hdsim_3d loops (portable::HostParallelFor). Kokkos builds run them on the host thread pool; other builds run them serially.",
+      "default": "serial",
+      "backends": {
+        "serial": {"threads": "global"},
+        "openmp": {"build": [{"kokkos": "host"}, {"kokkos": "device"}], "threads": "global"}
+      },
+      "subfeatures": [
+        {
+          "id": "rich.hydro.slopes",
+          "title": "Slopes and face values (LinearGauss3D)",
+          "description": "Device path in LinearGaussKernels.hpp, selected by LinearGauss3D::RunOnDevice; needs an EOS that runs on the device (IdealGas).",
+          "default": "inherit",
+          "backends": {
+            "inherit": {},
+            "gpu": {"build": [{"kokkos": "device"}], "max_gpus": 1, "available": false,
+                    "note": "Nothing calls LinearGauss3D::RunOnDevice yet; call it with rich::execution::OnDevice(\"rich.hydro.slopes\") and set available to true here."}
+          }
+        },
+        {
+          "id": "rich.hydro.fluxes",
+          "title": "Riemann fluxes (ConditionActionFlux1 + Hllc3D)",
+          "description": "Runs on the device exactly when the slopes leave their face values there.",
+          "default": "inherit",
+          "backends": {
+            "inherit": {},
+            "gpu": {"build": [{"kokkos": "device"}], "max_gpus": 1, "available": false,
+                    "requires": {"rich.hydro.slopes": ["gpu"]},
+                    "note": "Follows rich.hydro.slopes; has no switch of its own."}
+          }
+        },
+        {
+          "id": "rich.hydro.update",
+          "title": "Extensive update (ConditionExtensiveUpdater3D)",
+          "description": "Device path in ExtensiveUpdaterKernels.hpp, selected by ConditionExtensiveUpdater3D::RunOnDevice.",
+          "default": "inherit",
+          "backends": {
+            "inherit": {},
+            "gpu": {"build": [{"kokkos": "device"}], "max_gpus": 1, "available": false,
+                    "note": "Nothing calls ConditionExtensiveUpdater3D::RunOnDevice yet; call it with rich::execution::OnDevice(\"rich.hydro.update\") and set available to true here."}
+          }
+        }
+      ]
+    }
+  ]
+}

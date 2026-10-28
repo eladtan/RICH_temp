@@ -1,0 +1,61 @@
+{
+  "project": "storm",
+  "title": "STORM Monte Carlo radiation",
+  "features": [
+    {
+      "id": "storm.transport",
+      "title": "Monte Carlo transport",
+      "description": "IMC/DDMC particle transport. CPU builds transport serially per rank; STORM_WITH_GPU builds transport on Kokkos' default execution space: the GPU with a device Kokkos, OpenMP threads with a host-only Kokkos.",
+      "default": "serial",
+      "backends": {
+        "serial": {"build": [{"kokkos": "none"}, {"kokkos": "host"}], "threads": "global"},
+        "openmp": {"build": [{"kokkos": "host"}], "threads": "global"},
+        "gpu": {"build": [{"kokkos": "device"}], "max_gpus": 1}
+      },
+      "subfeatures": [
+        {
+          "id": "storm.transport.sources",
+          "title": "Source emission",
+          "description": "Emitted on the transport's execution space when the physics supports device source generation.",
+          "default": "inherit",
+          "backends": {"inherit": {}}
+        },
+        {
+          "id": "storm.transport.comb",
+          "title": "Comb population control",
+          "description": "Activation on the transport's execution space; the shuffle runs on the host.",
+          "default": "inherit",
+          "backends": {"inherit": {}}
+        },
+        {
+          "id": "storm.transport.tallies",
+          "title": "Census and energy tallies",
+          "description": "Accumulated on the transport's execution space; the census is copied back on the host.",
+          "default": "inherit",
+          "backends": {"inherit": {}}
+        },
+        {
+          "id": "storm.transport.ddmc",
+          "title": "DDMC",
+          "description": "On the device in GPU builds while RadiationIMCParameters::ddmcGpuEnable is set (the default).",
+          "default": "inherit",
+          "backends": {"inherit": {}}
+        },
+        {
+          "id": "storm.transport.host_only",
+          "title": "Compton, polarization, observers, post-processing, tracing",
+          "description": "Physics that forces the whole transport back to the host (IMCDeviceExecutor eligibility checks).",
+          "default": "serial",
+          "backends": {"serial": {}}
+        }
+      ]
+    }
+  ],
+  "rules": [
+    {
+      "when": {"storm.transport": ["gpu"]},
+      "level": "note",
+      "message": "STORM falls back to host transport for Compton, polarization, observers, post-processing and tracing runs."
+    }
+  ]
+}

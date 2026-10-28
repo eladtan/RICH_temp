@@ -1,0 +1,1076 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RICH Submit</title>
+<style>
+:root {
+  --bg: #f4f6f9; --panel: #ffffff; --ink: #1b2230; --muted: #5d6879; --faint: #8a94a6; --line: #dfe4ec;
+  --accent: #2456c8; --accent-ink: #ffffff; --accent-soft: #e8eefc;
+  --err: #b42318; --err-soft: #fdeceb; --warn: #8a5a00; --warn-soft: #fff4dc;
+  --ok: #17784b; --ok-soft: #e3f5ec; --note-soft: #eef1f6; --code: #f2f4f8;
+  --gpu: #7a3fc4; --gpu-soft: #f1e9fb; --omp: #157a8c; --omp-soft: #e2f3f6; --serial: #5d6879; --serial-soft: #eef1f6;
+  --idle: #e4e8ef; --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #11141a; --panel: #191d25; --ink: #e6eaf1; --muted: #a0a9b8; --faint: #747e8f; --line: #2b323e;
+    --accent: #6f97f3; --accent-ink: #0d1220; --accent-soft: #1d2942;
+    --err: #f97066; --err-soft: #3a1c1a; --warn: #f5b84b; --warn-soft: #33290e;
+    --ok: #4ccf8e; --ok-soft: #12301f; --note-soft: #212733; --code: #141820;
+    --gpu: #b993f2; --gpu-soft: #2a2140; --omp: #62c6d8; --omp-soft: #13303a; --serial: #a0a9b8; --serial-soft: #232a35;
+    --idle: #2a313d; --shadow: none;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #11141a; --panel: #191d25; --ink: #e6eaf1; --muted: #a0a9b8; --faint: #747e8f; --line: #2b323e;
+  --accent: #6f97f3; --accent-ink: #0d1220; --accent-soft: #1d2942;
+  --err: #f97066; --err-soft: #3a1c1a; --warn: #f5b84b; --warn-soft: #33290e;
+  --ok: #4ccf8e; --ok-soft: #12301f; --note-soft: #212733; --code: #141820;
+  --gpu: #b993f2; --gpu-soft: #2a2140; --omp: #62c6d8; --omp-soft: #13303a; --serial: #a0a9b8; --serial-soft: #232a35;
+  --idle: #2a313d; --shadow: none;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body { background: var(--bg); color: var(--ink); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+code, pre, .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+code { font-size: 12px; background: var(--code); padding: 1px 5px; border-radius: 4px; }
+a { color: var(--accent); }
+button, input, select, textarea { font: inherit; color: inherit; }
+button { cursor: pointer; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- header ---------- */
+header { position: sticky; top: 0; z-index: 10; display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--line); }
+header h1 { font-size: 17px; margin: 0; letter-spacing: -.01em; }
+header .where { color: var(--muted); font-size: 13px; }
+header .spacer { flex: 1; }
+.btn { border: 1px solid var(--line); background: var(--panel); border-radius: 8px; padding: 7px 14px; font-weight: 500; }
+.btn:hover:not(:disabled) { border-color: var(--accent); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: var(--accent-ink); }
+.btn.big { padding: 10px 20px; font-size: 15px; }
+.btn:disabled { opacity: .45; cursor: not-allowed; }
+.btn.link { border: 0; background: none; color: var(--accent); padding: 0; font-weight: 500; }
+header select.btn { width: auto; padding-right: 8px; }
+
+/* ---------- layout ---------- */
+.layout { display: grid; grid-template-columns: 250px minmax(0, 1fr) 320px; gap: 18px; padding: 18px 20px;
+  max-width: 1500px; margin: 0 auto; align-items: start; }
+@media (max-width: 1180px) { .layout { grid-template-columns: 220px minmax(0, 1fr); } .summary-col { grid-column: 1 / -1; } }
+@media (max-width: 760px) { .layout { grid-template-columns: minmax(0, 1fr); padding: 12px 16px; } }
+
+/* ---------- stepper ---------- */
+nav.steps { position: sticky; top: 70px; display: flex; flex-direction: column; gap: 4px; }
+@media (max-width: 760px) { nav.steps { position: static; flex-direction: row; overflow-x: auto; } }
+.step-link { display: grid; grid-template-columns: 30px minmax(0, 1fr); gap: 0 10px; align-items: center; text-align: left;
+  border: 1px solid transparent; background: none; border-radius: 10px; padding: 9px 10px; }
+.step-link:hover { background: var(--panel); border-color: var(--line); }
+.step-link.current { background: var(--panel); border-color: var(--accent); box-shadow: var(--shadow); }
+.step-link .dot { grid-row: span 2; width: 28px; height: 28px; border-radius: 50%; display: grid; place-items: center;
+  font-size: 13px; font-weight: 700; background: var(--note-soft); color: var(--muted); }
+.step-link.current .dot { background: var(--accent); color: var(--accent-ink); }
+.step-link.done .dot { background: var(--ok-soft); color: var(--ok); }
+.step-link.warn .dot { background: var(--warn-soft); color: var(--warn); }
+.step-link.fix .dot { background: var(--err-soft); color: var(--err); }
+.step-link .name { font-weight: 600; }
+.step-link .value { font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.step-link.fix .value { color: var(--err); }
+@media (max-width: 760px) { .step-link { min-width: 170px; } }
+
+/* ---------- step card ---------- */
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); }
+.step-card { padding: 22px 24px; }
+.step-card h2 { margin: 0; font-size: 20px; letter-spacing: -.01em; }
+.step-card .lead { margin: 4px 0 18px; color: var(--muted); }
+.step-card h3 { font-size: 14px; margin: 22px 0 8px; }
+.step-nav { display: flex; justify-content: space-between; align-items: center; gap: 10px; padding-top: 18px; margin-top: 22px;
+  border-top: 1px solid var(--line); }
+
+/* ---------- messages ---------- */
+.issues { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
+.issues:empty { display: none; }
+.msg { display: flex; gap: 8px; padding: 8px 12px; border-radius: 8px; font-size: 13px; }
+.msg .tag { font-weight: 700; flex-shrink: 0; }
+.msg.error { background: var(--err-soft); color: var(--err); }
+.msg.warning { background: var(--warn-soft); color: var(--warn); }
+.msg.note { background: var(--note-soft); color: var(--muted); }
+.msg.ok { background: var(--ok-soft); color: var(--ok); }
+
+/* ---------- fields ---------- */
+.fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 16px 20px; }
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field > .label { font-weight: 600; font-size: 13px; }
+.field > .label .opt { font-weight: 400; color: var(--faint); }
+.field .hint { font-size: 12px; color: var(--muted); }
+.field .hint.bad { color: var(--err); }
+input[type=text], input[type=number], select, textarea { background: var(--panel); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px; width: 100%; }
+input:disabled, select:disabled { opacity: .5; }
+textarea { min-height: 76px; resize: vertical; }
+.inline { display: flex; gap: 8px; align-items: center; }
+.inline input[type=number] { width: 110px; }
+.check { display: inline-flex; gap: 6px; align-items: center; font-size: 13px; }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { border: 1px solid var(--line); background: var(--panel); border-radius: 999px; padding: 3px 11px; font-size: 12.5px; }
+.chip:hover { border-color: var(--accent); }
+.chip.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+.chip.code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12px; }
+
+/* ---------- partition cards ---------- */
+.part-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr)); gap: 10px; }
+.part { text-align: left; border: 1.5px solid var(--line); background: var(--panel); border-radius: 10px; padding: 12px 14px; }
+.part:hover { border-color: var(--accent); }
+.part.on { border-color: var(--accent); background: var(--accent-soft); }
+.part.down { opacity: .55; }
+.part .top { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+.part .pname { font-weight: 700; font-size: 15px; }
+.part .facts { margin-top: 6px; font-size: 12.5px; color: var(--muted); line-height: 1.6; }
+.part .facts b { color: var(--ink); font-weight: 600; }
+.nw { white-space: nowrap; }
+.part .rule { color: var(--warn); font-weight: 600; }
+.badge { display: inline-block; font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: var(--note-soft); color: var(--muted); }
+.badge.up { background: var(--ok-soft); color: var(--ok); }
+.badge.down { background: var(--err-soft); color: var(--err); }
+.badge.gpu { background: var(--gpu-soft); color: var(--gpu); }
+.badge.openmp { background: var(--omp-soft); color: var(--omp); }
+.badge.serial { background: var(--serial-soft); color: var(--serial); }
+
+/* ---------- benchmarks ---------- */
+.bench-layout { display: grid; grid-template-columns: 280px minmax(0, 1fr); gap: 18px; }
+@media (max-width: 980px) { .bench-layout { grid-template-columns: minmax(0, 1fr); } }
+.bench-list { max-height: 420px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; margin-top: 8px; }
+.bench-item { display: block; width: 100%; text-align: left; border: 0; border-bottom: 1px solid var(--line); background: none; padding: 7px 10px; }
+.bench-item:last-child { border-bottom: 0; }
+.bench-item:hover { background: var(--accent-soft); }
+.bench-item.on { background: var(--accent); color: var(--accent-ink); }
+.bench-item .d { display: block; font-size: 11.5px; opacity: .75; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.bench-empty { padding: 30px; text-align: center; color: var(--muted); border: 1px dashed var(--line); border-radius: 10px; }
+.env-rows { display: flex; flex-direction: column; gap: 10px; }
+.env-row { display: grid; grid-template-columns: minmax(120px, 220px) auto minmax(0, 1fr) auto; gap: 8px; align-items: center; }
+.env-row .eq { color: var(--muted); font-weight: 700; }
+.env-row input[readonly] { background: var(--note-soft); }
+.env-need { grid-column: 1 / -1; font-size: 12.5px; color: var(--muted); margin-top: -4px; }
+.env-need.missing { color: var(--err); }
+@media (max-width: 640px) { .env-row { grid-template-columns: minmax(0, 1fr) auto; } .env-row .eq { display: none; } }
+.mode-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+.mode { text-align: left; border: 1.5px solid var(--line); background: var(--panel); border-radius: 10px; padding: 10px 12px; }
+.mode.on { border-color: var(--accent); background: var(--accent-soft); }
+.mode b { display: block; margin-bottom: 2px; }
+.mode span { font-size: 12.5px; color: var(--muted); }
+
+/* ---------- layout picture ---------- */
+.nodes { display: flex; flex-direction: column; gap: 8px; }
+.node { border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.node .nlabel { font-size: 12px; color: var(--muted); margin-bottom: 5px; display: flex; justify-content: space-between; }
+.cores { display: grid; gap: 2px; }
+.core { height: 14px; border-radius: 2px; background: var(--idle); }
+.gpus { display: flex; gap: 4px; margin-top: 6px; }
+.gpu-cell { flex: 1; height: 9px; border-radius: 2px; background: var(--idle); max-width: 60px; }
+.gpu-cell.used { background: var(--gpu); }
+.legend { display: flex; flex-wrap: wrap; gap: 14px; font-size: 12px; color: var(--muted); margin-top: 8px; }
+.legend i { display: inline-block; width: 11px; height: 11px; border-radius: 2px; vertical-align: -1px; margin-right: 5px; }
+.layout-facts { font-size: 13px; margin: 0 0 10px; }
+
+/* ---------- features ---------- */
+.limits { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 6px; }
+.limit { font-size: 12.5px; padding: 4px 10px; border-radius: 8px; background: var(--note-soft); color: var(--muted); }
+.limit b { color: var(--ink); }
+.project { border: 1px solid var(--line); border-radius: 10px; margin-top: 14px; overflow: hidden; }
+.project > .ph { padding: 9px 14px; font-weight: 700; background: var(--note-soft); }
+.feat { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px 16px; padding: 12px 14px; border-top: 1px solid var(--line); }
+.feat.sub { padding-left: 38px; background: color-mix(in srgb, var(--note-soft) 35%, transparent); }
+.feat.sub2 { padding-left: 62px; }
+.feat .ft { font-weight: 600; }
+.feat.sub .ft { font-weight: 500; }
+.feat .fid { font-size: 11.5px; color: var(--faint); }
+.feat .fd { font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+.feat .why { font-size: 12px; color: var(--warn); margin-top: 4px; }
+.fctl { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+.seg { display: inline-flex; border: 1px solid var(--line); border-radius: 8px; overflow: hidden; }
+.seg button { border: 0; background: var(--panel); padding: 5px 13px; font-size: 13px; }
+.seg button + button { border-left: 1px solid var(--line); }
+.seg button.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+.seg button:disabled { color: var(--faint); cursor: not-allowed; text-decoration: line-through; }
+.counts { display: flex; gap: 10px; align-items: center; font-size: 12.5px; color: var(--muted); }
+.counts input { width: 64px; padding: 4px 6px; }
+.fixed { font-size: 12.5px; color: var(--muted); }
+@media (max-width: 640px) { .feat { grid-template-columns: minmax(0, 1fr); } .fctl { align-items: flex-start; } }
+.build-line { margin-top: 16px; font-size: 13px; padding: 10px 12px; border-radius: 8px; background: var(--note-soft); }
+
+/* ---------- summary column ---------- */
+.summary-col { position: sticky; top: 70px; }
+@media (max-width: 1180px) { .summary-col { position: static; } }
+.summary { padding: 16px 18px; }
+.summary h2 { font-size: 15px; margin: 0 0 4px; display: flex; justify-content: space-between; align-items: center; }
+.status { font-size: 12px; font-weight: 700; padding: 2px 10px; border-radius: 999px; }
+.status.ready { background: var(--ok-soft); color: var(--ok); }
+.status.blocked { background: var(--err-soft); color: var(--err); }
+dl.facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 6px 12px; margin: 12px 0 14px; font-size: 13px; }
+dl.facts dt { color: var(--muted); }
+dl.facts dd { margin: 0; overflow-wrap: anywhere; }
+.summary .btn { width: 100%; }
+
+/* ---------- review ---------- */
+.banner { padding: 14px 16px; border-radius: 10px; font-weight: 600; margin-bottom: 14px; }
+.banner.ready { background: var(--ok-soft); color: var(--ok); }
+.banner.blocked { background: var(--err-soft); color: var(--err); }
+.review-list { display: grid; grid-template-columns: 170px minmax(0, 1fr); gap: 8px 14px; font-size: 13.5px; }
+.review-list dt { color: var(--muted); }
+.review-list dd { margin: 0; }
+@media (max-width: 640px) { .review-list { grid-template-columns: minmax(0, 1fr); } .review-list dd { margin-bottom: 6px; } }
+details.files { margin-top: 18px; border: 1px solid var(--line); border-radius: 10px; }
+details.files summary { cursor: pointer; padding: 10px 14px; font-weight: 600; }
+.tabs { display: flex; gap: 4px; padding: 0 14px; flex-wrap: wrap; }
+.tabs button { border: 1px solid var(--line); background: var(--panel); border-radius: 6px 6px 0 0; padding: 4px 12px; font-size: 12.5px; border-bottom: 0; }
+.tabs button.on { background: var(--code); font-weight: 600; }
+pre.script { margin: 0 14px 14px; background: var(--code); border: 1px solid var(--line); border-radius: 0 6px 6px 6px; padding: 12px;
+  font-size: 11.5px; overflow: auto; max-height: 440px; white-space: pre; }
+.submit-row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; margin-top: 20px; }
+.submit-row .explain { font-size: 12.5px; color: var(--muted); flex-basis: 100%; }
+
+/* ---------- dialogs ---------- */
+dialog { border: 1px solid var(--line); border-radius: 12px; padding: 0; background: var(--panel); color: var(--ink);
+  width: min(560px, calc(100vw - 32px)); box-shadow: 0 20px 50px rgba(0, 0, 0, .25); }
+dialog.wide { width: min(1000px, calc(100vw - 32px)); }
+dialog::backdrop { background: rgba(10, 14, 22, .45); }
+dialog .dh { padding: 16px 20px 0; font-size: 16px; font-weight: 700; }
+dialog .db { padding: 10px 20px; }
+dialog .df { padding: 12px 20px 16px; display: flex; justify-content: flex-end; gap: 10px; }
+dialog pre { background: var(--code); border: 1px solid var(--line); border-radius: 8px; padding: 10px; max-height: 60vh; overflow: auto; font-size: 11.5px; }
+table.jobs { width: 100%; border-collapse: collapse; font-size: 13px; }
+table.jobs th, table.jobs td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--line); }
+table.jobs th { color: var(--muted); font-weight: 500; font-size: 12px; }
+.empty { color: var(--muted); padding: 16px 0; }
+.toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--bg);
+  padding: 9px 16px; border-radius: 8px; font-size: 13px; z-index: 50; }
+</style>
+</head>
+<body>
+<header>
+  <h1>RICH Submit</h1>
+  <span class="where" id="where">Loading...</span>
+  <span class="spacer"></span>
+  <select class="btn" id="load-spec" aria-label="Load a saved setup"><option value="">Load saved setup...</option></select>
+  <button class="btn" id="save-spec">Save setup</button>
+  <button class="btn" id="open-jobs">My jobs</button>
+</header>
+
+<div class="layout">
+  <nav class="steps" id="stepper" aria-label="Steps"></nav>
+  <main>
+    <section class="card step-card" id="step"></section>
+  </main>
+  <aside class="summary-col">
+    <section class="card summary" id="summary"></section>
+  </aside>
+</div>
+
+<dialog id="dlg-confirm">
+  <div class="dh">Submit this job?</div>
+  <div class="db" id="confirm-text"></div>
+  <div class="df"><button class="btn" data-close>Cancel</button><button class="btn primary" id="confirm-yes">Submit job</button></div>
+</dialog>
+<dialog id="dlg-save">
+  <div class="dh">Save this setup</div>
+  <div class="db">
+    <label class="field"><span class="label">Name</span>
+      <input type="text" id="save-name" placeholder="e.g. rmtv_gpu_56ranks">
+      <span class="hint">Letters, digits, dots, dashes and underscores. It is saved in submit/specs/ and can be loaded from the top bar.</span></label>
+  </div>
+  <div class="df"><button class="btn" data-close>Cancel</button><button class="btn primary" id="save-yes">Save</button></div>
+</dialog>
+<dialog id="dlg-jobs" class="wide">
+  <div class="dh">My jobs</div>
+  <div class="db"><p class="hint" style="margin:0 0 8px;color:var(--muted);font-size:12.5px">Jobs submitted from this tool (newest first), with their state in Slurm.</p>
+    <div id="jobs-body"></div></div>
+  <div class="df"><button class="btn" id="jobs-refresh">Refresh</button><button class="btn primary" data-close>Close</button></div>
+</dialog>
+<dialog id="dlg-output" class="wide">
+  <div class="dh" id="output-title">Job output</div>
+  <div class="db" id="output-body"></div>
+  <div class="df"><button class="btn" id="output-refresh">Refresh</button><button class="btn primary" data-close>Close</button></div>
+</dialog>
+
+<script>
+"use strict";
+const TOKEN = new URLSearchParams(location.search).get("token") || "";
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s == null ? "" : s).replace(/[&<>"']/g, (c) => ({"&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"}[c]));
+const BACKEND = {serial: "Serial", openmp: "OpenMP", gpu: "GPU", inherit: "Same as parent"};
+const STEPS = [
+  {id: "partition", title: "Partition & time", lead: "Where the job runs and for how long."},
+  {id: "problem", title: "Problem", lead: "Which benchmark from runs/ to run, with which arguments, and how to build it."},
+  {id: "tasks", title: "Tasks", lead: "How many MPI ranks to start, and the cores, memory and GPUs each rank gets."},
+  {id: "features", title: "Parallel features", lead: "How each part of RICH, STORM and MadVoro runs: serially, on OpenMP threads, or on GPUs."},
+  {id: "advanced", title: "Advanced", lead: "Extra options for special cases."},
+  {id: "review", title: "Review & submit", lead: "Check the whole run, then submit it to Slurm."},
+];
+const BUILD_MODES = {
+  in_job: ["Build in the job", "The job compiles RICH first, then runs. Simplest; the build uses the job's time."],
+  separate_job: ["Separate build job", "A small one-node job compiles first; the run starts only if the build succeeds."],
+  existing: ["Use an existing binary", "No build. Point at a binary you already have."],
+};
+const TIME_PRESETS = [["30 min", "00:30:00"], ["1 hour", "01:00:00"], ["2 hours", "02:00:00"], ["6 hours", "06:00:00"],
+  ["12 hours", "12:00:00"], ["1 day", "1-00:00:00"]];
+
+const S = {
+  init: null, partitions: [], benchmarks: [], benchInfo: null, plan: null, step: 0, visited: new Set([0]),
+  choices: {}, filesTab: "run", busy: false, lastResult: null,
+  envRows: [],  // [{name, value, required, help, example}]: the job's environment variables
+  spec: {partition: "", time_limit: "01:00:00", account: "", qos: "", job_name: "", benchmark: "", program_args: "", environment: {},
+    build_config: "", build_mode: "in_job", build_time_limit: "01:00:00", binary: "",
+    resources: {ntasks: 1, cores_per_task: 1, ranks_per_node: 0, min_memory_per_rank_mb: 0, gpus_per_rank: 1, ranks_per_gpu: 1},
+    features: {}},
+};
+
+// ------------------------------------------------------------------ server
+async function api(path, body) {
+  const options = {headers: {"X-Token": TOKEN}};
+  if (body !== undefined) {
+    options.method = "POST";
+    options.headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch(path, options);
+  const text = await response.text();
+  let data;
+  try { data = JSON.parse(text); } catch (e) { throw new Error(text || response.statusText); }
+  if (!response.ok) throw new Error(data.error || response.statusText);
+  return data;
+}
+function toast(text) {
+  const el = document.createElement("div");
+  el.className = "toast"; el.textContent = text;
+  document.body.appendChild(el);
+  setTimeout(() => el.remove(), 3200);
+}
+
+// ------------------------------------------------------------------ helpers
+const partition = () => S.partitions.find((p) => p.name === S.spec.partition) || null;
+const feature = (fid) => S.init.catalog.features[fid];
+function minutes(text) {
+  const t = String(text || "").trim();
+  let m = t.match(/^(\d+)-(\d+)(?::(\d+))?(?::(\d+))?$/);
+  if (m) return (+m[1]) * 1440 + (+m[2]) * 60 + (+(m[3] || 0)) + ((+(m[4] || 0)) ? 1 : 0);
+  m = t.match(/^(\d+)(?::(\d+))?(?::(\d+))?$/);
+  if (!m) return null;
+  if (m[3] !== undefined) return (+m[1]) * 60 + (+m[2]) + ((+m[3]) ? 1 : 0);
+  if (m[2] !== undefined) return (+m[1]) + ((+m[2]) ? 1 : 0);
+  return +m[1];
+}
+function human(mins) {
+  if (mins == null) return "";
+  const d = Math.floor(mins / 1440), h = Math.floor((mins % 1440) / 60), m = mins % 60;
+  const parts = [];
+  if (d) parts.push(`${d} day${d > 1 ? "s" : ""}`);
+  if (h) parts.push(`${h} hour${h > 1 ? "s" : ""}`);
+  if (m) parts.push(`${m} min`);
+  return parts.join(" ") || "0 min";
+}
+const gib = (mb) => `${(mb / 1024).toFixed(mb % 1024 ? 1 : 0)} GiB`;
+function offered(fid) {
+  const p = partition();
+  return Object.keys(feature(fid).backends).filter((name) => name !== "gpu" || (p && p.has_gpus));
+}
+// The user's choice, or the default when this partition cannot offer it (GPU on a partition without GPUs)
+function effectiveChoice(fid) {
+  const f = feature(fid);
+  const choice = Object.assign({backend: f.default}, S.choices[fid] || {});
+  return offered(fid).includes(choice.backend) ? choice : {backend: f.default};
+}
+function usesGpus() { return Object.keys(S.init.catalog.features).some((fid) => effectiveChoice(fid).backend === "gpu"); }
+function issuesFor(step) { return S.plan ? (S.plan.issues || []).filter((i) => i.step === step) : []; }
+function setPath(path, value) {
+  const keys = path.split(".");
+  let target = S.spec;
+  for (const key of keys.slice(0, -1)) target = target[key];
+  target[keys[keys.length - 1]] = value;
+}
+function getPath(path) { return path.split(".").reduce((o, k) => o[k], S.spec); }
+function setHTML(el, html) {
+  if (el && el.innerHTML !== html && el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
+}
+function messages(list) {
+  const label = {error: "Fix:", warning: "Note:", note: "FYI:", ok: "Done:"};
+  return list.map((m) => `<div class="msg ${m.level}"><span class="tag">${label[m.level]}</span><span>${esc(m.text)}</span></div>`).join("");
+}
+
+// ------------------------------------------------------------------ planning
+let planTimer = null, planSerial = 0;
+function schedulePlan() { clearTimeout(planTimer); planTimer = setTimeout(refreshPlan, 250); }
+async function refreshPlan() {
+  const serial = ++planSerial;
+  S.spec.environment = {};
+  for (const row of S.envRows) if (row.name.trim()) S.spec.environment[row.name.trim()] = row.value;
+  S.spec.features = {};
+  for (const fid of Object.keys(S.init.catalog.features)) S.spec.features[fid] = effectiveChoice(fid);
+  try {
+    const plan = await api("/api/plan", {spec: S.spec});
+    if (serial !== planSerial) return;
+    S.plan = plan;
+  } catch (error) {
+    S.plan = {ok: false, errors: [error.message], warnings: [], notes: [], issues: [{level: "error", step: "review", text: error.message}],
+      layout: {}, resolution: {}};
+  }
+  updateDynamic();
+}
+
+// ------------------------------------------------------------------ stepper and summary
+function stepValue(id) {
+  const s = S.spec, r = s.resources, p = partition();
+  if (id === "partition") return p ? `${p.name} · ${human(minutes(s.time_limit)) || s.time_limit}` : "Not chosen";
+  if (id === "problem") return s.benchmark || "Not chosen";
+  if (id === "tasks") return `${r.ntasks} rank${r.ntasks === 1 ? "" : "s"} × ${r.cores_per_task} core${r.cores_per_task === 1 ? "" : "s"}`;
+  if (id === "features") {
+    const top = S.init.catalog.projects.flatMap((project) => project.features);
+    const special = top.map((fid) => effectiveChoice(fid)).filter((c) => c.backend !== "serial").length;
+    const gpu = Object.keys(S.init.catalog.features).filter((fid) => effectiveChoice(fid).backend === "gpu").length;
+    return gpu ? `${gpu} on GPU` : special ? "OpenMP threads" : "All serial";
+  }
+  if (id === "advanced") return "Nothing to set yet";
+  if (id === "review") return S.plan ? (S.plan.ok ? "Ready to submit" : `${S.plan.errors.length} to fix`) : "";
+  return "";
+}
+function renderStepper() {
+  const nav = $("stepper");
+  if (nav.children.length !== STEPS.length) {
+    nav.innerHTML = STEPS.map((step, index) => `<button class="step-link" data-goto="${index}">
+      <span class="dot"></span><span class="name">${esc(step.title)}</span><span class="value"></span></button>`).join("");
+  }
+  STEPS.forEach((step, index) => {
+    const issues = issuesFor(step.id);
+    const errors = issues.filter((i) => i.level === "error").length;
+    const warns = issues.filter((i) => i.level === "warning").length;
+    const visited = S.visited.has(index) || S.visited.has(5);
+    let cls = "", dot = index + 1;
+    if (index === 5) { if (S.plan) cls = S.plan.ok ? "done" : "fix"; dot = S.plan && S.plan.ok ? "✓" : 6; }
+    else if (visited && errors) { cls = "fix"; dot = "!"; }
+    else if (visited && warns) { cls = "warn"; dot = "✓"; }
+    else if (visited) { cls = "done"; dot = "✓"; }
+    const value = visited && errors && index !== 5 ? `${errors} to fix` : stepValue(step.id);
+    const link = nav.children[index];
+    link.className = `step-link ${cls} ${index === S.step ? "current" : ""}`;
+    link.querySelector(".dot").textContent = dot;
+    link.querySelector(".value").textContent = value;
+    link.setAttribute("aria-current", index === S.step ? "step" : "false");
+  });
+}
+function featureSummary() {
+  const resolved = (S.plan && S.plan.resolution && S.plan.resolution.features) || {};
+  return S.init.catalog.projects.map((project) => {
+    const parts = project.features.map((fid) => {
+      const r = resolved[fid];
+      if (!r) return "";
+      const how = r.backend === "openmp" ? `OpenMP × ${r.threads}` : r.backend === "gpu" ? `GPU × ${r.gpus}` : "serial";
+      return `<span class="badge ${r.backend}">${esc(how)}</span>`;
+    }).join(" ");
+    return `<div style="margin-bottom:3px">${esc(project.title.split(" ")[0])} ${parts}</div>`;
+  }).join("");
+}
+function renderSummary() {
+  const s = S.spec, r = s.resources, p = partition(), plan = S.plan, l = (plan && plan.layout) || {};
+  const status = plan ? (plan.ok ? `<span class="status ready">Ready</span>` : `<span class="status blocked">${plan.errors.length} to fix</span>`) : "";
+  const rows = [
+    ["Where", p ? `${p.name}${s.qos ? ` (QOS ${s.qos})` : ""}` : "-"],
+    ["Time limit", human(minutes(s.time_limit)) || s.time_limit],
+    ["Problem", s.benchmark || "-"],
+    ["Ranks", `${r.ntasks} × ${r.cores_per_task} core${r.cores_per_task === 1 ? "" : "s"}`],
+  ];
+  if (l.nodes) rows.push(["Nodes", `${l.nodes} × ${l.ranks_per_node} ranks`]);
+  if (l.memory_per_rank_mb) rows.push(["Memory/rank", gib(l.memory_per_rank_mb)]);
+  if (plan && plan.gpus_per_rank) rows.push(["GPU/rank", r.ranks_per_gpu > 1 ? `shared by ${r.ranks_per_gpu} ranks` : String(plan.gpus_per_rank)]);
+  const box = $("summary");
+  if (!box.firstChild) {
+    box.innerHTML = `<h2>Your run <span id="sum-status"></span></h2><dl class="facts" id="sum-facts"></dl>
+      <button class="btn primary" id="sum-go" data-goto="5">Review &amp; submit</button>`;
+  }
+  setHTML($("sum-status"), status);
+  setHTML($("sum-facts"), rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("") +
+    `<dt>Runs on</dt><dd>${featureSummary()}</dd>`);
+  $("sum-go").hidden = S.step === 5;
+}
+
+// ------------------------------------------------------------------ steps
+function renderStep() {
+  const step = STEPS[S.step];
+  const body = {partition: stepPartition, problem: stepProblem, tasks: stepTasks, features: stepFeatures,
+    advanced: stepAdvanced, review: stepReview}[step.id]();
+  const back = S.step > 0 ? `<button class="btn" data-goto="${S.step - 1}">Back</button>` : "<span></span>";
+  const next = S.step < 5 ? `<button class="btn primary" data-goto="${S.step + 1}">Next: ${esc(STEPS[S.step + 1].title)}</button>` : "";
+  $("step").innerHTML = `<h2>${S.step + 1}. ${esc(step.title)}</h2><p class="lead">${esc(step.lead)}</p>
+    ${step.id === "review" ? "" : `<div class="issues" id="step-issues"></div>`}
+    ${body}<div class="step-nav">${back}${next}</div>`;
+  afterRender();
+  updateDynamic();
+}
+function go(index) {
+  S.step = Math.max(0, Math.min(5, index));
+  S.visited.add(S.step);
+  renderStep();
+  window.scrollTo({top: 0});
+}
+
+function stepPartition() {
+  const s = S.spec, p = partition();
+  const cards = S.partitions.map((x) => {
+    const up = x.state.toUpperCase() === "UP";
+    return `<button class="part ${x.name === s.partition ? "on" : ""} ${up ? "" : "down"}" data-partition="${esc(x.name)}">
+      <div class="top"><span class="pname">${esc(x.name)}</span>
+        <span>${x.default ? '<span class="badge">default</span> ' : ""}<span class="badge ${up ? "up" : "down"}">${up ? "up" : esc(x.state.toLowerCase())}</span></span></div>
+      <div class="facts"><b>${x.nodes.toLocaleString()}</b> nodes<br>
+        Per node: <span class="nw"><b>${x.cores_per_node}</b> cores</span> · <span class="nw"><b>${Math.round(x.memory_per_node_mb / 1024)}</b> GiB</span> ·
+        <span class="nw">${x.gpus_per_node ? `<b>${x.gpus_per_node}</b> GPUs` : "no GPUs"}</span><br>
+        Up to <b>${esc(human(x.max_time_minutes) || x.max_time)}</b>${x.allowed_qos.length ? `<br>Requires QOS ${esc(x.allowed_qos.join(" or "))}` : ""}
+        ${x.max_nodes ? `<br><span class="rule" title="${esc(x.rule)}">At most ${x.max_nodes} node${x.max_nodes > 1 ? "s" : ""} per job</span>` : ""}</div>
+    </button>`;
+  }).join("") || `<div class="bench-empty">Asking Slurm for its partitions...</div>`;
+  const accounts = S.init.accounts;
+  const accountQos = (accounts.find((a) => a.name === s.account) || {}).qos || [];
+  const qosChoices = p && p.allowed_qos.length ? p.allowed_qos.filter((q) => !accountQos.length || accountQos.includes(q)) : [""].concat(accountQos);
+  const presets = TIME_PRESETS.concat(p && p.max_time_minutes ? [["Maximum", p.max_time]] : [])
+    .map(([label, value]) => `<button class="chip ${s.time_limit === value ? "on" : ""}" data-time="${esc(value)}">${esc(label)}</button>`).join("");
+  return `<h3>Partition</h3><div class="part-grid">${cards}</div>
+    <h3>Time limit</h3>
+    <div class="chips" style="margin-bottom:8px">${presets}</div>
+    <div class="fields">
+      <label class="field"><span class="label">Time limit</span>
+        <input type="text" class="mono" data-bind="time_limit" value="${esc(s.time_limit)}" placeholder="hh:mm:ss or d-hh:mm:ss">
+        <span class="hint" id="time-hint"></span></label>
+    </div>
+    <h3>Accounting</h3>
+    <div class="fields">
+      <label class="field"><span class="label">Project account</span>
+        <select data-bind="account">${accounts.length ? accounts.map((a) => `<option ${a.name === s.account ? "selected" : ""}>${esc(a.name)}</option>`).join("")
+          : `<option value="">default</option>`}</select>
+        <span class="hint">The allocation the job is charged to.</span></label>
+      <label class="field"><span class="label">QOS <span class="opt">(optional)</span></span>
+        <select data-bind="qos">${qosChoices.map((q) => `<option value="${esc(q)}" ${q === s.qos ? "selected" : ""}>${q ? esc(q) : "Default"}</option>`).join("")}</select>
+        <span class="hint">${p && p.allowed_qos.length ? `${esc(p.name)} requires one of these.` : "Leave on Default unless you need a special queue."}</span></label>
+      <label class="field"><span class="label">Job name <span class="opt">(optional)</span></span>
+        <input type="text" data-bind="job_name" value="${esc(s.job_name)}" placeholder="rich_${esc(s.benchmark || "benchmark")}">
+        <span class="hint">Shown in squeue.</span></label>
+    </div>`;
+}
+
+function stepProblem() {
+  const s = S.spec, info = S.benchInfo;
+  const options = info && info.options.length
+    ? `<div class="field" style="margin-top:12px"><span class="label">Options ${esc(info.name)} understands <span class="opt">(click to add)</span></span>
+        <div class="chips">${info.options.map((o) => `<button class="chip code" data-option="${esc(o.name)}" data-flag="${o.type === "flag" ? 1 : 0}"
+          title="${esc(o.type === "flag" ? "flag" : o.type)}: ${esc(o.help)}">--${esc(o.name)}</button>`).join("")}</div>
+        <span class="hint">Hover an option to see what it does.</span></div>` : "";
+  const selected = info
+    ? `<h3 style="margin-top:0">${esc(info.name)}</h3><p class="hint" style="margin:-4px 0 12px;color:var(--muted)">${esc(info.description || "No README description.")}</p>
+       <label class="field"><span class="label">Program arguments <span class="opt">(optional)</span></span>
+         <textarea class="mono" data-bind="program_args" spellcheck="false" placeholder="e.g. --n 96 --max-steps 30">${esc(s.program_args)}</textarea>
+         <span class="hint">Passed to the program as written. $USER, $SLURM_JOB_ID and $RICH_JOB_DIR (the job's folder) work here.</span></label>
+       ${options}`
+    : `<div class="bench-empty">Choose a benchmark on the left.</div>`;
+  const mpi = (s.build_config || "").includes("MPI");
+  return `<div class="bench-layout">
+      <div><input type="text" id="bench-filter" placeholder="Search ${S.benchmarks.length} benchmarks..." autocomplete="off">
+        <div class="bench-list" id="bench-list"></div></div>
+      <div>${selected}</div>
+    </div>
+    <h3>Environment variables</h3>
+    <p class="hint" style="margin:-4px 0 10px;color:var(--muted);font-size:12.5px">Exported in the job before the program
+      starts. Values may use other variables, such as $USER or $SLURM_JOB_ID.</p>
+    <div class="env-rows" id="env-rows">${envRowsHTML()}</div>
+    <button class="btn" data-env-add style="margin-top:10px">Add variable</button>
+    ${optionalEnvHTML()}
+    <h3>Build</h3>
+    <div class="mode-grid">${Object.entries(BUILD_MODES).map(([mode, [title, text]]) =>
+      `<button class="mode ${s.build_mode === mode ? "on" : ""}" data-mode="${mode}"><b>${esc(title)}</b><span>${esc(text)}</span></button>`).join("")}</div>
+    <div class="fields" style="margin-top:14px">
+      <label class="field"><span class="label">Build configuration</span>
+        <select data-bind="build_config">${S.init.build.configs.map((c) => `<option ${c === s.build_config ? "selected" : ""}>${esc(c)}</option>`).join("")}</select>
+        <span class="hint">${mpi ? "MPI build: needed for more than one task." : "Non-MPI build: runs a single task without mpirun."}</span></label>
+      ${s.build_mode === "separate_job" ? `<label class="field"><span class="label">Build time limit</span>
+        <input type="text" class="mono" data-bind="build_time_limit" value="${esc(s.build_time_limit)}"><span class="hint">For the build job only.</span></label>` : ""}
+      ${s.build_mode === "existing" ? `<label class="field" style="grid-column:1/-1"><span class="label">Binary <span class="opt">(empty: the one this setup builds)</span></span>
+        <input type="text" class="mono" data-bind="binary" value="${esc(s.binary)}" placeholder="${esc((S.plan && S.plan.binary) || "")}"></label>` : ""}
+    </div>`;
+}
+// "directory for results" -> "Directory for results."
+const sentence = (text) => text ? text.charAt(0).toUpperCase() + text.slice(1) + (/[.!?]$/.test(text) ? "" : ".") : "";
+function envRowsHTML() {
+  if (!S.envRows.length) return `<p class="empty" style="padding:0">None.</p>`;
+  return S.envRows.map((row, i) => `<div class="env-row">
+      <input type="text" class="mono" data-env="${i}" data-key="name" value="${esc(row.name)}" placeholder="NAME" ${row.required ? "readonly" : ""} aria-label="Variable name">
+      <span class="eq">=</span>
+      <input type="text" class="mono" data-env="${i}" data-key="value" value="${esc(row.value)}" placeholder="${row.required ? "required" : "value"}" aria-label="Value of ${esc(row.name || "the variable")}">
+      <button class="btn" data-env-remove="${i}" ${row.required ? "disabled title=\"This benchmark needs it\"" : ""}>Remove</button>
+      ${row.required ? `<div class="env-need ${row.value.trim() ? "" : "missing"}"><b>Required by ${esc(S.spec.benchmark)}.</b> ${esc(sentence(row.help))}
+        ${row.example ? `Example: <code>${esc(row.example)}</code> <button class="btn link" data-env-example="${i}">Use example</button>` : ""}</div>` : ""}
+    </div>`).join("");
+}
+// The optional variables the benchmark declares (EnvironmentParser::addOptional), as buttons that add a row
+function optionalEnvHTML() {
+  const optional = ((S.benchInfo && S.benchInfo.environment) || []).filter((v) => !v.required);
+  if (!optional.length) return "";
+  return `<div class="field" style="margin-top:12px"><span class="label">Other variables ${esc(S.benchInfo.name)} reads <span class="opt">(click to add)</span></span>
+    <div class="chips">${optional.map((v) => `<button class="chip code" data-env-optional="${esc(v.name)}"
+      title="${esc(v.type)}, default ${esc(v.default)}${v.help ? ": " + esc(v.help) : ""}">${esc(v.name)}</button>`).join("")}</div>
+    <span class="hint">Without them the program uses its defaults. Hover to read.</span></div>`;
+}
+// Rows for the variables the chosen benchmark needs; an empty row a previous benchmark needed goes away
+function mergeRequiredEnv(required) {
+  const names = required.map((r) => r.name);
+  S.envRows = S.envRows.filter((row) => !row.required || names.includes(row.name) || row.value.trim())
+    .map((row) => Object.assign(row, {required: false}));
+  for (const need of required.slice().reverse()) {
+    let row = S.envRows.find((r) => r.name === need.name);
+    if (!row) { row = {name: need.name, value: ""}; S.envRows.unshift(row); }
+    Object.assign(row, {required: true, help: need.help, example: need.example});
+  }
+}
+function renderBenchList() {
+  const list = $("bench-list");
+  if (!list) return;
+  const filter = ($("bench-filter").value || "").toLowerCase();
+  const shown = S.benchmarks.filter((b) => (b.name + " " + b.description).toLowerCase().includes(filter));
+  list.innerHTML = shown.map((b) => `<button class="bench-item ${b.name === S.spec.benchmark ? "on" : ""}" data-bench="${esc(b.name)}">
+    ${esc(b.name)}${b.description ? `<span class="d">${esc(b.description)}</span>` : ""}</button>`).join("")
+    || `<div class="empty" style="padding:12px">No benchmark matches.</div>`;
+}
+
+function stepTasks() {
+  const s = S.spec, r = s.resources, p = partition();
+  const gpuPart = p && p.has_gpus, active = usesGpus();
+  const gpuBox = !p ? "" : !gpuPart
+    ? `<div class="msg note" style="margin-top:16px"><span>${esc(p.name)} has no GPUs, so everything runs on CPUs.</span></div>`
+    : `<h3>GPUs</h3>${active ? "" : `<p class="hint" style="margin:-2px 0 10px;color:var(--muted);font-size:12.5px">No part of the code runs on a GPU yet. Choose GPU for a feature in step 4 to set these.</p>`}
+      <div class="fields">
+        <label class="field"><span class="label">GPUs per rank</span>
+          <input type="number" min="1" max="${p.gpus_per_node}" data-bind="resources.gpus_per_rank" data-int value="${r.gpus_per_rank}" ${active && r.ranks_per_gpu <= 1 ? "" : "disabled"}>
+          <span class="hint">1 to ${p.gpus_per_node} (a node has ${p.gpus_per_node}; a rank cannot use another node's GPUs).</span></label>
+        <label class="field"><span class="label">Ranks sharing one GPU</span>
+          <input type="number" min="1" max="64" data-bind="resources.ranks_per_gpu" data-int value="${r.ranks_per_gpu}" ${active ? "" : "disabled"}>
+          <span class="hint">1: each rank has its own GPU. 2 or more: that many ranks share a GPU (oversubscription).</span></label>
+      </div>`;
+  return `<div class="fields">
+      <label class="field"><span class="label">Total MPI ranks</span>
+        <input type="number" min="1" data-bind="resources.ntasks" data-int value="${r.ntasks}">
+        <span class="hint">1 means a serial run.</span></label>
+      <label class="field"><span class="label">Cores per rank</span>
+        <input type="number" min="1" max="${p ? p.cores_per_node : ""}" data-bind="resources.cores_per_task" data-int value="${r.cores_per_task}">
+        <span class="hint">${p ? `1 to ${p.cores_per_node} (cores in one node). ` : ""}Also the most OpenMP threads a feature can use.</span></label>
+      <label class="field"><span class="label">Ranks per node <span class="opt">(optional)</span></span>
+        <input type="number" min="0" data-bind="resources.ranks_per_node" data-int value="${r.ranks_per_node || ""}" placeholder="Automatic">
+        <span class="hint">Empty: as many as fit, spread evenly over the nodes.</span></label>
+      <label class="field"><span class="label">Minimum memory per rank <span class="opt">(optional, GiB)</span></span>
+        <input type="number" min="0" step="0.5" data-bind="resources.min_memory_per_rank_mb" data-gib value="${r.min_memory_per_rank_mb ? r.min_memory_per_rank_mb / 1024 : ""}" placeholder="No minimum">
+        <span class="hint">Fewer ranks go on each node so every rank gets at least this much.</span></label>
+    </div>
+    ${gpuBox}
+    <h3>How the ranks fit on the nodes</h3>
+    <div id="layout-view"><p class="empty">Choose a partition first.</p></div>`;
+}
+function updateTaskControls() {
+  const gpr = document.querySelector('[data-bind="resources.gpus_per_rank"]');
+  const rpg = document.querySelector('[data-bind="resources.ranks_per_gpu"]');
+  if (!gpr || !rpg) return;
+  const active = usesGpus();
+  gpr.disabled = !active || S.spec.resources.ranks_per_gpu > 1;
+  rpg.disabled = !active;
+}
+function renderLayoutView() {
+  const view = $("layout-view");
+  if (!view || !S.plan) return;
+  const l = S.plan.layout || {}, p = partition(), r = S.spec.resources;
+  if (!l.nodes || !p) {
+    setHTML(view, `<p class="empty">${esc((issuesFor("tasks").find((i) => i.level === "error") || {}).text || "Choose a partition first.")}</p>`);
+    return;
+  }
+  const shown = Math.min(l.nodes, 4);
+  const columns = Math.min(p.cores_per_node, 64);
+  const nodeBox = (n) => {
+    const ranks = n === l.nodes - 1 && r.ntasks % l.ranks_per_node ? r.ntasks % l.ranks_per_node : l.ranks_per_node;
+    const cells = [];
+    for (let c = 0; c < p.cores_per_node; c++) {
+      const rank = Math.floor(c / r.cores_per_task);
+      const used = rank < ranks;
+      const shade = rank % 2 ? "color-mix(in srgb, var(--accent) 60%, var(--panel))" : "var(--accent)";
+      cells.push(`<span class="core" style="${used ? `background:${shade}` : ""}" title="${used ? `rank ${n * l.ranks_per_node + rank}` : "idle core"}"></span>`);
+    }
+    const gpus = p.gpus_per_node ? `<div class="gpus">${Array.from({length: p.gpus_per_node}, (_, g) =>
+      `<span class="gpu-cell ${g < (l.gpus_per_node || 0) ? "used" : ""}" title="GPU ${g}"></span>`).join("")}</div>` : "";
+    return `<div class="node"><div class="nlabel"><span>Node ${n + 1}</span><span>${ranks} ranks</span></div>
+      <div class="cores" style="grid-template-columns:repeat(${columns},1fr)">${cells.join("")}</div>${gpus}</div>`;
+  };
+  setHTML(view, `<p class="layout-facts"><b>${l.nodes} node${l.nodes > 1 ? "s" : ""}</b> × <b>${l.ranks_per_node}</b> ranks per node
+      (at most ${l.max_ranks_per_node} fit; the limit is ${esc(l.limited_by)}).
+      Each rank gets ${r.cores_per_task} core${r.cores_per_task > 1 ? "s" : ""} and ${gib(l.memory_per_rank_mb)} of memory${S.plan.gpus_per_rank ? (r.ranks_per_gpu > 1 ? `, and shares a GPU with ${r.ranks_per_gpu - 1} other rank${r.ranks_per_gpu > 2 ? "s" : ""}` : `, and ${S.plan.gpus_per_rank} GPU${S.plan.gpus_per_rank > 1 ? "s" : ""}`) : ""}.</p>
+    <div class="nodes">${Array.from({length: shown}, (_, n) => nodeBox(n)).join("")}
+      ${l.nodes > shown ? `<div class="empty" style="padding:4px 0">...and ${l.nodes - shown} more node${l.nodes - shown > 1 ? "s" : ""} like these.</div>` : ""}</div>
+    <div class="legend"><span><i style="background:var(--accent)"></i>cores of a rank (alternating shades)</span><span><i style="background:var(--idle)"></i>idle core</span>
+      ${p.gpus_per_node ? `<span><i style="background:var(--gpu)"></i>GPU in use</span>` : ""}</div>`);
+}
+
+function stepFeatures() {
+  const p = partition(), r = S.spec.resources;
+  const gpuText = !p ? "" : !p.has_gpus ? "no GPUs on this partition" : r.ranks_per_gpu > 1 ? `1 GPU shared by ${r.ranks_per_gpu} ranks` : `up to ${r.gpus_per_rank || 1} GPU${(r.gpus_per_rank || 1) > 1 ? "s" : ""} per rank`;
+  const rows = (fid, depth) => {
+    const f = feature(fid);
+    return featureRow(fid, depth) + f.children.map((child) => rows(child, depth + 1)).join("");
+  };
+  return `<div class="limits">
+      <span class="limit">OpenMP threads: <b>1 to ${r.cores_per_task}</b> (cores per rank, step 3)</span>
+      <span class="limit">GPUs: <b>${esc(gpuText)}</b></span></div>
+    ${S.init.catalog.projects.map((project) => `<div class="project"><div class="ph">${esc(project.title)}</div>
+      ${project.features.map((fid) => rows(fid, 0)).join("")}</div>`).join("")}
+    <div class="build-line" id="build-line"></div>`;
+}
+function featureRow(fid, depth) {
+  const f = feature(fid), names = offered(fid), choice = effectiveChoice(fid), r = S.spec.resources;
+  const p = partition();
+  const why = [];
+  let control;
+  if (names.length === 1) {
+    control = `<span class="fixed">${names[0] === "inherit" ? "Same as the part above" : `Always ${BACKEND[names[0]].toLowerCase()}`}</span>`;
+  } else {
+    control = `<div class="seg" role="group" aria-label="${esc(f.title)}">${names.map((name) => {
+      const backend = f.backends[name], off = backend.available === false;
+      if (off) why.push(`${BACKEND[name]} is not available yet: ${backend.note || ""}`);
+      return `<button data-fid="${esc(fid)}" data-backend="${name}" class="${choice.backend === name ? "on" : ""}" ${off ? "disabled" : ""}
+        title="${esc(off ? backend.note || "Not available yet" : "")}">${BACKEND[name]}</button>`;
+    }).join("")}</div>`;
+  }
+  if ((S.choices[fid] || {}).backend === "gpu" && choice.backend !== "gpu") why.push("You chose GPU, but this partition has no GPUs; it runs as shown instead.");
+  let counts = "";
+  if (choice.backend === "openmp") {
+    counts += `<label>threads <input type="number" min="1" max="${r.cores_per_task}" data-fid="${esc(fid)}" data-key="threads" value="${choice.threads || r.cores_per_task}"></label>`;
+  }
+  if (choice.backend === "gpu" && p) {
+    const perRank = r.ranks_per_gpu > 1 ? 1 : (r.gpus_per_rank || 1);
+    const max = Math.max(1, Math.min(f.backends.gpu.max_gpus || p.gpus_per_node, p.gpus_per_node, perRank));
+    counts += `<label>GPUs <input type="number" min="1" max="${max}" data-fid="${esc(fid)}" data-key="gpus" value="${choice.gpus || 1}"></label>`;
+  }
+  counts += `<span data-eff="${esc(fid)}"></span>`;
+  return `<div class="feat ${depth ? "sub" : ""} ${depth > 1 ? "sub2" : ""}">
+    <div><div class="ft">${esc(f.title)}</div><div class="fid mono">${esc(fid)}</div>
+      ${f.description ? `<div class="fd">${esc(f.description)}</div>` : ""}
+      ${why.map((w) => `<div class="why">${esc(w)}</div>`).join("")}</div>
+    <div class="fctl">${control}<div class="counts">${counts}</div></div></div>`;
+}
+function updateEffective() {
+  const resolved = (S.plan && S.plan.resolution && S.plan.resolution.features) || {};
+  document.querySelectorAll("[data-eff]").forEach((el) => {
+    const r = resolved[el.dataset.eff];
+    setHTML(el, r ? `runs on <span class="badge ${r.backend}">${r.backend === "openmp" ? `OpenMP × ${r.threads}` : r.backend === "gpu" ? `GPU × ${r.gpus}` : "Serial"}</span>` : "");
+  });
+  const line = $("build-line");
+  if (line && S.plan) {
+    const build = (S.plan.resolution && S.plan.resolution.build) || {};
+    const kokkos = {none: "without Kokkos (plain CPU build)", host: "with Kokkos on OpenMP threads", device: "with Kokkos on the GPU"}[build.kokkos] || "";
+    const flags = (S.plan.build_command || []).filter((w) => w.startsWith("--with") || w.startsWith("--voronoi"));
+    setHTML(line, Object.keys(build).length
+      ? `<b>Build these choices need:</b> RICH ${esc(kokkos)}${build.geometry_on_host === "on" ? ", MadVoro geometry on host threads" : ""}.
+         ${flags.length ? `build_rich.sh flags: <code>${esc(flags.join(" "))}</code>.` : ""}
+         Threads per rank (OMP_NUM_THREADS): <b>${S.plan.resolution.pool_threads}</b>.`
+      : `<b>No single build fits these choices.</b> See the message at the top.`);
+  }
+}
+
+function stepAdvanced() {
+  return `<div class="bench-empty">Advanced options (extra Slurm flags and more) will be added here later.<br>Nothing to set for now.</div>`;
+}
+
+function stepReview() {
+  return `<div id="review-banner"></div><div class="issues" id="review-issues"></div>
+    <h3 style="margin-top:6px">What will happen</h3><dl class="review-list" id="review-list"></dl>
+    <details class="files" id="review-files"><summary>Generated files (for checking; you do not need to edit them)</summary>
+      <div class="tabs" id="files-tabs"></div><pre class="script" id="files-body"></pre></details>
+    <div class="submit-row">
+      <button class="btn big" id="check-btn">Check with Slurm</button>
+      <button class="btn big primary" id="submit-btn">Submit job</button>
+      <span class="explain"><b>Check with Slurm</b> asks Slurm whether it would accept the job and when it could start; nothing is submitted.
+        <b>Submit job</b> writes the job folder under submit/jobs/ and submits it.</span>
+    </div>
+    <div class="issues" id="result" style="margin-top:14px"></div>`;
+}
+function updateReview() {
+  if (!$("review-list") || !S.plan) return;
+  const plan = S.plan, s = S.spec, r = s.resources, l = plan.layout || {}, p = partition();
+  const errors = (plan.issues || []).filter((i) => i.level === "error");
+  setHTML($("review-banner"), plan.ok
+    ? `<div class="banner ready">Everything checks out. You can submit.</div>`
+    : `<div class="banner blocked">${errors.length} thing${errors.length > 1 ? "s" : ""} to fix before submitting.</div>`);
+  const stepIndex = (id) => STEPS.findIndex((x) => x.id === id);
+  setHTML($("review-issues"), (plan.issues || []).map((i) => {
+    const index = stepIndex(i.step);
+    const link = index >= 0 && index < 5 ? ` <button class="btn link" data-goto="${index}">Go to ${esc(STEPS[index].title)}</button>` : "";
+    const label = {error: "Fix:", warning: "Note:", note: "FYI:"}[i.level];
+    return `<div class="msg ${i.level}"><span class="tag">${label}</span><span>${esc(i.text)}${link}</span></div>`;
+  }).join(""));
+  const resolved = (plan.resolution && plan.resolution.features) || {};
+  const featureLines = S.init.catalog.projects.map((project) => project.features.map((fid) => {
+    const x = resolved[fid];
+    if (!x) return "";
+    const how = x.backend === "openmp" ? `${x.threads} OpenMP threads` : x.backend === "gpu" ? `${x.gpus} GPU${x.gpus > 1 ? "s" : ""}` : "serially";
+    return `${esc(feature(fid).title)}: <b>${esc(how)}</b>`;
+  }).join("<br>")).join("<br>");
+  const buildMode = BUILD_MODES[s.build_mode] ? BUILD_MODES[s.build_mode][0] : s.build_mode;
+  const rows = [
+    ["Partition", p ? `${esc(p.name)}${s.qos ? `, QOS ${esc(s.qos)}` : ""}, account ${esc(s.account || "default")}` : "-"],
+    ["Time limit", `${esc(human(minutes(s.time_limit)) || s.time_limit)} <span class="mono" style="color:var(--muted)">(${esc(s.time_limit)})</span>`],
+    ["Problem", s.benchmark ? `<b>${esc(s.benchmark)}</b>${s.program_args ? ` <code>${esc(s.program_args)}</code>` : " (no arguments)"}` : "-"],
+    ["Ranks", l.nodes ? `${r.ntasks} ranks on ${l.nodes} node${l.nodes > 1 ? "s" : ""} (${l.ranks_per_node} per node), ${r.cores_per_task} core${r.cores_per_task > 1 ? "s" : ""} and ${gib(l.memory_per_rank_mb)} each` : `${r.ntasks} ranks`],
+    ["GPUs", plan.gpus_per_rank ? (r.ranks_per_gpu > 1 ? `${r.ranks_per_gpu} ranks share each GPU; ${l.gpus_per_node} GPUs used per node` : `${plan.gpus_per_rank} per rank; ${l.gpus_per_node} used per node`) : "None"],
+    ["Parts of the code", featureLines || "-"],
+    ["Build", `${esc(buildMode)}: <code>${esc(s.build_config)}</code>${plan.build_variant ? `, folder <code>${esc(plan.build_variant)}</code>` : ""}`],
+    ["Environment", Object.keys(plan.user_environment || {}).length
+      ? Object.entries(plan.user_environment).map(([k, v]) => `<code>${esc(k)}=${esc(v)}</code>`).join("<br>") : "None set"],
+  ];
+  setHTML($("review-list"), rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join(""));
+  const files = [["run", "run.sh (the job)", plan.run_script], ["build", "build.sh", plan.build_script], ["exec", "execution.conf", plan.execution_config]]
+    .filter(([, , text]) => text);
+  if (!files.some(([key]) => key === S.filesTab)) S.filesTab = "run";
+  setHTML($("files-tabs"), files.map(([key, label]) => `<button data-files="${key}" class="${key === S.filesTab ? "on" : ""}">${esc(label)}</button>`).join(""));
+  const current = files.find(([key]) => key === S.filesTab);
+  $("files-body").textContent = current ? current[2] : "Choose a benchmark to see the job script.";
+  $("check-btn").disabled = $("submit-btn").disabled = !plan.ok || S.busy;
+}
+
+// ------------------------------------------------------------------ dynamic updates (after every plan)
+function updateDynamic() {
+  renderStepper();
+  renderSummary();
+  const box = $("step-issues");
+  if (box) setHTML(box, messages(issuesFor(STEPS[S.step].id)));
+  const hint = $("time-hint");
+  if (hint) {
+    const m = minutes(S.spec.time_limit), p = partition();
+    const over = m != null && p && p.max_time_minutes && m > p.max_time_minutes;
+    hint.className = "hint" + (m == null || over ? " bad" : "");
+    hint.textContent = m == null ? "Write it as hh:mm:ss, or d-hh:mm:ss for days." :
+      `= ${human(m)}${p ? `. ${p.name} allows up to ${human(p.max_time_minutes) || p.max_time}.` : ""}`;
+  }
+  updateTaskControls();
+  renderLayoutView();
+  updateEffective();
+  updateReview();
+}
+
+// ------------------------------------------------------------------ events
+function afterRender() {
+  if ($("bench-list")) { renderBenchList(); }
+}
+document.addEventListener("click", async (event) => {
+  const t = event.target.closest("button, [data-goto]");
+  if (!t) return;
+  if (t.dataset.goto !== undefined) { go(+t.dataset.goto); return; }
+  if (t.dataset.partition) {
+    const before = partition();
+    S.spec.partition = t.dataset.partition;
+    const p = partition();
+    if (p && p.allowed_qos.length && !p.allowed_qos.includes(S.spec.qos)) S.spec.qos = p.allowed_qos[0];
+    else if (p && !p.allowed_qos.length && before && before.allowed_qos.includes(S.spec.qos)) S.spec.qos = "";
+    renderStep(); schedulePlan(); return;
+  }
+  if (t.dataset.time) { S.spec.time_limit = t.dataset.time; renderStep(); schedulePlan(); return; }
+  if (t.dataset.bench) { await selectBenchmark(t.dataset.bench); return; }
+  if (t.dataset.option) {
+    const area = document.querySelector('[data-bind="program_args"]');
+    const add = `--${t.dataset.option}${t.dataset.flag === "1" ? "" : " "}`;
+    area.value = (area.value.trimEnd() + " " + add).trimStart();
+    S.spec.program_args = area.value; area.focus(); schedulePlan(); return;
+  }
+  if (t.dataset.mode) { S.spec.build_mode = t.dataset.mode; renderStep(); schedulePlan(); return; }
+  if (t.dataset.backend) {
+    const prev = S.choices[t.dataset.fid] || {};
+    S.choices[t.dataset.fid] = Object.assign({}, prev, {backend: t.dataset.backend});
+    renderStep(); schedulePlan(); return;
+  }
+  if (t.hasAttribute("data-env-add")) {
+    S.envRows.push({name: "", value: ""});
+    $("env-rows").innerHTML = envRowsHTML();
+    const inputs = $("env-rows").querySelectorAll('[data-key="name"]');
+    inputs[inputs.length - 1].focus();
+    return;
+  }
+  if (t.dataset.envOptional) {
+    if (!S.envRows.some((row) => row.name === t.dataset.envOptional)) S.envRows.push({name: t.dataset.envOptional, value: ""});
+    $("env-rows").innerHTML = envRowsHTML();
+    const row = S.envRows.findIndex((r) => r.name === t.dataset.envOptional);
+    const input = document.querySelector(`[data-env="${row}"][data-key="value"]`);
+    if (input) input.focus();
+    return;
+  }
+  if (t.dataset.envRemove !== undefined) {
+    S.envRows.splice(+t.dataset.envRemove, 1);
+    $("env-rows").innerHTML = envRowsHTML(); schedulePlan(); return;
+  }
+  if (t.dataset.envExample !== undefined) {
+    const row = S.envRows[+t.dataset.envExample];
+    row.value = row.example;
+    $("env-rows").innerHTML = envRowsHTML(); schedulePlan(); return;
+  }
+  if (t.dataset.files) { S.filesTab = t.dataset.files; updateReview(); return; }
+  if (t.id === "check-btn") { doSubmit(true); return; }
+  if (t.id === "submit-btn") { confirmSubmit(); return; }
+  if (t.hasAttribute("data-close")) { t.closest("dialog").close(); return; }
+  if (t.dataset.output) { showOutput(t.dataset.output); return; }
+});
+document.addEventListener("input", (event) => {
+  const el = event.target;
+  if (el.id === "bench-filter") { renderBenchList(); return; }
+  if (el.dataset.env !== undefined) {
+    const row = S.envRows[+el.dataset.env];
+    row[el.dataset.key] = el.value;
+    const need = el.closest(".env-row").querySelector(".env-need");
+    if (need) need.classList.toggle("missing", !row.value.trim());
+    schedulePlan(); return;
+  }
+  if (el.dataset.fid) {
+    const fid = el.dataset.fid;
+    S.choices[fid] = Object.assign({}, effectiveChoice(fid), {[el.dataset.key]: Math.max(1, parseInt(el.value, 10) || 1)});
+    schedulePlan(); return;
+  }
+  const path = el.dataset.bind;
+  if (!path) return;
+  let value = el.value;
+  if (el.hasAttribute("data-int")) value = Math.max(0, parseInt(value, 10) || 0);
+  if (el.hasAttribute("data-gib")) value = Math.round((parseFloat(value) || 0) * 1024);
+  setPath(path, value);
+  if (path === "resources.ntasks" && value < 1) setPath(path, 1);
+  if (path === "resources.ranks_per_gpu" && value < 1) setPath(path, 1);
+  schedulePlan();
+});
+document.addEventListener("change", (event) => {
+  const path = event.target.dataset.bind;
+  // Selects that change other choices on the page: re-render the step
+  if (path === "account" || path === "build_config") renderStep();
+});
+
+async function selectBenchmark(name) {
+  S.spec.benchmark = name;
+  S.benchInfo = name ? (await api(`/api/benchmark?name=${encodeURIComponent(name)}&account=${encodeURIComponent(S.spec.account)}`)).benchmark : null;
+  mergeRequiredEnv(((S.benchInfo && S.benchInfo.environment) || []).filter((v) => v.required));
+  if (STEPS[S.step].id === "problem") {
+    const filter = $("bench-filter") ? $("bench-filter").value : "";
+    const scroll = $("bench-list") ? $("bench-list").scrollTop : 0;
+    renderStep();
+    $("bench-filter").value = filter; renderBenchList(); $("bench-list").scrollTop = scroll;
+  }
+  schedulePlan();
+}
+
+// ------------------------------------------------------------------ submit, jobs, setups
+function confirmSubmit() {
+  const s = S.spec, l = (S.plan && S.plan.layout) || {};
+  $("confirm-text").innerHTML = `<p style="margin:0 0 6px"><b>${esc(s.benchmark)}</b> on <b>${esc(s.partition)}</b>:
+    ${s.resources.ntasks} ranks on ${l.nodes || "?"} node${l.nodes > 1 ? "s" : ""}, for up to ${esc(human(minutes(s.time_limit)))}.</p>
+    <p style="margin:0;color:var(--muted);font-size:13px">It is charged to ${esc(s.account || "your default account")}. You can cancel it later with scancel.</p>`;
+  $("dlg-confirm").showModal();
+}
+$("confirm-yes").onclick = () => { $("dlg-confirm").close(); doSubmit(false); };
+async function doSubmit(dryRun) {
+  S.busy = true; updateReview();
+  $("result").innerHTML = `<div class="msg note"><span>${dryRun ? "Asking Slurm..." : "Submitting..."}</span></div>`;
+  try {
+    const result = await api("/api/submit", {spec: S.spec, dry_run: dryRun});
+    if (!result.ok) {
+      $("result").innerHTML = `<div class="msg error"><span class="tag">${dryRun ? "Slurm says no:" : "Not submitted:"}</span><span style="white-space:pre-wrap">${esc(result.error)}</span></div>`;
+    } else if (dryRun) {
+      $("result").innerHTML = `<div class="msg ok"><span class="tag">Slurm would accept it.</span><span>${esc(result.message.replace(/^run\.sh: /, ""))}</span></div>
+        <div class="msg note"><span>Nothing was submitted.</span></div>`;
+    } else {
+      const name = result.job_dir.split("/").pop();
+      $("result").innerHTML = `<div class="msg ok"><span class="tag">Submitted.</span><span>Job ${esc(result.job_ids.join(" then "))}.
+        Its files and output are in <code>${esc(result.job_dir)}</code>.
+        <button class="btn link" data-output="${esc(name)}">Show its output</button></span></div>`;
+      toast(`Submitted job ${result.job_ids[result.job_ids.length - 1]}`);
+    }
+  } catch (error) {
+    $("result").innerHTML = `<div class="msg error"><span class="tag">Error:</span><span>${esc(error.message)}</span></div>`;
+  }
+  S.busy = false; updateReview();
+}
+
+async function loadJobs() {
+  $("jobs-body").innerHTML = `<p class="empty">Loading...</p>`;
+  try {
+    const {jobs} = await api("/api/jobs");
+    $("jobs-body").innerHTML = jobs.length ? `<table class="jobs"><thead><tr><th>Submitted</th><th>Job</th><th>State</th><th></th></tr></thead><tbody>
+      ${jobs.map((job) => {
+        const when = job.name.replace(/^(\d{4})(\d\d)(\d\d)_(\d\d)(\d\d)(\d\d)_(.*)$/, "$1-$2-$3 $4:$5 · $7");
+        const states = job.job_ids.map((id) => `${esc(id)} <span class="badge">${esc((job.states[id] || {}).state || "unknown")}</span>`).join(" ");
+        return `<tr><td>${esc(when)}</td><td>${states || '<span style="color:var(--muted)">checked only, not submitted</span>'}</td>
+          <td>${job.job_ids.length ? esc((job.states[job.job_ids[job.job_ids.length - 1]] || {}).elapsed || "") : ""}</td>
+          <td><button class="btn link" data-output="${esc(job.name)}">Output</button></td></tr>`;
+      }).join("")}</tbody></table>` : `<p class="empty">No jobs yet.</p>`;
+  } catch (error) { $("jobs-body").innerHTML = `<div class="msg error"><span>${esc(error.message)}</span></div>`; }
+}
+$("open-jobs").onclick = () => { $("dlg-jobs").showModal(); loadJobs(); };
+$("jobs-refresh").onclick = loadJobs;
+let outputName = "";
+async function showOutput(name) {
+  outputName = name;
+  $("output-title").textContent = `Output of ${name}`;
+  $("output-body").innerHTML = `<p class="empty">Loading...</p>`;
+  if (!$("dlg-output").open) $("dlg-output").showModal();
+  try {
+    const {files, dir} = await api(`/api/job_output?name=${encodeURIComponent(name)}`);
+    $("output-body").innerHTML = `<p style="margin:0 0 8px;font-size:12.5px;color:var(--muted)">Folder: <code>${esc(dir)}</code></p>` +
+      (files.length ? files.map((f) => `<p style="margin:10px 0 4px;font-weight:600">${esc(f.name)}${f.truncated ? " (last part)" : ""}</p><pre>${esc(f.text) || "(empty)"}</pre>`).join("")
+        : `<p class="empty">No output yet. The job may still be waiting in the queue.</p>`);
+  } catch (error) { $("output-body").innerHTML = `<div class="msg error"><span>${esc(error.message)}</span></div>`; }
+}
+$("output-refresh").onclick = () => showOutput(outputName);
+
+$("save-spec").onclick = () => { $("save-name").value = S.spec.benchmark || "run"; $("dlg-save").showModal(); $("save-name").select(); };
+$("save-yes").onclick = async () => {
+  try {
+    const {path} = await api("/api/spec", {name: $("save-name").value.trim(), spec: S.spec});
+    $("dlg-save").close(); toast(`Saved to ${path}`); loadSpecs();
+  } catch (error) { toast(error.message); }
+};
+async function loadSpecs() {
+  const {specs} = await api("/api/specs");
+  $("load-spec").innerHTML = `<option value="">Load saved setup...</option>` + specs.map((name) => `<option>${esc(name)}</option>`).join("");
+}
+$("load-spec").onchange = async () => {
+  const name = $("load-spec").value;
+  if (!name) return;
+  const {spec} = await api(`/api/spec?name=${encodeURIComponent(name)}`);
+  applySpec(spec);
+  $("load-spec").value = "";
+  toast(`Loaded ${name}`);
+};
+async function applySpec(spec) {
+  const resources = Object.assign({}, S.spec.resources, spec.resources || {});
+  Object.assign(S.spec, spec, {resources});
+  S.choices = Object.assign({}, spec.features || {});
+  S.envRows = Object.entries(spec.environment || {}).map(([name, value]) => ({name, value: String(value)}));
+  await selectBenchmark(S.spec.benchmark);
+  renderStep(); schedulePlan();
+}
+
+// ------------------------------------------------------------------ start
+async function start() {
+  if (!TOKEN) {
+    document.body.innerHTML = `<p style="padding:24px;font-size:15px">Open the full link that <code>submit/rich-submit</code> printed (it ends with <code>?token=...</code>).</p>`;
+    return;
+  }
+  try { S.init = await api("/api/init"); }
+  catch (error) { document.body.innerHTML = `<p style="padding:24px">${esc(error.message)}</p>`; return; }
+  $("where").textContent = `${S.init.cluster || "cluster"} · ${S.init.repo}`;
+  S.spec.account = S.init.default_account || (S.init.accounts[0] || {}).name || "";
+  S.spec.build_config = S.init.build.default_config;
+  for (const [fid, f] of Object.entries(S.init.catalog.features)) S.choices[fid] = {backend: f.default};
+  renderStep();
+  const [parts, benches] = await Promise.all([api("/api/partitions"), api("/api/benchmarks")]);
+  S.partitions = parts.partitions;
+  S.benchmarks = benches.benchmarks;
+  if (!partition()) S.spec.partition = ((S.partitions.find((p) => p.default) || S.partitions[0]) || {}).name || "";
+  renderStep();
+  schedulePlan();
+  loadSpecs();
+}
+start();
+</script>
+</body>
+</html>
