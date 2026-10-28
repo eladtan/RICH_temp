@@ -23,6 +23,9 @@ public:
 	Conserved3D operator()(ComputationalCell3D const& left,	ComputationalCell3D const& right,double velocity,
 		EquationOfState const& eos, Vector3D const& normaldir) const override;
 
+	//! \brief The factor of the iterated wave speed estimate, (gamma + 1) / (2 gamma) (not iterated if not above 0.001)
+	double GetIterationFactor(void) const { return gamma_; }
+
 	std::pair<double, double> GetUstarPstar(ComputationalCell3D const& left, ComputationalCell3D const& right,
 		EquationOfState const& eos, Vector3D const& normaldir) const;
 };

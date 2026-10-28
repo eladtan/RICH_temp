@@ -43,6 +43,13 @@ public:
   virtual ~FluxCalculator3D(void);
 };
 
+/*! \brief Fills a flux's radiation energies, tracers and energy groups from the upwind side (by the sign of its mass flux)
+\param left The left side
+\param right The right side
+\param res The flux
+*/
+void AddTracers3D(ComputationalCell3D const& left, ComputationalCell3D const& right, Conserved3D &res);
+
 /*! \brief Rotate, solve riemann problem and rotate back
   \param normal Normal direction
   \param left Cell on one side
