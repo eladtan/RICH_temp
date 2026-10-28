@@ -29,12 +29,20 @@ esac
 # Slingshot: Open MPI goes through OFI (set by the openmpi module); hybrid
 # matching avoids running out of CXI hardware match entries with many messages.
 export FI_CXI_RX_MATCH_MODE=hybrid
-# Jobs without Slingshot VNIs (the service partition) cannot open a CXI domain
-# (fi_domain: Function not implemented), so MPI_Init fails. Such jobs are single
-# node: use Open MPI's shared-memory path instead.
-if [[ -n "${SLURM_JOB_ID:-}" && -z "${SLINGSHOT_VNIS:-}" ]]; then
+# Jobs in the service partition get no Slingshot VNIs, so they cannot open a CXI
+# domain (fi_domain: Function not implemented) and MPI_Init fails. Such jobs are
+# single node: use Open MPI's shared-memory path instead. (The batch shell of other
+# partitions has no SLINGSHOT_* variables either; Slurm sets them for the job steps
+# that mpirun launches, so they cannot tell the two apart.)
+if [[ "${SLURM_JOB_PARTITION:-}" == service ]]; then
     export OMPI_MCA_pml=ob1 OMPI_MCA_btl=self,sm
     unset OMPI_MCA_mtl
+else
+    # MPI window locks across nodes crash in libfabric 2.3.1's CXI provider when the
+    # one-sided component (osc/rdma) uses btl/ofi atomics (mca_btl_ofi_afop). Without
+    # btl/ofi it falls back to active messages; point-to-point MPI still goes through
+    # the OFI MTL, and STORM's particle exchange uses libfabric directly.
+    export OMPI_MCA_btl=self,sm,tcp
 fi
 # Particle queues resize repeatedly; don't keep deregistered memory pinned.
 export OMPI_MCA_mpi_leave_pinned=0
