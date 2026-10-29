@@ -228,6 +228,13 @@ std::pair<Face, Face> clipFace(const Face &face, const Plane &plane, bool print)
                 if(R * 1e-10 < std::max(std::abs(d1), std::abs(d2)))
                 {
                     Vector3D intersection = plane.intersect(curr, next);
+                    // A plane through (within round-off of) a vertex gives an intersection a few 1e-15 off that vertex, while
+                    // the vertex itself is kept as well; the near-duplicate pair, against a thin cap, made ConvexHullFace drop
+                    // the cap face (wedge cells at the axis, 2026-10-23). Snap such points to the vertex.
+                    if(fastabs(intersection - curr) <= 1e-9 * R)
+                        intersection = curr;
+                    else if(fastabs(intersection - next) <= 1e-9 * R)
+                        intersection = next;
                     out.vertices.push_back(intersection);
                     clip_points.vertices.push_back(intersection);
                 }
@@ -326,7 +333,10 @@ Face ConvexHullFace(const Face &face)
         return First.Y < Second.Y;
     });
 
-    const double CoordinateTolerance = 128.0 * std::numeric_limits<double>::epsilon() * Scale;
+    // At least CleanFace's 1e-12 of the face size: the copies of a clip point computed in the adjacent faces differ by more
+    // than 128 eps of a small face (a wedge cell at the axis, 2026-10-23: 1.8e-17 apart on a cap of radius 5e-5), and with
+    // both copies kept the hull below collapsed and the cap face was lost (0.5% of the clipped volume)
+    const double CoordinateTolerance = std::max(128.0 * std::numeric_limits<double>::epsilon(), 1e-12) * Scale;
     // Merge near-duplicates against every kept point, not only the previous one: a clip cap collects each vertex from
     // both adjacent faces with roundoff, and when distinct points share almost the same X (mirror-symmetric pairs) the
     // copies interleave in the sorted order, std::unique misses them, and the hull below collapses to nothing.
@@ -381,6 +391,30 @@ Face ConvexHullFace(const Face &face)
     for(size_t Index = 0; Index < HullSize; ++Index)
         result.vertices.push_back(Projected[Hull[Index]].Original);
     return result;
+}
+
+void WeldPolyhedronVertices(std::vector<Face> &polyhedron, double tolerance)
+{
+    std::vector<Vector3D> representatives;
+    for(Face &face : polyhedron)
+    {
+        for(Vector3D &vertex : face.vertices)
+        {
+            bool found = false;
+            for(const Vector3D &representative : representatives)
+            {
+                if(std::abs(vertex.x - representative.x) <= tolerance && std::abs(vertex.y - representative.y) <= tolerance &&
+                    std::abs(vertex.z - representative.z) <= tolerance)
+                {
+                    vertex = representative;
+                    found = true;
+                    break;
+                }
+            }
+            if(!found)
+                representatives.push_back(vertex);
+        }
+    }
 }
 
 Face CleanFace(const Face &face)
