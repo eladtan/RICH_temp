@@ -113,14 +113,25 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 	for (size_t j = 0; j < N; ++j)
 	{
 		if (tess.IsPointOutsideBox(neigh[j]))
+		{
+			// A box face: the speed of the gas and of the mesh point towards it (outward normal, towards the ghost), so
+			// that gas running into the boundary is matched by the correction (2026-10-23)
+			Vector3D const normal = normalize(tess.GetMeshPoint(neigh[j]) - r);
+			cs = std::max(cs, std::max(ScalarProd(cells[i].velocity, normal), ScalarProd(velocities[i], normal)));
 			continue;
+		}
 #ifdef RICH_DEBUG
 		try
 		{
 #endif
 			cs = std::max(cs, eos_.dp2c(cells[neigh[j]].density, cells[neigh[j]].pressure,
 					    cells[static_cast<size_t>(neigh[j])].tracers, ComputationalCell3D::tracerNames));
-			cs = std::max(cs, fastabs(cells[neigh[j]].velocity));
+			// The relative speeds to the neighbor, of the gas and of the mesh points, not the bulk gas speed: that one depends
+			// on the frame and let a slow cell next to fast gas move at the fast gas's speed (a star crossing a disk at 0.1c:
+			// generators at ~22 code units around gas at 0.3 crushed a cell at the bow shock, 2026-10-22)
+			cs = std::max(cs, fastabs(cells[neigh[j]].velocity - cells[i].velocity));
+			if (neigh[j] < velocities.size())
+				cs = std::max(cs, fastabs(velocities[neigh[j]] - velocities[i]));
 #ifdef RICH_DEBUG
 			if (!std::isfinite(cs))
 				throw UniversalError("Bad cs in roundcells");
@@ -135,7 +146,9 @@ void RoundCells3D::calc_dw(Vector3D &velocity, size_t i, const Tessellation3D& t
 #endif
 		
 }
-	  cs =std::max(cs, std::max(fastabs(cells[i].velocity), std::max(eos_.dp2c(cells[i].density, cells[i].pressure,cells[i].tracers, ComputationalCell3D::tracerNames), min_dw_)));
+	  cs = std::max(cs, std::max(eos_.dp2c(cells[i].density, cells[i].pressure, cells[i].tracers, ComputationalCell3D::tracerNames), min_dw_));
+	if (boundary_speed_)
+		cs = std::max(cs, boundary_speed_(tess, i, cells[i].velocity, velocities[i]));
 #ifdef RICH_DEBUG
 	}
 	catch (UniversalError &eo)
@@ -300,10 +313,13 @@ void RoundCells3D::ApplyFix(Tessellation3D const& tess, vector<ComputationalCell
 	}
 	else
 	{
+		// The neighbor speed differences are taken from the velocities before any correction, so the result does not
+		// depend on the order of the cells
+		vector<Vector3D> const base_velocities(velocities);
 		for (size_t i = 0; i < n; ++i)
 		{
 			if (nomove[i] == 0)
-				calc_dw(velocities.at(i), i, tess, cells, velocities, nomove);
+				calc_dw(velocities.at(i), i, tess, cells, base_velocities, nomove);
 			else
 				velocities.at(i) = Vector3D();
 		}

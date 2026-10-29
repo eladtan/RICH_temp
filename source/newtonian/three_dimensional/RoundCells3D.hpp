@@ -6,6 +6,7 @@
 #ifndef ROUND_CELLS3D_HPP
 #define ROUND_CELLS3D_HPP 1
 
+#include <functional>
 #include "point_motion_3d.hpp"
 #include "../common/equation_of_state.hpp"
 #include "../two_dimensional/computational_cell_2d.hpp"
@@ -36,6 +37,16 @@ public:
 
 	void ApplyFix(Tessellation3D const& tess, vector<ComputationalCell3D> const& cells, double time,
 		double dt, vector<Vector3D> &velocities)const override;
+
+	/*! \brief Extra speed scale per cell for the regular (not cold) correction, for boundaries the tessellation does not
+	represent with a ghost, e.g. the axis of a wedge, where the walls meet along a line. It gets the cell, its gas velocity
+	and its mesh-point velocity before the correction; the correction speed is the maximum of it and the other scales.
+	\param boundary_speed The function (empty: none)
+	*/
+	void SetBoundarySpeed(std::function<double(Tessellation3D const&, size_t, Vector3D const&, Vector3D const&)> boundary_speed)
+	{
+		boundary_speed_ = std::move(boundary_speed);
+	}
 private:
 
 	void calc_dw(Vector3D &velocty, size_t i, const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
@@ -56,6 +67,7 @@ private:
 	mutable vector<size_t> slowdown_neigh_buf_;
 	mutable vector<size_t> calc_dw_neigh_buf_;
 	mutable vector<size_t> calc_dw2_neigh_buf_;
+	std::function<double(Tessellation3D const&, size_t, Vector3D const&, Vector3D const&)> boundary_speed_;
 };
 
 #endif // ROUND_CELLS3D_HPP
