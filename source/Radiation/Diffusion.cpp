@@ -483,7 +483,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         double const volume = tess.GetVolume(i) * length_scale_ * length_scale_ * length_scale_;
         double const T = cells_cgs[i].temperature;
         A[i].push_back(volume * (1 + fleck_factor[i] * dt * CG::speed_of_light * sigma_planck[i] * time_scale_));
-        if(compton_on_ && cells[i].tracers[1] > 0.5)
+        if(compton_on_ && (compton_tracer_gate_ < 0 || cells[i].tracers[static_cast<size_t>(compton_tracer_gate_)] > 0.5))
         {
             double const Tr = std::pow(new_Er[i] / CG::radiation_constant, 0.25);
 	        double const pre_factor = fleck_factor[i] * dt * time_scale_ * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light);
@@ -529,6 +529,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     Vector3D dummy_v;
     std::vector<Vector3D> gradE(Nlocal);
     std::vector<double> max_neighbor_R(Nlocal, 0);
+    std::vector<double> R2_enthalpy(implicit_enthalpy_advection_ ? Nlocal : 0, 1.0 / 3.0);
     for(size_t i = 0; i < Nlocal; ++i)
     {
         double const volume = tess.GetVolume(i) * length_scale_ * length_scale_ * length_scale_;
@@ -613,6 +614,20 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
     {
         double const volume = tess.GetVolume(i) * length_scale_ * length_scale_* length_scale_;
         gradE[i] *= -1.0 / volume;
+        if(implicit_enthalpy_advection_ && flux_limiter_)
+        {
+            // DiffusionForce's Eddington factor (Levermore-Pomraning, in [1/3, 1]) from the cell's own face-average gradient and
+            // E. The R2 below uses the matrix's limiter, whose gradient is floored and E lowered (Er_for_limit), and can fall
+            // below 1/3, which would make the enthalpy coefficient (1 - R2) / 2 exceed 1/3
+            double const Er_cell = cells_cgs[i].Erad * cells_cgs[i].density;
+            if(Er_cell > 0)
+            {
+                double const lambda = CalcSingleFluxLimiter(gradE[i], D[i], Er_cell);
+                R2_enthalpy[i] = lambda / 3 + boost::math::pow<2>(lambda * abs(gradE[i]) * D[i] / (CG::speed_of_light * Er_cell));
+            }
+            else
+                R2_enthalpy[i] = 1.0;   // no radiation: no enthalpy flux
+        }
         faces = tess.GetCellFaces(i);
         tess.GetNeighbors(i, neighbors);
         size_t const Nneigh = neighbors.size();
@@ -684,6 +699,67 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         }
         R2[i] = flux_limiter_ ? flux_limiter / 3 + boost::math::pow<2>(flux_limiter * abs(gradE[i]) * Dcell / (CG::speed_of_light * Er)) : 1.0 / 3.0;
         A[i][0] -= volume * fleck_factor[i] * dt * 0.5 * (3 - R2[i]) * sigma_planck[i] * std::min(0.01 * CG::speed_of_light * CG::speed_of_light, ScalarProd(cells_cgs[i].velocity, cells_cgs[i].velocity)) * time_scale_ / CG::speed_of_light;
+    }
+    if(implicit_enthalpy_advection_)
+    {
+        // Radiation enthalpy flux, the (1 - R2) / 2 E v.n part of the lab-frame flux F0 + (E + P) v that the hydro step does not
+        // carry (it advects E with the mass). Same faces, upwind cell and Eddington factor as DiffusionForce's explicit version,
+        // with E at the new time: outflow on the diagonal, inflow in the upwind neighbor's column (its outflow, so every face is
+        // conservative), inflow through a box face into b. Faces of zero cells are left out on both sides.
+        std::vector<double> R2_all(R2_enthalpy);
+#ifdef RICH_MPI
+        MPI_exchange_data(tess, R2_all, true);
+#endif
+        auto is_zero = [&](size_t index)
+        {
+            for(size_t k = 0; k < Nzero; ++k)
+                if(cells_cgs[index].stickers[zero_indeces[k]])
+                    return true;
+            return false;
+        };
+        for(size_t i = 0; i < Nlocal; ++i)
+        {
+            if(is_zero(i))
+                continue;
+            faces = tess.GetCellFaces(i);
+            tess.GetNeighbors(i, neighbors);
+            Vector3D const point = tess.GetMeshPoint(i);
+            for(size_t j = 0; j < neighbors.size(); ++j)
+            {
+                size_t const neighbor_j = neighbors[j];
+                bool const outside = tess.IsPointOutsideBox(neighbor_j);
+                if(!outside && is_zero(neighbor_j))
+                    continue;
+                Vector3D r_ij = point - tess.GetMeshPoint(neighbor_j);
+                r_ij *= 1.0 / abs(r_ij);
+                Vector3D velocity_outside;
+                double Er_outside = 0;
+                if(outside)
+                    boundary_calc_.GetOutSideValues(tess, cells_cgs, i, neighbor_j, new_Er, Er_outside, velocity_outside);
+                else
+                    velocity_outside = cells_cgs[neighbor_j].velocity;
+                double const v_cell0 = ScalarProd(r_ij, cells_cgs[i].velocity);
+                double const v_cell1 = ScalarProd(r_ij, velocity_outside);
+                if(!(v_cell0 * v_cell1 > 0))
+                    continue;
+                double const area_dt = tess.GetArea(faces[j]) * length_scale_ * length_scale_ * dt * time_scale_;
+                if(v_cell1 < 0)
+                {
+                    A[i][0] -= (0.5 - 0.5 * R2_all[i]) * v_cell0 * area_dt;   // outflow (v_cell0 < 0)
+                }
+                else if(outside)
+                {
+                    b[i] += (0.5 - 0.5 * R2_all[i]) * Er_outside * v_cell1 * area_dt;
+                }
+                else
+                {
+                    auto it = std::find(A_indeces[i].begin(), A_indeces[i].end(), neighbor_j);
+                    if(it == A_indeces[i].end())
+                        throw UniversalError("Missing neighbor column for the enthalpy flux in diffusion");
+                    A[i][static_cast<size_t>(it - A_indeces[i].begin())] -= (0.5 - 0.5 * R2_all[neighbor_j]) * v_cell1 * area_dt;
+                }
+            }
+        }
     }
     for(size_t i = 0; i < Nlocal; ++i)
     {

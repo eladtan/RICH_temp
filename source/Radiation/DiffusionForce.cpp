@@ -93,7 +93,8 @@ void DiffusionForce::operator()(const Tessellation3D& tess, const vector<Computa
         size_t const Nneigh = neighbors.size();
         Vector3D const point = tess.GetMeshPoint(i);
         double dE = 0;
-        for(size_t j = 0; j < Nneigh; ++j)
+        // With Diffusion::implicit_enthalpy_advection_ the enthalpy flux is part of the radiation solve (BuildMatrix)
+        for(size_t j = 0; j < Nneigh && !diffusion_.implicit_enthalpy_advection_; ++j)
         {
             size_t const neighbor_j = neighbors[j];
             Vector3D r_ij = point - tess.GetMeshPoint(neighbor_j);
@@ -125,7 +126,7 @@ void DiffusionForce::operator()(const Tessellation3D& tess, const vector<Computa
             }
         }
         extensives[i].Erad += dE ;
-        if(extensives[i].Erad < 0 || R2[i] < 0.3 || R2[i] > 1.1)
+        if(extensives[i].Erad < 0 || (!diffusion_.implicit_enthalpy_advection_ && (R2[i] < 0.3 || R2[i] > 1.1)))
         {
             UniversalError eo("Negative energy in DiffusionForce2");
             eo.addEntry("Erad", extensives[i].Erad);
