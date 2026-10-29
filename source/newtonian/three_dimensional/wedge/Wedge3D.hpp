@@ -50,6 +50,11 @@ public:
 
     //! \brief True for a face whose outside neighbor is a wall mirror
     bool IsWallFace(Tessellation3D const& Tess, size_t FaceIndex) const;
+    /*! \brief Speed of the gas or of the mesh point towards the axis, max(0, -v_y, -w_y), for a cell with a vertex on the
+    axis (0 for the others). The axis has no ghost (the walls meet there along a line), so RoundCells3D gets it as its
+    boundary speed (RoundCells3D::SetBoundarySpeed).
+    */
+    double AxisApproachSpeed(Tessellation3D const& Tess, size_t Cell, Vector3D const& Gas, Vector3D const& Mesh) const;
 
     //! \brief Meridional (x,y) area of a local cell, from its wall face; MaxEdge is its longest in-plane edge
     double InPlaneArea(Tessellation3D const& Tess, size_t Cell, double* MaxEdge = nullptr) const;
