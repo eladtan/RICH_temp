@@ -82,6 +82,23 @@ bool WedgeGeometry3D::IsWallFace(Tessellation3D const& Tess, size_t FaceIndex) c
     return Outside >= Tess.GetPointNo() && IsWallMirror(Tess.GetMeshPoint(Outside));
 }
 
+double WedgeGeometry3D::AxisApproachSpeed(Tessellation3D const& Tess, size_t Cell, Vector3D const& Gas, Vector3D const& Mesh) const {
+    double const Speed = std::max({0.0, -Gas.y, -Mesh.y});
+    if (Speed <= 0)
+        return 0;
+    // The wall faces of a cell that reaches the axis have their lifted vertices there at exactly y = 0
+    std::vector<Vector3D> const& Points = Tess.GetFacePoints();
+    for (size_t const FaceIndex : Tess.GetCellFaces(Cell)) {
+        if (!IsWallFace(Tess, FaceIndex))
+            continue;
+        for (size_t const Vertex : Tess.GetPointsInFace(FaceIndex))
+            if (Points[Vertex].y <= 0)
+                return Speed;
+        return 0;
+    }
+    return 0;
+}
+
 double WedgeGeometry3D::InPlaneArea(Tessellation3D const& Tess, size_t Cell, double* MaxEdge) const {
     double WallArea = 0;
     size_t WallFace = std::numeric_limits<size_t>::max();
@@ -128,15 +145,20 @@ double WedgeGeometry3D::FullRevolutionFactor(void) const {
 }
 
 WedgeVoronoi3D::WedgeVoronoi3D(WedgeGeometry3D const& Geometry, bool InPlaneGhostSearch)
+    : WedgeVoronoi3D(Geometry, InPlaneGhostSearch ? WedgeMesh::InPlaneSearch : WedgeMesh::Generic) {}
+
+WedgeVoronoi3D::WedgeVoronoi3D(WedgeGeometry3D const& Geometry, WedgeMesh Mesh)
     : Voronoi3D(Geometry.GetLowerLeft(), Geometry.GetUpperRight()), Geometry_(Geometry) {
     // Constructing from the bounding box keeps MadVoro's MPI Hilbert manager on a non-degenerate box; the wedge
     // faces replace the six box faces and are pushed to the engine at the next build.
     ModifyBoxFaces() = Geometry.BuildBoxFaces();
-    if (InPlaneGhostSearch) {
+    if (Mesh != WedgeMesh::Generic) {
         // Every generator is on z = 0 and is bounded by exactly its own two wall mirrors and its in-plane neighbors
         engine().SetGeneratorPlane(Vector3D(0, 0, 1), 0);
         engine().SetAlwaysMirroredFaces(Geometry.WallFaceIndices());
     }
+    engine().SetPlaneFaces(Mesh == WedgeMesh::PlaneFaces || Mesh == WedgeMesh::PlaneMesh);
+    engine().SetPlaneMesh(Mesh == WedgeMesh::PlaneMesh);
 }
 
 double WedgeVoronoi3D::GetWidth(size_t Index) const {
@@ -212,9 +234,19 @@ void WedgePointMotion3D::ApplyFix(Tessellation3D const& Tess, vector<Computation
             if (Approach < 0)
                 Velocities[i] -= 0.5 * Approach * Direction;
         }
-        // Axis guard. Dt is the first CFL pass; hydro recomputes dt after this fix, so keep a factor 4 margin.
-        if (Dt > 0 && Velocities[i].y * Dt < -0.25 * Point.y)
-            Velocities[i].y = -0.25 * Point.y / Dt;
+        // Axis guard: a generator covers at most a quarter of its height above a floor, a quarter of its cell's CM height,
+        // per step, and does not go down below the floor. Keeping 3/4 of its height per step let gas converging onto the
+        // axis in the wake drive a generator down geometrically to y = 8e-16 under a CM at 7e-4; its wall mirrors then
+        // fell within round-off of the axis, one was taken for an interior point, and the interpolation extrapolated a
+        // slope from (0, 0, 0) (2D_h1_t005_r2, t - t_boost = 143.8 s, 2026-10-23). Dt is the first CFL pass; hydro
+        // recomputes dt after this fix, so keep a factor 4 margin.
+        double const AxisRoom = Point.y - 0.25 * Tess.GetCellCM(i).y;
+        if (Dt > 0 && Velocities[i].y < 0) {
+            if (AxisRoom <= 0)
+                Velocities[i].y = 0;
+            else if (Velocities[i].y * Dt < -0.25 * AxisRoom)
+                Velocities[i].y = -0.25 * AxisRoom / Dt;
+        }
         // Outer-face guard (x = XMin, x = XMax, y = YMax). RoundCells3D only keeps a generator from covering more than 30%
         // of the way to its box mirror per step, so in a steady outflow it creeps onto the face geometrically: in the smoke
         // run one reached 1e-9 of x = XMax, and the near-coincident mirror pair left a 6e-11 face between another cell and

@@ -278,6 +278,20 @@ public:
         rejects at every retry. One rank-0 line per step reports the number of cells and the summed change.
     */
     bool clamp_conservative_negative_ = false;
+    /*! \brief Tracer index that must exceed 0.5 for the implicit Compton term in the matrix ("prevented compton cooling on
+    fluff", 2024: tracer 1 was the fluff flag of those runs); -1 applies it in every cell. The energy update after the solve
+    applies Compton in every cell either way, so a run whose tracer 1 is not such a flag should set -1.
+    */
+    int compton_tracer_gate_ = 1;
+    /*! \brief On by default. When set, the radiation enthalpy flux (the isotropic radiation pressure carried by the gas,
+    (1 - R2) / 2 E v.n per face, upwind, with the lab-frame gas velocity; the hydro step already advects E with the mass) is
+    part of the implicit solve in BuildMatrix, and DiffusionForce does not apply its explicit version. The explicit version
+    is stable only for |v| dt / width below ~1 in the lab frame, which the hydro CFL (|v - w| on a moving mesh) does not
+    enforce: gas at 0.2c moving with the mesh lost more radiation than it held (2D_h1_t005_r2, 2026-10-24). Implicit and
+    upwind, every face's exchange is conservative and the term adds only positive diagonal and negative off-diagonal
+    entries with unchanged column sums (the existing momentum_relativity_term can still break the M-matrix sign pattern).
+    */
+    bool implicit_enthalpy_advection_ = true;
 };
 
 //! D=D0*rho^alpha*T^beta, sigma_planck=sigma_planck0*rho^alpha_planck*T^beta_planck

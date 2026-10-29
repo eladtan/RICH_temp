@@ -25,12 +25,15 @@ struct Plane
         return ScalarProd(v - point, normal);
     }
 
+    // The point where the segment ab meets the plane. t is clamped to the segment: clipFace can call this for an edge whose
+    // ends are both within roundoff of the plane on the same side (classified differently by its tolerance), and then
+    // da / (da - db) is far outside [0, 1] (-1330 for a wedge sliver on its wall, 2026-10-22), a point far off the cell.
     Vector3D intersect(const Vector3D &a, const Vector3D &b) const
     {
         Vector3D ab = b - a;
         double da = signedDistance(a);
         double db = signedDistance(b);
-        double t = da / (da - db + std::numeric_limits<double>::min() * 1e-10);
+        double t = std::clamp(da / (da - db + std::numeric_limits<double>::min() * 1e-10), 0.0, 1.0);
         return a + ab * t;
     }
 
@@ -82,6 +85,12 @@ Vector3D computeCenter(const std::vector<Face> &faces);
 std::pair<Face, Face> clipFace(const Face &face, const Plane &plane, bool print = false);
 
 Face ConvexHullFace(const Face &face);
+
+/*! \brief Snaps every vertex of the polyhedron to the first vertex within tolerance of it, so that the copies of a vertex in
+the faces that share it are identical. Faces built separately carry copies that differ by round-off of the coordinates
+(1.7e-15 at x ~ 2.65 for a wedge cell at the axis), which a clip in a frame shifted close to the cell cannot tell apart.
+*/
+void WeldPolyhedronVertices(std::vector<Face> &polyhedron, double tolerance);
 
 double computeVolume(const std::vector<Face> &faces);
 

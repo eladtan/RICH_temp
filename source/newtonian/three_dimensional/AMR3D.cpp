@@ -1,5 +1,6 @@
 #include "AMR3D.hpp"
 #include <boost/array.hpp>
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <boost/scoped_ptr.hpp>
@@ -28,6 +29,7 @@ namespace
 	// Polyhedron reconstruction accumulates roundoff across many planes. The
 	// remap is rescaled to the exact source volume after this consistency check.
 	const double removal_source_geometry_consistency_limit = 1e-8;
+	// Default of AMR3D::SetRemovalPartitionLimit
 	const double removal_partition_correction_limit = 1e-5;
 
 		const std::vector<Plane> &CachedPolyPlanes(Tessellation3D const& tess, size_t cell_index,
@@ -1850,6 +1852,19 @@ namespace
 				Vertex += Shift;
 	}
 
+	// The faces of a cell carry their own copies of the vertices they share, and the copies differ by round-off of the
+	// absolute coordinates (1.7e-15 at x ~ 2.65, a wedge cell at the axis). After the shift to the source frame the clip's
+	// tolerances follow the small local coordinates, keep the copies apart, and lost a cap face of the clip (removal remap 5%
+	// short, 2026-10-23). Weld them in the absolute frame first.
+	void WeldSourcePolyhedron(std::vector<Face> &Polyhedron)
+	{
+		double Magnitude = 0;
+		for (const Face &CurrentFace : Polyhedron)
+			for (const Vector3D &Vertex : CurrentFace.vertices)
+				Magnitude = std::max({Magnitude, std::abs(Vertex.x), std::abs(Vertex.y), std::abs(Vertex.z)});
+		WeldPolyhedronVertices(Polyhedron, 64 * std::numeric_limits<double>::epsilon() * Magnitude);
+	}
+
 	void CanonicalizePolyhedron(std::vector<Face> &Polyhedron)
 	{
 		for (Face &CurrentFace : Polyhedron)
@@ -1889,7 +1904,7 @@ namespace
 		std::vector<size_t> const& ToRemove, PointsToNeighborsMap const& target_map,
 		AMRExtensiveUpdater3D const& eu, std::vector<ComputationalCell3D> const& cells,
 		EquationOfState const& eos, std::vector<Conserved3D> &extensives,
-		SpatialReconstruction3D &interp)
+		SpatialReconstruction3D &interp, double partition_limit)
 	{
 		struct LocalRemovalContribution
 		{
@@ -1909,6 +1924,7 @@ namespace
 			const Vector3D SourceCenter = oldtess.GetCellCM(Source);
 			const Vector3D ToLocal = -1.0 * SourceCenter;
 			CreatePolyFaces(oldtess, Source, SourcePolyhedron);
+			WeldSourcePolyhedron(SourcePolyhedron);
 			ShiftPolyhedron(SourcePolyhedron, ToLocal);
 			CanonicalizePolyhedron(SourcePolyhedron);
 			const ClipBounds SourceBounds = computeBounds(SourcePolyhedron);
@@ -1952,7 +1968,7 @@ namespace
 				std::max(SourceGeometryVolume, std::numeric_limits<double>::min());
 			if (!(SourceGeometryVolume > 0) || !(OverlapSum > 0) ||
 				GeometryRelativeError > removal_source_geometry_consistency_limit ||
-				PartitionRelativeError > removal_partition_correction_limit)
+				PartitionRelativeError > partition_limit)
 			{
 				UniversalError Error("Removal remap geometry exceeds conservative correction limit");
 				Error.addEntry("Source index", Source);
@@ -1982,7 +1998,7 @@ namespace
 		std::vector<size_t> const& ToRemove, PointsToNeighborsMap const& target_map,
 		AMRExtensiveUpdater3D const& eu, std::vector<ComputationalCell3D> const& cells,
 		EquationOfState const& eos, std::vector<Conserved3D> &extensives,
-		SpatialReconstruction3D &interp, bool distribute_clips)
+		SpatialReconstruction3D &interp, bool distribute_clips, double partition_limit)
 	{
 		int rank = 0;
 		int world_size = 1;
@@ -2004,6 +2020,7 @@ namespace
 			std::vector<double> PackedSourcePolyhedron;
 			const Vector3D SourceCenter = oldtess.GetCellCM(source);
 			CreatePolyFaces(oldtess, source, SourcePolyhedron);
+			WeldSourcePolyhedron(SourcePolyhedron);
 			ShiftPolyhedron(SourcePolyhedron, -1.0 * SourceCenter);
 			CanonicalizePolyhedron(SourcePolyhedron);
 			source_geometry_volumes[source] = computeVolume(SourcePolyhedron);
@@ -2192,12 +2209,15 @@ namespace
 				std::max(source_geometry_volume, std::numeric_limits<double>::min());
 			if (!(source_geometry_volume > 0) || !(overlap_sum > 0) ||
 				geometry_relative_error > removal_source_geometry_consistency_limit ||
-				partition_relative_error > removal_partition_correction_limit)
+				partition_relative_error > partition_limit)
 			{
 				UniversalError eo("MPI removal remap geometry exceeds conservative correction limit");
 				eo.addEntry("Rank", rank);
 				eo.addEntry("Source index", source);
 				eo.addEntry("Source ID", cells[source].ID);
+				eo.addEntry("Source CM x", oldtess.GetCellCM(source).x);
+				eo.addEntry("Source CM y", oldtess.GetCellCM(source).y);
+				eo.addEntry("Source CM z", oldtess.GetCellCM(source).z);
 				eo.addEntry("Source volume", source_volume);
 				eo.addEntry("Source geometry volume", source_geometry_volume);
 				eo.addEntry("Clipped volume", overlap_sum);
@@ -2848,6 +2868,54 @@ namespace
 			}
 		}
 #endif
+
+    // After the refine remap and before the removals: a cell that gave the new cells more than it held (slope extrapolation
+    // over most of its volume, or clips that took more volume than it has) has negative mass here. Reports the first one on
+    // this rank with what tells the two apart: the volume it lost in the new mesh against the mass it lost.
+    void CheckRefineRemap(Tessellation3D const& OldTess, Tessellation3D const& Tess, std::vector<size_t> const& ToRefine,
+        std::vector<size_t> const& ToRemove, std::vector<ComputationalCell3D> const& Cells, std::vector<Conserved3D> const& Extensives)
+    {
+        size_t const NOld = OldTess.GetPointNo();
+        size_t const NSurvivors = Tess.GetPointNo() - ToRefine.size();
+        std::vector<size_t> Neighbors;
+        for (size_t i = 0; i < NOld + ToRefine.size(); ++i) {
+            if (Extensives[i].mass >= 0)
+                continue;
+            bool const IsNew = i >= NOld;
+            size_t const Old = IsNew ? ToRefine[i - NOld] : i;   // a new cell is reported with its parent
+            bool const Removed = !IsNew && std::binary_search(ToRemove.begin(), ToRemove.end(), Old);
+            UniversalError Error("AMR3D: negative mass after the refine remap");
+            Error.addEntry("Rank-local index", static_cast<double>(i));
+            Error.addEntry("Is a new cell (then the rest is its parent)", IsNew ? 1 : 0);
+            Error.addEntry("ID", static_cast<double>(Cells[Old].ID));
+            Vector3D const Cm = OldTess.GetCellCM(Old);
+            Error.addEntry("Old CM x", Cm.x);
+            Error.addEntry("Old CM y", Cm.y);
+            Error.addEntry("Old CM z", Cm.z);
+            Error.addEntry("Old volume", OldTess.GetVolume(Old));
+            Error.addEntry("Old density", Cells[Old].density);
+            Error.addEntry("Old mass", Cells[Old].density * OldTess.GetVolume(Old));
+            Error.addEntry("Mass after refine", Extensives[i].mass);
+            Error.addEntry("Is refined itself", std::binary_search(ToRefine.begin(), ToRefine.end(), Old) ? 1 : 0);
+            Error.addEntry("Is removed", Removed ? 1 : 0);
+            if (IsNew)
+                Error.addEntry("New volume", Tess.GetVolume(NSurvivors + i - NOld));
+            else if (!Removed) {
+                size_t const RemovedBefore = static_cast<size_t>(std::lower_bound(ToRemove.begin(), ToRemove.end(), Old) - ToRemove.begin());
+                Error.addEntry("New volume", Tess.GetVolume(Old - RemovedBefore));
+            }
+            OldTess.GetNeighbors(Old, Neighbors);
+            size_t RefinedNeighbors = 0, RemovedNeighbors = 0;
+            for (size_t const Neighbor : Neighbors) {
+                RefinedNeighbors += std::binary_search(ToRefine.begin(), ToRefine.end(), Neighbor) ? 1 : 0;
+                RemovedNeighbors += std::binary_search(ToRemove.begin(), ToRemove.end(), Neighbor) ? 1 : 0;
+            }
+            Error.addEntry("Neighbors", static_cast<double>(Neighbors.size()));
+            Error.addEntry("Refined neighbors", static_cast<double>(RefinedNeighbors));
+            Error.addEntry("Removed neighbors", static_cast<double>(RemovedNeighbors));
+            throw Error;
+        }
+    }
 }
 
 AMRCellUpdater3D::AMRCellUpdater3D(void) = default;
@@ -3039,7 +3107,8 @@ AMR3D::AMR3D(EquationOfState const& eos,
   cu_(cu), 
   eu_(eu),
   distribute_clips_(distribute_clips),
-  absolute_refine_positions_(absolute_refine_positions)
+  absolute_refine_positions_(absolute_refine_positions),
+  removal_partition_limit_(removal_partition_correction_limit)
 {
 	if (!cu)
 		cu_ = &scu_;
@@ -3138,6 +3207,7 @@ void AMR3D::operator() (Simulation &sim)
 #else
 	LocalRefine(*oldtess, tess, ToRefine.first, cells, eos, *eu_, extensives, interp_);
 #endif
+	CheckRefineRemap(*oldtess, tess, ToRefine.first, ToRemove.first, cells, extensives);
 	// Remove from extensive the remove cells
 	RemoveVector(extensives, ToRemove.first);
 	// Add removed extensives to every geometrically overlapping survivor from
@@ -3145,10 +3215,10 @@ void AMR3D::operator() (Simulation &sim)
 	// retaining a single Voronoi rebuild.
 #ifdef RICH_MPI
 	MPIRemoveWithTargets(*oldtess, tess, ToRemove.first, removal_targets,
-		*eu_, cells, eos_, extensives, interp_, distribute_clips_);
+		*eu_, cells, eos_, extensives, interp_, distribute_clips_, removal_partition_limit_);
 #else
 	LocalRemoveWithTargets(*oldtess, tess, ToRemove.first, removal_targets,
-		*eu_, cells, eos_, extensives, interp_);
+		*eu_, cells, eos_, extensives, interp_, removal_partition_limit_);
 #endif
 	// Recalc cells
 	RemoveVector(cells, ToRemove.first);
@@ -3164,6 +3234,10 @@ void AMR3D::operator() (Simulation &sim)
 		{
 			eo.addEntry("First loop", static_cast<double>(i));
 			eo.addEntry("Norg", static_cast<double>(Norg));
+			eo.addEntry("CM x", tess.GetCellCM(i).x);
+			eo.addEntry("CM y", tess.GetCellCM(i).y);
+			eo.addEntry("CM z", tess.GetCellCM(i).z);
+			eo.addEntry("New volume", tess.GetVolume(i));
 			throw;
 		}
 	}
