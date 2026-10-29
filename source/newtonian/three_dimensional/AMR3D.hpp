@@ -197,6 +197,7 @@ private:
 	AMRExtensiveUpdater3D* eu_;
 	bool distribute_clips_;
 	bool absolute_refine_positions_;
+	double removal_partition_limit_;
 	AMR3D(AMR3D const& amr);
 	AMR3D& operator=(AMR3D const&);
 	
@@ -225,6 +226,12 @@ public:
 
 	//! \brief Enable or disable distributed clip offloading
 	void SetDistributeClips(bool v) { distribute_clips_ = v; }
+
+	/*! \brief Largest relative mismatch between a removed cell's volume and the overlaps that receive it before the removal
+	remap throws (default 1e-5); below it the overlaps are rescaled to conserve exactly. Thin cells next to the axis of a
+	wedge miss by ~1e-5 from clipping tolerances.
+	*/
+	void SetRemovalPartitionLimit(double limit) { removal_partition_limit_ = limit; }
 
 	//! Class destructor
 	~AMR3D();
