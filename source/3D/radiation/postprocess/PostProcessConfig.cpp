@@ -116,11 +116,13 @@ void printLegacyUsage(int rank)
               << "  --adaptive-group-pdf-floor F              Best-effort proposal PDF floor in [0,1]\n"
               << "  --adaptive-group-max-bias F               Max learned/physical proposal ratio (default: 100)\n"
               << "  --adaptive-group-max-weight-correction F  Max p/q before physical fallback (default: 100)\n"
-              << "  --adaptive-group-max-local-stats N        Max local source-cell/group stats before pruning/fallback\n"
+              << "  --adaptive-group-max-local-stats N        Max local source-cell/group stats before pruning/fallback (default: 200000)\n"
               << "  --adaptive-group-stat-min-count N         Min local count retained before MPI exchange\n"
               << "  --adaptive-group-stat-priority-keep F     Retain low-count stats from high-priority bins\n"
               << "  --adaptive-group-fallback-to-integrated-on-overflow\n"
+              << "                                            On overflow, drop the group scores for that generation\n"
               << "  --no-adaptive-group-fallback-to-integrated-on-overflow\n"
+              << "                                            On overflow, keep each rank's top-priority stats (default)\n"
               << "  --adaptive-diagnostics-verbose\n";
 }
 #endif

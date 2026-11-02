@@ -397,7 +397,9 @@ struct PostProcessConfig
             size_t maxLocalStats = 200000;
             size_t statMinCount = 1;
             double statPriorityKeep = 2.0;
-            bool fallbackToIntegratedOnOverflow = true;
+            // false: past maxLocalStats a rank keeps its top-priority stats;
+            // true: every rank drops the group scores for that generation.
+            bool fallbackToIntegratedOnOverflow = false;
         } group;
     } adaptive;
 

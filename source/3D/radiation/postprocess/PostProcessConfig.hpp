@@ -170,7 +170,7 @@ struct Config
     size_t adaptiveGroupMaxLocalStats = 200000;
     size_t adaptiveGroupStatMinCount = 1;
     double adaptiveGroupStatPriorityKeep = 2.0;
-    bool adaptiveGroupFallbackToIntegratedOnOverflow = true;
+    bool adaptiveGroupFallbackToIntegratedOnOverflow = false;
     bool adaptiveDiagnosticsVerbose = false;
 
 };

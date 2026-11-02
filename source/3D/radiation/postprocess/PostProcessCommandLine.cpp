@@ -524,7 +524,7 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddSize(options, "adaptive.group.max-local-stats", "Maximum local source-cell/group statistics.", c.adaptive.group.maxLocalStats);
     AddSize(options, "adaptive.group.stat-min-count", "Minimum local statistic count retained.", c.adaptive.group.statMinCount);
     AddDouble(options, "adaptive.group.stat-priority-keep", "Priority threshold retaining sparse statistics.", c.adaptive.group.statPriorityKeep);
-    AddBool(options, "adaptive.group.fallback-to-integrated-on-overflow", "Fall back to integrated allocation on statistics overflow.", c.adaptive.group.fallbackToIntegratedOnOverflow);
+    AddBool(options, "adaptive.group.fallback-to-integrated-on-overflow", "On statistics overflow, drop the group scores for that generation instead of keeping each rank's top-priority statistics.", c.adaptive.group.fallbackToIntegratedOnOverflow);
 
     AddBool(options, "load-balance.measured", "Use measured first-generation load balancing.", c.loadBalance.measured);
     AddDouble(options, "load-balance.weight-compression", "Measured load-weight compression, or -1 for automatic.", c.loadBalance.weightCompression);

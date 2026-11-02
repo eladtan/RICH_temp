@@ -167,8 +167,17 @@ void AccumulateAdaptiveGroupSourceSummary(
     AdaptiveGroupSourceUpdateSummary& total,
     AdaptiveGroupSourceUpdateSummary const& gen)
 {
+    // fallbackToIntegratedPath of the total means some included generation
+    // fell back; the current generation's state is reported separately.
+    if (gen.fallbackToIntegratedPath) {
+        total.fallbackToIntegratedPath = true;
+        total.fallbackReason = gen.fallbackReason;
+    }
     total.localStatsAfterPrune += gen.localStatsAfterPrune;
     total.localStatsDropped += gen.localStatsDropped;
+    total.maxLocalSourceGroupStats =
+        std::max(total.maxLocalSourceGroupStats, gen.maxLocalSourceGroupStats);
+    total.passedStats += gen.passedStats;
     total.mpiStatsExchanged += gen.mpiStatsExchanged;
     total.maxReceivedShardStats =
         std::max(total.maxReceivedShardStats, gen.maxReceivedShardStats);
@@ -2318,6 +2327,7 @@ PruneLocalSourceGroupStats(
     }
 
     if (pruned.size() > cfg.adaptiveGroupMaxLocalStats) {
+        summary.capExceeded = true;
         if (cfg.adaptiveGroupFallbackToIntegratedOnOverflow) {
             summary.fallbackToIntegratedPath = true;
             summary.fallbackReason = "local_group_stats_overflow";
@@ -2326,7 +2336,11 @@ PruneLocalSourceGroupStats(
             return {};
         }
 
-        std::sort(pruned.begin(), pruned.end(),
+        // Only the top cap are kept and their order does not matter, so a
+        // partition suffices (the full list can run to millions per rank).
+        std::nth_element(pruned.begin(),
+            pruned.begin() + static_cast<std::ptrdiff_t>(cfg.adaptiveGroupMaxLocalStats),
+            pruned.end(),
             [&](auto const& a, auto const& b) {
                 return PreMpiGroupStatScore(a, groupQuality) >
                        PreMpiGroupStatScore(b, groupQuality);
@@ -2429,16 +2443,54 @@ AdaptiveGroupSourceUpdateSummary UpdateAdaptiveSourceGroupScores(
 
     auto prunedLocalStats = PruneLocalSourceGroupStats(
         localGroupStats, groupQuality, cfg, summary);
+
+    // Overflow on any rank, and the share of the escaping energy the kept
+    // stats carry. The totals above are summed before pruning, so the share
+    // is measured against every crossing of this generation.
+    double keptEnergy = 0.0;
+    for (auto const& s : prunedLocalStats)
+        keptEnergy += s.energy;
+    unsigned long long overflowMax[3] = {
+        summary.localStatsInput,
+        summary.capExceeded ? 1ULL : 0ULL,
+        summary.fallbackToIntegratedPath ? 1ULL : 0ULL};
+    double overflowSum[3] = {
+        keptEnergy,
+        static_cast<double>(summary.localStatsInput),
+        static_cast<double>(summary.localStatsAfterPrune)};
 #ifdef RICH_MPI
-    int fallbackLocal = summary.fallbackToIntegratedPath ? 1 : 0;
-    int fallbackGlobal = fallbackLocal;
-    MPI_Allreduce(&fallbackLocal, &fallbackGlobal, 1, MPI_INT, MPI_MAX,
+    MPI_Allreduce(MPI_IN_PLACE, overflowMax, 3, MPI_UNSIGNED_LONG_LONG, MPI_MAX,
                   MPI_COMM_WORLD);
-    if (fallbackGlobal != 0) {
+    MPI_Allreduce(MPI_IN_PLACE, overflowSum, 3, MPI_DOUBLE, MPI_SUM,
+                  MPI_COMM_WORLD);
+#endif
+    summary.maxLocalStatsInput = overflowMax[0];
+    summary.capExceeded = overflowMax[1] != 0;
+    if (overflowMax[2] != 0) {
         summary.fallbackToIntegratedPath = true;
         summary.fallbackReason = "local_group_stats_overflow";
     }
-#endif
+    double totalEnergy = 0.0;
+    for (auto const& row : totalEnergyByOG)
+        for (double e : row)
+            totalEnergy += e;
+    double const statsIn = overflowSum[1];
+    double const statsKept = summary.fallbackToIntegratedPath ? 0.0 : overflowSum[2];
+    summary.totalStatsDropped =
+        static_cast<unsigned long long>(std::max(0.0, statsIn - statsKept));
+    summary.keptEnergyFraction = summary.fallbackToIntegratedPath
+        ? 0.0
+        : (totalEnergy > 0.0 ? std::min(1.0, overflowSum[0] / totalEnergy) : 1.0);
+    if (rank == 0 && summary.capExceeded) {
+        std::cout << "GROUP_ADAPT source_group_overflow: action="
+                  << (summary.fallbackToIntegratedPath ? "fallback" : "truncate")
+                  << " max_local_group_stats=" << summary.maxLocalStatsInput
+                  << " cap=" << cfg.adaptiveGroupMaxLocalStats
+                  << " dropped=" << summary.totalStatsDropped
+                  << " energy_kept_frac=" << summary.keptEnergyFraction
+                  << std::endl;
+    }
+
     if (summary.fallbackToIntegratedPath) {
         groupState.scoreByCellGroup.clear();
         groupState.cellScoreFromGroups.clear();
@@ -2570,6 +2622,7 @@ AdaptiveGroupSourceUpdateSummary UpdateAdaptiveSourceGroupScores(
 void PrintAdaptiveGroupGenerationStats(
     ObserverGroupQualityDiagnostics const& gq,
     RadiationIMC::GroupSamplingDiagnostics const& gsd,
+    AdaptiveGroupSourceUpdateSummary const* groupSource,
     size_t gen,
     int rank)
 {
@@ -2592,6 +2645,12 @@ void PrintAdaptiveGroupGenerationStats(
                   << " fallback=" << gsd.weightCorrectionFallback
                   << " invalid_pdf_cells=" << gsd.invalidPdfFallback
                   << " biased=" << (gsd.estimatorPotentiallyBiased ? 1 : 0);
+    }
+    if (groupSource != nullptr) {
+        std::cout << " group_source="
+                  << (groupSource->fallbackToIntegratedPath ? "fallback"
+                      : groupSource->capExceeded ? "truncated" : "active")
+                  << " max_local_group_stats=" << groupSource->maxLocalStatsInput;
     }
     std::cout << std::endl;
 

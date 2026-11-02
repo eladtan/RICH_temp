@@ -675,14 +675,20 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 std::vector<SphericalObserver::SourceCellEscapeStat>().swap(mgSourceStats);
 
                 AdaptiveGroupSourceUpdateSummary mgGroupUpdate;
-                if (cfg.adaptiveGroupSourceCells && mgGroupQuality.enabled && !burninThisGen) {
+                bool const mgGroupUpdated =
+                    cfg.adaptiveGroupSourceCells && mgGroupQuality.enabled && !burninThisGen;
+                if (mgGroupUpdated) {
                     mgGroupUpdate = UpdateAdaptiveSourceGroupScores(
                         mgGroupSourceStats, mgGroupQuality, cfg,
                         mgGroupSourceState, rank, mpiSize);
-                    if (mgGroupUpdate.fallbackToIntegratedPath) {
-                        mgGroupFallbackToIntegrated = true;
-                        mgGroupFallbackReason = mgGroupUpdate.fallbackReason;
-                    }
+                    // This generation's state, so a later generation (or a
+                    // restart) that fits under the cap stops reporting an
+                    // earlier overflow. Whether any included generation fell
+                    // back is accumulated in mgFinalGroupSourceSummary.
+                    mgGroupFallbackToIntegrated = mgGroupUpdate.fallbackToIntegratedPath;
+                    mgGroupFallbackReason = mgGroupUpdate.fallbackToIntegratedPath
+                        ? mgGroupUpdate.fallbackReason
+                        : std::string("none");
                 }
                 std::vector<SphericalObserver::SourceCellGroupEscapeStat>().swap(mgGroupSourceStats);
 
@@ -706,7 +712,9 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                         "MG", cfg, mgObserverQuality, finalGenerationIndex,
                         mgFinalGenerations, printBlock, rank);
                 }
-                PrintAdaptiveGroupGenerationStats(mgGroupQuality, mgGroupSamplingDiag, gen, rank);
+                PrintAdaptiveGroupGenerationStats(
+                    mgGroupQuality, mgGroupSamplingDiag,
+                    mgGroupUpdated ? &mgGroupUpdate : nullptr, gen, rank);
                 if (rank == 0 && cfg.adaptiveSourceCells)
                     std::cout << "MG learned cells after iteration " << (gen + 1)
                               << ": " << mgAdaptive.scoreByCellID.size() << std::endl;
