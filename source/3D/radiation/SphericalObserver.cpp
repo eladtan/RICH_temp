@@ -2684,6 +2684,9 @@ void SphericalObserver::writeHDF5(std::string const& filename,
             std::vector<std::vector<double>> gSigmaP(numObservers_, std::vector<double>(numGroups_, 0.0));
             std::vector<std::vector<double>> gSnr(numObservers_, std::vector<double>(numGroups_, 0.0));
             std::vector<std::vector<int>> gSnrValid(numObservers_, std::vector<int>(numGroups_, 0));
+            std::vector<std::vector<double>> gDebiased(numObservers_, std::vector<double>(numGroups_, 0.0));
+            std::vector<double> gValidFraction(numGroups_, 0.0);
+            std::vector<double> gSnrGt3Fraction(numGroups_, 0.0);
             for (size_t i = 0; i < numObservers_; ++i) {
                 for (size_t g = 0; g < numGroups_; ++g) {
                     auto const quality = polarization_statistics::ComputeQuality(
@@ -2702,6 +2705,21 @@ void SphericalObserver::writeHDF5(std::string const& filename,
                     gSigmaP[i][g] = quality.sigmaP;
                     gSnr[i][g] = quality.snr;
                     gSnrValid[i][g] = quality.uncertaintyValid ? 1 : 0;
+                    gDebiased[i][g] = quality.uncertaintyValid
+                        ? std::sqrt(std::max(0.0, quality.degree * quality.degree
+                                                      - quality.sigmaP * quality.sigmaP))
+                        : quality.degree;
+                    if (quality.uncertaintyValid) {
+                        gValidFraction[g] += 1.0;
+                        if (quality.snr > 3.0)
+                            gSnrGt3Fraction[g] += 1.0;
+                    }
+                }
+            }
+            if (numObservers_ > 0) {
+                for (size_t g = 0; g < numGroups_; ++g) {
+                    gValidFraction[g] /= static_cast<double>(numObservers_);
+                    gSnrGt3Fraction[g] /= static_cast<double>(numObservers_);
                 }
             }
             writer.WriteElement("/tally/multigroup/group_stokes_Q", groupStokesQ_);
@@ -2718,6 +2736,17 @@ void SphericalObserver::writeHDF5(std::string const& filename,
             writer.WriteElement("/tally/multigroup/group_polarization_sigma_p", gSigmaP);
             writer.WriteElement("/tally/multigroup/group_polarization_snr", gSnr);
             writer.WriteElement("/tally/multigroup/group_polarization_snr_valid", gSnrValid);
+            writer.WriteElement("/tally/multigroup/group_polarization_degree_debiased", gDebiased);
+            writer.WriteElement("/tally/multigroup/group_polarization_snr_valid_fraction", gValidFraction);
+            writer.WriteElement("/tally/multigroup/group_polarization_snr_gt3_fraction", gSnrGt3Fraction);
+            writer.WriteElement("/tally/multigroup/group_polarization_debiased_definition", std::string(
+                "group_polarization_degree_debiased[observer][group] = sqrt(max(0, P^2 - sigma_P^2)) with the "
+                "packet-level sigma_P^2 = sigma_q^2 + sigma_u^2; a bin with fewer than 10 effective packets "
+                "(group_polarization_snr_valid = 0) keeps its raw degree. Per group, over all observers: "
+                "group_polarization_snr_valid_fraction is the fraction with a packet-level uncertainty and "
+                "group_polarization_snr_gt3_fraction the fraction with one and SNR = P / sigma_P > 3. Pure "
+                "noise gives P / sigma_P near 0.89, so where the true degree is below sigma_P the SNR does "
+                "not grow with packets; judge convergence there by sigma_P."));
             std::vector<std::vector<double>> gSigmaGen(numObservers_, std::vector<double>(numGroups_, 0.0));
             std::vector<std::vector<double>> gSnrGen(numObservers_, std::vector<double>(numGroups_, 0.0));
             std::vector<std::vector<double>> gNeffGen(numObservers_, std::vector<double>(numGroups_, 0.0));

@@ -206,6 +206,14 @@ struct AdaptiveGroupSourceUpdateSummary
     size_t passedStats = 0;
     size_t scoreDeltaCells = 0;
     size_t scoreMapCells = 0;
+    // Per generation, the same on every rank (not in the restart file): the
+    // largest local stat count before pruning, whether any rank exceeded
+    // adaptive.group.max-local-stats, the stats dropped over all ranks, and
+    // the share of this generation's escaping energy the kept stats carry.
+    unsigned long long maxLocalStatsInput = 0;
+    bool capExceeded = false;
+    unsigned long long totalStatsDropped = 0;
+    double keptEnergyFraction = 1.0;
 };
 
 
@@ -365,14 +373,23 @@ void PrintAdaptiveIterationSummary(
     bool adaptiveActive,
     bool includeInFinal,
     int rank);
+// groupSource is this generation's group-score update, or nullptr when none
+// ran (burn-in, or the group source layer off).
 void PrintAdaptiveGroupGenerationStats(
     ObserverGroupQualityDiagnostics const& gq,
     RadiationIMC::GroupSamplingDiagnostics const& gsd,
+    AdaptiveGroupSourceUpdateSummary const* groupSource,
     size_t gen,
     int rank);
 void PrintPolarizationSummary(
     std::string const& label,
     SphericalObserver::ObserverQualitySnapshot const& snap,
+    int rank);
+// One line per energy group (multigroup only): sigma_P, debiased degree and
+// SNR medians and the fraction of observers with SNR > 3.
+void PrintGroupPolarizationSummary(
+    std::string const& label,
+    SphericalObserver::ObserverGroupQualitySnapshot const& snap,
     int rank);
 std::unordered_map<size_t, std::array<double, ENERGY_GROUPS_NUM>> BuildGroupScoresForIMC(
     AdaptiveGroupSourceState const& groupState,

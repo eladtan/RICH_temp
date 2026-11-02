@@ -167,8 +167,17 @@ void AccumulateAdaptiveGroupSourceSummary(
     AdaptiveGroupSourceUpdateSummary& total,
     AdaptiveGroupSourceUpdateSummary const& gen)
 {
+    // fallbackToIntegratedPath of the total means some included generation
+    // fell back; the current generation's state is reported separately.
+    if (gen.fallbackToIntegratedPath) {
+        total.fallbackToIntegratedPath = true;
+        total.fallbackReason = gen.fallbackReason;
+    }
     total.localStatsAfterPrune += gen.localStatsAfterPrune;
     total.localStatsDropped += gen.localStatsDropped;
+    total.maxLocalSourceGroupStats =
+        std::max(total.maxLocalSourceGroupStats, gen.maxLocalSourceGroupStats);
+    total.passedStats += gen.passedStats;
     total.mpiStatsExchanged += gen.mpiStatsExchanged;
     total.maxReceivedShardStats =
         std::max(total.maxReceivedShardStats, gen.maxReceivedShardStats);
@@ -2318,6 +2327,7 @@ PruneLocalSourceGroupStats(
     }
 
     if (pruned.size() > cfg.adaptiveGroupMaxLocalStats) {
+        summary.capExceeded = true;
         if (cfg.adaptiveGroupFallbackToIntegratedOnOverflow) {
             summary.fallbackToIntegratedPath = true;
             summary.fallbackReason = "local_group_stats_overflow";
@@ -2326,7 +2336,11 @@ PruneLocalSourceGroupStats(
             return {};
         }
 
-        std::sort(pruned.begin(), pruned.end(),
+        // Only the top cap are kept and their order does not matter, so a
+        // partition suffices (the full list can run to millions per rank).
+        std::nth_element(pruned.begin(),
+            pruned.begin() + static_cast<std::ptrdiff_t>(cfg.adaptiveGroupMaxLocalStats),
+            pruned.end(),
             [&](auto const& a, auto const& b) {
                 return PreMpiGroupStatScore(a, groupQuality) >
                        PreMpiGroupStatScore(b, groupQuality);
@@ -2429,16 +2443,54 @@ AdaptiveGroupSourceUpdateSummary UpdateAdaptiveSourceGroupScores(
 
     auto prunedLocalStats = PruneLocalSourceGroupStats(
         localGroupStats, groupQuality, cfg, summary);
+
+    // Overflow on any rank, and the share of the escaping energy the kept
+    // stats carry. The totals above are summed before pruning, so the share
+    // is measured against every crossing of this generation.
+    double keptEnergy = 0.0;
+    for (auto const& s : prunedLocalStats)
+        keptEnergy += s.energy;
+    unsigned long long overflowMax[3] = {
+        summary.localStatsInput,
+        summary.capExceeded ? 1ULL : 0ULL,
+        summary.fallbackToIntegratedPath ? 1ULL : 0ULL};
+    double overflowSum[3] = {
+        keptEnergy,
+        static_cast<double>(summary.localStatsInput),
+        static_cast<double>(summary.localStatsAfterPrune)};
 #ifdef RICH_MPI
-    int fallbackLocal = summary.fallbackToIntegratedPath ? 1 : 0;
-    int fallbackGlobal = fallbackLocal;
-    MPI_Allreduce(&fallbackLocal, &fallbackGlobal, 1, MPI_INT, MPI_MAX,
+    MPI_Allreduce(MPI_IN_PLACE, overflowMax, 3, MPI_UNSIGNED_LONG_LONG, MPI_MAX,
                   MPI_COMM_WORLD);
-    if (fallbackGlobal != 0) {
+    MPI_Allreduce(MPI_IN_PLACE, overflowSum, 3, MPI_DOUBLE, MPI_SUM,
+                  MPI_COMM_WORLD);
+#endif
+    summary.maxLocalStatsInput = overflowMax[0];
+    summary.capExceeded = overflowMax[1] != 0;
+    if (overflowMax[2] != 0) {
         summary.fallbackToIntegratedPath = true;
         summary.fallbackReason = "local_group_stats_overflow";
     }
-#endif
+    double totalEnergy = 0.0;
+    for (auto const& row : totalEnergyByOG)
+        for (double e : row)
+            totalEnergy += e;
+    double const statsIn = overflowSum[1];
+    double const statsKept = summary.fallbackToIntegratedPath ? 0.0 : overflowSum[2];
+    summary.totalStatsDropped =
+        static_cast<unsigned long long>(std::max(0.0, statsIn - statsKept));
+    summary.keptEnergyFraction = summary.fallbackToIntegratedPath
+        ? 0.0
+        : (totalEnergy > 0.0 ? std::min(1.0, overflowSum[0] / totalEnergy) : 1.0);
+    if (rank == 0 && summary.capExceeded) {
+        std::cout << "GROUP_ADAPT source_group_overflow: action="
+                  << (summary.fallbackToIntegratedPath ? "fallback" : "truncate")
+                  << " max_local_group_stats=" << summary.maxLocalStatsInput
+                  << " cap=" << cfg.adaptiveGroupMaxLocalStats
+                  << " dropped=" << summary.totalStatsDropped
+                  << " energy_kept_frac=" << summary.keptEnergyFraction
+                  << std::endl;
+    }
+
     if (summary.fallbackToIntegratedPath) {
         groupState.scoreByCellGroup.clear();
         groupState.cellScoreFromGroups.clear();
@@ -2570,6 +2622,7 @@ AdaptiveGroupSourceUpdateSummary UpdateAdaptiveSourceGroupScores(
 void PrintAdaptiveGroupGenerationStats(
     ObserverGroupQualityDiagnostics const& gq,
     RadiationIMC::GroupSamplingDiagnostics const& gsd,
+    AdaptiveGroupSourceUpdateSummary const* groupSource,
     size_t gen,
     int rank)
 {
@@ -2592,6 +2645,12 @@ void PrintAdaptiveGroupGenerationStats(
                   << " fallback=" << gsd.weightCorrectionFallback
                   << " invalid_pdf_cells=" << gsd.invalidPdfFallback
                   << " biased=" << (gsd.estimatorPotentiallyBiased ? 1 : 0);
+    }
+    if (groupSource != nullptr) {
+        std::cout << " group_source="
+                  << (groupSource->fallbackToIntegratedPath ? "fallback"
+                      : groupSource->capExceeded ? "truncated" : "active")
+                  << " max_local_group_stats=" << groupSource->maxLocalStatsInput;
     }
     std::cout << std::endl;
 
@@ -3404,6 +3463,69 @@ void PrintPolarizationSummary(
                   << "/" << Percentile(debiasedDegree, 0.95);
     }
     std::cout << std::endl;
+}
+
+void PrintGroupPolarizationSummary(
+    std::string const& label,
+    SphericalObserver::ObserverGroupQualitySnapshot const& snap,
+    int rank)
+{
+    if (rank != 0 || !snap.polarizationEnabled || snap.groupCount < 2)
+        return;
+
+    // Medians over the observers with a packet-level uncertainty, as in
+    // PrintPolarizationSummary. Where the true degree is below sigma_P the
+    // SNR sits near 0.89 however many packets there are, so sigma_P and the
+    // debiased degree are what show convergence there.
+    for (size_t g = 0; g < snap.groupCount; ++g) {
+        std::vector<double> sigmaP;
+        std::vector<double> snr;
+        std::vector<double> debiasedDegree;
+        size_t activeObservers = 0;
+        size_t aboveThree = 0;
+        for (size_t i = 0; i < snap.observerCount; ++i) {
+            if (i >= snap.energy.size() || g >= snap.energy[i].size() ||
+                i >= snap.energyWeightSq.size() || g >= snap.energyWeightSq[i].size() ||
+                i >= snap.stokesQ.size() || g >= snap.stokesQ[i].size() ||
+                i >= snap.stokesU.size() || g >= snap.stokesU[i].size() ||
+                i >= snap.sumKW2Q.size() || g >= snap.sumKW2Q[i].size() ||
+                i >= snap.sumKW2QQ.size() || g >= snap.sumKW2QQ[i].size() ||
+                i >= snap.sumKW2U.size() || g >= snap.sumKW2U[i].size() ||
+                i >= snap.sumKW2UU.size() || g >= snap.sumKW2UU[i].size())
+                continue;
+
+            auto const quality = polarization_statistics::ComputeQuality(
+                snap.energy[i][g], snap.stokesQ[i][g], snap.stokesU[i][g],
+                snap.energyWeightSq[i][g], snap.sumKW2Q[i][g], snap.sumKW2QQ[i][g],
+                snap.sumKW2U[i][g], snap.sumKW2UU[i][g]);
+            if (!quality.intensityValid)
+                continue;
+            ++activeObservers;
+            if (!quality.uncertaintyValid)
+                continue;
+            sigmaP.push_back(quality.sigmaP);
+            snr.push_back(quality.snr);
+            debiasedDegree.push_back(std::sqrt(std::max(
+                0.0, quality.degree * quality.degree - quality.sigmaP * quality.sigmaP)));
+            if (quality.snr > 3.0)
+                ++aboveThree;
+        }
+
+        double const aboveThreeFraction = snap.observerCount > 0
+            ? static_cast<double>(aboveThree) / static_cast<double>(snap.observerCount)
+            : 0.0;
+        std::cout << label << " group polarization summary: group=" << g
+                  << " active_observers=" << activeObservers << "/" << snap.observerCount
+                  << " valid_snr_observers=" << snr.size();
+        if (snr.empty()) {
+            std::cout << " sigma_P_med=n/a debiased_degree_med=n/a snr_med=n/a";
+        } else {
+            std::cout << " sigma_P_med=" << Percentile(sigmaP, 0.50)
+                      << " debiased_degree_med=" << Percentile(debiasedDegree, 0.50)
+                      << " snr_med=" << Percentile(snr, 0.50);
+        }
+        std::cout << " snr_gt3_frac=" << aboveThreeFraction << std::endl;
+    }
 }
 
 bool MeasuredLBDebugMemory()
