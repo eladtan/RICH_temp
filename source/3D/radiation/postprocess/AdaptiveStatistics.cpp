@@ -3465,6 +3465,69 @@ void PrintPolarizationSummary(
     std::cout << std::endl;
 }
 
+void PrintGroupPolarizationSummary(
+    std::string const& label,
+    SphericalObserver::ObserverGroupQualitySnapshot const& snap,
+    int rank)
+{
+    if (rank != 0 || !snap.polarizationEnabled || snap.groupCount < 2)
+        return;
+
+    // Medians over the observers with a packet-level uncertainty, as in
+    // PrintPolarizationSummary. Where the true degree is below sigma_P the
+    // SNR sits near 0.89 however many packets there are, so sigma_P and the
+    // debiased degree are what show convergence there.
+    for (size_t g = 0; g < snap.groupCount; ++g) {
+        std::vector<double> sigmaP;
+        std::vector<double> snr;
+        std::vector<double> debiasedDegree;
+        size_t activeObservers = 0;
+        size_t aboveThree = 0;
+        for (size_t i = 0; i < snap.observerCount; ++i) {
+            if (i >= snap.energy.size() || g >= snap.energy[i].size() ||
+                i >= snap.energyWeightSq.size() || g >= snap.energyWeightSq[i].size() ||
+                i >= snap.stokesQ.size() || g >= snap.stokesQ[i].size() ||
+                i >= snap.stokesU.size() || g >= snap.stokesU[i].size() ||
+                i >= snap.sumKW2Q.size() || g >= snap.sumKW2Q[i].size() ||
+                i >= snap.sumKW2QQ.size() || g >= snap.sumKW2QQ[i].size() ||
+                i >= snap.sumKW2U.size() || g >= snap.sumKW2U[i].size() ||
+                i >= snap.sumKW2UU.size() || g >= snap.sumKW2UU[i].size())
+                continue;
+
+            auto const quality = polarization_statistics::ComputeQuality(
+                snap.energy[i][g], snap.stokesQ[i][g], snap.stokesU[i][g],
+                snap.energyWeightSq[i][g], snap.sumKW2Q[i][g], snap.sumKW2QQ[i][g],
+                snap.sumKW2U[i][g], snap.sumKW2UU[i][g]);
+            if (!quality.intensityValid)
+                continue;
+            ++activeObservers;
+            if (!quality.uncertaintyValid)
+                continue;
+            sigmaP.push_back(quality.sigmaP);
+            snr.push_back(quality.snr);
+            debiasedDegree.push_back(std::sqrt(std::max(
+                0.0, quality.degree * quality.degree - quality.sigmaP * quality.sigmaP)));
+            if (quality.snr > 3.0)
+                ++aboveThree;
+        }
+
+        double const aboveThreeFraction = snap.observerCount > 0
+            ? static_cast<double>(aboveThree) / static_cast<double>(snap.observerCount)
+            : 0.0;
+        std::cout << label << " group polarization summary: group=" << g
+                  << " active_observers=" << activeObservers << "/" << snap.observerCount
+                  << " valid_snr_observers=" << snr.size();
+        if (snr.empty()) {
+            std::cout << " sigma_P_med=n/a debiased_degree_med=n/a snr_med=n/a";
+        } else {
+            std::cout << " sigma_P_med=" << Percentile(sigmaP, 0.50)
+                      << " debiased_degree_med=" << Percentile(debiasedDegree, 0.50)
+                      << " snr_med=" << Percentile(snr, 0.50);
+        }
+        std::cout << " snr_gt3_frac=" << aboveThreeFraction << std::endl;
+    }
+}
+
 bool MeasuredLBDebugMemory()
 {
     static int cached = -1;

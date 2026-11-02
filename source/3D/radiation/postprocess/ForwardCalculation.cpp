@@ -894,6 +894,8 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 if (cfg.polarization) {
                     PrintPolarizationSummary(
                         "MG", observer->getObserverQualitySnapshot(), rank);
+                    PrintGroupPolarizationSummary(
+                        "MG", observer->getObserverGroupQualitySnapshot(), rank);
                     observer->printGenerationPolarizationSummary("MG");
                 }
             }

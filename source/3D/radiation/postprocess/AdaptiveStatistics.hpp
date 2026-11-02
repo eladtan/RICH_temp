@@ -385,6 +385,12 @@ void PrintPolarizationSummary(
     std::string const& label,
     SphericalObserver::ObserverQualitySnapshot const& snap,
     int rank);
+// One line per energy group (multigroup only): sigma_P, debiased degree and
+// SNR medians and the fraction of observers with SNR > 3.
+void PrintGroupPolarizationSummary(
+    std::string const& label,
+    SphericalObserver::ObserverGroupQualitySnapshot const& snap,
+    int rank);
 std::unordered_map<size_t, std::array<double, ENERGY_GROUPS_NUM>> BuildGroupScoresForIMC(
     AdaptiveGroupSourceState const& groupState,
     std::vector<ComputationalCell3D> const& localCells,
