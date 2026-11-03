@@ -5,12 +5,15 @@
 // TODO: make a units namespace used by all the program 
 #include "CMMC/src/units/units.hpp"
 #include "CMMC/src/planck_integral/planck_integral.hpp"
+#include "radiation/compton/CMMCComptonBackend.hpp"
+#include "radiation/compton/ComptonPairThrottle.hpp"
 #include <algorithm>
 #include <cmath>
 #include <iomanip>
 #include <limits>
 #include <numeric>
 #include <sstream>
+#include <stdexcept>
 
 using boost::math::pow;
 
@@ -157,7 +160,8 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
                                          bool const doppler_on,
                                          double const minimum_temperature,
                                          bool const protections_on,
-                                         bool const cooling_time_limiter_on) :
+                                         bool const cooling_time_limiter_on,
+                                         std::size_t const compton_matrix_samples) :
     RadiationDriver(eos,
         zero_cells,
         flux_limiter,
@@ -183,12 +187,8 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
     doppler_on_(doppler_on),
     minimum_temperature_(minimum_temperature),
     displayed_warning_(false),
-    compton_matrix_gen(
-        energy_groups_center_,
-        energy_groups_boundary_,
-        compton_on ? 100000 : 10,
-        true, // num of samples
-        1),
+    compton_matrix_samples_(compton_on ? compton_matrix_samples : 10),
+    compton_tables_(),
     tau(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
     dtau_dUm(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
     S(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)),
@@ -228,14 +228,72 @@ MultigroupDiffusion::MultigroupDiffusion(std::vector<double> const& energy_group
             exit(1);
         }
     }
-    if(compton_on)
-        compton_matrix_gen.set_tables(compton_temperatures());
+}
+
+STORM::ComptonTableBackendCore const& MultigroupDiffusion::compton_tables() const {
+    if (!compton_tables_) {
+        if (compton_mace_tables_ && compton_top_group_term_) {
+            throw std::invalid_argument("MultigroupDiffusion: the Compton top-group term needs CMMC tables");
+        }
+        if (compton_mace_tables_) {
+            compton_tables_ = std::make_unique<STORM::MACEComptonBackendCore>(energy_groups_center,
+                                                                              energy_groups_boundary,
+                                                                              compton_table_options_);
+        } else {
+            auto core = std::make_unique<STORM::CMMCComptonBackendCore>(
+                energy_groups_center, energy_groups_boundary, compton_matrix_samples_, true, 1);
+            core->SetTables(compton_temperatures());
+            compton_tables_ = std::move(core);
+        }
+    }
+    return *compton_tables_;
+}
+
+void MultigroupDiffusion::SetComptonTopGroupTerm(bool const on) {
+    // Checked against the table source when the tables are created (the source may be chosen later).
+    compton_top_group_term_ = on;
+}
+
+double MultigroupDiffusion::compton_table_temperature(double const T) const {
+    // A backend that clamps itself (MACE) gets the physical temperature (zero derivative outside its table);
+    // CMMC needs a temperature inside its table.
+    if (compton_tables().ClampsTemperature())
+        return std::max(T, std::numeric_limits<double>::min());
+    return std::clamp(T, compton_tables().GetMinimumTemperature(), compton_tables().GetMaximumTemperature() * 0.9999);
+}
+
+void MultigroupDiffusion::SetComptonTableSource(bool const mace, std::string const& cache_dir,
+                                                std::size_t const angle_bins, bool const exact_solver,
+                                                int const threads) {
+    compton_mace_tables_ = mace;
+    compton_table_options_.cacheDir = cache_dir;
+    compton_table_options_.angleBins = angle_bins;
+    compton_table_options_.exactSolver = exact_solver;
+    compton_table_options_.threads = threads;
+    compton_tables_.reset();
 }
 
 bool MultigroupDiffusion::prestep(Tessellation3D const& tess,
                                   std::vector<ComputationalCell3D> const& cells) const {
     MEMORY_PROFILE_SCOPE("multigroup diffusion prestep");
     auto const N = tess.GetPointNo();
+    // Every rank runs prestep, so the (collective) MACE table load happens here.
+    if (compton_on_)
+        compton_tables();
+
+    if (compton_on_ && !scattering_in_rosseland_reported_) {
+        scattering_in_rosseland_reported_ = true;
+        int rank = 0;
+#ifdef RICH_MPI
+        MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+        bool const included = scattering_in_rosseland_.value_or(coefficient_calculator.ComptonIncludedInTransport());
+        if (rank == 0)
+            std::cout << "MultigroupDiffusion Compton transport: electron scattering in the opacity's Rosseland = "
+                      << (included ? "yes (nothing added)" : "no (scattering added)")
+                      << (scattering_in_rosseland_ ? " [set by driver]" : " [opacity default]")
+                      << ", in-group scattering " << (compton_in_group_transport_ ? "included" : "excluded") << std::endl;
+    }
 
     resize_group_matrix(sigma_absorption_group, N);
     resize_group_matrix(sigma_scattering_group, N);
@@ -1914,7 +1972,7 @@ void MultigroupDiffusion::calculate_fleck_factor(Tessellation3D const& tess, std
             double const coupling_opacity = std::max(sigma_planck_safe, std::abs(upsilon));
             double const coupling = coupling_opacity * beta * CG::speed_of_light * dt_cgs;
 
-            if (std::abs(upsilon) > 0.1 * sigma_planck_safe && coupling > 0.1) {
+            if (compton_planck_fallback_ && std::abs(upsilon) > 0.1 * sigma_planck_safe && coupling > 0.1) {
                 generate_S_and_dSdUm_matrices(cells[i], i, dt_cgs, ComptonOccupationMode::PlanckFunction);
                 double const upsilon_lte = calculate_Upsilon(cells[i]);
                 upsilon_lte_[i] = upsilon_lte;
@@ -2001,8 +2059,6 @@ void MultigroupDiffusion::calculate_fleck_factor(Tessellation3D const& tess, std
     if (compton_on_) {
         auto const Ntotal = cells.size();
         double constexpr fac_n = pow<3>(units::clight) / (8.0 * M_PI * units::planck_constant);
-        std::vector<std::vector<double>> local_tau(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0));
-        std::vector<std::vector<double>> local_dtau(ENERGY_GROUPS_NUM, std::vector<double>(ENERGY_GROUPS_NUM, 0.0)); // required by get_tau_matrix, unused
         std::vector<double> local_n(ENERGY_GROUPS_NUM, 0.0);
         for (std::size_t i = 0; i < Ntotal; ++i) {
             if (i < N && compton_deferred_[i])
@@ -2017,20 +2073,26 @@ void MultigroupDiffusion::calculate_fleck_factor(Tessellation3D const& tess, std
             double const raw_T = (i < N) ? old_Tm[i] : cell.temperature;
             if (!std::isfinite(raw_T) || raw_T <= 0.0)
                 continue;
-            double const T = std::min(compton_matrix_gen.get_maximum_temperature_grid() * 0.9999,
-                                      raw_T);
+            double const T = compton_table_temperature(raw_T);
             double const rho_cgs = cell.density * mass_scale_ / pow<3>(length_scale_);
-            compton_matrix_gen.get_tau_matrix(T, rho_cgs, 1.0, 1.0, local_tau, local_dtau);
+            STORM::ComptonMatrixData local_tables = compton_tables().GetTauMatrix(T, rho_cgs, 1.0, 1.0);
 
             for (std::size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
                 double const dnu = energy_groups_width[g] / units::planck_constant;
                 double const nu = energy_groups_center[g] / units::planck_constant;
                 double const Eg = cell.Eg[g] * cell.density * mass_scale_ /
                                   (length_scale_ * pow<2>(time_scale_));
-                local_n[g] = std::min(100.0, fac_n * Eg / (pow<3>(nu) * dnu));
+                local_n[g] = fac_n * Eg / (pow<3>(nu) * dnu);
             }
+            std::vector<double> const cap = compton_occupation_cap(cell, raw_T);
+            for (std::size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+                local_n[g] = std::min(cap[g], local_n[g]);
+            // Like the rest of this pass, the throttle uses radiation-field occupations (the owner cell may have
+            // selected another occupation mode).
+            STORM::ApplyComptonPairThrottle(local_n, compton_pair_throttle_occupation_, local_tables.tau,
+                                            local_tables.dtau_dUm);
 
-            fillComptonScatteringRates(i, local_tau, local_n);
+            fillComptonScatteringRates(i, local_tables.tau, local_n);
         }
     }
 }
@@ -2247,6 +2309,41 @@ void MultigroupDiffusion::calculate_planck_absorption_coefficient(Tessellation3D
     }
 }
 
+std::vector<double> MultigroupDiffusion::compton_occupation_cap(ComputationalCell3D const& cell, double const T_e) const {
+    std::vector<double> cap(ENERGY_GROUPS_NUM, 100.0);
+    if (compton_occupation_cap_factor_ > 0.0) {
+        double constexpr fac = pow<3>(units::clight) / (8.0 * M_PI * units::planck_constant);
+        double radiation_density = 0.0;
+        for (std::size_t g = 0; g < ENERGY_GROUPS_NUM; ++g)
+            radiation_density += std::max(0.0, cell.Eg[g]) * cell.density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
+        double const T_rad = std::pow(radiation_density / CG::radiation_constant, 0.25);
+        double const T_cap = std::max(std::isfinite(T_e) ? T_e : 0.0, T_rad);
+        double const kT = CG::boltzmann_constant * T_cap;
+        if (kT > 0.0 && std::isfinite(kT)) {
+            std::vector<double> fraction(ENERGY_GROUPS_NUM, 0.0);
+            double total = 0.0;
+            for (std::size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
+                double const mass = planck_integral::planck_integral(energy_groups_boundary[g] / kT,
+                                                                     energy_groups_boundary[g + 1] / kT);
+                fraction[g] = (mass > 0.0 && std::isfinite(mass)) ? mass : 0.0;
+                total += fraction[g];
+            }
+            double const Um_cap = CG::radiation_constant * pow<4>(T_cap);
+            for (std::size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
+                double const dnu = energy_groups_width[g] / units::planck_constant;
+                double const nu = energy_groups_center[g] / units::planck_constant;
+                double const planck_occupation = total > 0.0 ? fac * Um_cap * fraction[g] / total / (pow<3>(nu) * dnu) : 0.0;
+                if (std::isfinite(planck_occupation))
+                    cap[g] = std::max(100.0, compton_occupation_cap_factor_ * planck_occupation);
+            }
+        }
+    }
+    if (compton_occupation_max_ > 0.0)
+        for (double& value : cap)
+            value = std::min(value, compton_occupation_max_);
+    return cap;
+}
+
 void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D const& cell,
                                                           std::size_t const cell_index,
                                                           double const dt_cgs,
@@ -2258,7 +2355,7 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
 
     double const raw_T = old_Tm[cell_index];
     double const safe_T = (std::isfinite(raw_T) && raw_T > 0.0) ? raw_T : 1e-200;
-    double const T = std::min(compton_matrix_gen.get_maximum_temperature_grid() * 0.9999, safe_T);
+    double const T = compton_table_temperature(safe_T);
     bool const use_planck_lte = occupation_mode == ComptonOccupationMode::PlanckFunction;
     double const T_lte = use_planck_lte ? compute_lte_temperature(cell) : safe_T;
     double const Um_lte = CG::radiation_constant * pow<4>(T_lte);
@@ -2278,6 +2375,7 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
         }
     }
 
+    std::vector<double> const occupation_cap = compton_occupation_cap(cell, safe_T);
     for (std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g) {
         if (occupation_mode == ComptonOccupationMode::RadiationField) {
             double const dnu = energy_groups_width[g]/units::planck_constant;
@@ -2285,13 +2383,13 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
 
             double const Eg = cell.Eg[g] * cell.density * mass_scale_ / (length_scale_ * pow<2>(time_scale_));
 
-            n[g] = std::min(100.0, fac * Eg / (pow<3>(nu)*dnu));
+            n[g] = std::min(occupation_cap[g], fac * Eg / (pow<3>(nu)*dnu));
         } else if (use_planck_lte) {
             double const dnu = energy_groups_width[g]/units::planck_constant;
             double const nu = energy_groups_center[g]/units::planck_constant;
             double const Eg = Um_lte * lte_planck_fraction[g];
             double const occupation = fac * Eg / (pow<3>(nu) * dnu);
-            n[g] = std::clamp(occupation, 0.0, 100.0);
+            n[g] = std::clamp(occupation, 0.0, occupation_cap[g]);
         } else {
             n[g] = 0.0;
         }
@@ -2299,7 +2397,10 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
 
     double const A = 1.0;
     double const Z = 1.0;
-    compton_matrix_gen.get_tau_matrix(T, cell.density*mass_scale_/pow<3>(length_scale_), A, Z, tau, dtau_dUm);
+    STORM::ComptonMatrixData tables = compton_tables().GetTauMatrix(T, cell.density*mass_scale_/pow<3>(length_scale_), A, Z);
+    tau = std::move(tables.tau);
+    dtau_dUm = std::move(tables.dtau_dUm);
+    STORM::ApplyComptonPairThrottle(n, compton_pair_throttle_occupation_, tau, dtau_dUm);
 
     // transform dtau_dT to dtau_dUm
     // double const beta = 1.0 / (4.0*CG::radiation_constant*pow<3>(T));
@@ -2309,7 +2410,8 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
     //     }
     // }
 
-    auto const [up_scattering_last, down_scattering_last] = compton_matrix_gen.get_last_group_upscattering_and_downscattering(T, cell.density*mass_scale_/pow<3>(length_scale_), A, Z);
+    double const up_scattering_last = tables.lastGroupUpScatter;
+    double const down_scattering_last = tables.lastGroupDownScatter;
 
     fill_zero(S);
     fill_zero(dSdUm);
@@ -2317,10 +2419,16 @@ void MultigroupDiffusion::generate_S_and_dSdUm_matrices(ComputationalCell3D cons
     for (std::size_t g=0; g < ENERGY_GROUPS_NUM; ++g) {
         for (std::size_t gt=0; gt < ENERGY_GROUPS_NUM; ++gt) {
             if (g+1 == ENERGY_GROUPS_NUM and gt+1 == ENERGY_GROUPS_NUM) {
+                if (!compton_top_group_term_)
+                    continue;
                 S[g][g] += (up_scattering_last - down_scattering_last)*(1.0 + n[g]);
                 dSdUm[g][g] += dtau_dUm[g][g] * (1.0 + n[g]);
                 continue;
             }
+            // In-group scattering moves no energy between groups; adding and then subtracting tau_gg (1 + n_g)
+            // would only cost precision against the (possibly throttled) out rates.
+            if (g == gt)
+                continue;
 
             // in scattering
             double const in_scattering_factor = energy_groups_center[g] / energy_groups_center[gt] * (1.0 + n[g]);
@@ -2429,7 +2537,7 @@ double MultigroupDiffusion::compute_lte_temperature(ComputationalCell3D const& c
     if (e_tot <= 0.0 || !std::isfinite(e_tot))
         return std::max(cell.temperature, 1e-200);
 
-    double const T_max = compton_matrix_gen.get_maximum_temperature_grid() * 0.9999;
+    double const T_max = compton_tables().GetMaximumTemperature() * 0.9999;
     double const Trad = std::pow(
         std::max(cell.Erad, 0.0) * cell.density * mass_scale_
             / (CG::radiation_constant * length_scale_ * pow<2>(time_scale_)),
@@ -2537,7 +2645,7 @@ double MultigroupDiffusion::calcEffectiveDiffusionCoefficient(
     std::size_t group) const
 {
     double D = coefficient_calculator.CalcDiffusionCoefficient(cell, energy_groups_center[group]);
-    if (compton_on_ && !coefficient_calculator.ComptonIncludedInTransport()) {
+    if (compton_on_ && !scattering_in_rosseland_.value_or(coefficient_calculator.ComptonIncludedInTransport())) {
         if (cell_index < sigma_scattering_group.size() &&
             group < sigma_scattering_group[cell_index].size() &&
             sigma_scattering_group[cell_index][group] > 1e-50)
@@ -2559,6 +2667,9 @@ void MultigroupDiffusion::fillComptonScatteringRates(
         double out = 0.0;
         for (std::size_t gt = 0; gt < ENERGY_GROUPS_NUM; ++gt)
             if (gt != g) out += tau_mat[g][gt] * (1.0 + occ[gt]);
+        // In-group scattering only changes direction; induced scattering into and out of a direction cancel
+        // exactly for it, so it enters without the (1 + n) factor (same rate as the IMC direction-only events).
+        if (compton_in_group_transport_) out += tau_mat[g][g];
         sigma_scattering_group[cell_index][g] = std::max(0.0, out);
     }
 }

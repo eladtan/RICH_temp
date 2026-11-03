@@ -1,12 +1,15 @@
 #ifndef MULTIGROUP_DIFFUSION_HPP
 #define MULTIGROUP_DIFFUSION_HPP
 
+#include <optional>
 #include "RadiationDriver.hpp"
 #include "conj_grad_solve.hpp"
 #include "boost/math/special_functions/pow.hpp"
 #include "MultigroupDiffusionCoefficientCalculator.hpp"
 #include "MultigroupDiffusionBoundaryCalculator.hpp"
-#include "CMMC/src/compton_matrix_mc.hpp"
+#include <memory>
+#include "radiation/compton/ComptonTableBackend.hpp"
+#include "radiation/compton/MACEComptonBackend.hpp"
 
 using namespace CG;
 
@@ -50,7 +53,8 @@ public:
                         bool const doppler_on,
                         double const minimum_temperature = -1,
                         bool const protections_on = true,
-                        bool const cooling_time_limiter_on = false);
+                        bool const cooling_time_limiter_on = false,
+                        std::size_t const compton_matrix_samples = 100000);
 
     /**
      * @brief Destructor for the MultigroupDiffusion class.
@@ -58,6 +62,37 @@ public:
      * Default destructor, does nothing.
      */
     ~MultigroupDiffusion() = default;
+
+    void SetComptonInGroupTransport(bool const on) { compton_in_group_transport_ = on; }
+
+    // Whether the opacity's diffusion coefficient (its Rosseland mean) already contains electron scattering. With
+    // Compton on, true adds nothing to the transport opacity and false adds the scattering opacity, so electron
+    // scattering is counted once. Unless set, the opacity's ComptonIncludedInTransport() decides (false by default).
+    void SetScatteringInRosseland(bool const included) { scattering_in_rosseland_ = included; }
+
+    // Compton kernel consistency with the STORM IMC (plan v10, section 6). The last group's in-group energy-only
+    // term (CMMC up minus down scatter) is off unless enabled. The occupation of group g is capped at
+    // max(100, factor * nP_g(max(Te, Trad))), nP_g the group-integrated Planck occupation; an optional fixed cap
+    // nMax > 0 applies on top.
+    void SetComptonTopGroupTerm(bool const on);
+
+    // Compton table source, mirroring STORM's comptonTableSource: MACE number-weighted effective-rate tables (the
+    // default), read from the cache file in cache_dir ("" = $STORM_COMPTON_TABLE_DIR, else the working directory) or
+    // built with all MPI ranks and cached there; or CMMC (mace = false).  Call before the first step; the tables are
+    // created at the first prestep, which every rank runs.
+    void SetComptonTableSource(bool const mace, std::string const& cache_dir = "", std::size_t const angle_bins = 32,
+                               bool const exact_solver = true, int const threads = 0);
+    void SetComptonOccupationCapFactor(double const factor) { compton_occupation_cap_factor_ = factor; }
+    void SetComptonOccupationMax(double const occupation_max) { compton_occupation_max_ = occupation_max; }
+    // Symmetric pair throttle, mirroring STORM's comptonPairThrottleOccupation (default 100, <= 0 = off): both
+    // directions of a pair scaled by min(1, (1 + occupation) / (1 + max(n_i, n_j))); see
+    // radiation/compton/ComptonPairThrottle.hpp.
+    void SetComptonPairThrottleOccupation(double const occupation) { compton_pair_throttle_occupation_ = occupation; }
+    double GetComptonPairThrottleOccupation() const { return compton_pair_throttle_occupation_; }
+    // Try Planck-function occupations when the radiation-field Upsilon is not the larger one (default on); off keeps
+    // the radiation-field occupations (with the zero-occupation fallback for Upsilon < 0), like STORM's
+    // ComptonInducedMode::RadiationField.
+    void SetComptonPlanckFallback(bool const on) { compton_planck_fallback_ = on; }
 
     double GetLengthScale() const override { return length_scale_; }
 
@@ -105,6 +140,18 @@ public:
 
     mutable std::vector<std::vector<double>> sigma_absorption_group; // absorption opacity per group per cell (1/cm) [group][cell]
     mutable std::vector<std::vector<double>> sigma_scattering_group; // scattering opacity per group per cell (1/cm) [group][cell]
+    // Include scatterings that stay in the group (tau_gg) in the Compton transport opacity of the diffusion
+    // coefficient. Every scattering deflects the photon, so the physical transport opacity is the total
+    // Compton rate; false reproduces the old out-of-group-only coefficient. Only used when the opacity has no
+    // scattering of its own and its diffusion coefficient excludes electron scattering (see SetScatteringInRosseland).
+    bool compton_in_group_transport_ = true;
+    bool compton_top_group_term_ = false;
+    double compton_occupation_cap_factor_ = 10.0;
+    double compton_occupation_max_ = 0.0;
+    double compton_pair_throttle_occupation_ = 100.0;
+    bool compton_planck_fallback_ = true;
+    std::optional<bool> scattering_in_rosseland_;
+    mutable bool scattering_in_rosseland_reported_ = false;
     mutable std::vector<std::vector<double>> planck_integal_group;   // the integral of the Planck distribution on each group per cell [group][cell]
 
     mutable std::vector<double> sigma_absorption_planck; // the Planck weighted absorption opacity per cell (1/cm)
@@ -123,7 +170,14 @@ public:
     bool const doppler_on_; // flag to indicate whether to add the doppler terms to the matrix
     double const minimum_temperature_; // enforce a minimal temperature 
 
-    mutable ComptonMatrixMC compton_matrix_gen; // generator for Compton cross sections matrices
+    std::size_t const compton_matrix_samples_; // CMMC samples per table temperature
+    mutable std::unique_ptr<STORM::ComptonTableBackendCore> compton_tables_; // Compton cross-section tables
+    bool compton_mace_tables_ = true; // table source chosen by SetComptonTableSource
+    STORM::MACEComptonTableOptions compton_table_options_;
+    // The tables of the chosen source, created on first use (the first prestep).
+    STORM::ComptonTableBackendCore const& compton_tables() const;
+    // The temperature passed to the tables: physical for a self-clamping backend, else inside the table.
+    double compton_table_temperature(double T) const;
 
     // used for Compton 
     mutable std::vector<std::vector<double>> tau;
@@ -170,6 +224,9 @@ private:
 
     // helper functions
     void calculate_fleck_factor(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells, double dt_cgs) const;
+
+    // Occupation cap per group (see SetComptonOccupationCapFactor); T_e is the gas temperature in K.
+    std::vector<double> compton_occupation_cap(ComputationalCell3D const& cell, double const T_e) const;
 
     void generate_S_and_dSdUm_matrices(ComputationalCell3D const& cell,
                                        std::size_t const cell_index,
