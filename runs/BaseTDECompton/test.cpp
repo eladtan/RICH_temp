@@ -1250,6 +1250,9 @@ int main(void)
 	matrix_builder.length_scale_ = lscale;
 	matrix_builder.time_scale_ = tscale;
 	matrix_builder.mass_scale_ = mscale;
+    // The STA Rosseland tables (sigma_rossland_*) are absorption + scattering, so Compton must not add electron
+    // scattering to the diffusion coefficient again.
+    matrix_builder.SetScatteringInRosseland(true);
 
 	// std::shared_ptr<MultigroupDiffusionForce> rad_force = std::make_shared<MultigroupDiffusionForce>(matrix_builder, eos);
 	DefaultCellUpdater cu(false, 0, true, 2000, &matrix_builder);
