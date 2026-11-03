@@ -1164,6 +1164,9 @@ int PostProcessIMC::RunPostProcessMain(
         params.withMultigroupOpacity = false;
 #endif
         params.withCompton = cfg.compton;
+        // Post-processing runs no end-of-step correction or settlement, so the Thinned machinery does not apply
+        // and its grids need not be log-uniform: keep the Mean events.
+        params.comptonEventMode = STORM::ComptonEventMode::Mean;
         params.comptonMatrixSamples = cfg.comptonSamples;
         params.comptonAngleDependent = cfg.comptonAngleDependent;
 
