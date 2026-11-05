@@ -102,6 +102,13 @@ RICH throws `UniversalError` with diagnostic context when an error is detected. 
 
 Check stdout for `reportError` output to identify the failing cell and condition.
 
+The report ends with a stack trace symbolized by `addr2line`, which can need
+about 2 GB on a large debug binary.  When many ranks report at once (a
+collective error), only one process per node symbolizes at a time.  The others
+print each frame as `object@0xaddress`, which `addr2line -C -f -e object
+0xaddress` resolves later.  Set `RICH_SYMBOLIZE_STACK=0` to skip symbolization
+altogether.
+
 ### NaN or Inf values in output
 
 **Possible causes:**
