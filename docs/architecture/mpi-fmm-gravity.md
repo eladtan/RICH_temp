@@ -128,6 +128,46 @@ timings.  Set `RICH_FMM_TRACE=1` to print one maximum-rank timing/rebuild line
 per gravity solve; this is intended for short profiling runs rather than normal
 production output.
 
+The trace splits the two most expensive parts of a LET rebuild.
+`let_subscription` is split into
+- `let_sub_build`: local record and wave planning;
+- `let_sub_wave_sync`: the elapsed time of the wave-count `MPI_Allreduce`,
+  which includes waiting for the slowest rank as well as the collective
+  itself;
+- `let_sub_pack`: packing and interaction reordering;
+- `let_sub_exchange`: the subscription exchange;
+- `let_sub_receive`: decoding.
+
+`let_finalize` is split into `let_fin_sort`, `let_fin_sources`,
+`let_fin_geometry` (M2L operator grouping) and `let_fin_p2p`.
+
+Every solve also reports `let_plan_age_solves` and `process_plan_age_solves`
+(solves since each plan was rebuilt) and the remote source counts.  With
+`FmmDistributedOptions::letStalenessDiagnostics`, which is off by default and
+changes no result, it also reports how far a retained compat LET plan has
+drifted from the current geometry:
+- `g_growth_beyond_<eps>_ranks`: ranks where some node's planning radius `g`
+  (the retained radius, or the cube radius when that is zero) grew by more than
+  `1+eps` since the LET rebuild;
+- `root_radius_growth_ratio_max`: rank-root growth since the process rebuild;
+- a bracket on executed M2L/M2P interactions that would fail their build-time
+  admissibility test today. The optimistic count takes a source's radius at
+  build as its current radius, a lower bound that is zero on a rebuild solve.
+  The bound count takes its cube radius, an upper bound.
+
+The optimistic bound relies on the monotone retained envelope, so the option
+requires `persistentLocalTreeTopology`.  The one-tree-per-rank solver alone
+fills these fields.
+
+For comparing two builds of the compat LET planner, set `RICH_FMM_PLAN_DUMP=1`.
+Every LET rebuild then writes `fmm_plan_dump_r<rank>_<n>.bin` to the working
+directory: the source tables, interactions, prepared M2L geometries and their
+use counts, wave and target ranges, the subscription bytes sent, the
+subscriptions received and the remote descriptors kept after pruning.  `<n>`
+counts rebuilds in the process.  Two runs of the same input are compared file
+by file with `cmp`.  This is a debugging aid: it writes one file per rank and
+rebuild.
+
 ## Gravity-owner redistribution
 
 With `spatiallyRedistributeForGravity` (the default), every solve first moves
@@ -240,6 +280,18 @@ heterogeneous-cluster serialization format.
   not limit the result return, the record exchange detects count mismatches and
   over-limit receives, and a domain change with a partial root rebuild (no
   redistribution) moves every rank to the new lattice.
+- `fmm_trace_smoke`: three hydro steps of a small self-gravitating sphere
+  through `FastMultipoleAcceleration3D` with the trace and the LET reuse
+  diagnostics on.  Rank 0's output goes to a log of its own.  The check
+  requires exactly one complete `fmm_solve_trace` record per gravity solve,
+  with the phase and diagnostic fields, at least one LET rebuild, zero
+  optimistic stale counts on rebuild solves, and forward simulation time.
+- `fmm_let_staleness`: the staleness diagnostics on a two-rank geometry whose
+  interaction classes and stale verdicts follow from distances alone (the
+  derivation is in the test source).  Four solves of one retained plan
+  (rebuild, unchanged, three particles moved, one leaf emptied) are checked rank
+  by rank against the expected active, inactive and stale counts, growth flags
+  and root growth ratio, once with one LET wave and once with eight.
 - `fmm_process_pair_coverage`: checks exact ordered-rank-pair coverage for
   separated, overlapping/empty-rank, and irregular process geometries.
 

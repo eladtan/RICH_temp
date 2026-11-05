@@ -32,12 +32,23 @@ PHASE_NAMES = (
     "let_m2l",
     "let_p2p",
     "downward",
+    "redistribution",
+    "let_sub_build",
+    "let_sub_wave_sync",
+    "let_sub_pack",
+    "let_sub_exchange",
+    "let_sub_receive",
+    "let_fin_sort",
+    "let_fin_sources",
+    "let_fin_geometry",
+    "let_fin_p2p",
 )
 TIMING_KEYS = tuple(
     f"{phase}_{suffix}"
     for phase in PHASE_NAMES
     for suffix in ("min", "mean", "max")
-) + ("let_residual_wait_max", "let_payload_lifetime_max")
+) + ("let_residual_wait_max", "let_payload_lifetime_max",
+       "root_radius_growth_ratio_max")
 
 INTEGER_KEYS = (
     "call",
@@ -87,6 +98,18 @@ INTEGER_KEYS = (
     "let_cache_hits_sum",
     "let_cache_misses_sum",
     "let_cache_bypasses_sum",
+    "let_plan_age_solves",
+    "process_plan_age_solves",
+    "let_m2l_sources_sum",
+    "let_p2p_sources_sum",
+    "g_growth_beyond_0_ranks",
+    "g_growth_beyond_0p1_ranks",
+    "g_growth_beyond_0p3_ranks",
+    "g_growth_beyond_0p6_ranks",
+    "let_m2l_optimistic_stale_active_sum",
+    "let_m2l_bound_stale_active_sum",
+    "let_m2p_optimistic_stale_active_sum",
+    "let_m2p_bound_stale_active_sum",
     "process_cache_misses_sum",
     "process_cache_bypasses_sum",
 )

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+
+TEST_ID="fmm_trace_smoke"
+TAGS="mpi"
+CATEGORY="code_correctness"
+BUILD_TEST_NAME="regression_tests/cases/fmm_trace_smoke"
+RUN_DIR_REL="regression_tests/cases/fmm_trace_smoke"
+CHECK_FUNCTION="check_fmm_trace_smoke_case"
+RUN_MODE="slurm"
+SLURM_NTASKS="8"
+SLURM_PARTITION="genoa"
+SLURM_TIME_LIMIT="00:10:00"
+RUN_COMMAND='mpirun -np ${SLURM_NTASKS} "${RICH_BIN}"'
+
+# Three hydro steps of a small self-gravitating sphere through the production
+# FMM adapter, so the per-solve fmm_solve_trace line and its reductions run,
+# with the LET reuse diagnostics on. The check parses the trace, not physics.
+# SLURM only.

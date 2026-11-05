@@ -154,6 +154,21 @@ struct FmmSolveStats
     double letFinalizeSeconds = 0;
     double letSubscriptionSeconds = 0;
     double letPruneCompactSeconds = 0;
+    // let_subscription split: the local record and wave build, the wave-count
+    // Allreduce (time spent waiting for the slowest rank), packing and
+    // reordering, the subscription exchange, and decoding what was received.
+    double letSubscriptionBuildSeconds = 0;
+    double letSubscriptionWaveSyncSeconds = 0;
+    double letSubscriptionPackSeconds = 0;
+    double letSubscriptionExchangeSeconds = 0;
+    double letSubscriptionReceiveSeconds = 0;
+    // let_finalize split: sorting the pending M2L/M2P interactions, building
+    // the multipole source table, grouping M2L geometries, and the P2P tables
+    // plus the cross-kind check.
+    double letFinalizeSortSeconds = 0;
+    double letFinalizeSourceSeconds = 0;
+    double letFinalizeGeometrySeconds = 0;
+    double letFinalizeP2PSeconds = 0;
     double letPayloadLayoutRefreshSeconds = 0;
     double letInvalidationSeconds = 0;
 
@@ -242,6 +257,34 @@ struct FmmSolveStats
     double gravityOwnerMeanCount = 0;
     std::uint64_t gravityResampleCount = 0;
     std::uint64_t gravitySplitterEpoch = 0;
+
+    // Compat LET reuse diagnostics (one tree per rank only; the patch forest
+    // leaves them, and the let_sub_* and let_fin_* timers, at zero).  Plan ages
+    // and source counts are always set; the rest only with
+    // FmmDistributedOptions::letStalenessDiagnostics.  The planning radius g of
+    // a node is the radius the admissibility tests consume: its retained
+    // radius, or the cube radius when that is zero.
+    std::uint64_t letPlanAgeSolves = 0;
+    std::uint64_t processPlanAgeSolves = 0;
+    std::uint64_t letM2LSourceCount = 0;
+    std::uint64_t letP2PSourceCount = 0;
+    // Whether any local node's g exceeds (1 + eps) times its g at the last LET
+    // rebuild, for eps = 0, 0.1, 0.3 and 0.6.  Not measured, so false, on a
+    // solve that rebuilt the LET plan.
+    bool planningRadiusGrowthBeyond[4] = {false, false, false, false};
+    // The local root's g over its g at the last process rebuild; -1 when the
+    // rank holds no tree now or held none then.
+    double rootRadiusGrowthRatio = 0;
+    // Retained M2L and M2P interactions executed this solve (non-empty target
+    // and source) that fail their build-time admissibility test against the
+    // current target geometry.  The source's current radius is unknown
+    // locally: the optimistic count uses its radius at build (zero when it was
+    // empty then), a lower bound, so it is zero on a solve that rebuilt the
+    // plan; the bound count uses its cube radius, an upper bound.
+    std::uint64_t letM2LOptimisticStaleCount = 0;
+    std::uint64_t letM2LBoundStaleCount = 0;
+    std::uint64_t letM2POptimisticStaleCount = 0;
+    std::uint64_t letM2PBoundStaleCount = 0;
 };
 
 #endif // FMM_DIAGNOSTICS_HPP

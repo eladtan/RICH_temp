@@ -62,6 +62,7 @@ public:
                const MPI_Comm& comm,
                bool reuseBuildStorage,
                bool enableLeafM2P,
+               bool stalenessDiagnostics,
                bool compactParticlePayload,
                bool quantizedParticlePayload,
                bool compactMultipolePayload,
@@ -73,6 +74,9 @@ public:
     // build(), so all ranks call the neighborhood collective the same number of
     // times even when only a few of them need more than one wave.
     std::size_t waveCount() const { return waveCount_; }
+    std::size_t m2lSourceCount() const { return m2lSources_.size(); }
+    std::size_t p2pSourceCount() const { return p2pSources_.size(); }
+
 
     void beginExecute(std::size_t wave,
                       const FmmTree& localTree,
@@ -187,6 +191,16 @@ private:
         std::uint64_t sourceKey = 0;
     };
 
+    // Debug: with RICH_FMM_PLAN_DUMP set, write the finished plan of this
+    // build to fmm_plan_dump_r<rank>_<n>.bin in the working directory, so two
+    // builds can be compared with cmp: the source tables, interactions,
+    // prepared M2L geometries and their use counts, wave and target ranges,
+    // the subscription wire bytes sent, the subscriptions received, and the
+    // remote descriptors kept after pruning.  The multipole build radii are
+    // not written (they exist only with letStalenessDiagnostics).
+    void dumpPlanForComparison(
+        const std::unordered_map<int, std::vector<char>>& subscriptionBuffers) const;
+
     static FmmRemoteNodeDescriptor descriptorForNode(const FmmNode& node,
                                                      const FmmPatchKey& patch,
                                                      std::uint64_t topologyEpoch);
@@ -209,6 +223,10 @@ private:
         FmmPatchKeyHash> remoteDescriptors_;
     std::vector<FmmLetM2LInteraction> m2lInteractions_;
     std::vector<M2LSource> m2lSources_;
+    // Each multipole source's descriptor radius when the plan was built (zero
+    // for a source that was empty then).  Filled only with
+    // letStalenessDiagnostics, which is its only reader.
+    std::vector<double> m2lSourceBuildRadius_;
     std::vector<FmmM2LOperatorCache::PreparedGeometry>
         m2lOperatorGeometries_;
     std::vector<std::uint64_t> m2lOperatorGeometryUseCounts_;
@@ -253,6 +271,14 @@ private:
     bool compactParticlePayload_;
     bool quantizedParticlePayload_;
     bool compactMultipolePayload_;
+    // letStalenessDiagnostics: the opening criterion of the last build and
+    // whether finishExecute counts stale retained interactions.
+    double thetaCritical_;
+    bool stalenessDiagnostics_;
+    // Bracket on a multipole source's current radius: its descriptor radius
+    // at build (zero when it was empty then) and its cube radius.
+    double optimisticSourceRadius(std::uint32_t sourceIndex) const;
+    double boundSourceRadius(std::uint32_t sourceIndex) const;
 };
 
 #endif // RICH_MPI

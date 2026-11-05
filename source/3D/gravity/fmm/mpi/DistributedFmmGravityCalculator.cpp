@@ -434,6 +434,12 @@ void progressLetExchange(void* context)
     static_cast<FmmLetPlan*>(context)->progressExecute();
 }
 
+// The radius the LET and process admissibility tests consume for a node.
+double planningRadius(const FmmNode& node)
+{
+    return node.radius > 0.0 ? node.radius : std::sqrt(3.0) * node.halfSize;
+}
+
 std::vector<std::uint64_t> structuralTopologySignature(const FmmTree& tree)
 {
     static_assert(sizeof(std::size_t) <= sizeof(std::uint64_t),
@@ -672,7 +678,10 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
     pendingSplitterResample_(false),
     gravityOwnerImbalanceAtSample_(1.0),
     gravityResampleCount_(0),
-    gravitySplitterEpoch_(0)
+    gravitySplitterEpoch_(0),
+    letPlanAgeSolves_(0),
+    processPlanAgeSolves_(0),
+    processBuildRootRadius_(0.0)
 {
     int initialized = 0;
     MPI_Initialized(&initialized);
@@ -779,6 +788,16 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
         localOptionsError =
             "DistributedFmmGravityCalculator: invalid persistent merge factor";
     }
+    else if(distributedOptions_.letStalenessDiagnostics &&
+            !distributedOptions_.persistentLocalTreeTopology)
+    {
+        // The optimistic stale count takes a source's radius at build as a
+        // lower bound on its radius now, which holds only for the monotone
+        // retained envelope of a persistent tree.
+        localOptionsOk = false;
+        localOptionsError =
+            "DistributedFmmGravityCalculator: letStalenessDiagnostics requires persistentLocalTreeTopology";
+    }
     else if(distributedOptions_.minimumPatchLevel < 0 ||
             distributedOptions_.minimumPatchLevel > FMM_MAX_TREE_DEPTH ||
             distributedOptions_.maximumPatchLevel < 0 ||
@@ -869,7 +888,7 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
     MPI_Allreduce(localDoubleOptions, maximumDoubleOptions, doubleOptionCount,
                   MPI_DOUBLE, MPI_MAX, comm_);
 
-    constexpr int integerOptionCount = 33;
+    constexpr int integerOptionCount = 35;
     const unsigned long long localIntegerOptions[] = {
         static_cast<unsigned long long>(options_.expansionOrder),
         static_cast<unsigned long long>(options_.leafCapacity),
@@ -912,7 +931,10 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
         distributedOptions_.compactLetMultipolePayload ? 1ull : 0ull,
         distributedOptions_.quantizedLetParticlePayload ? 1ull : 0ull,
         static_cast<unsigned long long>(
-            distributedOptions_.maxGravityOwnerBytesPerRank)};
+            distributedOptions_.maxGravityOwnerBytesPerRank),
+        distributedOptions_.letStalenessDiagnostics ? 1ull : 0ull,
+        // The trace's reductions are collective, so every rank must agree.
+        distributedOptions_.emitSolveTrace ? 1ull : 0ull};
     static_assert(sizeof(localIntegerOptions) / sizeof(localIntegerOptions[0]) ==
                       integerOptionCount,
                   "every integer option must take part in the consistency check");
@@ -1197,6 +1219,53 @@ FmmPatchRootDescriptor DistributedFmmGravityCalculator::localRootDescriptor() co
     return result;
 }
 
+void DistributedFmmGravityCalculator::updateLetReuseDiagnostics(
+    bool letRebuilt,
+    bool processRebuilt)
+{
+    const std::vector<FmmNode>& nodes = localTree_.nodes();
+    if(processRebuilt)
+        processBuildRootRadius_ = nodes.empty() ? 0.0 : planningRadius(nodes[0]);
+    // -1 marks a rank that holds no tree now or held none at the last
+    // process rebuild.
+    stats_.rootRadiusGrowthRatio =
+        nodes.empty() || !(processBuildRootRadius_ > 0.0) ? -1.0 :
+        planningRadius(nodes[0]) / processBuildRootRadius_;
+    // On a rebuild the growth flags stay false: nothing is retained yet, so
+    // they read "not measured" (let_plan_age_solves is then 0).
+    if(letRebuilt)
+    {
+        letBuildPlanningRadius_.resize(nodes.size());
+        for(std::size_t i = 0; i < nodes.size(); ++i)
+            letBuildPlanningRadius_[i] = planningRadius(nodes[i]);
+        return;
+    }
+    // Without a LET rebuild the local tree keeps its structure, and with it
+    // the node order the retained plan indexes.
+    // Throwing would leave the other ranks waiting in the next collective, so
+    // abort with a printed reason, as for the leaf half-size bound.
+    if(nodes.size() != letBuildPlanningRadius_.size())
+    {
+        std::fprintf(stderr,
+            "DistributedFmmGravityCalculator abort on MPI rank %d: local tree "
+            "changed under a retained LET plan\nnodes=%zu snapshot=%zu\n",
+            rank_, nodes.size(), letBuildPlanningRadius_.size());
+        std::fflush(stderr);
+        MPI_Abort(comm_, 95);
+        // Should MPI_Abort return, never read past the snapshot below.
+        throw UniversalError("DistributedFmmGravityCalculator: local tree "
+                             "changed under a retained LET plan");
+    }
+    const double growthLimits[4] = {1.0, 1.1, 1.3, 1.6};
+    for(std::size_t i = 0; i < nodes.size(); ++i)
+    {
+        const double current = planningRadius(nodes[i]);
+        for(int e = 0; e < 4; ++e)
+            if(current > growthLimits[e] * letBuildPlanningRadius_[i])
+                stats_.planningRadiusGrowthBeyond[e] = true;
+    }
+}
+
 void DistributedFmmGravityCalculator::rebuildTopology(
     const std::vector<Vector3D>& positions,
     bool rebuildProcessTopology)
@@ -1276,6 +1345,7 @@ void DistributedFmmGravityCalculator::rebuildTopology(
                    options_.thetaCritical, topologyEpoch_, comm_,
                    !rebuildProcessTopology,
                    distributedOptions_.enableLeafM2P,
+                   distributedOptions_.letStalenessDiagnostics,
                    distributedOptions_.compactLetParticlePayload,
                    distributedOptions_.quantizedLetParticlePayload,
                    distributedOptions_.compactLetMultipolePayload,
@@ -2001,6 +2071,17 @@ void DistributedFmmGravityCalculator::solveOwned(
         stats_.processCommunicatorsReused = true;
         stats_.letCommunicatorReused = true;
     }
+    letPlanAgeSolves_ = letTopologyChanged ? 0 : letPlanAgeSolves_ + 1;
+    processPlanAgeSolves_ = processTopologyChanged ? 0 :
+        processPlanAgeSolves_ + 1;
+    stats_.letPlanAgeSolves = letPlanAgeSolves_;
+    stats_.processPlanAgeSolves = processPlanAgeSolves_;
+    stats_.letM2LSourceCount = letPlan_.m2lSourceCount();
+    stats_.letP2PSourceCount = letPlan_.p2pSourceCount();
+    // The stale-interaction counts are taken later, in FmmLetPlan's
+    // finishExecute, where only interactions that actually run are seen.
+    if(distributedOptions_.letStalenessDiagnostics)
+        updateLetReuseDiagnostics(letTopologyChanged, processTopologyChanged);
 
     stats_.topologyEpoch = topologyEpoch_;
     stats_.topologyRebuildCount = topologyRebuildCount_;
@@ -2395,7 +2476,8 @@ void DistributedFmmGravityCalculator::solveOwned(
         lastLocalOccupancySignature_.capacity() * sizeof(std::uint64_t) +
         processTree_.bytesOwned() + processPlan_.bytesOwned() +
         stats_.letPlanBytes + processUpExchange_.bytesOwned() +
-        processM2LExchange_.bytesOwned() + processDownExchange_.bytesOwned();
+        processM2LExchange_.bytesOwned() + processDownExchange_.bytesOwned() +
+        letBuildPlanningRadius_.capacity() * sizeof(double);
 
     if(options_.validateFinite)
     {

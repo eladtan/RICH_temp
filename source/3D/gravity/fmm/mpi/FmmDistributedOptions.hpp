@@ -168,6 +168,12 @@ struct FmmDistributedOptions
     // Must lie in [record size, INT_MAX].
     std::size_t maxGravityOwnerBytesPerRank =
         static_cast<std::size_t>(std::numeric_limits<int>::max());
+
+    // Diagnostics only, no effect on results: on every solve, measure how far
+    // the retained compat LET plan has drifted from the current geometry (see
+    // the LET reuse fields of FmmSolveStats).  Costs O(nodes + retained
+    // interactions + M2P target particles) per solve.
+    bool letStalenessDiagnostics = false;
 };
 
 #endif // FMM_DISTRIBUTED_OPTIONS_HPP
