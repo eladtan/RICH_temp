@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 #include "3D/gravity/fmm/FmmConfig.hpp"
 
@@ -150,6 +151,23 @@ struct FmmDistributedOptions
     // an unbounded MPI_Allgatherv allocation.
     std::size_t maxReplicatedDescriptorBytes =
         static_cast<std::size_t>(256) * 1024 * 1024;
+
+    // Gravity-owner splitters are kept across warm solves, because resampling
+    // every step invalidates the LET plan.  They are always resampled when the
+    // solve domain changes, since the redistribution keys are normalised by it.
+    // They are also resampled when the worst gravity owner would receive more
+    // than this multiple of the worst owner count the latest sampling produced
+    // (at least the mean), so slow drift of particles relative to the frozen
+    // splitters cannot build up.  Must be > 1.
+    double gravityOwnerImbalanceTrigger = 8.0;
+
+    // Most gravity-owner records one rank may receive, in bytes.  Exceeding it
+    // after a resample is a collective error naming the worst owner.  The
+    // default is the MPI int limit of the exchange itself; it bounds only the
+    // temporary gravity ownership, not the return of results to hydro owners.
+    // Must lie in [record size, INT_MAX].
+    std::size_t maxGravityOwnerBytesPerRank =
+        static_cast<std::size_t>(std::numeric_limits<int>::max());
 };
 
 #endif // FMM_DISTRIBUTED_OPTIONS_HPP

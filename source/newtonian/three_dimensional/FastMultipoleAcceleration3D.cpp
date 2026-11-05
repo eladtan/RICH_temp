@@ -414,7 +414,17 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
          << " let_cache_misses_sum=" << globalCacheCounts[4]
          << " let_cache_bypasses_sum=" << globalCacheCounts[5]
          << " process_cache_misses_sum=" << globalCacheCounts[6]
-         << " process_cache_bypasses_sum=" << globalCacheCounts[7];
+         << " process_cache_bypasses_sum=" << globalCacheCounts[7]
+         << " domain_changed=" << (stats.gravityDomainChanged ? 1 : 0)
+         << " gravity_splitters_resampled="
+         << (stats.gravitySplittersResampled ? 1 : 0)
+         << " gravity_resamples=" << stats.gravityResampleCount
+         << " gravity_splitter_epoch=" << stats.gravitySplitterEpoch
+         << " gravity_particles=" << stats.gravityParticleTotal
+         << " gravity_owner_max=" << stats.gravityOwnerMaxCount
+         << " gravity_owner_max_before="
+         << stats.gravityOwnerMaxCountBeforeResample
+         << " gravity_owner_mean=" << stats.gravityOwnerMeanCount;
     std::cout << line.str() << std::endl;
 }
 }

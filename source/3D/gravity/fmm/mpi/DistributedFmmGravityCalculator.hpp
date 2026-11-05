@@ -113,6 +113,17 @@ private:
     std::uint64_t processTopologyRebuildCount_;
     std::uint64_t letTopologyRebuildCount_;
     std::uint64_t solveCount_;
+    // Domain of the previous solve, identical on every rank. A change marks the
+    // gravity-owner splitters stale and forces every local root onto the new
+    // dyadic lattice.
+    double lastSolveDomain_[6];
+    bool domainInitialized_;
+    bool pendingSplitterResample_;
+    // Worst owner over mean right after the latest sampling: the imbalance
+    // the trigger compares against, as a ratio so it follows the particle count.
+    double gravityOwnerImbalanceAtSample_;
+    std::uint64_t gravityResampleCount_;
+    std::uint64_t gravitySplitterEpoch_;
 
     FmmTree localTree_;
     FmmM2LOperatorCache operatorCache_;

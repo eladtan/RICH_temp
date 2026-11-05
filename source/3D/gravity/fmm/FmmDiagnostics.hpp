@@ -229,6 +229,19 @@ struct FmmSolveStats
     double letP2PSeconds = 0;
     double letM2PSeconds = 0;
     double localTraversalSeconds = 0;
+
+    // Gravity-owner redistribution (spatiallyRedistributeForGravity), global
+    // values.  The "before" count is the partition the splitters in force at
+    // the start of the solve would have produced; it differs from the used
+    // partition only when this solve resampled them.
+    bool gravityDomainChanged = false;
+    bool gravitySplittersResampled = false;
+    std::uint64_t gravityParticleTotal = 0;
+    std::uint64_t gravityOwnerMaxCount = 0;
+    std::uint64_t gravityOwnerMaxCountBeforeResample = 0;
+    double gravityOwnerMeanCount = 0;
+    std::uint64_t gravityResampleCount = 0;
+    std::uint64_t gravitySplitterEpoch = 0;
 };
 
 #endif // FMM_DIAGNOSTICS_HPP

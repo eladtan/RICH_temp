@@ -128,6 +128,37 @@ timings.  Set `RICH_FMM_TRACE=1` to print one maximum-rank timing/rebuild line
 per gravity solve; this is intended for short profiling runs rather than normal
 production output.
 
+## Gravity-owner redistribution
+
+With `spatiallyRedistributeForGravity` (the default), every solve first moves
+the particles to temporary gravity owners: each particle gets a level-20 Hilbert
+key of its position normalised by the solve domain, and `size - 1` splitters
+cut the key range into one interval per rank.  The splitters are sampled once
+and then frozen, because resampling every step moves interval boundaries and
+invalidates the LET plan.
+
+Frozen splitters are only valid while the keys mean the same thing.  They are
+resampled when:
+
+- the solve domain changes (for example `UpdateBox`), since that moves every
+  key.  The same change also forces every rank to rebuild its local root,
+  because a retained root keeps the old domain's dyadic lattice while a rebuilt
+  one snaps to the new lattice, and the LET plan rejects that mix;
+- the worst owner would receive more than `gravityOwnerImbalanceTrigger`
+  (default 8) times the owner count the last sampling produced (at least the
+  mean), which catches drift of the particles relative to the splitters;
+- the worst owner would exceed `maxGravityOwnerBytesPerRank` (default and
+  maximum `INT_MAX`, the MPI count limit of the exchange).
+
+The load is measured with a reduce-scatter of the per-destination counts before
+the exchange, so a stale partition is visible before it is replaced.  Rank 0
+prints one `FMM gravity splitters sampled` line on the first solve and one
+`FMM gravity splitters resampled: reason=...` line per resample, with the worst
+owner before and after.  An owner still over its byte limit after resampling is
+a collective `UniversalError` naming the worst rank, its count and the mean.
+The record exchange also checks each rank's received count against the
+prediction, which separates corrupted counts from a genuine imbalance.
+
 ## Identity
 
 Application `ComputationalCell3D::ID` values are transported only for
@@ -202,6 +233,13 @@ heterogeneous-cluster serialization format.
   deliberately duplicates application cell IDs, includes an empty rank for
   three or more ranks, checks mass-only plan reuse, forces a topology rebuild,
   and verifies mismatched domain bounds are rejected collectively.
+- `fmm_gravity_mpi_redistribute`: gravity-owner redistribution lifecycle on a
+  clustered body set: a domain change and a drift each collapse the stale
+  partition and trigger exactly one resample, the warm result matches a fresh
+  calculator, the owner byte limit fails collectively with diagnostics but does
+  not limit the result return, the record exchange detects count mismatches and
+  over-limit receives, and a domain change with a partial root rebuild (no
+  redistribution) moves every rank to the new lattice.
 - `fmm_process_pair_coverage`: checks exact ordered-rank-pair coverage for
   separated, overlapping/empty-rank, and irregular process geometries.
 

@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+
+TEST_ID="fmm_gravity_mpi_redistribute"
+TAGS="mpi"
+CATEGORY="code_correctness"
+BUILD_TEST_NAME="regression_tests/cases/fmm_gravity_mpi_redistribute"
+RUN_DIR_REL="regression_tests/cases/fmm_gravity_mpi_redistribute"
+CHECK_FUNCTION="check_fmm_gravity_mpi_redistribute_case"
+RUN_MODE="slurm"
+SLURM_NTASKS="7"
+SLURM_PARTITION="bigrun"
+SLURM_EXCLUSIVE="1"
+SLURM_TIME_LIMIT="00:10:00"
+RUN_COMMAND='mpirun -np ${SLURM_NTASKS} "${RICH_BIN}"'
+
+# Gravity-owner redistribution lifecycle: domain change, drift, owner byte
+# limit, record-exchange count checks and the stale-lattice root rebuild.
+# Seven ranks with the last one empty, as in fmm_gravity_mpi. SLURM only.

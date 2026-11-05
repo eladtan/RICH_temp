@@ -1932,6 +1932,51 @@ check_fmm_gravity_mpi_guard_case() {
     return 0
 }
 
+check_fmm_gravity_mpi_redistribute_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_gravity_mpi_redistribute_metrics.txt"
+    local ok_count
+    local failed
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_gravity_mpi_redistribute_metrics.txt"
+        return 1
+    fi
+
+    # Every assertion is written as "<name>_ok 0|1"; a scenario that throws
+    # early omits its dependent assertions, so require the full set.
+    ok_count=$(awk '$1 ~ /_ok$/ { n++ } END { print n + 0 }' "$metrics_file")
+    failed=$(awk '$1 ~ /_ok$/ && $2 != 1 { printf "%s%s", sep, $1; sep = "," }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse FMM redistribution metrics"
+        return 1
+    fi
+    if [[ -n "$failed" ]]; then
+        set_check_msg "FMM redistribution assertions failed: ${failed}"
+        return 1
+    fi
+    if [[ "$ok_count" -ne 29 ]]; then
+        set_check_msg "FMM redistribution metrics hold ${ok_count} assertions, expected 29"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "FMM redistribution test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "FMM redistribution check passed (${ok_count} assertions)"
+    return 0
+}
+
 check_fmm_gravity_mpi_case() {
     local run_dir="$1"
     local run_start_epoch="$2"
