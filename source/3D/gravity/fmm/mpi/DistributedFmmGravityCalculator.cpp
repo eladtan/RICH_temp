@@ -889,7 +889,7 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
     MPI_Allreduce(localDoubleOptions, maximumDoubleOptions, doubleOptionCount,
                   MPI_DOUBLE, MPI_MAX, comm_);
 
-    constexpr int integerOptionCount = 37;
+    constexpr int integerOptionCount = 38;
     const unsigned long long localIntegerOptions[] = {
         static_cast<unsigned long long>(options_.expansionOrder),
         static_cast<unsigned long long>(options_.leafCapacity),
@@ -938,7 +938,9 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
         distributedOptions_.emitSolveTrace ? 1ull : 0ull,
         distributedOptions_.globallyBalanceProcessNodeOwners ? 1ull : 0ull,
         static_cast<unsigned long long>(
-            distributedOptions_.letParticlePayloadSlackCount)};
+            distributedOptions_.letParticlePayloadSlackCount),
+        static_cast<unsigned long long>(
+            distributedOptions_.directErrorSamplePeriod)};
     static_assert(sizeof(localIntegerOptions) / sizeof(localIntegerOptions[0]) ==
                       integerOptionCount,
                   "every integer option must take part in the consistency check");
@@ -1738,8 +1740,13 @@ void DistributedFmmGravityCalculator::solve(
                    acceleration, positiveKernelPotential);
     stats_.gravityDomainChanged = domainChanged;
 
+    const std::uint64_t firstSample = distributedOptions_.directErrorSampleSolve;
+    const std::uint64_t samplePeriod =
+        distributedOptions_.directErrorSamplePeriod;
     if(distributedOptions_.directErrorSampleCount != 0 &&
-       solveCount_ == distributedOptions_.directErrorSampleSolve)
+       (solveCount_ == firstSample ||
+        (samplePeriod != 0 && solveCount_ > firstSample &&
+         (solveCount_ - firstSample) % samplePeriod == 0)))
         sampleDirectAccelerationError(positions, masses, acceleration);
 }
 

@@ -174,6 +174,11 @@ struct FmmDistributedOptions
     // the LET reuse fields of FmmSolveStats).  Costs O(nodes + retained
     // interactions + M2P target particles) per solve.
     bool letStalenessDiagnostics = false;
+
+    // With directErrorSampleCount, repeat the direct-sum comparison every
+    // directErrorSamplePeriod solves after the selected solve
+    // (directErrorSampleSolve); zero disables repetition.
+    std::uint64_t directErrorSamplePeriod = 0;
 };
 
 #endif // FMM_DISTRIBUTED_OPTIONS_HPP

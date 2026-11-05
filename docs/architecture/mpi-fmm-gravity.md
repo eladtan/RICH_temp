@@ -159,6 +159,16 @@ The optimistic bound relies on the monotone retained envelope, so the option
 requires `persistentLocalTreeTopology`.  The one-tree-per-rank solver alone
 fills these fields.
 
+To measure the force error of a run, set `directErrorSampleCount`.  On solve
+`directErrorSampleSolve` (one-based), a deterministic sample of target
+accelerations is compared with a distributed direct sum over all particles.
+The comparison repeats every `directErrorSamplePeriod` solves after the
+selected solve; zero disables repetition.  Rank 0 prints one
+`fmm_tde_sample_error` line per sampled solve with the mean, RMS, median, p90,
+p99 and maximum relative errors.  Each sampled solve costs every rank about
+samples times its local particle count in pair evaluations; the accelerations
+are unchanged.
+
 For comparing two builds of the compat LET planner, set `RICH_FMM_PLAN_DUMP=1`.
 Every LET rebuild then writes `fmm_plan_dump_r<rank>_<n>.bin` to the working
 directory: the source tables, interactions, prepared M2L geometries and their
