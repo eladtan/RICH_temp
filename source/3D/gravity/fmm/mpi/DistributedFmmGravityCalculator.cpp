@@ -870,14 +870,15 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
             localOptionsError);
     }
 
-    constexpr int doubleOptionCount = 7;
+    constexpr int doubleOptionCount = 8;
     const double localDoubleOptions[] = {
         options_.thetaCritical, distributedOptions_.rootSlackFactor,
         distributedOptions_.persistentLeafSplitFactor,
         distributedOptions_.persistentLeafMergeFactor,
         options_.maxLeafHalfSize,
         distributedOptions_.hilbertGravityVolumeWeight,
-        distributedOptions_.gravityOwnerImbalanceTrigger};
+        distributedOptions_.gravityOwnerImbalanceTrigger,
+        distributedOptions_.letParticlePayloadSlackFactor};
     static_assert(sizeof(localDoubleOptions) / sizeof(localDoubleOptions[0]) ==
                       doubleOptionCount,
                   "every double option must take part in the consistency check");
@@ -888,7 +889,7 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
     MPI_Allreduce(localDoubleOptions, maximumDoubleOptions, doubleOptionCount,
                   MPI_DOUBLE, MPI_MAX, comm_);
 
-    constexpr int integerOptionCount = 35;
+    constexpr int integerOptionCount = 37;
     const unsigned long long localIntegerOptions[] = {
         static_cast<unsigned long long>(options_.expansionOrder),
         static_cast<unsigned long long>(options_.leafCapacity),
@@ -934,7 +935,10 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
             distributedOptions_.maxGravityOwnerBytesPerRank),
         distributedOptions_.letStalenessDiagnostics ? 1ull : 0ull,
         // The trace's reductions are collective, so every rank must agree.
-        distributedOptions_.emitSolveTrace ? 1ull : 0ull};
+        distributedOptions_.emitSolveTrace ? 1ull : 0ull,
+        distributedOptions_.globallyBalanceProcessNodeOwners ? 1ull : 0ull,
+        static_cast<unsigned long long>(
+            distributedOptions_.letParticlePayloadSlackCount)};
     static_assert(sizeof(localIntegerOptions) / sizeof(localIntegerOptions[0]) ==
                       integerOptionCount,
                   "every integer option must take part in the consistency check");
