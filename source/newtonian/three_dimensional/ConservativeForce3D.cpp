@@ -1,4 +1,5 @@
 #include "ConservativeForce3D.hpp"
+#include <algorithm>
 #ifdef RICH_MPI
 #include <mpi.h>
 #endif
@@ -71,13 +72,31 @@ void ConservativeForce3D::operator()(const Tessellation3D& tess,const vector<Com
 			int mpi_id;
 		}max_data;
 		max_data.mpi_id = rank;
-		max_data.val = dt_;
-#ifdef RICH_MPI   
+		// A rank without cells has none to report, so it enters the reduction
+		// below every rank with cells; the reduced value is unchanged.
+		max_data.val = N > 0 ? dt_ : -1.0;
+	// The limiting cell, reported by rank 0 so that the line cannot split
+	// another line rank 0 is writing.
+	struct
+	{
+		unsigned long long id;
+		double width;
+		double radius;
+		double acceleration;
+		int valid;
+	} report = {0, 0.0, 0.0, 0.0, 0};
+#ifdef RICH_MPI
     MPI_Allreduce(MPI_IN_PLACE, &max_data, 1, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
-    dt_ = max_data.val;
+    dt_ = std::max(max_data.val, 0.0);
 #endif
-    if(rank == max_data.mpi_id)
-        std::cout<<"ConservativeForce3D dt ID "<<cells[loc].ID<<" width "<< tess.GetWidth(loc)<<" r "<<fastabs(tess.GetMeshPoint(loc))<<" acc "<<fastabs(acc_buf_[loc])<<" next dt "<<dt_<<std::endl;
+    if(rank == max_data.mpi_id && N > 0)
+        report = {static_cast<unsigned long long>(cells[loc].ID), tess.GetWidth(loc),
+            fastabs(tess.GetMeshPoint(loc)), fastabs(acc_buf_[loc]), 1};
+#ifdef RICH_MPI
+    MPI_Bcast(&report, sizeof(report), MPI_BYTE, max_data.mpi_id, MPI_COMM_WORLD);
+#endif
+    if(rank == 0 && report.valid != 0)
+        std::cout<<"ConservativeForce3D dt ID "<<report.id<<" width "<<report.width<<" r "<<report.radius<<" acc "<<report.acceleration<<" next dt "<<dt_<<std::endl;
 
 }
 
