@@ -75,6 +75,13 @@ struct IMCGroupSamplingDiagnostics
     static constexpr size_t kBirthKinds = 4;
     std::array<std::array<size_t, ENERGY_GROUPS_NUM>, kBirthKinds> birthCount{};
     std::array<std::array<double, ENERGY_GROUPS_NUM>, kBirthKinds> birthEnergy{};
+    // Completed-birth weight histogram (decades from 1e30 erg; bin 0 below,
+    // last bin above 1e52) and maximum, by birth class (kind + 4 x
+    // exploration-fallback cell).
+    static constexpr size_t kBirthClasses = 8;
+    static constexpr size_t kBirthWeightBins = 24;
+    std::array<std::array<size_t, kBirthWeightBins>, kBirthClasses> birthWeightHistogram{};
+    std::array<double, kBirthClasses> birthWeightMax{};
 };
 
 struct IMCPostProcessControl

@@ -17,6 +17,15 @@
 //   source without restart.in-place, and one from a file that is not HDF5
 //   must all be refused.
 //
+// Per-group weight window (transport.split-per-group, restart schema 3):
+//   GA fresh with the window, GR0 = GA + 0, GX = GA + 3, GY1 = GA + 1,
+//   GY = GY1 + 2. GR0 reproduces GA, GY matches GX (serial), and the saved
+//   split state and spectrum generation follow the chain. Refused: the mode
+//   on from a file written with it off, from a schema-2 file (accepted with
+//   the mode off), and from files whose split state is missing, lists a cell
+//   twice, has an inconsistent spectrum validity, or has NaN or infinite
+//   group boundaries. The grey pass never stores split state.
+//
 // The chain comparison needs one rank: there is no load balancing, so the
 // decomposition and hence the random streams of X and Y are the same. Under
 // MPI it is skipped and the rest (round trip, counts, statistics, refusals,
@@ -32,10 +41,12 @@
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <limits>
 #include <memory>
 #include <random>
 #include <sstream>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <unordered_map>
 #include <vector>
@@ -369,6 +380,58 @@ std::string ReadString(std::string const& file, std::string const& path)
 // Runs a post-process that must be refused. Its error report (with a stack
 // trace) goes to a buffer, so the expected failure does not look like a crash
 // to the regression framework's fatal-marker scan.
+// Rank 0: copies `from` to `to` and applies `edit` to the copy (HDF5).
+void EditedCopy(std::string const& from, std::string const& to,
+                std::function<void(H5::H5File&)> const& edit)
+{
+    std::filesystem::copy_file(from, to, std::filesystem::copy_options::overwrite_existing);
+    H5::H5File f(to, H5F_ACC_RDWR);
+    edit(f);
+}
+
+void DeleteLink(H5::H5File& f, std::string const& path)
+{
+    if (H5Lexists(f.getId(), path.c_str(), H5P_DEFAULT) > 0)
+        H5Ldelete(f.getId(), path.c_str(), H5P_DEFAULT);
+}
+
+void WriteInt(H5::H5File& f, std::string const& path, int value)
+{
+    H5::DataSet d = f.openDataSet(path);
+    d.write(&value, H5::PredType::NATIVE_INT);
+}
+
+// Rank 0: rewrites a 1-D double dataset (and its _shape) with new values.
+void RewriteDoubles(H5::H5File& f, std::string const& path, std::vector<double> const& values)
+{
+    DeleteLink(f, path);
+    DeleteLink(f, path + "_shape");
+    hsize_t const dims[1] = {values.size()};
+    H5::DataSet d = f.createDataSet(path, H5::PredType::NATIVE_DOUBLE, H5::DataSpace(1, dims));
+    if (!values.empty())
+        d.write(values.data(), H5::PredType::NATIVE_DOUBLE);
+    unsigned long long const n = values.size();
+    hsize_t const one[1] = {1};
+    H5::DataSet shape = f.createDataSet(path + "_shape", H5::PredType::NATIVE_ULLONG, H5::DataSpace(1, one));
+    shape.write(&n, H5::PredType::NATIVE_ULLONG);
+}
+
+std::vector<double> ReadDoublesAt(H5::H5File& f, std::string const& path)
+{
+    H5::DataSet d = f.openDataSet(path);
+    hssize_t const n = d.getSpace().getSimpleExtentNpoints();
+    std::vector<double> values(static_cast<size_t>(n));
+    if (n > 0)
+        d.read(values.data(), H5::PredType::NATIVE_DOUBLE);
+    return values;
+}
+
+bool LinkExists(std::string const& file, std::string const& path)
+{
+    H5::H5File f(file, H5F_ACC_RDONLY);
+    return H5Lexists(f.getId(), path.c_str(), H5P_DEFAULT) > 0;
+}
+
 bool ThrowsContaining(std::function<void()> const& work, std::string const& needle,
                       std::string& message)
 {
@@ -529,6 +592,234 @@ int main(int argc, char* argv[])
         check(overwriteRefused &&
               (gRank != 0 || ReadScalar<size_t>(ResultFile("A"), "/restart/segment_count") == 1),
               "restart onto its own source without restart.in-place is refused");
+
+        // ---- per-group weight window: restart schema 3 ----
+        PostProcessIMC::PostProcessScenario group = scenario;
+        group.defaults.transport.splitObserverFraction = 1e-4;
+        group.defaults.transport.splitEscapeReference = 0.1;
+        group.defaults.transport.splitPerGroup = true;
+        group.defaults.transport.splitGroupScale = 0.2;
+        Run(group, "GA", 3, "");
+        Run(group, "GR0", 0, ResultFile("GA"));
+        Run(group, "GX", 3, ResultFile("GA"));
+        Run(group, "GY1", 1, ResultFile("GA"));
+        Run(group, "GY", 2, ResultFile("GY1"));
+        std::string const split = "/passes/forward/learned_state/weight_split";
+        if (gRank == 0) {
+            check(LinkExists(ResultFile("GA"), split + "/present") &&
+                  ReadScalar<double>(ResultFile("GA"), split + "/present") == 1.0 &&
+                  !LinkExists(ResultFile("GA"), "/passes/grey/learned_state/weight_split") &&
+                  !LinkExists(ResultFile("A"), split),
+                  "split state saved for the multigroup pass with the per-group window only");
+            size_t const cellsSaved = ReadScalar<size_t>(ResultFile("GA"), split + "/count");
+            metrics << "group_window_split_cells " << cellsSaved << "\n";
+            check(cellsSaved > 0 && ReadScalar<double>(ResultFile("GA"), split + "/spectrum_valid") == 1.0,
+                  "split state holds cells (" + std::to_string(cellsSaved) + ") and a valid spectrum");
+            TreeComparison const groupRoundTrip = CompareFiles(ResultFile("GA"), ResultFile("GR0"), stateGroups);
+            metrics << "group_round_trip_datasets " << groupRoundTrip.datasets
+                    << " mismatches " << groupRoundTrip.structuralMismatches
+                    << " max_rel " << groupRoundTrip.maxRelativeDifference << "\n";
+            check(groupRoundTrip.datasets > 50 && groupRoundTrip.structuralMismatches == 0 &&
+                  groupRoundTrip.maxRelativeDifference == 0.0,
+                  "per-group window: restart adding 0 generations reproduces GA (worst: " + groupRoundTrip.worst + ")");
+            double const genA = ReadScalar<double>(ResultFile("GA"), split + "/spectrum_generation");
+            double const genX = ReadScalar<double>(ResultFile("GX"), split + "/spectrum_generation");
+            double const genY = ReadScalar<double>(ResultFile("GY"), split + "/spectrum_generation");
+            metrics << "group_spectrum_generation " << genA << " " << genX << " " << genY << "\n";
+            check(genX == genA + 3.0 && genY == genX,
+                  "spectrum generation is absolute along the restart chain");
+            if (gSize == 1) {
+                // The multigroup pass carries its split state, so the chain
+                // reproduces one longer restart. The transport sink residual
+                // is a cancellation (round-off) quantity: it is compared with
+                // the emitted energy instead. The grey pass keeps the scalar
+                // window, whose statistics restart from zero on every restart
+                // (unchanged behaviour), so its chain is not reproduced.
+                std::vector<std::string> forwardGroups;
+                for (char const* g : {"/tally", "/learned_state", "/load_balance"})
+                    forwardGroups.push_back(std::string("/passes/forward") + g);
+                std::vector<std::string> forwardStatistics;
+                {
+                    H5::H5File f(ResultFile("GX"), H5F_ACC_RDONLY);
+                    H5::Group stats = f.openGroup("/passes/forward/statistics_state");
+                    for (hsize_t i = 0; i < stats.getNumObjs(); ++i) {
+                        std::string const name = stats.getObjnameByIdx(i);
+                        if (name != "transport_sink_residual" &&
+                            stats.getObjTypeByIdx(i) == H5G_GROUP)
+                            forwardStatistics.push_back("/passes/forward/statistics_state/" + name);
+                    }
+                }
+                forwardGroups.insert(forwardGroups.end(), forwardStatistics.begin(), forwardStatistics.end());
+                TreeComparison const groupChain = CompareFiles(ResultFile("GX"), ResultFile("GY"), forwardGroups);
+                double const residualX = ReadScalar<double>(ResultFile("GX"),
+                    "/passes/forward/statistics_state/transport_sink_residual/sum");
+                double const residualY = ReadScalar<double>(ResultFile("GY"),
+                    "/passes/forward/statistics_state/transport_sink_residual/sum");
+                double const emitted = ReadScalar<double>(ResultFile("GX"),
+                    "/passes/forward/statistics_state/emitted_energy/sum");
+                metrics << "group_chain_datasets " << groupChain.datasets
+                        << " mismatches " << groupChain.structuralMismatches
+                        << " max_rel " << groupChain.maxRelativeDifference
+                        << " residual_difference_over_emitted " << std::abs(residualX - residualY) / emitted << "\n";
+                check(groupChain.datasets > 30 && groupChain.structuralMismatches == 0 &&
+                      groupChain.maxRelativeDifference < 1e-9 &&
+                      std::abs(residualX - residualY) <= 1e-12 * emitted,
+                      "per-group window: multigroup restart chain GA+1+2 matches GA+3 (worst: " +
+                      groupChain.worst + ")");
+            }
+            // Edited copies for the refusals.
+            EditedCopy(ResultFile("A"), kOutputDir + "/A_schema2.h5", [](H5::H5File& f) {
+                WriteInt(f, "/restart/schema_version", 2);
+                for (char const* option : {"split-per-group", "split-group-scale", "split-group-floor",
+                                           "split-importance-floor", "seed-offset"})
+                    DeleteLink(f, std::string("/config/transport/") + option);
+            });
+            EditedCopy(ResultFile("GA"), kOutputDir + "/GA_nosplit.h5", [&](H5::H5File& f) {
+                DeleteLink(f, split);
+            });
+            EditedCopy(ResultFile("GA"), kOutputDir + "/GA_duplicate.h5", [&](H5::H5File& f) {
+                H5::DataSet d = f.openDataSet(split + "/cell_ids");
+                hssize_t const n = d.getSpace().getSimpleExtentNpoints();
+                std::vector<unsigned long long> ids(static_cast<size_t>(n));
+                d.read(ids.data(), H5::PredType::NATIVE_ULLONG);
+                if (ids.size() >= 2)
+                    ids[1] = ids[0];
+                d.write(ids.data(), H5::PredType::NATIVE_ULLONG);
+            });
+            EditedCopy(ResultFile("GA"), kOutputDir + "/GA_validity.h5", [&](H5::H5File& f) {
+                WriteInt(f, split + "/spectrum_valid", 0);
+            });
+            // Schema-2 labels on files whose configuration matches: only the
+            // explicit schema rule can refuse them.
+            EditedCopy(ResultFile("GA"), kOutputDir + "/GA_schema2.h5", [](H5::H5File& f) {
+                WriteInt(f, "/restart/schema_version", 2);
+            });
+            EditedCopy(ResultFile("A"), kOutputDir + "/A_schema2_config.h5", [](H5::H5File& f) {
+                WriteInt(f, "/restart/schema_version", 2);
+            });
+            EditedCopy(ResultFile("GA"), kOutputDir + "/GA_unknown.h5", [&](H5::H5File& f) {
+                H5::DataSet d = f.openDataSet(split + "/cell_ids");
+                hssize_t const n = d.getSpace().getSimpleExtentNpoints();
+                std::vector<unsigned long long> ids(static_cast<size_t>(n));
+                d.read(ids.data(), H5::PredType::NATIVE_ULLONG);
+                ids.back() = 999999999ULL;   // not a cell of the snapshot
+                d.write(ids.data(), H5::PredType::NATIVE_ULLONG);
+            });
+            EditedCopy(ResultFile("GA"), kOutputDir + "/GA_length.h5", [&](H5::H5File& f) {
+                std::vector<double> escaped = ReadDoublesAt(f, split + "/escaped");
+                escaped.pop_back();
+                RewriteDoubles(f, split + "/escaped", escaped);
+            });
+            EditedCopy(ResultFile("GA"), kOutputDir + "/GA_negative.h5", [&](H5::H5File& f) {
+                std::vector<double> escaped = ReadDoublesAt(f, split + "/escaped");
+                escaped[0] = -1.0;
+                RewriteDoubles(f, split + "/escaped", escaped);
+            });
+            EditedCopy(ResultFile("GA"), kOutputDir + "/GA_nan.h5", [&](H5::H5File& f) {
+                std::vector<double> emitted = ReadDoublesAt(f, split + "/emitted");
+                emitted[0] = std::nan("");
+                RewriteDoubles(f, split + "/emitted", emitted);
+            });
+            EditedCopy(ResultFile("GA"), kOutputDir + "/GA_flag.h5", [&](H5::H5File& f) {
+                WriteInt(f, split + "/accumulated", 0);
+            });
+            EditedCopy(ResultFile("GA"), kOutputDir + "/GA_boolean.h5", [&](H5::H5File& f) {
+                WriteInt(f, split + "/present", 2);
+            });
+            EditedCopy(ResultFile("GA"), kOutputDir + "/GA_bands.h5", [&](H5::H5File& f) {
+                std::vector<double> bounds = ReadDoublesAt(f, split + "/group_boundaries");
+                bounds[1] *= 1.01;
+                RewriteDoubles(f, split + "/group_boundaries", bounds);
+            });
+            // Non-finite boundaries: the tolerance comparison alone accepted
+            // both (NaN compares false; |inf - b| > tol * inf is inf > inf).
+            EditedCopy(ResultFile("GA"), kOutputDir + "/GA_bands_nan.h5", [&](H5::H5File& f) {
+                std::vector<double> bounds = ReadDoublesAt(f, split + "/group_boundaries");
+                bounds[1] = std::nan("");
+                RewriteDoubles(f, split + "/group_boundaries", bounds);
+            });
+            EditedCopy(ResultFile("GA"), kOutputDir + "/GA_bands_inf.h5", [&](H5::H5File& f) {
+                std::vector<double> bounds = ReadDoublesAt(f, split + "/group_boundaries");
+                bounds.back() = std::numeric_limits<double>::infinity();
+                RewriteDoubles(f, split + "/group_boundaries", bounds);
+            });
+        }
+#ifdef RICH_MPI
+        MPI_Barrier(MPI_COMM_WORLD);
+#endif
+        bool const fromOffRefused = ThrowsContaining([&]() {
+            Run(group, "G_from_off", 1, ResultFile("A"));
+        }, "transport.split-per-group", message);
+        check(fromOffRefused, "per-group window from a file written without it is refused: " + message);
+        bool legacyAccepted = true;
+        try {
+            Run(scenario, "L2", 1, kOutputDir + "/A_schema2.h5");
+        } catch (...) {
+            legacyAccepted = false;
+        }
+        check(legacyAccepted, "a schema-2 file is still continued with the per-group window off");
+        bool const legacyRefused = ThrowsContaining([&]() {
+            Run(group, "L2_on", 1, kOutputDir + "/A_schema2.h5");
+        }, "transport.split-per-group", message);
+        check(legacyRefused, "a schema-2 file is refused with the per-group window on: " + message);
+        bool const missingRefused = ThrowsContaining([&]() {
+            Run(group, "G_missing", 1, kOutputDir + "/GA_nosplit.h5");
+        }, "weight-split state", message);
+        check(missingRefused, "missing split state is refused: " + message);
+        bool const duplicateRefused = ThrowsContaining([&]() {
+            Run(group, "G_duplicate", 1, kOutputDir + "/GA_duplicate.h5");
+        }, "twice", message);
+        check(duplicateRefused, "split state listing a cell twice is refused: " + message);
+        bool const validityRefused = ThrowsContaining([&]() {
+            Run(group, "G_validity", 1, kOutputDir + "/GA_validity.h5");
+        }, "marked invalid", message);
+        check(validityRefused, "inconsistent spectrum validity is refused: " + message);
+        metrics << "group_window_refusals " << fromOffRefused << legacyRefused << missingRefused
+                << duplicateRefused << validityRefused << " legacy_accepted " << legacyAccepted << "\n";
+        for (auto const& [file, needle, what] : {
+                 std::make_tuple(std::string("GA_unknown"), std::string("not in this mesh"), std::string("unknown cell ID")),
+                 std::make_tuple(std::string("GA_length"), std::string("size mismatch"), std::string("truncated escaped energies")),
+                 std::make_tuple(std::string("GA_negative"), std::string("negative or non-finite"), std::string("negative energy")),
+                 std::make_tuple(std::string("GA_nan"), std::string("negative or non-finite"), std::string("non-finite energy")),
+                 std::make_tuple(std::string("GA_flag"), std::string("not accumulated"), std::string("accumulators without the accumulated flag")),
+                 std::make_tuple(std::string("GA_boolean"), std::string("non-boolean"), std::string("non-boolean flag")),
+                 std::make_tuple(std::string("GA_bands"), std::string("group boundaries"), std::string("other group boundaries")),
+                 std::make_tuple(std::string("GA_bands_nan"), std::string("NaN, negative or non-increasing group boundaries"), std::string("a NaN group boundary")),
+                 std::make_tuple(std::string("GA_bands_inf"), std::string("other group boundaries"), std::string("an infinite group boundary"))}) {
+            bool const refused = ThrowsContaining([&]() {
+                Run(group, "G_" + file, 1, kOutputDir + "/" + file + ".h5");
+            }, needle, message);
+            metrics << "split_state_refused " << file << " " << refused << "\n";
+            check(refused, "split state with " + what + " is refused on every rank: " + message);
+        }
+        bool const schemaRuleGroup = ThrowsContaining([&]() {
+            Run(group, "G_schema2", 1, kOutputDir + "/GA_schema2.h5");
+        }, "(schema 2)", message);
+        check(schemaRuleGroup, "schema 2 with the per-group window is refused by the schema rule: " + message);
+        bool const schemaRuleSeed = ThrowsContaining([&]() {
+            PostProcessIMC::PostProcessScenario seeded = scenario;
+            seeded.defaults.transport.seedOffset = 1;
+            Run(seeded, "S_schema2", 1, kOutputDir + "/A_schema2_config.h5");
+        }, "(schema 2)", message);
+        check(schemaRuleSeed, "schema 2 with a seed offset is refused by the schema rule: " + message);
+        // A continuation with other ramp settings (not must-match) keeps the
+        // absolute generation index of the file.
+        PostProcessIMC::PostProcessScenario groupRamp = group;
+        groupRamp.defaults.adaptive.source.learnedPhotonsPerCellBudget = 80;
+        groupRamp.defaults.volumeEmission.learnedPhotonsPerCellBudget = 80;
+        Run(groupRamp, "GZ", 2, ResultFile("GA"));
+        if (gRank == 0) {
+            double const nextA = ReadScalar<double>(ResultFile("GA"), "/passes/forward/learned_state/next_generation_id");
+            double const nextX = ReadScalar<double>(ResultFile("GX"), "/passes/forward/learned_state/next_generation_id");
+            double const nextZ = ReadScalar<double>(ResultFile("GZ"), "/passes/forward/learned_state/next_generation_id");
+            double const genZ = ReadScalar<double>(ResultFile("GZ"), split + "/spectrum_generation");
+            double const greyA = ReadScalar<double>(ResultFile("GA"), "/passes/grey/learned_state/next_generation_id");
+            double const greyZ = ReadScalar<double>(ResultFile("GZ"), "/passes/grey/learned_state/next_generation_id");
+            metrics << "generation_origin GA " << nextA << " GX " << nextX << " GZ " << nextZ
+                    << " GZ_spectrum " << genZ << " grey GA " << greyA << " GZ " << greyZ << "\n";
+            check(nextX == nextA + 3.0 && nextZ == nextA + 2.0 && genZ == nextA + 1.0 && greyZ == greyA + 2.0,
+                  "absolute generation indices continue from the file whatever the continuation's ramp settings");
+        }
     } catch (UniversalError const& eo) {
         reportError(eo, std::cerr);
         pass = false;

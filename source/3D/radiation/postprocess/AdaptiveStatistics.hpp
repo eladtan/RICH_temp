@@ -267,8 +267,10 @@ void PrintSourcePhotonDistribution(
     std::string const& label,
     SourcePhotonDistribution const& dist,
     int rank);
+// birthWeights: also reduce the birth-weight histograms and maxima (filled
+// only with packet provenance on; must be the same on every rank).
 RadiationIMC::GroupSamplingDiagnostics ReduceGroupSamplingDiagnostics(
-    RadiationIMC::GroupSamplingDiagnostics local);
+    RadiationIMC::GroupSamplingDiagnostics local, bool birthWeights);
 void AccumulateGroupSamplingDiagnostics(
     RadiationIMC::GroupSamplingDiagnostics& total,
     RadiationIMC::GroupSamplingDiagnostics const& gen);
@@ -344,6 +346,9 @@ void PrintAdaptiveGenerationStats(
     bool adaptiveActive,
     int rank);
 void CollectGlobalObserverGroupQuality(SphericalObserver::ObserverGroupQualitySnapshot& snap);
+// Reduces only snap.energy (the same all-reduce as above); every other field
+// of snap stays rank-local.
+void CollectGlobalObserverGroupEnergy(SphericalObserver::ObserverGroupQualitySnapshot& snap);
 ObserverGroupQualityDiagnostics BuildObserverGroupQualityDiagnosticsFromSnapshot(
     SphericalObserver::ObserverGroupQualitySnapshot const& snap,
     Config const& cfg,
@@ -517,6 +522,12 @@ bool ResetPeakRSS();
 // MPI_COMM_WORLD.
 void ReportGenerationMemory(char const* pass, size_t generation, int rank, int mpiSize,
                             Tessellation3D const& tess, size_t censusParticles);
+
+// Rank 0: BIRTH_WEIGHT_FINAL lines (completed-birth weight histogram and
+// maximum per birth class over the final generations).
+void PrintBirthWeightSummary(std::string const& label,
+                             RadiationIMC::GroupSamplingDiagnostics const& finalTotals,
+                             int rank);
 
 } // namespace imc_postprocess_tde
 

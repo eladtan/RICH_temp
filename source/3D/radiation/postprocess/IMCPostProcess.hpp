@@ -169,6 +169,19 @@ struct PostProcessConfig
         size_t splitMaxCopies = 1000;
         // At most this many copies per rank per generation (288 B each).
         size_t splitCopyBudget = 1000000;
+        // Per-group window (multigroup pass only): the window of a packet in
+        // lab-frame group g is w_max x splitGroupScale x max(splitGroupFloor,
+        // f_g), f_g the share of group g in the previous generation's
+        // escaping energy; the grey pass keeps w_max. splitImportanceFloor
+        // gives every cell an importance of at least that value in this mode.
+        bool splitPerGroup = false;
+        double splitGroupScale = 1.0;
+        double splitGroupFloor = 1e-3;
+        double splitImportanceFloor = 0.0;
+        // Replicate identifier: 0 keeps the default random streams; any
+        // other value gives an independent set (both passes, fresh and
+        // restarted runs).
+        size_t seedOffset = 0;
         bool useCellVelocities = true;
         MonteCarloCommunication communication = MonteCarloCommunication::Auto;
 
@@ -426,6 +439,17 @@ struct PostProcessConfig
     struct Diagnostics
     {
         bool verboseAdaptive = false;
+        // Packet provenance (multigroup pass): where the heavy escaping
+        // packets of each band come from and whether a per-group window
+        // could have split them (results unchanged).
+        bool packetProvenance = false;
+        // Raw per-generation I, Q, U of every (observer, group) bin of the
+        // final generations, both passes, in the result file.
+        bool generationStokes = false;
+        // Per-generation band reports of the multigroup pass (BAND_BIRTH,
+        // BAND_ESCAPE, BAND_SCORE, BIRTH_WEIGHT_MAX). They need the global
+        // observer/group snapshot every generation (3 to 9 all-reduces).
+        bool bandReports = false;
     } diagnostics;
 };
 
@@ -482,6 +506,11 @@ struct PostProcessPassResult
     double luminosityWeightedPolarizationDegree = 0.0;
     uint64_t polarizedObserverCount = 0;
     uint64_t splitCopies = 0;   // weight-window copies over the pass
+    // Splits the copy budget reduced or refused over the pass, and the
+    // copies made per lab-frame group by the per-group window (empty when
+    // the per-group window and packet provenance are off).
+    uint64_t splitRefusals = 0;
+    std::vector<uint64_t> groupSplitCopies;
     // Packets added by volume-emission.cap-learned-weight over the pass, the
     // cells it raised and all cells given packets, summed over generations.
     uint64_t weightCapExtraPhotons = 0;

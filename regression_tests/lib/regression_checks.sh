@@ -2950,6 +2950,31 @@ check_imc_postprocess_weight_split_case() {
     return 0
 }
 
+check_imc_postprocess_band_window_unit_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/imc_postprocess_band_window_unit_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale imc_postprocess_band_window_unit_metrics.txt"
+        return 1
+    fi
+    local pass_flag failures
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    failures=$(awk '$1 == "failures" { print $2 }' "$metrics_file")
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "imc_postprocess_band_window_unit: ${failures:-?} failed checks; see the FAIL lines in stdout"
+        return 1
+    fi
+    set_check_msg "per-group window, provenance and seed-offset unit checks passed"
+    return 0
+}
+
 check_multigroup_thermal_sampling_case() {
     local run_dir="$1"
     local run_start_epoch="$2"

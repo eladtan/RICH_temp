@@ -1272,8 +1272,9 @@ void PrintSourcePhotonDistribution(
 }
 
 RadiationIMC::GroupSamplingDiagnostics
-ReduceGroupSamplingDiagnostics(RadiationIMC::GroupSamplingDiagnostics local)
+ReduceGroupSamplingDiagnostics(RadiationIMC::GroupSamplingDiagnostics local, bool birthWeights)
 {
+    (void)birthWeights;
 #ifdef RICH_MPI
     size_t const localWeightCorrectionCount = local.weightCorrectionCount;
     unsigned long long sums[7] = {
@@ -1345,6 +1346,22 @@ ReduceGroupSamplingDiagnostics(RadiationIMC::GroupSamplingDiagnostics local)
                 static_cast<size_t>(birthCounts[k * ENERGY_GROUPS_NUM + g]);
             local.birthEnergy[k][g] = birthEnergies[k * ENERGY_GROUPS_NUM + g];
         }
+    if (birthWeights) {
+        using Diag = RadiationIMC::GroupSamplingDiagnostics;
+        std::vector<unsigned long long> histogram(Diag::kBirthClasses * Diag::kBirthWeightBins, 0ULL);
+        for (size_t c = 0; c < Diag::kBirthClasses; ++c)
+            for (size_t b = 0; b < Diag::kBirthWeightBins; ++b)
+                histogram[c * Diag::kBirthWeightBins + b] =
+                    static_cast<unsigned long long>(local.birthWeightHistogram[c][b]);
+        MPI_Allreduce(MPI_IN_PLACE, histogram.data(), static_cast<int>(histogram.size()),
+                      MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, local.birthWeightMax.data(), static_cast<int>(Diag::kBirthClasses),
+                      MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        for (size_t c = 0; c < Diag::kBirthClasses; ++c)
+            for (size_t b = 0; b < Diag::kBirthWeightBins; ++b)
+                local.birthWeightHistogram[c][b] =
+                    static_cast<size_t>(histogram[c * Diag::kBirthWeightBins + b]);
+    }
 #endif
     local.cappedEnergyFraction = local.sampledEnergy > 0.0
         ? local.cappedEnergy / local.sampledEnergy
@@ -1372,6 +1389,11 @@ void AccumulateGroupSamplingDiagnostics(
         }
     }
 
+    for (size_t c = 0; c < total.birthWeightMax.size(); ++c) {
+        total.birthWeightMax[c] = std::max(total.birthWeightMax[c], gen.birthWeightMax[c]);
+        for (size_t b = 0; b < total.birthWeightHistogram[c].size(); ++b)
+            total.birthWeightHistogram[c][b] += gen.birthWeightHistogram[c][b];
+    }
     total.totalSampled += gen.totalSampled;
     total.cellsWithGroupScores =
         std::max(total.cellsWithGroupScores, gen.cellsWithGroupScores);
@@ -1990,6 +2012,29 @@ void CollectGlobalObserverGroupQuality(
         flattenD(snap.sumKW2U);
         flattenD(snap.sumKW2UU);
     }
+#else
+    (void)snap;
+#endif
+}
+
+void CollectGlobalObserverGroupEnergy(
+    SphericalObserver::ObserverGroupQualitySnapshot& snap)
+{
+#ifdef RICH_MPI
+    size_t const nObs = snap.observerCount;
+    size_t const nGrp = snap.groupCount;
+    size_t const flat = nObs * nGrp;
+    if (flat == 0) return;
+    // Same flattening and reduction as CollectGlobalObserverGroupQuality, so
+    // the reduced energies (and the group windows built from them) agree.
+    std::vector<double> buf(flat, 0.0);
+    for (size_t o = 0; o < nObs; ++o)
+        for (size_t g = 0; g < nGrp; ++g)
+            buf[o * nGrp + g] = snap.energy[o][g];
+    MPI_Allreduce(MPI_IN_PLACE, buf.data(), static_cast<int>(flat), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    for (size_t o = 0; o < nObs; ++o)
+        for (size_t g = 0; g < nGrp; ++g)
+            snap.energy[o][g] = buf[o * nGrp + g];
 #else
     (void)snap;
 #endif
@@ -2678,6 +2723,12 @@ void PrintBandGenerationDiagnostics(
                   << " count=" << BandList(gsd.birthCount[k])
                   << " energy=" << BandList(gsd.birthEnergy[k]) << std::endl;
     }
+    // Filled only with packet provenance on.
+    if (std::any_of(gsd.birthWeightMax.begin(), gsd.birthWeightMax.end(), [](double w) { return w > 0.0; }))
+        std::cout << "BIRTH_WEIGHT_MAX " << label << " gen=" << (gen + 1)
+                  << " class_max=" << BandList(gsd.birthWeightMax)
+                  << " (class = kind + 4 x exploration; kinds volume_physical, volume_learned,"
+                     " face_physical, face_learned)" << std::endl;
 
     // Escaping energy and crossings summed over observers; medians over the
     // observer bins with crossings of n_eff = E^2 / sum k w^2 and of
@@ -3982,5 +4033,29 @@ void PrintVmRSS(std::string const& label, int rank) {
 }
 
 
+
+} // namespace imc_postprocess_tde
+
+namespace imc_postprocess_tde {
+
+void PrintBirthWeightSummary(std::string const& label,
+                             RadiationIMC::GroupSamplingDiagnostics const& finalTotals,
+                             int rank)
+{
+    if (rank != 0)
+        return;
+    using Diag = RadiationIMC::GroupSamplingDiagnostics;
+    for (size_t c = 0; c < Diag::kBirthClasses; ++c) {
+        size_t total = 0;
+        for (size_t const n : finalTotals.birthWeightHistogram[c])
+            total += n;
+        if (total == 0)
+            continue;
+        std::cout << "BIRTH_WEIGHT_FINAL " << label << " class=" << c << " kind=" << (c % 4)
+                  << " exploration=" << (c / 4) << " births=" << total
+                  << " max=" << finalTotals.birthWeightMax[c]
+                  << " decades_from_1e30=" << BandList(finalTotals.birthWeightHistogram[c]) << std::endl;
+    }
+}
 
 } // namespace imc_postprocess_tde

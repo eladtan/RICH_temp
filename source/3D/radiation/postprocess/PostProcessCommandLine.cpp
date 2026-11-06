@@ -1,3 +1,4 @@
+#include <algorithm>
 #include "PostProcessCommandLine.hpp"
 
 #include <cerrno>
@@ -89,7 +90,10 @@ bool ParseDouble(std::string const& text, double& value, bool allowInfinity = fa
 
 bool ParseSize(std::string const& text, size_t& value)
 {
-    if (text.empty() || text[0] == '-')
+    // Digits only: strtoull would accept leading spaces and a sign (" -1"
+    // becomes the largest value).
+    if (text.empty() || !std::all_of(text.begin(), text.end(),
+                                     [](unsigned char c) { return c >= '0' && c <= '9'; }))
         return false;
     errno = 0;
     char* end = nullptr;
@@ -419,6 +423,11 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddDouble(options, "transport.split-observer-fraction", "Weight window: split packets in cells that escape, so none exceeds this fraction of the average observer energy per generation (0 = off).", c.transport.splitObserverFraction);
     AddDouble(options, "transport.split-escape-reference", "Weight window: escape probability at which a cell's window reaches the full split-observer-fraction target, in (0, 1].", c.transport.splitEscapeReference);
     AddSize(options, "transport.split-max-copies", "Weight window: maximum copies per split (>= 2).", c.transport.splitMaxCopies);
+    AddBool(options, "transport.split-per-group", "Weight window per group (multigroup pass): the window of a packet in group g is split-observer-fraction x split-group-scale x max(split-group-floor, share of g in the previous generation's escaping energy).", c.transport.splitPerGroup);
+    AddDouble(options, "transport.split-group-scale", "Per-group weight window: scale beta of every group window, in (0, 1].", c.transport.splitGroupScale);
+    AddDouble(options, "transport.split-group-floor", "Per-group weight window: smallest escaping-energy share a group window uses, in (0, 1].", c.transport.splitGroupFloor);
+    AddDouble(options, "transport.split-importance-floor", "Per-group weight window: smallest cell importance, in [0, 1] (0 = cells without escapes never split).", c.transport.splitImportanceFloor);
+    AddSize(options, "transport.seed-offset", "Replicate identifier: 0 keeps the default random streams, any other value gives an independent set.", c.transport.seedOffset);
     AddSize(options, "transport.split-copy-budget", "Weight window: maximum copies per rank per generation; splits beyond it are reduced or refused.", c.transport.splitCopyBudget);
     AddDouble(options, "transport.ddmc-max-cell-advection-peclet", "Cells whose advection Peclet number |v|(L/2)/D exceeds this stay in IMC (default: no limit).", c.transport.ddmcMaxCellAdvectionPeclet);
     AddLimit(options, "transport.ddmc-compression-max-dynamical-times", "Frozen-flow limit on the DDMC compression shift: a packet's frequency and weight follow the gas compression only until it has spent this many local dynamical times min(1/|div v|, r/|v|) in the flow (0 = no shift, inf = unlimited).", c.transport.ddmcCompressionMaxDynamicalTimes);
@@ -535,6 +544,9 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddSize(options, "load-balance.max-rebalances", "Maximum adaptive rebalances.", c.loadBalance.maxRebalances);
     AddSize(options, "load-balance.final-period", "Rebalance on measured costs after every N-th final generation; 0 keeps the built-in period (10).", c.loadBalance.finalPeriod);
     AddBool(options, "diagnostics.verbose-adaptive", "Print detailed adaptive diagnostics.", c.diagnostics.verboseAdaptive);
+    AddBool(options, "diagnostics.packet-provenance", "Classify the heavy escaping packets of every band by birth and split history (multigroup pass; results unchanged).", c.diagnostics.packetProvenance);
+    AddBool(options, "diagnostics.generation-stokes", "Store the raw per-generation I, Q, U of every observer bin of the final generations in the result file.", c.diagnostics.generationStokes);
+    AddBool(options, "diagnostics.band-reports", "Print the per-generation band reports of the multigroup pass (BAND_BIRTH, BAND_ESCAPE, BAND_SCORE; results unchanged).", c.diagnostics.bandReports);
 
     return options;
 }

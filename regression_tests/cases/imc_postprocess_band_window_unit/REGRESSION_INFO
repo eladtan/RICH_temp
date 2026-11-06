@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+
+TEST_ID="imc_postprocess_band_window_unit"
+TAGS="serial"
+CATEGORY="code_correctness"
+BUILD_TEST_NAME="regression_tests/cases/imc_postprocess_band_window_unit"
+RUN_DIR_REL="regression_tests/cases/imc_postprocess_band_window_unit"
+BUILD_ARGS="--energy_groups_num=4 --montecarlo-polarization"
+RUN_MODE="direct"
+RUN_COMMAND='"${RICH_BIN}"'
+CHECK_FUNCTION="check_imc_postprocess_band_window_unit_case"

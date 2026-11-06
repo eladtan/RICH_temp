@@ -539,6 +539,10 @@ struct ForwardPostprocessResult
     bool usesCompton = false;
     // Weight-window copies made over the pass (all generations).
     uint64_t splitCopies = 0;
+    // Splits the copy budget reduced or refused, and the per-group window's
+    // copies per lab-frame group (empty when that report is off).
+    uint64_t splitRefusals = 0;
+    std::vector<uint64_t> groupSplitCopies;
     // Packets added by the learned packet-weight cap over the pass, the cells
     // it raised and all cells given packets, summed over generations (global,
     // the same on every rank).

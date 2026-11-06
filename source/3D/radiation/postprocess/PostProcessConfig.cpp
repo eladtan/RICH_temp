@@ -366,6 +366,37 @@ bool ValidateConfig(Config &cfg, int rank)
         if (rank == 0) std::cerr << "--transport.split-max-copies must be >= 2\n";
         return false;
     }
+    if (!(cfg.splitGroupScale > 0.0) || !(cfg.splitGroupScale <= 1.0)) {
+        if (rank == 0) std::cerr << "--transport.split-group-scale must lie in (0, 1]\n";
+        return false;
+    }
+    if (!(cfg.splitGroupFloor > 0.0) || !(cfg.splitGroupFloor <= 1.0)) {
+        if (rank == 0) std::cerr << "--transport.split-group-floor must lie in (0, 1]\n";
+        return false;
+    }
+    if (!(cfg.splitImportanceFloor >= 0.0) || !(cfg.splitImportanceFloor <= 1.0)) {
+        if (rank == 0) std::cerr << "--transport.split-importance-floor must lie in [0, 1]\n";
+        return false;
+    }
+    if (cfg.splitImportanceFloor > 0.0 && !cfg.splitPerGroup) {
+        if (rank == 0) std::cerr << "--transport.split-importance-floor requires --transport.split-per-group true\n";
+        return false;
+    }
+    if ((cfg.splitPerGroup || cfg.packetProvenance) && !(cfg.splitObserverFraction > 0.0)) {
+        // Both are built on the scalar window and its cell importance.
+        if (rank == 0)
+            std::cerr << "--transport.split-per-group and --diagnostics.packet-provenance require "
+                         "--transport.split-observer-fraction > 0\n";
+        return false;
+    }
+#if ENERGY_GROUPS_NUM <= 1 || ENERGY_GROUPS_NUM > 254
+    if (cfg.splitPerGroup || cfg.packetProvenance) {
+        if (rank == 0)
+            std::cerr << "--transport.split-per-group and --diagnostics.packet-provenance require "
+                         "1 < ENERGY_GROUPS_NUM <= 254\n";
+        return false;
+    }
+#endif
     if (!(cfg.ddmcMaxCellAdvectionPeclet > 0.0)) {
         if (rank == 0)
             std::cerr << "--transport.ddmc-max-cell-advection-peclet must be positive\n";

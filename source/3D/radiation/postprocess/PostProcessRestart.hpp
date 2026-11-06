@@ -22,12 +22,17 @@
 #include "IMCPostProcessControl.hpp"
 #include "PostProcessConfig.hpp"
 #include "PostProcessRuntime.hpp"
+#include "WeightSplit.hpp"
 
 namespace imc_postprocess_tde {
 
 // 2: compression clock and work, split-aware polarization second moments and
 // generation cross sums.
-constexpr int kRestartSchemaVersion = 2;
+// 3: the multigroup pass's weight-split state when transport.split-per-group
+// is on (learned_state/weight_split); schema-2 files are still read with the
+// per-group window off and seed offset 0 (the must-match legacy values).
+constexpr int kRestartSchemaVersion = 3;
+constexpr int kOldestReadableRestartSchema = 2;
 
 enum class RestartPass { Forward, Grey };
 
@@ -43,8 +48,27 @@ struct LoadBalanceMeasurements
     std::vector<size_t> particles;
 };
 
+// Weight-split state of the multigroup pass (schema 3, written only with
+// transport.split-per-group): the per-cell escaped and emitted energies of
+// every cell that has either, keyed by snapshot cell ID (rank 0), the
+// accumulated flag, and the lagged escaping spectrum with its validity and
+// the absolute generation that produced it.
+struct WeightSplitRestartState
+{
+    bool present = false;
+    bool accumulated = false;
+    std::vector<size_t> cellIDs;
+    std::vector<double> escaped;
+    std::vector<double> emitted;
+    std::vector<double> spectrum;
+    bool spectrumValid = false;
+    long spectrumGeneration = -1;
+    // Group boundaries the spectrum and the observer statistics refer to.
+    std::vector<double> groupBoundaries;
+};
+
 // The state a pass needs to continue. Learned state is identical on every
-// rank; loadBalance is held by rank 0 only.
+// rank; loadBalance and split are held by rank 0 only.
 struct PassRestartState
 {
     AdaptiveSourceState adaptive;
@@ -60,7 +84,33 @@ struct PassRestartState
     // Final generations already in the statistics (all earlier segments).
     size_t completedFinalGenerations = 0;
     LoadBalanceMeasurements loadBalance;
+    WeightSplitRestartState split;
+    // Absolute index the next final generation of this pass takes (-1 when
+    // the file predates it): generation records and the lagged spectrum
+    // continue from it, whatever the ramp settings of the continuation.
+    long nextGenerationID = -1;
 };
+
+// Gathers the multigroup weight-split state to rank 0 for the restart file.
+// Collective; call on all ranks before the rank-0 write.
+WeightSplitRestartState GatherWeightSplitRestartState(
+    WeightSplitState const& state,
+    std::vector<ComputationalCell3D> const& cells,
+    size_t nCells,
+    std::vector<double> const& groupBoundaries,
+    int rank);
+
+// Hands each rank the stored weight-split state of its cells (by ID) and the
+// spectrum. Throws on every rank when the state is missing (the per-group
+// window cannot continue without it) or names cells that are not in this
+// mesh. Collective; call before the initial restart rebalance.
+void RestoreWeightSplitState(
+    WeightSplitRestartState const& stored,
+    std::vector<ComputationalCell3D> const& cells,
+    size_t nCells,
+    std::vector<double> const& groupBoundaries,
+    WeightSplitState& state,
+    int rank);
 
 // Settings compatibility between the run and the file it continues. Throws on
 // every rank, listing all differences, when a setting that changes the
@@ -122,6 +172,12 @@ LoadBalanceMeasurements CollectLocalLoadBalanceMeasurements(
 // never repeat across segments and a chain of restarts reproduces one longer
 // restart on the same decomposition. Fresh runs keep their original seeds.
 uint64_t RestartGenerationSeed(RestartPass pass, int rank, size_t absoluteFinalGeneration);
+
+// Replicate seeds (transport.seed-offset): offset 0 returns legacySeed
+// unchanged; any other offset R returns
+// SplitMix64(legacySeed XOR SplitMix64(R XOR kSeedOffsetDomain)), applied to
+// both the fresh and the restart seed of every pass, rank and generation.
+uint64_t ApplySeedOffset(uint64_t legacySeed, uint64_t offset);
 
 // Final generations a pass runs this segment.
 size_t GreyGenerationCount(Config const& cfg);

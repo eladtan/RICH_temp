@@ -92,6 +92,8 @@ PostProcessIMC::PostProcessPassResult ToPublicResult(
         value.luminosityWeightedPolarizationDegree;
     result.polarizedObserverCount = value.polarizedObserverCount;
     result.splitCopies = value.splitCopies;
+    result.splitRefusals = value.splitRefusals;
+    result.groupSplitCopies = value.groupSplitCopies;
     result.weightCapExtraPhotons = value.weightCapExtraPhotons;
     result.weightCappedCells = value.weightCappedCells;
     result.allocatedCells = value.allocatedCells;
@@ -177,6 +179,14 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.splitEscapeReference = publicConfig.transport.splitEscapeReference;
     cfg.splitMaxCopies = publicConfig.transport.splitMaxCopies;
     cfg.splitCopyBudget = publicConfig.transport.splitCopyBudget;
+    cfg.splitPerGroup = publicConfig.transport.splitPerGroup;
+    cfg.splitGroupScale = publicConfig.transport.splitGroupScale;
+    cfg.splitGroupFloor = publicConfig.transport.splitGroupFloor;
+    cfg.splitImportanceFloor = publicConfig.transport.splitImportanceFloor;
+    cfg.seedOffset = static_cast<uint64_t>(publicConfig.transport.seedOffset);
+    cfg.packetProvenance = publicConfig.diagnostics.packetProvenance;
+    cfg.generationStokes = publicConfig.diagnostics.generationStokes;
+    cfg.bandReports = publicConfig.diagnostics.bandReports;
     cfg.useCellVelocities = publicConfig.transport.useCellVelocities;
     switch (publicConfig.transport.communication) {
     case PostProcessIMC::MonteCarloCommunication::Rdma:
@@ -641,6 +651,14 @@ int PostProcessIMC::RunPostProcessMain(
                           ? "yes (" + std::to_string(cfg.splitObserverFraction) + " of the average observer energy, escape reference "
                             + std::to_string(cfg.splitEscapeReference) + ", at most " + std::to_string(cfg.splitMaxCopies) + " copies)"
                           : std::string("no")) << "\n"
+                      << "Group window:     " << (cfg.splitPerGroup
+                          ? "yes (multigroup pass; scale " + std::to_string(cfg.splitGroupScale) + ", share floor "
+                            + std::to_string(cfg.splitGroupFloor) + ", importance floor " + std::to_string(cfg.splitImportanceFloor) + ")"
+                          : std::string("no")) << "\n"
+                      << "Provenance:       " << (cfg.packetProvenance ? "yes" : "no")
+                      << ", generation Stokes records: " << (cfg.generationStokes ? "yes" : "no")
+                      << ", band reports: " << (cfg.bandReports ? "yes" : "no") << "\n"
+                      << "Seed offset:      " << cfg.seedOffset << "\n"
                       << "Cooling limit:    " << (!cfg.volumeEmissionEnabled || !cfg.volumeEmissionCoolingLimit
                           ? std::string("no")
                           : cfg.volumeEmissionCoolingLimitDt > 0.0
