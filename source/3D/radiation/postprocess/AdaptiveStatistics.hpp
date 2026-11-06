@@ -373,6 +373,27 @@ void PrintAdaptiveIterationSummary(
     bool adaptiveActive,
     bool includeInFinal,
     int rank);
+// Per-band diagnostics of one generation (multigroup, rank 0 prints). snap is
+// the global observer/group snapshot and gsd the reduced group-sampling
+// diagnostics: BAND_BIRTH (completed births per birth group and kind) and
+// BAND_ESCAPE (escaping energy and crossings per group, and medians of
+// split-adjusted n_eff and n_eff / crossings over observer bins with
+// crossings).
+void PrintBandGenerationDiagnostics(
+    std::string const& label,
+    SphericalObserver::ObserverGroupQualitySnapshot const& snap,
+    RadiationIMC::GroupSamplingDiagnostics const& gsd,
+    size_t gen,
+    int rank);
+// BAND_SCORE: the band-blind integrated cell scores and the group-layer cell
+// scores that BuildCombinedSourceScoresForIMC adds, with each band's share of
+// the combined sum (rank 0 prints; both maps are replicated).
+void PrintBandScoreShares(
+    std::string const& label,
+    AdaptiveSourceState const& integratedState,
+    AdaptiveGroupSourceState const& groupState,
+    size_t gen,
+    int rank);
 // groupSource is this generation's group-score update, or nullptr when none
 // ran (burn-in, or the group source layer off).
 void PrintAdaptiveGroupGenerationStats(

@@ -307,8 +307,15 @@ public:
     // and the observer/group bins most dominated by a single packet, with that
     // packet's emission weight, source cell and steps. Collective (call before
     // mpiReduceToRank0); rank 0 prints.
+    // Multigroup: also one HEAVY_PACKETS_BY_GROUP line with, per group, the
+    // ranked bins, those one packet dominates, and the crossings heavier than
+    // the overweight threshold (setOverweightThreshold) with their energy.
     void printHeavyPacketReport(std::string const& label, size_t generation,
                                 size_t topBins) const;
+    // Weight above which a crossing counts as overweight in the heavy-packet
+    // report (the weight window's smallest window; <= 0 disables the count).
+    // Kept until changed; set before each generation's transport.
+    void setOverweightThreshold(double weight);
     // Escape-origin diagnostic: this generation's crossing energy split by the
     // class of the packet's source cell and by group. Classes: 0 a cell that
     // owns emitting flux-source faces (its face and volume packets share the
@@ -461,6 +468,10 @@ private:
     std::array<double, kGrowthBins> growthBinEnergy_{};
     std::array<double, kGrowthBins> growthBinCount_{};
     double maxWeightGrowth_ = 0.0;
+    // Crossings heavier than overweightThreshold_ this generation, per group.
+    double overweightThreshold_ = 0.0;
+    std::vector<double> overweightEnergy_;
+    std::vector<double> overweightCount_;
     void recordHeavyCrossing(size_t obs, size_t group, ::ObserverCrossingRecord const& rec);
     std::unordered_set<size_t> const* escapeOriginFaceCells_ = nullptr;
     std::vector<std::pair<size_t, unsigned char>> const* escapeOriginHotCells_ = nullptr;

@@ -741,6 +741,10 @@ public:
     double getDDMCCompressionWorkLoss() const { return this->impl_.getDDMCCompressionWorkLoss(); }
     std::size_t getPostProcessSplitCopies() const { return this->impl_.getPostProcessSplitCopies(); }
     std::size_t getPostProcessSplitCapped() const { return this->impl_.getPostProcessSplitCapped(); }
+    // Steps heavier than the smallest window taken without a split
+    // opportunity (DDMC resident or pending flux; no cell importance).
+    std::size_t getPostProcessSplitSkippedResidentSteps() const { return this->impl_.getPostProcessSplitSkippedResidentSteps(); }
+    std::size_t getPostProcessSplitSkippedNoImportanceSteps() const { return this->impl_.getPostProcessSplitSkippedNoImportanceSteps(); }
     void setPostProcessVolumeEmission(std::vector<std::uint8_t> mask, std::vector<std::uint16_t> groupOutsideBits,
                                       double subsampleFraction, std::uint64_t seed)
     {
@@ -889,6 +893,18 @@ private:
         target.cappedEnergyFraction = source.cappedEnergyFraction;
         target.estimatorPotentiallyBiased =
             source.estimatorPotentiallyBiased;
+        static_assert(ImplGroupSamplingDiagnostics::kBirthKinds ==
+                          GroupSamplingDiagnostics::kBirthKinds,
+                      "birth diagnostics kinds differ between STORM and RICH");
+        static_assert(sizeof(source.birthCount) == sizeof(target.birthCount) &&
+                          sizeof(source.birthEnergy) == sizeof(target.birthEnergy),
+                      "birth diagnostics group counts differ between STORM and RICH");
+        for (std::size_t k = 0; k < GroupSamplingDiagnostics::kBirthKinds; ++k) {
+            for (std::size_t g = 0; g < target.birthCount[k].size(); ++g) {
+                target.birthCount[k][g] = source.birthCount[k][g];
+                target.birthEnergy[k][g] = source.birthEnergy[k][g];
+            }
+        }
         return target;
     }
 

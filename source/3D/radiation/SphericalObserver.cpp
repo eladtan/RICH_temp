@@ -680,6 +680,8 @@ SphericalObserver::SphericalObserver(Vector3D center, double radius,
     escapeWeightCount_.assign(numGroups_ * kEscapeWeightBins, 0.0);
     escapeWeightEnergySum_.assign(numGroups_ * kEscapeWeightBins, 0.0);
     escapeWeightCountSum_.assign(numGroups_ * kEscapeWeightBins, 0.0);
+    overweightEnergy_.assign(numGroups_, 0.0);
+    overweightCount_.assign(numGroups_, 0.0);
 #ifdef MONTECARLO_POLARIZATION
     observerStokesQ_.assign(numObservers_, 0.0);
     observerStokesU_.assign(numObservers_, 0.0);
@@ -1169,6 +1171,10 @@ void SphericalObserver::recordHeavyCrossing(size_t obs, size_t group,
             kEscapeWeightEdges.begin());
     escapeWeightEnergy_[group * kEscapeWeightBins + weightBin] += w;
     escapeWeightCount_[group * kEscapeWeightBins + weightBin] += 1.0;
+    if (overweightThreshold_ > 0.0 && w > overweightThreshold_) {
+        overweightEnergy_[group] += w;
+        overweightCount_[group] += 1.0;
+    }
     if (escapeOriginFaceCells_ != nullptr || escapeOriginHotCells_ != nullptr) {
         escapeOriginEnergy_[escapeOriginClass(rec.sourceCellID) * numGroups_ + group] += rec.weight;
         if (rec.compressionConverted)
@@ -1231,6 +1237,16 @@ void SphericalObserver::printHeavyPacketReport(std::string const& label,
     MPI_Reduce(rank == 0 ? MPI_IN_PLACE : &maxGrowth, &maxGrowth, 1,
                MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 #endif
+    std::vector<double> overweightEnergy = overweightEnergy_;
+    std::vector<double> overweightCount = overweightCount_;
+#ifdef RICH_MPI
+    if (!overweightEnergy.empty()) {
+        MPI_Reduce(rank == 0 ? MPI_IN_PLACE : overweightEnergy.data(), overweightEnergy.data(),
+                   static_cast<int>(overweightEnergy.size()), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce(rank == 0 ? MPI_IN_PLACE : overweightCount.data(), overweightCount.data(),
+                   static_cast<int>(overweightCount.size()), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    }
+#endif
 
     // Bins ranked by the share of their energy carried by one packet. Only
     // bins with many crossings are ranked: in a bin with a handful of
@@ -1242,6 +1258,9 @@ void SphericalObserver::printHeavyPacketReport(std::string const& label,
     size_t dominated90 = 0;
     size_t nonEmpty = 0;
     size_t ranked = 0;
+    std::vector<size_t> rankedByGroup(numGroups_, 0);
+    std::vector<size_t> dominatedHalfByGroup(numGroups_, 0);
+    std::vector<size_t> dominated90ByGroup(numGroups_, 0);
     for (size_t b = 0; b < nBins; ++b) {
         if (!(binEnergy[b] > 0.0))
             continue;
@@ -1249,9 +1268,11 @@ void SphericalObserver::printHeavyPacketReport(std::string const& label,
         if (binCount[b] < kMinRankedCrossings)
             continue;
         ++ranked;
+        size_t const g = b % numGroups_;
+        ++rankedByGroup[g];
         double const share = binMax[b].value / binEnergy[b];
-        if (share > 0.5) ++dominatedHalf;
-        if (share > 0.9) ++dominated90;
+        if (share > 0.5) { ++dominatedHalf; ++dominatedHalfByGroup[g]; }
+        if (share > 0.9) { ++dominated90; ++dominated90ByGroup[g]; }
         order.push_back(b);
     }
     auto share = [&](size_t b) { return binMax[b].value / binEnergy[b]; };
@@ -1304,6 +1325,33 @@ void SphericalObserver::printHeavyPacketReport(std::string const& label,
                 << (totalEnergy > 0.0 ? growthEnergy[k] / totalEnergy : 0.0);
     }
     std::cout << summary.str() << std::endl;
+    if (numGroups_ > 1) {
+        std::vector<double> groupEnergy(numGroups_, 0.0);
+        for (size_t b = 0; b < nBins; ++b)
+            groupEnergy[b % numGroups_] += binEnergy[b];
+        auto list = [](auto const& values) {
+            std::ostringstream out;
+            out << std::setprecision(4) << "[";
+            for (size_t g = 0; g < values.size(); ++g)
+                out << (g ? "," : "") << values[g];
+            out << "]";
+            return out.str();
+        };
+        std::ostringstream byGroup;
+        byGroup << "HEAVY_PACKETS_BY_GROUP " << label << " gen=" << generation
+                << " bins_ge100_crossings=" << list(rankedByGroup)
+                << " one_packet_gt50pct=" << list(dominatedHalfByGroup)
+                << " one_packet_gt90pct=" << list(dominated90ByGroup);
+        if (overweightThreshold_ > 0.0) {
+            std::vector<double> overweightFraction(numGroups_, 0.0);
+            for (size_t g = 0; g < numGroups_; ++g)
+                overweightFraction[g] = groupEnergy[g] > 0.0 ? overweightEnergy[g] / groupEnergy[g] : 0.0;
+            byGroup << std::setprecision(4) << " overweight_threshold=" << overweightThreshold_
+                    << " overweight_count=" << list(overweightCount)
+                    << " overweight_energy_frac=" << list(overweightFraction);
+        }
+        std::cout << byGroup.str() << std::endl;
+    }
     for (size_t i = 0; i < nTop; ++i) {
         size_t const b = order[i];
         double const w = binMax[b].value;
@@ -1326,6 +1374,11 @@ void SphericalObserver::printHeavyPacketReport(std::string const& label,
              << " rank=" << binMax[b].rank;
         std::cout << line.str() << std::endl;
     }
+}
+
+void SphericalObserver::setOverweightThreshold(double weight)
+{
+    overweightThreshold_ = (weight > 0.0 && std::isfinite(weight)) ? weight : 0.0;
 }
 
 void SphericalObserver::setEscapeOriginClassification(
@@ -1464,6 +1517,8 @@ void SphericalObserver::resetTallies()
     growthBinEnergy_.fill(0.0);
     growthBinCount_.fill(0.0);
     maxWeightGrowth_ = 0.0;
+    std::fill(overweightEnergy_.begin(), overweightEnergy_.end(), 0.0);
+    std::fill(overweightCount_.begin(), overweightCount_.end(), 0.0);
     std::fill(observerEnergy_.begin(), observerEnergy_.end(), 0.0);
     std::fill(observerEnergyWeightSq_.begin(), observerEnergyWeightSq_.end(), 0.0);
     std::fill(observerMaxPacketEnergy_.begin(), observerMaxPacketEnergy_.end(), 0.0);

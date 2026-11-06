@@ -169,20 +169,23 @@ unsigned long long PrintWeightSplitReport(
 {
     if(!(cfg.splitObserverFraction > 0.0))
         return 0;
-    unsigned long long counts[4] = {
+    unsigned long long counts[6] = {
         static_cast<unsigned long long>(physics.getPostProcessSplitEvents()),
         static_cast<unsigned long long>(physics.getPostProcessSplitCopies()),
         static_cast<unsigned long long>(physics.getPostProcessSplitCapped()),
-        static_cast<unsigned long long>(physics.getPostProcessSplitRefused())};
+        static_cast<unsigned long long>(physics.getPostProcessSplitRefused()),
+        static_cast<unsigned long long>(physics.getPostProcessSplitSkippedResidentSteps()),
+        static_cast<unsigned long long>(physics.getPostProcessSplitSkippedNoImportanceSteps())};
 #ifdef RICH_MPI
-    MPI_Allreduce(MPI_IN_PLACE, counts, 4, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, counts, 6, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
 #endif
     if(rank != 0)
         return counts[1];
     std::ostringstream line;
     line << std::setprecision(4) << "WEIGHT_SPLIT " << label << " gen=" << generation
          << " max_weight=" << state.maxWeight << " erg important_cells=" << state.importantCells
-         << " split_events=" << counts[0] << " copies=" << counts[1] << " capped_events=" << counts[2] << " budget_refusals=" << counts[3];
+         << " split_events=" << counts[0] << " copies=" << counts[1] << " capped_events=" << counts[2] << " budget_refusals=" << counts[3]
+         << " overweight_resident_steps=" << counts[4] << " overweight_no_importance_steps=" << counts[5];
     std::cout << line.str() << std::endl;
     return counts[1];
 }

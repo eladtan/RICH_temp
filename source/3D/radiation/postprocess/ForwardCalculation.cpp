@@ -474,6 +474,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                         allocationCfg, &runtime.fluxSourceCellIDs);
                     ApplyNeymanAllocationToControl(postProcessControl, plan, allocationCfg);
                     PrintSourceAllocationPlan("MG", plan, gen, rank);
+                    PrintBandScoreShares("MG", mgAdaptive, mgGroupSourceState, gen, rank);
                 } else if (adaptiveActiveThisGen) {
                     // Learned-only probe: flat 75 packets per learned cell,
                     // used to measure costs for the load balance.
@@ -582,6 +583,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
 
                 manager->getParticles().clear();
                 InstallWeightSplit(cfg, runtime, *physics, mgSplit);
+                observer->setOverweightThreshold(mgSplit.maxWeight);
                 manager->step(cells, cfg.transportTime);
                 if (cfg.volumeEmissionEnabled && physics->hasPostProcessVolumeEmission()) {
                     double volumeEnergy = physics->getLastVolumeEmissionEnergy();
@@ -650,16 +652,22 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 }
 
                 ObserverGroupQualityDiagnostics mgGroupQuality;
-                if (cfg.adaptiveGroupQuality && ENERGY_GROUPS_NUM > 1) {
+                if (ENERGY_GROUPS_NUM > 1) {
+                    // The global group snapshot feeds the per-band diagnostics
+                    // of every multigroup generation and, when enabled, the
+                    // adaptive group quality.
                     auto groupSnap = observer->getObserverGroupQualitySnapshot();
                     CollectGlobalObserverGroupQuality(groupSnap);
-                    if (cfg.adaptiveGroupFrequencySampling &&
-                        groupSnap.groupCount != static_cast<size_t>(ENERGY_GROUPS_NUM)) {
-                        throw UniversalError(
-                            "--adaptive-group-frequency-sampling requires observer group count to match ENERGY_GROUPS_NUM");
+                    PrintBandGenerationDiagnostics("MG", groupSnap, mgGroupSamplingDiag, gen, rank);
+                    if (cfg.adaptiveGroupQuality) {
+                        if (cfg.adaptiveGroupFrequencySampling &&
+                            groupSnap.groupCount != static_cast<size_t>(ENERGY_GROUPS_NUM)) {
+                            throw UniversalError(
+                                "--adaptive-group-frequency-sampling requires observer group count to match ENERGY_GROUPS_NUM");
+                        }
+                        mgGroupQuality = BuildObserverGroupQualityDiagnosticsFromSnapshot(
+                            groupSnap, cfg, mgGroupHistory, cfg.sourceDt, finalThisGen);
                     }
-                    mgGroupQuality = BuildObserverGroupQualityDiagnosticsFromSnapshot(
-                        groupSnap, cfg, mgGroupHistory, cfg.sourceDt, finalThisGen);
                 }
 
                 auto mgUpdate = UpdateAdaptiveSourceScoresDistributed(

@@ -68,6 +68,13 @@ struct IMCGroupSamplingDiagnostics
     double cappedEnergy = 0.0;
     double cappedEnergyFraction = 0.0;
     bool estimatorPotentiallyBiased = false;
+    // Completed source births of one generation by lab-frame birth group:
+    // [kind][group], kind = 2 * face + learned (volume/physical,
+    // volume/learned, face/physical, face/learned); energy is the birth
+    // weight. Per generation only: not accumulated or restarted.
+    static constexpr size_t kBirthKinds = 4;
+    std::array<std::array<size_t, ENERGY_GROUPS_NUM>, kBirthKinds> birthCount{};
+    std::array<std::array<double, ENERGY_GROUPS_NUM>, kBirthKinds> birthEnergy{};
 };
 
 struct IMCPostProcessControl
