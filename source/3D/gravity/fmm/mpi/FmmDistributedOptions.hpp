@@ -35,8 +35,16 @@ struct FmmDistributedOptions
 
     // Keep persistent-tree controls last for aggregate compatibility.
     bool persistentLocalTreeTopology = true;
+    // An existing leaf splits above persistentLeafSplitFactor * leafCapacity
+    // particles; an existing internal subtree merges back into a leaf at or
+    // below persistentLeafMergeFactor * leafCapacity.  Every split or merge
+    // rebuilds the LET plan.  Zero merges a subtree only once it is empty: on
+    // the moving-mesh TDE workload a positive factor (0.2) merged subtrees
+    // hovering near the threshold on a third of the solves, while zero cut the
+    // LET rebuilds from 212 to 7 over the same 322 cycles with the same force
+    // error, warm-solve cost and memory.
     double persistentLeafSplitFactor = 4.0;
-    double persistentLeafMergeFactor = 0.2;
+    double persistentLeafMergeFactor = 0.0;
 
     // Retained particle subscriptions reserve more than the current leaf
     // occupancy.  This keeps count-only moving-mesh changes from rebuilding the

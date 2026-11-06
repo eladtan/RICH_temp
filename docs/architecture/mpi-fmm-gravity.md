@@ -64,8 +64,17 @@ solve.  By default, the distributed solver uses the previous local tree as a
 hysteresis template: an existing leaf splits only above
 `persistentLeafSplitFactor * leafCapacity`, while an existing internal subtree
 merges only at or below `persistentLeafMergeFactor * leafCapacity`.  The
-defaults are 1.5 and 0.5 respectively. A newly initialized tree still
-refines at `leafCapacity`; the wider thresholds apply only to later refits.
+defaults are 4.0 and 0, so a subtree merges only once it is empty. A newly
+initialized tree still refines at `leafCapacity`; the wider thresholds apply
+only to later refits, and a rank whose root cube changes starts from scratch.
+
+Every split or merge changes the topology and rebuilds the LET plan.  On the
+moving-mesh TDE workload a merge factor of 0.2 merged subtrees that hovered
+near the threshold on a third of the solves, and those rebuilds took 80% of the
+FMM time; with 0 the LET plan was rebuilt 7 times instead of 212 over the same
+322 cycles, with unchanged force error, warm-solve cost and memory.  Over
+about 1,000 solves without a root change the number of empty leaves grew by
+0.6%.
 
 Every persistent internal node materializes all eight spatial children,
 including empty leaf children.  A particle crossing into or out of an octant
