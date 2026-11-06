@@ -67,6 +67,14 @@ struct Config
     double splitEscapeReference = 0.1;
     size_t splitMaxCopies = 1000;
     size_t splitCopyBudget = 1000000;
+    bool splitPerGroup = false;
+    double splitGroupScale = 1.0;
+    double splitGroupFloor = 1e-3;
+    double splitImportanceFloor = 0.0;
+    uint64_t seedOffset = 0;
+    bool packetProvenance = false;
+    bool generationStokes = false;
+    bool bandReports = false;
     bool useCellVelocities = true;
     CommunicationMode communication = CommunicationMode::Auto;
     bool polarization = true;

@@ -2,6 +2,7 @@
 #include "monte/gpu/DeviceParticle.hpp"
 #include "monte/utils/CounterRNG.hpp"
 #include <array>
+#include <cstddef>
 #include <cstring>
 #include <iostream>
 #include <stdexcept>
@@ -32,6 +33,10 @@ Particle3D makeParticle(int rank, int slot)
     p.splitFactor = 2.5f + static_cast<float>(slot);
     p.compressionClock = 0.375 + static_cast<double>(tag);
     p.on_track = p.sent = 1;
+    // Packet provenance (non-default values in every byte).
+    p.birthGroup = static_cast<std::uint8_t>(3 + slot);
+    p.provenance0 = static_cast<std::uint8_t>(0xA5 ^ slot);
+    p.provenance1 = static_cast<std::uint8_t>(0x5A ^ (slot << 1));
 #ifdef MONTECARLO_POLARIZATION
     p.stokesQ = 0.125;
     p.stokesU = -0.25;
@@ -70,6 +75,14 @@ void check(const Particle3D &actual, const Particle3D &expected)
             throw std::runtime_error("Migration changed RNG stream continuation");
 }
 
+// The provenance bytes live in the padding after on_track: they must not
+// move splitFactor or grow the particle.
+static_assert(offsetof(STORM::ParticleTransportData<Vector3D>, birthGroup) ==
+                  offsetof(STORM::ParticleTransportData<Vector3D>, on_track) + 1 &&
+              offsetof(STORM::ParticleTransportData<Vector3D>, provenance1) + 1 <=
+                  offsetof(STORM::ParticleTransportData<Vector3D>, splitFactor),
+              "packet provenance does not fit the padding before splitFactor");
+
 int main(int argc, char **argv)
 {
     MPI_Init(&argc, &argv);
@@ -107,6 +120,16 @@ int main(int argc, char **argv)
             if(unpacked.splitFactor != original.splitFactor ||
                unpacked.compressionClock != original.compressionClock)
                 throw std::runtime_error("P2P packed wire lost the split factor or compression clock");
+            if(unpacked.birthGroup != original.birthGroup ||
+               unpacked.provenance0 != original.provenance0 ||
+               unpacked.provenance1 != original.provenance1)
+                throw std::runtime_error("P2P packed wire lost the packet provenance");
+            // AssignCold (device-side copies) carries it too.
+            STORM::gpu::DeviceParticleCold copied;
+            STORM::gpu::AssignCold(copied, cold);
+            if(copied.birthGroup != cold.birthGroup || copied.provenance0 != cold.provenance0 ||
+               copied.provenance1 != cold.provenance1)
+                throw std::runtime_error("AssignCold lost the packet provenance");
         }
         if(rank == 0) std::cout << "Particle MPI state and RNG continuation preserved in fresh/reused buffers\n";
     }

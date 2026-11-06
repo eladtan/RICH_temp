@@ -369,6 +369,8 @@ public:
     using PostProcessExternalSource = IMCPostProcessExternalSource;
     using SourceAllocationSummary = IMCSourceAllocationSummary;
     using GroupSamplingDiagnostics = IMCGroupSamplingDiagnostics;
+    using PostProcessGroupWindow = typename Impl::PostProcessGroupWindow;
+    using PostProcessGroupSplitCounters = typename Impl::PostProcessGroupSplitCounters;
     using ComptonCellData = typename Impl::ComptonCellData;
     using Parameters = typename Impl::Parameters;
 
@@ -399,6 +401,9 @@ public:
             oldRecord.steps = record.steps;
             oldRecord.splitFactor = record.splitFactor;
             oldRecord.compressionConverted = record.compressionConverted;
+            oldRecord.birthGroup = record.birthGroup;
+            oldRecord.provenance0 = record.provenance0;
+            oldRecord.provenance1 = record.provenance1;
 #ifdef MONTECARLO_POLARIZATION
             oldRecord.stokesQ = record.stokesQ;
             oldRecord.stokesU = record.stokesU;
@@ -741,6 +746,21 @@ public:
     double getDDMCCompressionWorkLoss() const { return this->impl_.getDDMCCompressionWorkLoss(); }
     std::size_t getPostProcessSplitCopies() const { return this->impl_.getPostProcessSplitCopies(); }
     std::size_t getPostProcessSplitCapped() const { return this->impl_.getPostProcessSplitCapped(); }
+    // Steps heavier than the smallest window taken without a split
+    // opportunity (DDMC resident or pending flux; no cell importance).
+    std::size_t getPostProcessSplitSkippedResidentSteps() const { return this->impl_.getPostProcessSplitSkippedResidentSteps(); }
+    std::size_t getPostProcessSplitSkippedNoImportanceSteps() const { return this->impl_.getPostProcessSplitSkippedNoImportanceSteps(); }
+    // Per-group window and packet provenance (STORM setPostProcessGroupWindow);
+    // call after setPostProcessWeightSplit, which clears them.
+    void setPostProcessGroupWindow(PostProcessGroupWindow window)
+    {
+        this->impl_.setPostProcessGroupWindow(std::move(window));
+    }
+    PostProcessGroupWindow const& getPostProcessGroupWindow() const { return this->impl_.getPostProcessGroupWindow(); }
+    PostProcessGroupSplitCounters const& getPostProcessGroupSplitCounters() const
+    {
+        return this->impl_.getPostProcessGroupSplitCounters();
+    }
     void setPostProcessVolumeEmission(std::vector<std::uint8_t> mask, std::vector<std::uint16_t> groupOutsideBits,
                                       double subsampleFraction, std::uint64_t seed)
     {
@@ -889,6 +909,26 @@ private:
         target.cappedEnergyFraction = source.cappedEnergyFraction;
         target.estimatorPotentiallyBiased =
             source.estimatorPotentiallyBiased;
+        static_assert(ImplGroupSamplingDiagnostics::kBirthKinds ==
+                          GroupSamplingDiagnostics::kBirthKinds,
+                      "birth diagnostics kinds differ between STORM and RICH");
+        static_assert(sizeof(source.birthCount) == sizeof(target.birthCount) &&
+                          sizeof(source.birthEnergy) == sizeof(target.birthEnergy),
+                      "birth diagnostics group counts differ between STORM and RICH");
+        static_assert(ImplGroupSamplingDiagnostics::kBirthClasses == GroupSamplingDiagnostics::kBirthClasses &&
+                          ImplGroupSamplingDiagnostics::kBirthWeightBins == GroupSamplingDiagnostics::kBirthWeightBins,
+                      "STORM and RICH birth-weight histograms must have the same layout");
+        for (std::size_t c = 0; c < GroupSamplingDiagnostics::kBirthClasses; ++c) {
+            target.birthWeightMax[c] = source.birthWeightMax[c];
+            for (std::size_t b = 0; b < GroupSamplingDiagnostics::kBirthWeightBins; ++b)
+                target.birthWeightHistogram[c][b] = source.birthWeightHistogram[c][b];
+        }
+        for (std::size_t k = 0; k < GroupSamplingDiagnostics::kBirthKinds; ++k) {
+            for (std::size_t g = 0; g < target.birthCount[k].size(); ++g) {
+                target.birthCount[k][g] = source.birthCount[k][g];
+                target.birthEnergy[k][g] = source.birthEnergy[k][g];
+            }
+        }
         return target;
     }
 

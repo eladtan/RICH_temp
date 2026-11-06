@@ -194,6 +194,7 @@ ForwardPostprocessResult RunGreyPostprocess(
             // and never reruns the burn-in or the learned-only probe.
             bool const restarting = !cfg.restartFrom.empty();
             size_t greyCompletedFinalGenerations = 0;
+            long greyGenerationOrigin = -1;   // absolute index of this segment's first final generation
             LoadBalanceMeasurements greyRestartLoadBalance;   // rank 0
             if (restarting) {
                 PassRestartState greyLoaded = BeginPassRestart(
@@ -201,6 +202,7 @@ ForwardPostprocessResult RunGreyPostprocess(
                 greyAdaptive = std::move(greyLoaded.adaptive);
                 runtime.lastEscapingLuminosity = greyLoaded.lastEscapingLuminosity;
                 greyCompletedFinalGenerations = greyLoaded.completedFinalGenerations;
+                greyGenerationOrigin = greyLoaded.nextGenerationID;
                 greyRestartLoadBalance = std::move(greyLoaded.loadBalance);
                 // The restart balance below replaces the first-final-step one.
                 greyFirstNonBurninMeasuredLBDone = true;
@@ -566,7 +568,9 @@ ForwardPostprocessResult RunGreyPostprocess(
                                             static_cast<double>(runtime.volumeEmissionCells);
                         fraction = std::clamp(wanted / std::max(1.0, full), 1e-6, 1.0);
                     }
-                    greyPhysics->setPostProcessVolumeEmissionSubsample(fraction, static_cast<uint64_t>(gen) + 1);
+                    // The burn-in cell subset follows the replicate seeds too.
+                    greyPhysics->setPostProcessVolumeEmissionSubsample(
+                        fraction, ApplySeedOffset(static_cast<uint64_t>(gen) + 1, cfg.seedOffset));
                     double const escapingReference = runtime.lastEscapingLuminosity > 0.0
                         ? runtime.lastEscapingLuminosity : runtime.fluxSourceInjectedLuminosity;
                     greyPhysics->setPostProcessExplorationMaxWeight(
@@ -583,14 +587,21 @@ ForwardPostprocessResult RunGreyPostprocess(
                 }
 
                 if (restarting)
-                    greyPhysics->reseedRNG(RestartGenerationSeed(
+                    greyPhysics->reseedRNG(ApplySeedOffset(RestartGenerationSeed(
                         RestartPass::Grey, rank,
-                        greyCompletedFinalGenerations + greyFinalGenerationIndex));
+                        greyCompletedFinalGenerations + greyFinalGenerationIndex), cfg.seedOffset));
                 else
-                    greyPhysics->reseedRNG(static_cast<uint64_t>(rank + 87654321) * greyTotalGenerations + gen);
+                    greyPhysics->reseedRNG(ApplySeedOffset(
+                        static_cast<uint64_t>(rank + 87654321) * greyTotalGenerations + gen, cfg.seedOffset));
 
                 greyManager->getParticles().clear();
-                InstallWeightSplit(cfg, runtime, *greyPhysics, greySplit);
+                InstallWeightSplit(cfg, runtime, *greyPhysics, greySplit, false);
+                greyObserver->setGenerationRecords(cfg.generationStokes);
+                if (greyGenerationOrigin < 0)
+                    greyGenerationOrigin = static_cast<long>(greyFinalStartGeneration + greyCompletedFinalGenerations);
+                greyObserver->setGenerationRecordId(greyFinalThisGen
+                    ? static_cast<long long>(greyGenerationOrigin) + static_cast<long long>(greyFinalGenerationIndex)
+                    : static_cast<long long>(gen));
                 greyManager->step(cells, cfg.transportTime);
                 if (cfg.volumeEmissionEnabled && greyPhysics->hasPostProcessVolumeEmission()) {
                     double volumeEnergy = greyPhysics->getLastVolumeEmissionEnergy();
@@ -688,7 +699,7 @@ ForwardPostprocessResult RunGreyPostprocess(
                 greyBoundary->resetEscapedEnergy();
                 greyObserver->printHeavyPacketReport("grey", gen + 1, 10);
                 greyObserver->printEscapeOriginReport("grey", gen + 1);
-                result.splitCopies += PrintWeightSplitReport(cfg, *greyPhysics, greySplit, "grey", gen + 1, rank);
+                result.splitCopies += PrintWeightSplitReport(cfg, *greyPhysics, greySplit, "grey", gen + 1, rank, &result);
                 PrintCompressionReport(cfg, *greyPhysics, "grey", gen + 1, rank);
                 greyObserver->mpiReduceToRank0();
                 if (greyIncludeGenerationInFinal) {
@@ -986,6 +997,9 @@ ForwardPostprocessResult RunGreyPostprocess(
                 greySaved.completedFinalGenerations =
                     greyCompletedFinalGenerations + greyIncludedFinalGenerations;
                 greySaved.loadBalance = std::move(greySavedLoadBalance);
+                if (greyGenerationOrigin < 0)
+                    greyGenerationOrigin = static_cast<long>(greyFinalStartGeneration + greyCompletedFinalGenerations);
+                greySaved.nextGenerationID = greyGenerationOrigin + static_cast<long>(greyIncludedFinalGenerations);
                 WriteGreyPassScratch(cfg, *greyObserver, greyDiagnostics, greySaved);
 
                 if (cfg.fluxSourceCompare && !forwardResult.ran)

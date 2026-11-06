@@ -680,6 +680,8 @@ SphericalObserver::SphericalObserver(Vector3D center, double radius,
     escapeWeightCount_.assign(numGroups_ * kEscapeWeightBins, 0.0);
     escapeWeightEnergySum_.assign(numGroups_ * kEscapeWeightBins, 0.0);
     escapeWeightCountSum_.assign(numGroups_ * kEscapeWeightBins, 0.0);
+    overweightEnergy_.assign(numGroups_, 0.0);
+    overweightCount_.assign(numGroups_, 0.0);
 #ifdef MONTECARLO_POLARIZATION
     observerStokesQ_.assign(numObservers_, 0.0);
     observerStokesU_.assign(numObservers_, 0.0);
@@ -798,6 +800,9 @@ void SphericalObserver::recordCrossing(::ObserverCrossingRecord const& rec)
         observerMaxPacketEnergy_[obs] = rec.weight;
     ++observerCrossingCount_[obs];
     recordHeavyCrossing(obs, findGroup(rec.frequency), rec);
+    if (provenanceEnabled_)
+        provenanceGeneration_.record(findGroup(rec.frequency), rec.weight, rec.splitFactor,
+                                     rec.birthGroup, rec.provenance0, rec.provenance1);
 
     if (numGroups_ > 1) {
         size_t g = findGroup(rec.frequency);
@@ -1169,6 +1174,12 @@ void SphericalObserver::recordHeavyCrossing(size_t obs, size_t group,
             kEscapeWeightEdges.begin());
     escapeWeightEnergy_[group * kEscapeWeightBins + weightBin] += w;
     escapeWeightCount_[group * kEscapeWeightBins + weightBin] += 1.0;
+    double const threshold = group < overweightGroupThreshold_.size()
+        ? overweightGroupThreshold_[group] : overweightThreshold_;
+    if (threshold > 0.0 && w > threshold) {
+        overweightEnergy_[group] += w;
+        overweightCount_[group] += 1.0;
+    }
     if (escapeOriginFaceCells_ != nullptr || escapeOriginHotCells_ != nullptr) {
         escapeOriginEnergy_[escapeOriginClass(rec.sourceCellID) * numGroups_ + group] += rec.weight;
         if (rec.compressionConverted)
@@ -1231,6 +1242,16 @@ void SphericalObserver::printHeavyPacketReport(std::string const& label,
     MPI_Reduce(rank == 0 ? MPI_IN_PLACE : &maxGrowth, &maxGrowth, 1,
                MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
 #endif
+    std::vector<double> overweightEnergy = overweightEnergy_;
+    std::vector<double> overweightCount = overweightCount_;
+#ifdef RICH_MPI
+    if (!overweightEnergy.empty()) {
+        MPI_Reduce(rank == 0 ? MPI_IN_PLACE : overweightEnergy.data(), overweightEnergy.data(),
+                   static_cast<int>(overweightEnergy.size()), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce(rank == 0 ? MPI_IN_PLACE : overweightCount.data(), overweightCount.data(),
+                   static_cast<int>(overweightCount.size()), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    }
+#endif
 
     // Bins ranked by the share of their energy carried by one packet. Only
     // bins with many crossings are ranked: in a bin with a handful of
@@ -1242,6 +1263,9 @@ void SphericalObserver::printHeavyPacketReport(std::string const& label,
     size_t dominated90 = 0;
     size_t nonEmpty = 0;
     size_t ranked = 0;
+    std::vector<size_t> rankedByGroup(numGroups_, 0);
+    std::vector<size_t> dominatedHalfByGroup(numGroups_, 0);
+    std::vector<size_t> dominated90ByGroup(numGroups_, 0);
     for (size_t b = 0; b < nBins; ++b) {
         if (!(binEnergy[b] > 0.0))
             continue;
@@ -1249,9 +1273,11 @@ void SphericalObserver::printHeavyPacketReport(std::string const& label,
         if (binCount[b] < kMinRankedCrossings)
             continue;
         ++ranked;
+        size_t const g = b % numGroups_;
+        ++rankedByGroup[g];
         double const share = binMax[b].value / binEnergy[b];
-        if (share > 0.5) ++dominatedHalf;
-        if (share > 0.9) ++dominated90;
+        if (share > 0.5) { ++dominatedHalf; ++dominatedHalfByGroup[g]; }
+        if (share > 0.9) { ++dominated90; ++dominated90ByGroup[g]; }
         order.push_back(b);
     }
     auto share = [&](size_t b) { return binMax[b].value / binEnergy[b]; };
@@ -1304,6 +1330,38 @@ void SphericalObserver::printHeavyPacketReport(std::string const& label,
                 << (totalEnergy > 0.0 ? growthEnergy[k] / totalEnergy : 0.0);
     }
     std::cout << summary.str() << std::endl;
+    if (numGroups_ > 1) {
+        std::vector<double> groupEnergy(numGroups_, 0.0);
+        for (size_t b = 0; b < nBins; ++b)
+            groupEnergy[b % numGroups_] += binEnergy[b];
+        auto list = [](auto const& values) {
+            std::ostringstream out;
+            out << std::setprecision(4) << "[";
+            for (size_t g = 0; g < values.size(); ++g)
+                out << (g ? "," : "") << values[g];
+            out << "]";
+            return out.str();
+        };
+        std::ostringstream byGroup;
+        byGroup << "HEAVY_PACKETS_BY_GROUP " << label << " gen=" << generation
+                << " bins_ge100_crossings=" << list(rankedByGroup)
+                << " one_packet_gt50pct=" << list(dominatedHalfByGroup)
+                << " one_packet_gt90pct=" << list(dominated90ByGroup);
+        if (overweightThreshold_ > 0.0 || !overweightGroupThreshold_.empty()) {
+            std::vector<double> overweightFraction(numGroups_, 0.0);
+            for (size_t g = 0; g < numGroups_; ++g)
+                overweightFraction[g] = groupEnergy[g] > 0.0 ? overweightEnergy[g] / groupEnergy[g] : 0.0;
+            byGroup << std::setprecision(4);
+            if (overweightGroupThreshold_.empty())
+                byGroup << " overweight_threshold=" << overweightThreshold_;
+            else
+                byGroup << " overweight_group_threshold=" << list(overweightGroupThreshold_);
+            byGroup
+                    << " overweight_count=" << list(overweightCount)
+                    << " overweight_energy_frac=" << list(overweightFraction);
+        }
+        std::cout << byGroup.str() << std::endl;
+    }
     for (size_t i = 0; i < nTop; ++i) {
         size_t const b = order[i];
         double const w = binMax[b].value;
@@ -1326,6 +1384,115 @@ void SphericalObserver::printHeavyPacketReport(std::string const& label,
              << " rank=" << binMax[b].rank;
         std::cout << line.str() << std::endl;
     }
+}
+
+void SphericalObserver::setOverweightThreshold(double weight)
+{
+    overweightThreshold_ = (weight > 0.0 && std::isfinite(weight)) ? weight : 0.0;
+}
+
+void SphericalObserver::setOverweightGroupThresholds(std::vector<double> weights)
+{
+    if (!weights.empty() && weights.size() != numGroups_)
+        throw UniversalError("setOverweightGroupThresholds: one threshold per observer group required");
+    overweightGroupThreshold_ = std::move(weights);
+}
+
+void SphericalObserver::configureProvenance(bool enabled, std::vector<double> const& referenceEnergy,
+                                            bool accumulate)
+{
+    provenanceEnabled_ = enabled && numGroups_ > 1;
+    provenanceAccumulate_ = provenanceEnabled_ && accumulate;
+    if (!provenanceEnabled_)
+        return;
+    if (provenanceGeneration_.groups() != numGroups_) {
+        provenanceGeneration_ = PacketProvenanceTally(numGroups_);
+        provenancePass_ = PacketProvenanceTally(numGroups_);
+        provenancePassGenerations_ = 0;
+    }
+    std::vector<double> reference = referenceEnergy;
+    if (reference.empty())
+        reference.assign(numGroups_, 0.0);   // every crossing in the missing-reference bin
+    provenanceGeneration_.setReference(reference);
+    provenancePass_.setReference(reference);
+}
+
+void SphericalObserver::reportProvenanceGeneration(std::string const& label, size_t generation, int rank)
+{
+    if (!provenanceEnabled_)
+        return;
+    std::vector<double>& local = provenanceGeneration_.data();
+#ifdef RICH_MPI
+    std::vector<double> reduced(rank == 0 ? local.size() : 0, 0.0);
+    MPI_Reduce(local.data(), rank == 0 ? reduced.data() : nullptr, static_cast<int>(local.size()),
+               MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    if (rank == 0)
+        local.swap(reduced);
+#endif
+    if (rank == 0) {
+        auto const bands = provenanceGeneration_.summarize();
+        std::ostringstream line;
+        line << std::setprecision(4) << "PROVENANCE_TAIL " << label << " gen=" << generation
+             << " accumulate=" << (provenanceAccumulate_ ? 1 : 0) << " tail_w2=[";
+        for (size_t g = 0; g < bands.size(); ++g)
+            line << (g ? "," : "") << bands[g].tailW2;
+        for (size_t c = 0; c < PacketProvenanceTally::kCandidates; ++c) {
+            line << "] useful_share_candidate" << c << "=[";
+            for (size_t g = 0; g < bands.size(); ++g) {
+                double const t = bands[g].tailW2;
+                line << (g ? "," : "") << (t > 0.0 ? bands[g].classW2[c][0] / t : -1.0);
+            }
+        }
+        line << "] tail_crossings=[";
+        for (size_t g = 0; g < bands.size(); ++g)
+            line << (g ? "," : "") << bands[g].crossings;
+        line << "]";
+        std::cout << line.str() << std::endl;
+        if (provenanceAccumulate_) {
+            provenancePass_.add(provenanceGeneration_);
+            ++provenancePassGenerations_;
+        }
+    }
+    provenanceGeneration_.clear();
+}
+
+void SphericalObserver::printProvenanceSummary(std::string const& label) const
+{
+    if (provenancePassGenerations_ == 0 || provenancePass_.groups() == 0)
+        return;
+    static char const* const classNames[PacketProvenanceTally::kClasses] = {
+        "useful", "ballistic", "zero_importance", "ddmc", "none"};
+    auto const bands = provenancePass_.summarize();
+    for (size_t c = 0; c < PacketProvenanceTally::kCandidates; ++c) {
+        for (size_t g = 0; g < bands.size(); ++g) {
+            auto const& band = bands[g];
+            std::ostringstream line;
+            line << std::setprecision(4) << "PROVENANCE_GATE " << label << " candidate=" << c
+                 << " group=" << g << " generations=" << provenancePassGenerations_
+                 << " tail_crossings=" << band.crossings << " tail_w2=" << band.tailW2;
+            if (!(band.tailW2 > 0.0)) {
+                line << " no_observed_tail";
+            } else {
+                line << " F=" << band.classW2[c][0] / band.tailW2;
+                for (size_t k = 1; k < PacketProvenanceTally::kClasses; ++k)
+                    line << " " << classNames[k] << "=" << band.classW2[c][k] / band.tailW2;
+                line << " born_elsewhere=" << band.bornElsewhereW2 / band.tailW2
+                     << " unknown_birth=" << band.unknownBirthW2 / band.tailW2
+                     << " refused_ancestor=" << band.refusedW2 / band.tailW2;
+            }
+            std::cout << line.str() << std::endl;
+        }
+    }
+}
+
+void SphericalObserver::setGenerationRecords(bool enabled)
+{
+    generationRecordsEnabled_ = enabled;
+}
+
+void SphericalObserver::setGenerationRecordId(long long id)
+{
+    generationRecordId_ = id;
 }
 
 void SphericalObserver::setEscapeOriginClassification(
@@ -1464,6 +1631,8 @@ void SphericalObserver::resetTallies()
     growthBinEnergy_.fill(0.0);
     growthBinCount_.fill(0.0);
     maxWeightGrowth_ = 0.0;
+    std::fill(overweightEnergy_.begin(), overweightEnergy_.end(), 0.0);
+    std::fill(overweightCount_.begin(), overweightCount_.end(), 0.0);
     std::fill(observerEnergy_.begin(), observerEnergy_.end(), 0.0);
     std::fill(observerEnergyWeightSq_.begin(), observerEnergyWeightSq_.end(), 0.0);
     std::fill(observerMaxPacketEnergy_.begin(), observerMaxPacketEnergy_.end(), 0.0);
@@ -1504,6 +1673,13 @@ void SphericalObserver::resetTallies()
 void SphericalObserver::clearGenerationStatistics()
 {
     generationStats_ = GenerationStatistics{};
+    provenancePass_.clear();
+    provenancePassGenerations_ = 0;
+    generationRecordIds_.clear();
+    generationRecordEnergy_.clear();
+    generationRecordStokesQ_.clear();
+    generationRecordStokesU_.clear();
+    generationRecordGroups_ = 0;
     std::fill(escapeWeightEnergySum_.begin(), escapeWeightEnergySum_.end(), 0.0);
     std::fill(escapeWeightCountSum_.begin(), escapeWeightCountSum_.end(), 0.0);
     escapeWeightGenerations_ = 0;
@@ -1511,6 +1687,30 @@ void SphericalObserver::clearGenerationStatistics()
 
 void SphericalObserver::accumulateCurrentTalliesForStatistics(double sourceDt)
 {
+    if (generationRecordsEnabled_) {
+        // Raw I, Q, U of this generation, [observer][group] (multigroup) or
+        // the observer totals (single group).
+        size_t const groups = numGroups_ > 1 ? numGroups_ : 1;
+        if (generationRecordIds_.empty())
+            generationRecordGroups_ = groups;
+        generationRecordIds_.push_back(static_cast<long>(generationRecordId_));
+        for (size_t i = 0; i < numObservers_; ++i) {
+            for (size_t g = 0; g < groups; ++g) {
+                double energy = numGroups_ > 1 ? groupEnergy_[i][g] : observerEnergy_[i];
+                double q = 0.0;
+                double u = 0.0;
+#ifdef MONTECARLO_POLARIZATION
+                if (polarizationOutputEnabled_) {
+                    q = numGroups_ > 1 ? groupStokesQ_[i][g] : observerStokesQ_[i];
+                    u = numGroups_ > 1 ? groupStokesU_[i][g] : observerStokesU_[i];
+                }
+#endif
+                generationRecordEnergy_.push_back(energy);
+                generationRecordStokesQ_.push_back(q);
+                generationRecordStokesU_.push_back(u);
+            }
+        }
+    }
     for (size_t k = 0; k < escapeWeightEnergy_.size(); ++k) {
         escapeWeightEnergySum_[k] += escapeWeightEnergy_[k];
         escapeWeightCountSum_[k] += escapeWeightCount_[k];
@@ -3060,6 +3260,44 @@ void SphericalObserver::writeHDF5(std::string const& filename,
     writer.WriteElement("/diagnostics/polarization_positive_Q_convention",
                         std::string("aligned_with_projected_reference_axis"));
 #endif
+    if (provenancePassGenerations_ > 0 && provenancePass_.groups() > 0) {
+        // Segment-local (a restarted run covers its own generations).
+        std::string const p = "/diagnostics/packet_provenance/";
+        writer.WriteElement(p + "generations", provenancePassGenerations_);
+        writer.WriteElement(p + "x_edges", std::vector<double>(PacketProvenanceTally::kXEdges.begin(),
+                                                               PacketProvenanceTally::kXEdges.end()));
+        writer.WriteElement(p + "candidate_scales", std::vector<double>{1.0, 0.2});
+        writer.WriteElement(p + "last_reference_energy", provenancePass_.reference());
+        writer.WriteElement(p + "layout", std::string(
+            "segment-local (this run's final generations; not restart state). "
+            "flat tables with <name>_shape; last axis (count, sum_w, sum_w2, sum_kw2); x bins: "
+            "[0,1e-3],(1e-3,1e-2],(1e-2,3e-2],(3e-2,0.1],(0.1,0.3],(0.3,1],(1,10],(10,inf),missing_reference; "
+            "class axis: useful, ballistic, zero_importance, ddmc, none; birth_group axis: groups then unknown; "
+            "channel axis: bit0 elastic, bit1 thermal, bit2 ddmc, bit3 face; birth_kind axis: kind (bit0 learned "
+            "pdf, bit1 face) + 4 x exploration"));
+        std::vector<double> const& data = provenancePass_.data();
+        for (auto const& section : provenancePass_.sections()) {
+            size_t n = 1;
+            for (size_t const d : section.shape)
+                n *= d;
+            writer.WriteElement(p + section.name + "_shape", section.shape);
+            writer.WriteElement(p + section.name, std::vector<double>(data.begin() + static_cast<std::ptrdiff_t>(section.offset),
+                                                                      data.begin() + static_cast<std::ptrdiff_t>(section.offset + n)));
+        }
+    }
+    if (generationRecordsEnabled_ && !generationRecordIds_.empty()) {
+        std::string const p = "/diagnostics/generation_stokes/";
+        std::vector<size_t> const shape{generationRecordIds_.size(), numObservers_, generationRecordGroups_};
+        writer.WriteElement(p + "generation_id", generationRecordIds_);
+        for (char const* name : {"energy", "stokes_q", "stokes_u"})
+            writer.WriteElement(p + name + std::string("_shape"), shape);
+        writer.WriteElement(p + "energy", generationRecordEnergy_);
+        writer.WriteElement(p + "stokes_q", generationRecordStokesQ_);
+        writer.WriteElement(p + "stokes_u", generationRecordStokesU_);
+        writer.WriteElement(p + "layout", std::string(
+            "[generation][observer][group] raw outward-crossing energy and absolute Stokes Q, U (erg) of each "
+            "final generation of this segment; generation_id is the absolute generation index"));
+    }
 }
 
 void SphericalObserver::writeVTK(std::string const& filename, double sourceDt) const

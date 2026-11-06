@@ -1272,8 +1272,9 @@ void PrintSourcePhotonDistribution(
 }
 
 RadiationIMC::GroupSamplingDiagnostics
-ReduceGroupSamplingDiagnostics(RadiationIMC::GroupSamplingDiagnostics local)
+ReduceGroupSamplingDiagnostics(RadiationIMC::GroupSamplingDiagnostics local, bool birthWeights)
 {
+    (void)birthWeights;
 #ifdef RICH_MPI
     size_t const localWeightCorrectionCount = local.weightCorrectionCount;
     unsigned long long sums[7] = {
@@ -1324,6 +1325,43 @@ ReduceGroupSamplingDiagnostics(RadiationIMC::GroupSamplingDiagnostics local)
                   MPI_COMM_WORLD);
     local.weightCorrectionMin = std::isfinite(minCorr) ? minCorr : 1.0;
     local.weightCorrectionMax = local.weightCorrectionCount > 0 ? maxCorr : 1.0;
+
+    constexpr size_t kBirthEntries =
+        RadiationIMC::GroupSamplingDiagnostics::kBirthKinds * ENERGY_GROUPS_NUM;
+    std::vector<unsigned long long> birthCounts(kBirthEntries, 0ULL);
+    std::vector<double> birthEnergies(kBirthEntries, 0.0);
+    for (size_t k = 0; k < RadiationIMC::GroupSamplingDiagnostics::kBirthKinds; ++k)
+        for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
+            birthCounts[k * ENERGY_GROUPS_NUM + g] =
+                static_cast<unsigned long long>(local.birthCount[k][g]);
+            birthEnergies[k * ENERGY_GROUPS_NUM + g] = local.birthEnergy[k][g];
+        }
+    MPI_Allreduce(MPI_IN_PLACE, birthCounts.data(), static_cast<int>(kBirthEntries),
+                  MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, birthEnergies.data(), static_cast<int>(kBirthEntries),
+                  MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    for (size_t k = 0; k < RadiationIMC::GroupSamplingDiagnostics::kBirthKinds; ++k)
+        for (size_t g = 0; g < ENERGY_GROUPS_NUM; ++g) {
+            local.birthCount[k][g] =
+                static_cast<size_t>(birthCounts[k * ENERGY_GROUPS_NUM + g]);
+            local.birthEnergy[k][g] = birthEnergies[k * ENERGY_GROUPS_NUM + g];
+        }
+    if (birthWeights) {
+        using Diag = RadiationIMC::GroupSamplingDiagnostics;
+        std::vector<unsigned long long> histogram(Diag::kBirthClasses * Diag::kBirthWeightBins, 0ULL);
+        for (size_t c = 0; c < Diag::kBirthClasses; ++c)
+            for (size_t b = 0; b < Diag::kBirthWeightBins; ++b)
+                histogram[c * Diag::kBirthWeightBins + b] =
+                    static_cast<unsigned long long>(local.birthWeightHistogram[c][b]);
+        MPI_Allreduce(MPI_IN_PLACE, histogram.data(), static_cast<int>(histogram.size()),
+                      MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, local.birthWeightMax.data(), static_cast<int>(Diag::kBirthClasses),
+                      MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        for (size_t c = 0; c < Diag::kBirthClasses; ++c)
+            for (size_t b = 0; b < Diag::kBirthWeightBins; ++b)
+                local.birthWeightHistogram[c][b] =
+                    static_cast<size_t>(histogram[c * Diag::kBirthWeightBins + b]);
+    }
 #endif
     local.cappedEnergyFraction = local.sampledEnergy > 0.0
         ? local.cappedEnergy / local.sampledEnergy
@@ -1351,6 +1389,11 @@ void AccumulateGroupSamplingDiagnostics(
         }
     }
 
+    for (size_t c = 0; c < total.birthWeightMax.size(); ++c) {
+        total.birthWeightMax[c] = std::max(total.birthWeightMax[c], gen.birthWeightMax[c]);
+        for (size_t b = 0; b < total.birthWeightHistogram[c].size(); ++b)
+            total.birthWeightHistogram[c][b] += gen.birthWeightHistogram[c][b];
+    }
     total.totalSampled += gen.totalSampled;
     total.cellsWithGroupScores =
         std::max(total.cellsWithGroupScores, gen.cellsWithGroupScores);
@@ -1969,6 +2012,29 @@ void CollectGlobalObserverGroupQuality(
         flattenD(snap.sumKW2U);
         flattenD(snap.sumKW2UU);
     }
+#else
+    (void)snap;
+#endif
+}
+
+void CollectGlobalObserverGroupEnergy(
+    SphericalObserver::ObserverGroupQualitySnapshot& snap)
+{
+#ifdef RICH_MPI
+    size_t const nObs = snap.observerCount;
+    size_t const nGrp = snap.groupCount;
+    size_t const flat = nObs * nGrp;
+    if (flat == 0) return;
+    // Same flattening and reduction as CollectGlobalObserverGroupQuality, so
+    // the reduced energies (and the group windows built from them) agree.
+    std::vector<double> buf(flat, 0.0);
+    for (size_t o = 0; o < nObs; ++o)
+        for (size_t g = 0; g < nGrp; ++g)
+            buf[o * nGrp + g] = snap.energy[o][g];
+    MPI_Allreduce(MPI_IN_PLACE, buf.data(), static_cast<int>(flat), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    for (size_t o = 0; o < nObs; ++o)
+        for (size_t g = 0; g < nGrp; ++g)
+            snap.energy[o][g] = buf[o * nGrp + g];
 #else
     (void)snap;
 #endif
@@ -2617,6 +2683,143 @@ AdaptiveGroupSourceUpdateSummary UpdateAdaptiveSourceGroupScores(
                   << std::endl;
     }
     return summary;
+}
+
+namespace {
+
+template <typename T>
+std::string BandList(T const& values)
+{
+    std::ostringstream out;
+    out << std::setprecision(4) << "[";
+    for (size_t g = 0; g < values.size(); ++g)
+        out << (g ? "," : "") << values[g];
+    out << "]";
+    return out.str();
+}
+
+} // namespace
+
+void PrintBandGenerationDiagnostics(
+    std::string const& label,
+    SphericalObserver::ObserverGroupQualitySnapshot const& snap,
+    RadiationIMC::GroupSamplingDiagnostics const& gsd,
+    size_t gen,
+    int rank)
+{
+    if (rank != 0 || snap.groupCount < 2)
+        return;
+    using Diag = RadiationIMC::GroupSamplingDiagnostics;
+    static char const* const kindNames[Diag::kBirthKinds] = {
+        "volume_physical", "volume_learned", "face_physical", "face_learned"};
+    for (size_t k = 0; k < Diag::kBirthKinds; ++k) {
+        size_t total = 0;
+        for (size_t const c : gsd.birthCount[k])
+            total += c;
+        if (total == 0)
+            continue;
+        std::cout << "BAND_BIRTH " << label << " gen=" << (gen + 1)
+                  << " kind=" << kindNames[k]
+                  << " count=" << BandList(gsd.birthCount[k])
+                  << " energy=" << BandList(gsd.birthEnergy[k]) << std::endl;
+    }
+    // Filled only with packet provenance on.
+    if (std::any_of(gsd.birthWeightMax.begin(), gsd.birthWeightMax.end(), [](double w) { return w > 0.0; }))
+        std::cout << "BIRTH_WEIGHT_MAX " << label << " gen=" << (gen + 1)
+                  << " class_max=" << BandList(gsd.birthWeightMax)
+                  << " (class = kind + 4 x exploration; kinds volume_physical, volume_learned,"
+                     " face_physical, face_learned)" << std::endl;
+
+    // Escaping energy and crossings summed over observers; medians over the
+    // observer bins with crossings of n_eff = E^2 / sum k w^2 and of
+    // n_eff / crossings. k is the split factor, so a bin of equal-weight
+    // copies of one split packet has n_eff / crossings = 1 / copies: the
+    // ratio is split-adjusted, not the plain Kish efficiency.
+    size_t const nGrp = snap.groupCount;
+    std::vector<double> energy(nGrp, 0.0), crossings(nGrp, 0.0);
+    std::vector<double> neffMedian(nGrp, 0.0), efficiencyMedian(nGrp, 0.0);
+    std::vector<size_t> activeBins(nGrp, 0);
+    for (size_t g = 0; g < nGrp; ++g) {
+        std::vector<double> neff, efficiency;
+        for (size_t o = 0; o < snap.observerCount; ++o) {
+            double const e = snap.energy[o][g];
+            double const w2 = snap.energyWeightSq[o][g];
+            double const n = static_cast<double>(snap.crossingCount[o][g]);
+            energy[g] += e;
+            crossings[g] += n;
+            if (!(n > 0.0) || !(w2 > 0.0))
+                continue;
+            double const binNeff = e * e / w2;
+            neff.push_back(binNeff);
+            efficiency.push_back(binNeff / n);
+        }
+        activeBins[g] = neff.size();
+        neffMedian[g] = Percentile(neff, 0.5);
+        efficiencyMedian[g] = Percentile(efficiency, 0.5);
+    }
+    std::cout << "BAND_ESCAPE " << label << " gen=" << (gen + 1)
+              << " energy=" << BandList(energy)
+              << " crossings=" << BandList(crossings)
+              << " active_bins=" << BandList(activeBins)
+              << " split_adjusted_neff_med=" << BandList(neffMedian)
+              << " split_adjusted_neff_per_crossing_med=" << BandList(efficiencyMedian) << std::endl;
+}
+
+void PrintBandScoreShares(
+    std::string const& label,
+    AdaptiveSourceState const& integratedState,
+    AdaptiveGroupSourceState const& groupState,
+    size_t gen,
+    int rank)
+{
+    // Both maps are replicated on every rank (their deltas are allgathered),
+    // so rank 0 sums them alone. These are raw score shares: the Neyman
+    // allocation takes a power of the combined score, with floors and caps,
+    // so they are not packet-budget fractions.
+    if (rank != 0)
+        return;
+    double integratedSum = 0.0;
+    for (auto const& kv : integratedState.scoreByCellID)
+        if (kv.second > 0.0 && std::isfinite(kv.second))
+            integratedSum += kv.second;
+    // Cells whose group-layer score exceeds their integrated score (missing
+    // integrated entries count as zero, so group-only cells are included).
+    size_t groupDominatedCells = 0;
+    for (auto const& kv : groupState.cellScoreFromGroups) {
+        if (!(kv.second > 0.0) || !std::isfinite(kv.second))
+            continue;
+        auto const it = integratedState.scoreByCellID.find(kv.first);
+        double const integrated = (it != integratedState.scoreByCellID.end() &&
+                                   it->second > 0.0 && std::isfinite(it->second))
+            ? it->second : 0.0;
+        if (kv.second > integrated)
+            ++groupDominatedCells;
+    }
+    std::vector<double> byBand(ENERGY_GROUPS_NUM, 0.0);
+    double groupSum = 0.0;
+    for (auto const& kv : groupState.scoreByCellGroup) {
+        if (byBand.size() < kv.second.size())
+            byBand.resize(kv.second.size(), 0.0);
+        for (size_t g = 0; g < kv.second.size(); ++g)
+            if (kv.second[g] > 0.0 && std::isfinite(kv.second[g]))
+                byBand[g] += kv.second[g];
+    }
+    for (double const s : byBand)
+        groupSum += s;
+    double const combined = integratedSum + groupSum;
+    std::vector<double> bandShare(byBand.size(), 0.0);
+    for (size_t g = 0; g < byBand.size(); ++g)
+        bandShare[g] = combined > 0.0 ? byBand[g] / combined : 0.0;
+    std::ostringstream line;
+    line << std::setprecision(4) << "BAND_SCORE " << label << " gen=" << (gen + 1)
+         << " integrated_sum=" << integratedSum
+         << " group_sum=" << groupSum
+         << " group_share=" << (combined > 0.0 ? groupSum / combined : 0.0)
+         << " integrated_cells=" << integratedState.scoreByCellID.size()
+         << " group_cells=" << groupState.scoreByCellGroup.size()
+         << " group_dominated_cells=" << groupDominatedCells
+         << " band_share_of_combined=" << BandList(bandShare);
+    std::cout << line.str() << std::endl;
 }
 
 void PrintAdaptiveGroupGenerationStats(
@@ -3830,5 +4033,29 @@ void PrintVmRSS(std::string const& label, int rank) {
 }
 
 
+
+} // namespace imc_postprocess_tde
+
+namespace imc_postprocess_tde {
+
+void PrintBirthWeightSummary(std::string const& label,
+                             RadiationIMC::GroupSamplingDiagnostics const& finalTotals,
+                             int rank)
+{
+    if (rank != 0)
+        return;
+    using Diag = RadiationIMC::GroupSamplingDiagnostics;
+    for (size_t c = 0; c < Diag::kBirthClasses; ++c) {
+        size_t total = 0;
+        for (size_t const n : finalTotals.birthWeightHistogram[c])
+            total += n;
+        if (total == 0)
+            continue;
+        std::cout << "BIRTH_WEIGHT_FINAL " << label << " class=" << c << " kind=" << (c % 4)
+                  << " exploration=" << (c / 4) << " births=" << total
+                  << " max=" << finalTotals.birthWeightMax[c]
+                  << " decades_from_1e30=" << BandList(finalTotals.birthWeightHistogram[c]) << std::endl;
+    }
+}
 
 } // namespace imc_postprocess_tde

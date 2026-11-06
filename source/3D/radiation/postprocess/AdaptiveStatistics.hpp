@@ -267,8 +267,10 @@ void PrintSourcePhotonDistribution(
     std::string const& label,
     SourcePhotonDistribution const& dist,
     int rank);
+// birthWeights: also reduce the birth-weight histograms and maxima (filled
+// only with packet provenance on; must be the same on every rank).
 RadiationIMC::GroupSamplingDiagnostics ReduceGroupSamplingDiagnostics(
-    RadiationIMC::GroupSamplingDiagnostics local);
+    RadiationIMC::GroupSamplingDiagnostics local, bool birthWeights);
 void AccumulateGroupSamplingDiagnostics(
     RadiationIMC::GroupSamplingDiagnostics& total,
     RadiationIMC::GroupSamplingDiagnostics const& gen);
@@ -344,6 +346,9 @@ void PrintAdaptiveGenerationStats(
     bool adaptiveActive,
     int rank);
 void CollectGlobalObserverGroupQuality(SphericalObserver::ObserverGroupQualitySnapshot& snap);
+// Reduces only snap.energy (the same all-reduce as above); every other field
+// of snap stays rank-local.
+void CollectGlobalObserverGroupEnergy(SphericalObserver::ObserverGroupQualitySnapshot& snap);
 ObserverGroupQualityDiagnostics BuildObserverGroupQualityDiagnosticsFromSnapshot(
     SphericalObserver::ObserverGroupQualitySnapshot const& snap,
     Config const& cfg,
@@ -372,6 +377,27 @@ void PrintAdaptiveIterationSummary(
     size_t finalGenerations,
     bool adaptiveActive,
     bool includeInFinal,
+    int rank);
+// Per-band diagnostics of one generation (multigroup, rank 0 prints). snap is
+// the global observer/group snapshot and gsd the reduced group-sampling
+// diagnostics: BAND_BIRTH (completed births per birth group and kind) and
+// BAND_ESCAPE (escaping energy and crossings per group, and medians of
+// split-adjusted n_eff and n_eff / crossings over observer bins with
+// crossings).
+void PrintBandGenerationDiagnostics(
+    std::string const& label,
+    SphericalObserver::ObserverGroupQualitySnapshot const& snap,
+    RadiationIMC::GroupSamplingDiagnostics const& gsd,
+    size_t gen,
+    int rank);
+// BAND_SCORE: the band-blind integrated cell scores and the group-layer cell
+// scores that BuildCombinedSourceScoresForIMC adds, with each band's share of
+// the combined sum (rank 0 prints; both maps are replicated).
+void PrintBandScoreShares(
+    std::string const& label,
+    AdaptiveSourceState const& integratedState,
+    AdaptiveGroupSourceState const& groupState,
+    size_t gen,
     int rank);
 // groupSource is this generation's group-score update, or nullptr when none
 // ran (burn-in, or the group source layer off).
@@ -496,6 +522,12 @@ bool ResetPeakRSS();
 // MPI_COMM_WORLD.
 void ReportGenerationMemory(char const* pass, size_t generation, int rank, int mpiSize,
                             Tessellation3D const& tess, size_t censusParticles);
+
+// Rank 0: BIRTH_WEIGHT_FINAL lines (completed-birth weight histogram and
+// maximum per birth class over the final generations).
+void PrintBirthWeightSummary(std::string const& label,
+                             RadiationIMC::GroupSamplingDiagnostics const& finalTotals,
+                             int rank);
 
 } // namespace imc_postprocess_tde
 

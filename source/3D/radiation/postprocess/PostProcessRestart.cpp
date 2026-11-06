@@ -6,6 +6,7 @@
 #include <exception>
 #include <functional>
 #include <iostream>
+#include <numeric>
 #include <sstream>
 #include <type_traits>
 #include <unordered_map>
@@ -629,6 +630,12 @@ std::vector<std::string> const& MustMatchOptions()
         "transport.ddmc-max-cell-advection-peclet",
         "transport.ddmc-compression-max-dynamical-times",
         "transport.use-cell-velocities",
+        // The restored per-group window state and the random streams.
+        "transport.split-per-group",
+        "transport.split-group-scale",
+        "transport.split-group-floor",
+        "transport.split-importance-floor",
+        "transport.seed-offset",
         "transport.compton.enabled",
         "transport.compton.matrix-samples",
         "transport.compton.angle-dependent",
@@ -680,6 +687,11 @@ std::unordered_map<std::string, std::string> const& LegacyOptionValues()
         {"volume-emission.cooling-limit-per-pass", "false"},
         {"transport.weight-cutoff-fraction", "0.001"},
         {"input.missing-radiation", "auto"},
+        {"transport.split-per-group", "false"},
+        {"transport.split-group-scale", "1"},
+        {"transport.split-group-floor", "0.001"},
+        {"transport.split-importance-floor", "0"},
+        {"transport.seed-offset", "0"},
     };
     return values;
 }
@@ -727,13 +739,20 @@ void CheckRestartCompatibility(
                 "Restart file " + path + " has no restart state (written before restarts were supported, "
                 "or not a post-process result); it cannot be continued");
         int const schema = state_hdf5::ReadScalar<int>(reader, "/restart/schema_version");
-        if (schema != kRestartSchemaVersion) {
+        if (schema < kOldestReadableRestartSchema || schema > kRestartSchemaVersion) {
             UniversalError eo("Restart file " + path + " has an unsupported restart schema; "
                               "files written before schema 2 lack the DDMC compression clock and work "
                               "and the split-aware polarization statistics, so they cannot be continued: "
                               "start a fresh run");
             eo.addEntry("schema", schema);
             eo.addEntry("supported", kRestartSchemaVersion);
+            throw eo;
+        }
+        if (schema < 3 && (effectiveConfig.transport.splitPerGroup || effectiveConfig.transport.seedOffset != 0)) {
+            // Schema 2 has no weight-split state and only the default seeds.
+            UniversalError eo("Restart file " + path + " (schema 2) can only be continued with "
+                              "transport.split-per-group false and transport.seed-offset 0");
+            eo.addEntry("schema", schema);
             throw eo;
         }
 
@@ -842,6 +861,70 @@ void CheckRestartSourceSurface(
 
 namespace {
 
+// Rank 0: reads and validates learned_state/weight_split.
+void ReadWeightSplitRestartState(HDF5Reader const& reader, std::string const& p, size_t groups,
+                                 WeightSplitRestartState& split)
+{
+    split = WeightSplitRestartState{};
+    auto flag = [&](std::string const& name) {
+        int const value = state_hdf5::ReadScalar<int>(reader, p + "/" + name);
+        if (value != 0 && value != 1)
+            throw UniversalError("Restart weight-split state at " + p + " has a non-boolean " + name);
+        return value == 1;
+    };
+    if (!flag("present"))
+        throw UniversalError("Restart weight-split state at " + p + " is malformed (present != 1)");
+    split.present = true;
+    split.accumulated = flag("accumulated");
+    split.groupBoundaries = state_hdf5::ReadVector<double>(reader, p + "/group_boundaries");
+    if (split.groupBoundaries.size() != groups + 1)
+        throw UniversalError("Restart weight-split state at " + p + " has the wrong number of group boundaries");
+    // NaN would slip through the tolerance comparison with the run's boundaries.
+    // Strictly increasing leaves +inf possible only as the last (open) boundary.
+    for (size_t k = 0; k < split.groupBoundaries.size(); ++k) {
+        double const b = split.groupBoundaries[k];
+        if (std::isnan(b) || !(b >= 0.0) || (k > 0 && !(b > split.groupBoundaries[k - 1])))
+            throw UniversalError("Restart weight-split state at " + p +
+                                 " has NaN, negative or non-increasing group boundaries");
+    }
+    size_t const count = state_hdf5::ReadScalar<size_t>(reader, p + "/count");
+    split.cellIDs = state_hdf5::ReadVector<size_t>(reader, p + "/cell_ids", count);
+    split.escaped = state_hdf5::ReadVector<double>(reader, p + "/escaped", count);
+    split.emitted = state_hdf5::ReadVector<double>(reader, p + "/emitted", count);
+    split.spectrum = state_hdf5::ReadVector<double>(reader, p + "/spectrum");
+    split.spectrumValid = flag("spectrum_valid");
+    split.spectrumGeneration = state_hdf5::ReadScalar<long>(reader, p + "/spectrum_generation");
+    if (split.cellIDs.size() != count || split.escaped.size() != count || split.emitted.size() != count)
+        throw UniversalError("Restart weight-split state at " + p + " is truncated");
+    for (size_t k = 0; k < count; ++k)
+        if (!(split.escaped[k] >= 0.0) || !std::isfinite(split.escaped[k]) ||
+            !(split.emitted[k] >= 0.0) || !std::isfinite(split.emitted[k]))
+            throw UniversalError("Restart weight-split state at " + p + " has negative or non-finite energies");
+    if (!split.accumulated)
+        for (size_t k = 0; k < count; ++k)
+            if (split.escaped[k] > 0.0 || split.emitted[k] > 0.0)
+                throw UniversalError("Restart weight-split state at " + p +
+                                     " has accumulated energies but is marked not accumulated");
+    std::vector<size_t> sorted = split.cellIDs;
+    std::sort(sorted.begin(), sorted.end());
+    if (std::adjacent_find(sorted.begin(), sorted.end()) != sorted.end())
+        throw UniversalError("Restart weight-split state at " + p + " lists a cell twice");
+    if (split.spectrumValid) {
+        double total = 0.0;
+        for (double const e : split.spectrum) {
+            if (!(e >= 0.0) || !std::isfinite(e))
+                throw UniversalError("Restart weight-split spectrum at " + p + " is negative or non-finite");
+            total += e;
+        }
+        if (split.spectrum.size() != groups || !(total > 0.0) || !std::isfinite(total))
+            throw UniversalError("Restart weight-split spectrum at " + p + " is marked valid but is not");
+        if (split.spectrumGeneration < 0)
+            throw UniversalError("Restart weight-split spectrum at " + p + " has no producing generation");
+    } else if (!split.spectrum.empty() || split.spectrumGeneration != -1) {
+        throw UniversalError("Restart weight-split spectrum at " + p + " is marked invalid but has contents");
+    }
+}
+
 PassRestartState LoadPassRestartState(
     std::string const& path, RestartPass pass,
     size_t observerCount, size_t groupCount, int rank)
@@ -865,6 +948,26 @@ PassRestartState LoadPassRestartState(
             state.loadBalance.particles.size() != count)
             throw UniversalError("Restart load-balance measurements are truncated for " + group);
         ValidateLearnedState(state, observerCount, groupCount, group);
+        // Group first: probing a path under a missing group prints an HDF5
+        // error stack.
+        int const schema = state_hdf5::ReadScalar<int>(reader, "/restart/schema_version");
+        if (reader.Exists(group + "/learned_state/next_generation_id")) {
+            state.nextGenerationID = state_hdf5::ReadScalar<long>(reader, group + "/learned_state/next_generation_id");
+            if (state.nextGenerationID < 0)
+                throw UniversalError("Restart file " + path + " has a negative next generation index for " + group);
+        } else if (schema >= 3) {
+            // Written by every schema-3 file; without it generation indices
+            // would follow the continuation's ramp settings.
+            throw UniversalError("Restart file " + path + " (schema 3) has no next generation index for " + group);
+        }
+        if (reader.Exists(group + "/learned_state/weight_split") &&
+            reader.Exists(group + "/learned_state/weight_split/present")) {
+            ReadWeightSplitRestartState(reader, group + "/learned_state/weight_split", groupCount, state.split);
+            if (state.split.spectrumValid && state.nextGenerationID >= 0 &&
+                state.split.spectrumGeneration >= state.nextGenerationID)
+                throw UniversalError("Restart weight-split spectrum of " + path +
+                                     " was produced by a generation at or after the next one");
+        }
         SerializeLearnedState(state, bytes);
     });
 #ifdef RICH_MPI
@@ -873,10 +976,18 @@ PassRestartState LoadPassRestartState(
     // Every rank, rank 0 included, rebuilds the maps from the same sorted
     // sequence, so their iteration order is identical across ranks.
     LoadBalanceMeasurements loadBalance = std::move(state.loadBalance);
+    WeightSplitRestartState split = std::move(state.split);
+    long nextGenerationID = state.nextGenerationID;
+#ifdef RICH_MPI
+    MPI_Bcast(&nextGenerationID, 1, MPI_LONG, 0, MPI_COMM_WORLD);
+#endif
     state = PassRestartState{};
     DeserializeLearnedState(bytes, state);
-    if (rank == 0)
+    state.nextGenerationID = nextGenerationID;
+    if (rank == 0) {
         state.loadBalance = std::move(loadBalance);
+        state.split = std::move(split);
+    }
     state.adaptive.burninCompletePrinted = true;
     state.adaptive.postAdaptiveMeasuredLBDone = true;
     return state;
@@ -913,6 +1024,21 @@ void WritePassRestartState(
     state_hdf5::WriteVector(writer, "/load_balance/cell_ids", state.loadBalance.cellIDs);
     state_hdf5::WriteVector(writer, "/load_balance/steps", state.loadBalance.steps);
     state_hdf5::WriteVector(writer, "/load_balance/particles", state.loadBalance.particles);
+    if (state.nextGenerationID >= 0)
+        writer.WriteElement("/learned_state/next_generation_id", state.nextGenerationID);
+    if (state.split.present) {
+        std::string const p = "/learned_state/weight_split/";
+        writer.WriteElement(p + "present", 1);
+        writer.WriteElement(p + "accumulated", state.split.accumulated ? 1 : 0);
+        writer.WriteElement(p + "count", state.split.cellIDs.size());
+        state_hdf5::WriteVector(writer, p + "cell_ids", state.split.cellIDs);
+        state_hdf5::WriteVector(writer, p + "escaped", state.split.escaped);
+        state_hdf5::WriteVector(writer, p + "emitted", state.split.emitted);
+        state_hdf5::WriteVector(writer, p + "spectrum", state.split.spectrum);
+        writer.WriteElement(p + "spectrum_valid", state.split.spectrumValid ? 1 : 0);
+        writer.WriteElement(p + "spectrum_generation", state.split.spectrumGeneration);
+        state_hdf5::WriteVector(writer, p + "group_boundaries", state.split.groupBoundaries);
+    }
     writer.Close();
 }
 
@@ -1091,6 +1217,201 @@ LoadBalanceMeasurements FinishPassLoadBalance(
     if (ranGenerations)
         return gathered;
     return stored;
+}
+
+WeightSplitRestartState GatherWeightSplitRestartState(
+    WeightSplitState const& state,
+    std::vector<ComputationalCell3D> const& cells,
+    size_t nCells,
+    std::vector<double> const& groupBoundaries,
+    int rank)
+{
+    WeightSplitRestartState split;
+    split.present = true;
+    split.groupBoundaries = groupBoundaries;
+    split.accumulated = state.accumulated;
+    split.spectrumValid = state.spectrumValid;
+    split.spectrum = state.spectrumValid ? state.groupSpectrum : std::vector<double>();
+    split.spectrumGeneration = state.spectrumValid ? static_cast<long>(state.spectrumGeneration) : -1;
+    // Local cells with either accumulator, as (ID, escaped, emitted).
+    std::vector<unsigned long long> localIDs;
+    std::vector<double> localValues;
+    for (size_t i = 0; i < nCells && i < state.escapedEnergy.size() && i < state.emittedEnergy.size(); ++i) {
+        if (!(state.escapedEnergy[i] > 0.0) && !(state.emittedEnergy[i] > 0.0))
+            continue;
+        localIDs.push_back(static_cast<unsigned long long>(cells[i].ID));
+        localValues.push_back(state.escapedEnergy[i]);
+        localValues.push_back(state.emittedEnergy[i]);
+    }
+#ifdef RICH_MPI
+    int mpiSize = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &mpiSize);
+    // Collective size check before any Gatherv (every rank throws together).
+    unsigned long long localCells = localIDs.size();
+    unsigned long long totalCells = 0;
+    MPI_Allreduce(&localCells, &totalCells, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    if (2ULL * totalCells > static_cast<unsigned long long>(INT_MAX))
+        throw UniversalError("Too many weight-split cells to gather for the restart state");
+    int const localCount = static_cast<int>(localIDs.size());
+    std::vector<int> counts(rank == 0 ? static_cast<size_t>(mpiSize) : 0);
+    MPI_Gather(&localCount, 1, MPI_INT, counts.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+    std::vector<int> displacements, valueCounts, valueDisplacements;
+    long long total = 0;
+    if (rank == 0) {
+        displacements.resize(counts.size());
+        valueCounts.resize(counts.size());
+        valueDisplacements.resize(counts.size());
+        for (size_t r = 0; r < counts.size(); ++r) {
+            displacements[r] = static_cast<int>(total);
+            valueDisplacements[r] = static_cast<int>(2 * total);
+            valueCounts[r] = 2 * counts[r];
+            total += counts[r];
+        }
+    }
+    std::vector<unsigned long long> ids(rank == 0 ? static_cast<size_t>(total) : 0);
+    std::vector<double> values(rank == 0 ? static_cast<size_t>(2 * total) : 0);
+    MPI_Gatherv(localIDs.data(), localCount, MPI_UNSIGNED_LONG_LONG, ids.data(), counts.data(),
+                displacements.data(), MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+    MPI_Gatherv(localValues.data(), 2 * localCount, MPI_DOUBLE, values.data(), valueCounts.data(),
+                valueDisplacements.data(), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    if (rank != 0)
+        return split;
+#else
+    (void)rank;
+    std::vector<unsigned long long> const& ids = localIDs;
+    std::vector<double> const& values = localValues;
+#endif
+    // Sorted by cell ID so the file does not depend on the decomposition.
+    std::vector<size_t> order(ids.size());
+    std::iota(order.begin(), order.end(), size_t(0));
+    std::sort(order.begin(), order.end(), [&](size_t a, size_t b) { return ids[a] < ids[b]; });
+    split.cellIDs.reserve(ids.size());
+    split.escaped.reserve(ids.size());
+    split.emitted.reserve(ids.size());
+    for (size_t const k : order) {
+        split.cellIDs.push_back(static_cast<size_t>(ids[k]));
+        split.escaped.push_back(values[2 * k]);
+        split.emitted.push_back(values[2 * k + 1]);
+    }
+    return split;
+}
+
+void RestoreWeightSplitState(
+    WeightSplitRestartState const& stored,
+    std::vector<ComputationalCell3D> const& cells,
+    size_t nCells,
+    std::vector<double> const& groupBoundaries,
+    WeightSplitState& state,
+    int rank)
+{
+    size_t const groups = groupBoundaries.empty() ? 0 : groupBoundaries.size() - 1;
+    // The stored spectrum and statistics must refer to the same bands.
+    int boundariesMatch = 1;
+    if (rank == 0 && stored.present) {
+        if (stored.groupBoundaries.size() != groupBoundaries.size())
+            boundariesMatch = 0;
+        else
+            for (size_t k = 0; k < groupBoundaries.size(); ++k) {
+                // Equal (also both +inf), or both finite and within tolerance;
+                // a NaN or a lone infinity is a mismatch.
+                double const a = stored.groupBoundaries[k];
+                double const b = groupBoundaries[k];
+                bool const same = a == b ||
+                    (std::isfinite(a) && std::isfinite(b) &&
+                     std::abs(a - b) <= 1e-12 * std::max(std::abs(a), std::abs(b)));
+                if (!same)
+                    boundariesMatch = 0;
+            }
+    }
+#ifdef RICH_MPI
+    MPI_Bcast(&boundariesMatch, 1, MPI_INT, 0, MPI_COMM_WORLD);
+#endif
+    if (!boundariesMatch)
+        throw UniversalError("Restart weight-split state refers to other group boundaries than this run");
+    // Scalars and the spectrum first, from rank 0.
+    long header[4] = {stored.present ? 1L : 0L, stored.accumulated ? 1L : 0L,
+                      stored.spectrumValid ? 1L : 0L, stored.spectrumGeneration};
+    unsigned long long count = rank == 0 ? stored.cellIDs.size() : 0;
+    std::vector<double> spectrum = stored.spectrum;
+    unsigned long long spectrumSize = rank == 0 ? spectrum.size() : 0;
+#ifdef RICH_MPI
+    MPI_Bcast(header, 4, MPI_LONG, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&count, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+    MPI_Bcast(&spectrumSize, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+    spectrum.resize(static_cast<size_t>(spectrumSize));
+    if (spectrumSize > 0)
+        MPI_Bcast(spectrum.data(), static_cast<int>(spectrumSize), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+#endif
+    if (header[0] != 1)
+        throw UniversalError(
+            "Restart file has no multigroup weight-split state; transport.split-per-group cannot "
+            "continue it (the per-cell importance and the escaping spectrum would restart from zero)");
+    if (header[2] != 0 && spectrum.size() != groups)
+        throw UniversalError("Restart weight-split spectrum has the wrong number of groups");
+
+    state.escapedEnergy.assign(nCells, 0.0);
+    state.emittedEnergy.assign(nCells, 0.0);
+    state.accumulated = header[1] != 0;
+    state.spectrumValid = header[2] != 0;
+    state.groupSpectrum = state.spectrumValid ? spectrum : std::vector<double>();
+    state.spectrumGeneration = state.spectrumValid ? header[3] : -1;
+
+    std::unordered_map<size_t, size_t> localIndexByID;
+    localIndexByID.reserve(nCells);
+    for (size_t i = 0; i < nCells; ++i)
+        localIndexByID.emplace(cells[i].ID, i);
+    unsigned long long localMatched = 0;
+    size_t const chunk = size_t(1) << 18;
+    std::vector<unsigned long long> idBuffer;
+    std::vector<double> valueBuffer;
+    for (size_t begin = 0; begin < count; begin += chunk) {
+        size_t const n = std::min<size_t>(chunk, static_cast<size_t>(count) - begin);
+        idBuffer.assign(n, 0);
+        valueBuffer.assign(2 * n, 0.0);
+        if (rank == 0) {
+            for (size_t k = 0; k < n; ++k) {
+                idBuffer[k] = stored.cellIDs[begin + k];
+                valueBuffer[2 * k] = stored.escaped[begin + k];
+                valueBuffer[2 * k + 1] = stored.emitted[begin + k];
+            }
+        }
+#ifdef RICH_MPI
+        MPI_Bcast(idBuffer.data(), static_cast<int>(n), MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+        MPI_Bcast(valueBuffer.data(), static_cast<int>(2 * n), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+#endif
+        for (size_t k = 0; k < n; ++k) {
+            auto const it = localIndexByID.find(static_cast<size_t>(idBuffer[k]));
+            if (it == localIndexByID.end())
+                continue;
+            state.escapedEnergy[it->second] = valueBuffer[2 * k];
+            state.emittedEnergy[it->second] = valueBuffer[2 * k + 1];
+            ++localMatched;
+        }
+    }
+    unsigned long long matched = localMatched;
+#ifdef RICH_MPI
+    MPI_Allreduce(&localMatched, &matched, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+#endif
+    if (matched != count) {
+        UniversalError eo("Restart weight-split state names cells that are not in this mesh");
+        eo.addEntry("stored cells", static_cast<double>(count));
+        eo.addEntry("cells found", static_cast<double>(matched));
+        throw eo;
+    }
+    if (rank == 0)
+        std::cout << "MG restart: weight-split state of " << count << " cells restored, spectrum "
+                  << (state.spectrumValid ? "valid from generation " + std::to_string(state.spectrumGeneration)
+                                          : std::string("not yet valid"))
+                  << std::endl;
+}
+
+uint64_t ApplySeedOffset(uint64_t legacySeed, uint64_t offset)
+{
+    if (offset == 0)
+        return legacySeed;
+    // Domain tag of the replicate streams ("RICHREPL").
+    constexpr uint64_t kSeedOffsetDomain = 0x5249434852455050ULL;
+    return SplitMix64(legacySeed ^ SplitMix64(offset ^ kSeedOffsetDomain));
 }
 
 uint64_t RestartGenerationSeed(RestartPass pass, int rank, size_t absoluteFinalGeneration)

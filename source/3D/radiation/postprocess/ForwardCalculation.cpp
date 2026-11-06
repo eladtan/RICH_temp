@@ -31,6 +31,7 @@
 #include "WeightSplit.hpp"
 #include "CoolingLimit.hpp"
 #include "PostProcessRestart.hpp"
+#include "utils/hdf5/HDF5Writer.hpp"
 #include "source/3D/radiation/IMCMeasuredLoadBalance.hpp"
 #include "source/3D/radiation/IMCStepCounterCostCalculator.hpp"
 
@@ -96,6 +97,19 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
             bool mgGroupFallbackToIntegrated = false;
             std::string mgGroupFallbackReason = "none";
             observer->clearGenerationStatistics();
+            if (cfg.splitPerGroup || cfg.packetProvenance) {
+                // The group windows and the provenance tallies use the
+                // transport's lab-frame groups; the observer must bin the
+                // same bands.
+                std::vector<double> const& observerBoundaries = observer->getGroupBoundaries();
+                bool same = observer->getNumGroups() == static_cast<size_t>(ENERGY_GROUPS_NUM) &&
+                    observerBoundaries.size() == static_cast<size_t>(ENERGY_GROUPS_NUM) + 1;
+                for (size_t g = 0; same && g < observerBoundaries.size(); ++g)
+                    same = observerBoundaries[g] == ComputationalCell3D::energyBoundaries[g];
+                if (!same)
+                    throw UniversalError("transport.split-per-group and diagnostics.packet-provenance need the observer "
+                                         "groups to be the transport's energy groups");
+            }
             size_t mgIncludedFinalGenerations = 0;
             size_t mgDiscardedBurninGenerations = 0;
 
@@ -103,6 +117,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
             // and never reruns the burn-in or the learned-only probe.
             bool const restarting = !cfg.restartFrom.empty();
             size_t mgCompletedFinalGenerations = 0;
+            long mgGenerationOrigin = -1;   // absolute index of this segment's first final generation
             LoadBalanceMeasurements mgRestartLoadBalance;   // rank 0
             if (restarting) {
                 PassRestartState loaded = BeginPassRestart(
@@ -116,7 +131,15 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 mgGroupFallbackReason = loaded.groupFallbackReason;
                 runtime.lastEscapingLuminosity = loaded.lastEscapingLuminosity;
                 mgCompletedFinalGenerations = loaded.completedFinalGenerations;
+                mgGenerationOrigin = loaded.nextGenerationID;
                 mgRestartLoadBalance = std::move(loaded.loadBalance);
+                // The per-group window continues the importance and the
+                // escaping spectrum of the file (before the initial
+                // rebalance, which migrates them with the cells); without
+                // it the scalar window restarts its statistics as before.
+                if (cfg.splitPerGroup)
+                    RestoreWeightSplitState(loaded.split, cells, Ncells, observer->getGroupBoundaries(),
+                                            mgSplit, rank);
             }
             // Touched cells of this segment's last final generation (local).
             LoadBalanceMeasurements mgLastFinalMeasurements;
@@ -140,6 +163,17 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
             size_t const mgTotalGenerations = cfg.adaptiveSourceCells
                 ? mgFinalStartGeneration + mgFinalGenerations
                 : cfg.nGenerations;
+            // Absolute index of a transported generation along a restart
+            // chain: the burn-in, probe and ramp of the first segment keep
+            // their loop index; final generations continue from the origin
+            // stored in the file (files without it: the fresh-run layout).
+            if (mgGenerationOrigin < 0)
+                mgGenerationOrigin = static_cast<long>(mgFinalStartGeneration + mgCompletedFinalGenerations);
+            auto mgAbsoluteGeneration = [&](size_t generation, bool finalGeneration, size_t finalIndex) {
+                return finalGeneration
+                    ? static_cast<long long>(mgGenerationOrigin) + static_cast<long long>(finalIndex)
+                    : static_cast<long long>(generation);
+            };
     #ifdef RICH_MPI
             // Repartitions on one generation's measured per-cell steps and
             // source packets (predicted packets before the probe): the
@@ -474,6 +508,8 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                         allocationCfg, &runtime.fluxSourceCellIDs);
                     ApplyNeymanAllocationToControl(postProcessControl, plan, allocationCfg);
                     PrintSourceAllocationPlan("MG", plan, gen, rank);
+                    if (cfg.bandReports)
+                        PrintBandScoreShares("MG", mgAdaptive, mgGroupSourceState, gen, rank);
                 } else if (adaptiveActiveThisGen) {
                     // Learned-only probe: flat 75 packets per learned cell,
                     // used to measure costs for the load balance.
@@ -554,7 +590,9 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                                             static_cast<double>(runtime.volumeEmissionCells);
                         fraction = std::clamp(wanted / std::max(1.0, full), 1e-6, 1.0);
                     }
-                    physics->setPostProcessVolumeEmissionSubsample(fraction, static_cast<uint64_t>(gen) + 1);
+                    // The burn-in cell subset follows the replicate seeds too.
+                    physics->setPostProcessVolumeEmissionSubsample(
+                        fraction, ApplySeedOffset(static_cast<uint64_t>(gen) + 1, cfg.seedOffset));
                     // Bound the weight of exploration packets by a fraction of the
                     // escaping energy of the previous generation (face flux before
                     // the first one).
@@ -574,14 +612,28 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 }
 
                 if (restarting)
-                    physics->reseedRNG(RestartGenerationSeed(
+                    physics->reseedRNG(ApplySeedOffset(RestartGenerationSeed(
                         RestartPass::Forward, rank,
-                        mgCompletedFinalGenerations + finalGenerationIndex));
+                        mgCompletedFinalGenerations + finalGenerationIndex), cfg.seedOffset));
                 else
-                    physics->reseedRNG(static_cast<uint64_t>(rank+12345678) * mgTotalGenerations + gen);
+                    physics->reseedRNG(ApplySeedOffset(
+                        static_cast<uint64_t>(rank+12345678) * mgTotalGenerations + gen, cfg.seedOffset));
 
                 manager->getParticles().clear();
-                InstallWeightSplit(cfg, runtime, *physics, mgSplit);
+                InstallWeightSplit(cfg, runtime, *physics, mgSplit, true);
+                observer->setOverweightThreshold(mgSplit.maxWeight);
+                observer->setOverweightGroupThresholds(mgSplit.groupMaxWeight);
+                if (cfg.packetProvenance) {
+                    // x = w / e_g with e_g the lagged escaping energy per
+                    // observer of group g (none before the first spectrum).
+                    std::vector<double> reference;
+                    if (mgSplit.spectrumValid && cfg.nObservers > 0)
+                        for (double const e : mgSplit.groupSpectrum)
+                            reference.push_back(e / static_cast<double>(cfg.nObservers));
+                    observer->configureProvenance(true, reference, finalThisGen);
+                }
+                observer->setGenerationRecords(cfg.generationStokes);
+                observer->setGenerationRecordId(mgAbsoluteGeneration(gen, finalThisGen, finalGenerationIndex));
                 manager->step(cells, cfg.transportTime);
                 if (cfg.volumeEmissionEnabled && physics->hasPostProcessVolumeEmission()) {
                     double volumeEnergy = physics->getLastVolumeEmissionEnergy();
@@ -636,7 +688,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     rank,
                     mpiSize);
                 auto mgGroupSamplingDiag = ReduceGroupSamplingDiagnostics(
-                    generationDiagnostics.groupSampling);
+                    generationDiagnostics.groupSampling, cfg.packetProvenance);
                 mgLastGroupSamplingDiag = mgGroupSamplingDiag;
                 auto mgSourceStats = observer->getGenerationSourceCellEscapeStats();
                 observer->resetGenerationSourceCellEscapeStats();
@@ -650,16 +702,38 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 }
 
                 ObserverGroupQualityDiagnostics mgGroupQuality;
-                if (cfg.adaptiveGroupQuality && ENERGY_GROUPS_NUM > 1) {
+                // The global group snapshot feeds the band reports and the
+                // adaptive group quality; the group windows need only its
+                // escaping energy (one all-reduce instead of up to nine).
+                bool const wantSpectrum = !burninThisGen && (cfg.splitPerGroup || cfg.packetProvenance);
+                bool const wantFullSnapshot = cfg.bandReports || cfg.adaptiveGroupQuality;
+                if (ENERGY_GROUPS_NUM > 1 && (wantFullSnapshot || wantSpectrum)) {
                     auto groupSnap = observer->getObserverGroupQualitySnapshot();
-                    CollectGlobalObserverGroupQuality(groupSnap);
-                    if (cfg.adaptiveGroupFrequencySampling &&
-                        groupSnap.groupCount != static_cast<size_t>(ENERGY_GROUPS_NUM)) {
-                        throw UniversalError(
-                            "--adaptive-group-frequency-sampling requires observer group count to match ENERGY_GROUPS_NUM");
+                    if (wantFullSnapshot)
+                        CollectGlobalObserverGroupQuality(groupSnap);
+                    else
+                        CollectGlobalObserverGroupEnergy(groupSnap);
+                    if (cfg.bandReports)
+                        PrintBandGenerationDiagnostics("MG", groupSnap, mgGroupSamplingDiag, gen, rank);
+                    if (wantSpectrum) {
+                        // Escaping spectrum of this full-emission generation:
+                        // the next generation's group windows (lagged).
+                        std::vector<double> groupEnergy(groupSnap.groupCount, 0.0);
+                        for (auto const& row : groupSnap.energy)
+                            for (size_t g = 0; g < row.size() && g < groupEnergy.size(); ++g)
+                                groupEnergy[g] += row[g];
+                        CaptureWeightSplitSpectrum(
+                            groupEnergy, mgAbsoluteGeneration(gen, finalThisGen, finalGenerationIndex), mgSplit);
                     }
-                    mgGroupQuality = BuildObserverGroupQualityDiagnosticsFromSnapshot(
-                        groupSnap, cfg, mgGroupHistory, cfg.sourceDt, finalThisGen);
+                    if (cfg.adaptiveGroupQuality) {
+                        if (cfg.adaptiveGroupFrequencySampling &&
+                            groupSnap.groupCount != static_cast<size_t>(ENERGY_GROUPS_NUM)) {
+                            throw UniversalError(
+                                "--adaptive-group-frequency-sampling requires observer group count to match ENERGY_GROUPS_NUM");
+                        }
+                        mgGroupQuality = BuildObserverGroupQualityDiagnosticsFromSnapshot(
+                            groupSnap, cfg, mgGroupHistory, cfg.sourceDt, finalThisGen);
+                    }
                 }
 
                 auto mgUpdate = UpdateAdaptiveSourceScoresDistributed(
@@ -721,8 +795,9 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 observer->addBoxEscapeEnergy(boundary->getEscapedEnergy());
                 boundary->resetEscapedEnergy();
                 observer->printHeavyPacketReport("MG", gen + 1, 10);
+                observer->reportProvenanceGeneration("MG", gen + 1, rank);
                 observer->printEscapeOriginReport("MG", gen + 1);
-                result.splitCopies += PrintWeightSplitReport(cfg, *physics, mgSplit, "MG", gen + 1, rank);
+                result.splitCopies += PrintWeightSplitReport(cfg, *physics, mgSplit, "MG", gen + 1, rank, &result);
                 PrintCompressionReport(cfg, *physics, "MG", gen + 1, rank);
                 observer->mpiReduceToRank0();
                 if (includeGenerationInFinal) {
@@ -885,6 +960,11 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
             LoadBalanceMeasurements mgSavedLoadBalance = FinishPassLoadBalance(
                 mgLastFinalMeasurements, std::move(mgRestartLoadBalance),
                 mgIncludedFinalGenerations + mgDiscardedBurninGenerations > 0, rank);
+            // Weight-split state of the per-group window (collective gather).
+            WeightSplitRestartState mgSavedSplit;
+            if (cfg.splitPerGroup)
+                mgSavedSplit = GatherWeightSplitRestartState(mgSplit, cells, Ncells,
+                                                             observer->getGroupBoundaries(), rank);
 
             // ============================================================
             // Finish diagnostics
@@ -977,7 +1057,31 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 diag.adaptiveGroupSourceMpiPackedBytes =
                     mgFinalGroupSourceSummary.maxPackedBytes;
 
+                observer->printProvenanceSummary("MG");
+                if (cfg.packetProvenance)
+                    PrintBirthWeightSummary("MG", mgFinalGroupSamplingDiag, rank);
                 observer->writeHDF5(cfg.outputPath, diag);
+                if (cfg.packetProvenance) {
+                    // Completed-birth weights per birth class over this
+                    // segment's final generations (diagnostic).
+                    using Diag = RadiationIMC::GroupSamplingDiagnostics;
+                    std::vector<size_t> histogram;
+                    for (auto const& row : mgFinalGroupSamplingDiag.birthWeightHistogram)
+                        histogram.insert(histogram.end(), row.begin(), row.end());
+                    std::vector<double> const maxima(mgFinalGroupSamplingDiag.birthWeightMax.begin(),
+                                                     mgFinalGroupSamplingDiag.birthWeightMax.end());
+                    std::vector<size_t> const shape{Diag::kBirthClasses, Diag::kBirthWeightBins};
+                    HDF5Writer birthWriter(cfg.outputPath, false);
+                    birthWriter.WriteElement("/diagnostics/birth_weight/histogram_shape", shape);
+                    birthWriter.WriteElement("/diagnostics/birth_weight/histogram", histogram);
+                    birthWriter.WriteElement("/diagnostics/birth_weight/max", maxima);
+                    birthWriter.WriteElement("/diagnostics/birth_weight/layout", std::string(
+                        "segment-local (this run's final generations; not restart state). "
+                        "[class][bin]: class = birth kind (0 volume physical pdf, 1 volume learned pdf, "
+                        "2 face physical, 3 face learned) + 4 x exploration-fallback cell; bin 0 below "
+                        "1e30 erg, bins 1..22 one decade each from 1e30, bin 23 at or above 1e52"));
+                    birthWriter.Close();
+                }
                 {
                     PassRestartState saved;
                     saved.adaptive = mgAdaptive;
@@ -991,6 +1095,8 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     saved.completedFinalGenerations =
                         mgCompletedFinalGenerations + mgIncludedFinalGenerations;
                     saved.loadBalance = std::move(mgSavedLoadBalance);
+                    saved.split = std::move(mgSavedSplit);
+                    saved.nextGenerationID = mgGenerationOrigin + static_cast<long>(mgIncludedFinalGenerations);
                     WritePassRestartState(cfg.outputPath, saved, *observer);
                 }
 

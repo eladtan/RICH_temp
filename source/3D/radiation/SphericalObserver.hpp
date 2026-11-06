@@ -11,6 +11,7 @@
 #include <utility>
 #include <vector>
 #include "3D/elementary/Vector3D.hpp"
+#include "PacketProvenanceTally.hpp"
 
 class HDF5Writer;
 class HDF5Reader;
@@ -35,6 +36,10 @@ struct ObserverCrossingRecord
     double splitFactor = 1.0;
     // The packet reached its band through the DDMC compression cutoff.
     bool compressionConverted = false;
+    // Packet provenance (STORM particle/PacketProvenance.hpp), diagnostic.
+    std::uint8_t birthGroup = 255;
+    std::uint8_t provenance0 = 0;
+    std::uint8_t provenance1 = 0;
 #ifdef MONTECARLO_POLARIZATION
     double stokesQ = 0.0;
     double stokesU = 0.0;
@@ -307,8 +312,41 @@ public:
     // and the observer/group bins most dominated by a single packet, with that
     // packet's emission weight, source cell and steps. Collective (call before
     // mpiReduceToRank0); rank 0 prints.
+    // Multigroup: also one HEAVY_PACKETS_BY_GROUP line with, per group, the
+    // ranked bins, those one packet dominates, and the crossings heavier than
+    // the overweight threshold (setOverweightThreshold) with their energy.
     void printHeavyPacketReport(std::string const& label, size_t generation,
                                 size_t topBins) const;
+    // Weight above which a crossing counts as overweight in the heavy-packet
+    // report (the weight window's smallest window; <= 0 disables the count).
+    // Kept until changed; set before each generation's transport.
+    void setOverweightThreshold(double weight);
+    // Per-group overweight thresholds (the per-group window's group
+    // windows); empty = the scalar threshold for every group.
+    void setOverweightGroupThresholds(std::vector<double> weights);
+
+    // Packet provenance (diagnostics.packet-provenance, multigroup): every
+    // crossing of this generation is tallied by escape group, x = w / e_g
+    // (referenceEnergy = e_g per group, the previous generation's escaping
+    // energy per observer) and provenance class (PacketProvenanceTally).
+    // accumulate: this generation enters the pass totals (final generations).
+    // Set before each generation's transport; identical on all ranks.
+    void configureProvenance(bool enabled, std::vector<double> const& referenceEnergy, bool accumulate);
+    // Collective (all ranks, when enabled): reduces this generation's
+    // provenance tally to rank 0, which prints PROVENANCE_TAIL and adds it to
+    // the pass totals when accumulating; clears the generation tally.
+    void reportProvenanceGeneration(std::string const& label, size_t generation, int rank);
+    // Rank 0: PROVENANCE_GATE lines from the pass totals (the step-4 gate
+    // F = useful tail w^2 / tail w^2 per candidate and band).
+    void printProvenanceSummary(std::string const& label) const;
+
+    // Raw per-generation I, Q, U records (diagnostics.generation-stokes):
+    // accumulateCurrentTalliesForStatistics appends the generation with the
+    // identifier set here (rank 0, after mpiReduceToRank0). Multigroup
+    // observers record every (observer, group) bin, single-group observers
+    // the observer totals. Written to /diagnostics/generation_stokes.
+    void setGenerationRecords(bool enabled);
+    void setGenerationRecordId(long long id);
     // Escape-origin diagnostic: this generation's crossing energy split by the
     // class of the packet's source cell and by group. Classes: 0 a cell that
     // owns emitting flux-source faces (its face and volume packets share the
@@ -409,6 +447,7 @@ public:
     double getRadius() const;
     size_t getNumObservers() const;
     size_t getNumGroups() const;
+    std::vector<double> const& getGroupBoundaries() const { return groupBoundaries_; }
     double getSolidAngle() const;
     double getPatchArea() const;
     std::vector<double> const& getObserverSolidAngles() const;
@@ -461,6 +500,26 @@ private:
     std::array<double, kGrowthBins> growthBinEnergy_{};
     std::array<double, kGrowthBins> growthBinCount_{};
     double maxWeightGrowth_ = 0.0;
+    // Crossings heavier than overweightThreshold_ (or the group's entry of
+    // overweightGroupThreshold_) this generation, per group.
+    double overweightThreshold_ = 0.0;
+    std::vector<double> overweightGroupThreshold_;
+    // Packet provenance (configureProvenance).
+    bool provenanceEnabled_ = false;
+    bool provenanceAccumulate_ = false;
+    PacketProvenanceTally provenanceGeneration_;
+    PacketProvenanceTally provenancePass_;
+    size_t provenancePassGenerations_ = 0;
+    // Generation records (setGenerationRecords), rank 0.
+    bool generationRecordsEnabled_ = false;
+    long long generationRecordId_ = -1;
+    std::vector<long> generationRecordIds_;
+    size_t generationRecordGroups_ = 0;
+    std::vector<double> generationRecordEnergy_;
+    std::vector<double> generationRecordStokesQ_;
+    std::vector<double> generationRecordStokesU_;
+    std::vector<double> overweightEnergy_;
+    std::vector<double> overweightCount_;
     void recordHeavyCrossing(size_t obs, size_t group, ::ObserverCrossingRecord const& rec);
     std::unordered_set<size_t> const* escapeOriginFaceCells_ = nullptr;
     std::vector<std::pair<size_t, unsigned char>> const* escapeOriginHotCells_ = nullptr;
