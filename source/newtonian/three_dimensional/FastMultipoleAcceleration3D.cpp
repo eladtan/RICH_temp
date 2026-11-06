@@ -98,7 +98,13 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
 
     static std::uint64_t call = 0;
     ++call;
-    const double localTimes[22] = {
+    // The let_sub_* phases split let_subscription: local build, the wave-count
+    // Allreduce (its elapsed time: arrival imbalance plus the collective
+    // itself), packing, exchange and decoding.  The
+    // let_fin_* phases split let_finalize: sorting, the multipole source
+    // table, M2L geometry grouping, and the P2P tables.
+    constexpr int kTracePhaseCount = 31;
+    const double localTimes[kTracePhaseCount] = {
         stats.totalSeconds, stats.gravityRedistributionSeconds,
         stats.buildSeconds, stats.topologyRebuildSeconds,
         stats.rootDescriptorExchangeSeconds, stats.processTopologySeconds,
@@ -109,10 +115,17 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
         stats.upwardSeconds, stats.processUpwardSeconds,
         stats.processInteractionSeconds, stats.processDownwardSeconds,
         stats.letExchangeSeconds, stats.letM2LSeconds,
-        stats.letP2PSeconds, stats.downwardSeconds};
-    double minimumTimes[22] = {};
-    double meanTimes[22] = {};
-    double maximumTimes[22] = {};
+        stats.letP2PSeconds, stats.downwardSeconds,
+        stats.letSubscriptionBuildSeconds,
+        stats.letSubscriptionWaveSyncSeconds,
+        stats.letSubscriptionPackSeconds,
+        stats.letSubscriptionExchangeSeconds,
+        stats.letSubscriptionReceiveSeconds,
+        stats.letFinalizeSortSeconds, stats.letFinalizeSourceSeconds,
+        stats.letFinalizeGeometrySeconds, stats.letFinalizeP2PSeconds};
+    double minimumTimes[kTracePhaseCount] = {};
+    double meanTimes[kTracePhaseCount] = {};
+    double maximumTimes[kTracePhaseCount] = {};
     unsigned long long reusedActiveRanks =
         stats.localInteractionPlanReused ? 1ull : 0ull;
     unsigned long long globalReusedActiveRanks = reusedActiveRanks;
@@ -217,15 +230,29 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
         static_cast<unsigned long long>(stats.letMaxIncomingBytes),
         static_cast<unsigned long long>(stats.letMaxSendCapacityBytes)};
     unsigned long long maximumExchangeBytes[3] = {};
+    const unsigned long long localReuseCounts[10] = {
+        static_cast<unsigned long long>(stats.letM2LSourceCount),
+        static_cast<unsigned long long>(stats.letP2PSourceCount),
+        stats.planningRadiusGrowthBeyond[0] ? 1ull : 0ull,
+        stats.planningRadiusGrowthBeyond[1] ? 1ull : 0ull,
+        stats.planningRadiusGrowthBeyond[2] ? 1ull : 0ull,
+        stats.planningRadiusGrowthBeyond[3] ? 1ull : 0ull,
+        static_cast<unsigned long long>(stats.letM2LOptimisticStaleCount),
+        static_cast<unsigned long long>(stats.letM2LBoundStaleCount),
+        static_cast<unsigned long long>(stats.letM2POptimisticStaleCount),
+        static_cast<unsigned long long>(stats.letM2PBoundStaleCount)};
+    unsigned long long globalReuseCounts[10] = {};
+    const double localRootGrowth = stats.rootRadiusGrowthRatio;
+    double maximumRootGrowth = localRootGrowth;
     int rank = 0;
 #ifdef RICH_MPI
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Reduce(localTimes, minimumTimes, 22, MPI_DOUBLE, MPI_MIN, 0,
-               MPI_COMM_WORLD);
-    MPI_Reduce(localTimes, meanTimes, 22, MPI_DOUBLE, MPI_SUM, 0,
-               MPI_COMM_WORLD);
-    MPI_Reduce(localTimes, maximumTimes, 22, MPI_DOUBLE, MPI_MAX, 0,
-               MPI_COMM_WORLD);
+    MPI_Reduce(localTimes, minimumTimes, kTracePhaseCount, MPI_DOUBLE,
+               MPI_MIN, 0, MPI_COMM_WORLD);
+    MPI_Reduce(localTimes, meanTimes, kTracePhaseCount, MPI_DOUBLE,
+               MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(localTimes, maximumTimes, kTracePhaseCount, MPI_DOUBLE,
+               MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(&reusedActiveRanks, &globalReusedActiveRanks, 1,
                MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(&localLetPlanBytes, &maximumLetPlanBytes, 1,
@@ -260,10 +287,14 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
                MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(localExchangeBytes, maximumExchangeBytes, 3,
                MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
-    for(int i = 0; i < 22; ++i)
+    MPI_Reduce(localReuseCounts, globalReuseCounts, 10,
+               MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(&localRootGrowth, &maximumRootGrowth, 1, MPI_DOUBLE, MPI_MAX,
+               0, MPI_COMM_WORLD);
+    for(int i = 0; i < kTracePhaseCount; ++i)
         meanTimes[i] /= static_cast<double>(stats.mpiRankCount);
 #else
-    for(int i = 0; i < 22; ++i) {
+    for(int i = 0; i < kTracePhaseCount; ++i) {
         minimumTimes[i] = localTimes[i];
         meanTimes[i] = localTimes[i];
         maximumTimes[i] = localTimes[i];
@@ -280,6 +311,8 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
         maximumDetailedExchangeTimes[i] = localDetailedExchangeTimes[i];
     for(int i = 0; i < 3; ++i)
         maximumExchangeBytes[i] = localExchangeBytes[i];
+    for(int i = 0; i < 10; ++i)
+        globalReuseCounts[i] = localReuseCounts[i];
 #endif
     if(rank != 0)
         return;
@@ -287,15 +320,18 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
     std::ostringstream line;
     line.setf(std::ios::scientific);
     line.precision(8);
-    const char* const phaseNames[22] = {
+    const char* const phaseNames[kTracePhaseCount] = {
         "total", "redistribution", "build", "topology", "descriptor", "process_topology",
         "let_plan", "let_reset", "let_descriptor_traversal",
         "let_finalize", "let_subscription", "let_prune_compact",
         "local_traversal", "let_execute", "upward", "process_upward",
         "process_interaction", "process_downward", "let_exchange",
-        "let_m2l", "let_p2p", "downward"};
+        "let_m2l", "let_p2p", "downward",
+        "let_sub_build", "let_sub_wave_sync", "let_sub_pack",
+        "let_sub_exchange", "let_sub_receive",
+        "let_fin_sort", "let_fin_sources", "let_fin_geometry", "let_fin_p2p"};
     line << "fmm_solve_trace call=" << call;
-    for(int i = 0; i < 22; ++i)
+    for(int i = 0; i < kTracePhaseCount; ++i)
         line << ' ' << phaseNames[i] << "_min=" << minimumTimes[i]
              << ' ' << phaseNames[i] << "_mean=" << meanTimes[i]
              << ' ' << phaseNames[i] << "_max=" << maximumTimes[i];
@@ -414,7 +450,30 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled)
          << " let_cache_misses_sum=" << globalCacheCounts[4]
          << " let_cache_bypasses_sum=" << globalCacheCounts[5]
          << " process_cache_misses_sum=" << globalCacheCounts[6]
-         << " process_cache_bypasses_sum=" << globalCacheCounts[7];
+         << " process_cache_bypasses_sum=" << globalCacheCounts[7]
+         << " domain_changed=" << (stats.gravityDomainChanged ? 1 : 0)
+         << " gravity_splitters_resampled="
+         << (stats.gravitySplittersResampled ? 1 : 0)
+         << " gravity_resamples=" << stats.gravityResampleCount
+         << " gravity_splitter_epoch=" << stats.gravitySplitterEpoch
+         << " gravity_particles=" << stats.gravityParticleTotal
+         << " gravity_owner_max=" << stats.gravityOwnerMaxCount
+         << " gravity_owner_max_before="
+         << stats.gravityOwnerMaxCountBeforeResample
+         << " gravity_owner_mean=" << stats.gravityOwnerMeanCount
+         << " let_plan_age_solves=" << stats.letPlanAgeSolves
+         << " process_plan_age_solves=" << stats.processPlanAgeSolves
+         << " let_m2l_sources_sum=" << globalReuseCounts[0]
+         << " let_p2p_sources_sum=" << globalReuseCounts[1]
+         << " g_growth_beyond_0_ranks=" << globalReuseCounts[2]
+         << " g_growth_beyond_0p1_ranks=" << globalReuseCounts[3]
+         << " g_growth_beyond_0p3_ranks=" << globalReuseCounts[4]
+         << " g_growth_beyond_0p6_ranks=" << globalReuseCounts[5]
+         << " root_radius_growth_ratio_max=" << maximumRootGrowth
+         << " let_m2l_optimistic_stale_active_sum=" << globalReuseCounts[6]
+         << " let_m2l_bound_stale_active_sum=" << globalReuseCounts[7]
+         << " let_m2p_optimistic_stale_active_sum=" << globalReuseCounts[8]
+         << " let_m2p_bound_stale_active_sum=" << globalReuseCounts[9];
     std::cout << line.str() << std::endl;
 }
 }

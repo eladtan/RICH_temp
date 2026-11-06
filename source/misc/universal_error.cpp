@@ -11,6 +11,9 @@
 #include <execinfo.h>
 #include <cxxabi.h>
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <link.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 #ifdef RICH_MPI
@@ -185,20 +188,122 @@ SourceLocation resolveAddress(const std::string &exe, void *addr)
     return loc;
 }
 
+// The frame's object file and the address addr2line needs for it ("object@
+// address"), and the dynamic symbol name when there is one.  No subprocess.
+// A position-dependent executable is looked up by its absolute address, a
+// shared object or PIE by the offset from its load address.
+SourceLocation describeAddress(const std::string &exe, void *addr)
+{
+    SourceLocation loc;
+    std::string objectPath = exe;
+    std::uintptr_t lookup = reinterpret_cast<std::uintptr_t>(addr);
+    Dl_info info;
+    if(dladdr(addr, &info))
+    {
+        if(info.dli_sname)
+            loc.function = demangle(info.dli_sname);
+        if(info.dli_fname)
+            objectPath = info.dli_fname;
+        if(info.dli_fbase)
+        {
+            const ElfW(Ehdr) *header =
+                static_cast<const ElfW(Ehdr) *>(info.dli_fbase);
+            const std::uintptr_t base =
+                reinterpret_cast<std::uintptr_t>(info.dli_fbase);
+            if(header->e_type != ET_EXEC && lookup >= base)
+                lookup -= base;
+        }
+    }
+    loc.file = objectPath + "@" + formatAddress(lookup);
+    return loc;
+}
+
+// addr2line can need ~2 GB on a large -g3 binary (binutils 2.42), and a
+// collective error is reported by every rank at once: 192 concurrent
+// symbolizers would exhaust a node.  At most one process per node therefore
+// symbolizes at a time, chosen by a non-blocking lock on a node-local file;
+// the others print object@address at once.  A lone failing rank always gets
+// the lock.  RICH_SYMBOLIZE_STACK=0 disables symbolization.  Without a lock
+// file, an MPI run symbolizes on rank 0 only.
+class SymbolizerLock
+{
+public:
+    SymbolizerLock(): fd_(-1), held_(false), disabled_(false)
+    {
+        const char *setting = std::getenv("RICH_SYMBOLIZE_STACK");
+        if(setting != nullptr && setting[0] == '0' && setting[1] == '\0')
+        {
+            disabled_ = true;
+            return;
+        }
+        const std::string path = "/dev/shm/rich_symbolize_" +
+            std::to_string(static_cast<unsigned long>(getuid())) + ".lock";
+        fd_ = open(path.c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+        if(fd_ >= 0)
+        {
+            held_ = flock(fd_, LOCK_EX | LOCK_NB) == 0;
+            return;
+        }
+        held_ = true;
+#ifdef RICH_MPI
+        int initialized = 0;
+        int finalized = 0;
+        MPI_Initialized(&initialized);
+        if(initialized)
+            MPI_Finalized(&finalized);
+        if(initialized && !finalized)
+        {
+            int rank = 0;
+            MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+            held_ = rank == 0;
+        }
+#endif // RICH_MPI
+    }
+
+    ~SymbolizerLock()
+    {
+        if(fd_ >= 0)
+        {
+            if(held_)
+                flock(fd_, LOCK_UN);
+            close(fd_);
+        }
+    }
+
+    SymbolizerLock(const SymbolizerLock&) = delete;
+    SymbolizerLock& operator=(const SymbolizerLock&) = delete;
+
+    bool held() const { return held_; }
+    bool disabled() const { return disabled_; }
+
+private:
+    int fd_;
+    bool held_;
+    bool disabled_;
+};
+
 void printStackTrace(void * const *frames, int depth, std::ostream &os, const std::string &prefix)
 {
     if(depth <= 0)
         return;
 
     std::string exe = getExecutablePath();
+    const SymbolizerLock symbolizer;
+    const bool symbolize = symbolizer.held() && !symbolizer.disabled();
 
-    os << prefix << "Stack trace (" << depth << " frames):" << std::endl;
+    os << prefix << "Stack trace (" << depth << " frames)";
+    if(symbolizer.disabled())
+        os << ", not symbolized (RICH_SYMBOLIZE_STACK=0)";
+    else if(!symbolize)
+        os << ", not symbolized (another process on this node is symbolizing)";
+    os << ":" << std::endl;
 
     // skip frames 0-1 (UniversalError ctor + backtrace)
     int start = 2;
     for(int i = start; i < depth; ++i)
     {
-        SourceLocation loc = resolveAddress(exe, frames[i]);
+        SourceLocation loc = symbolize ? resolveAddress(exe, frames[i]) :
+            describeAddress(exe, frames[i]);
 
         os << prefix << "  #" << (i - start) << "  ";
 

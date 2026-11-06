@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 #include "3D/gravity/fmm/FmmConfig.hpp"
 
@@ -34,8 +35,16 @@ struct FmmDistributedOptions
 
     // Keep persistent-tree controls last for aggregate compatibility.
     bool persistentLocalTreeTopology = true;
+    // An existing leaf splits above persistentLeafSplitFactor * leafCapacity
+    // particles; an existing internal subtree merges back into a leaf at or
+    // below persistentLeafMergeFactor * leafCapacity.  Every split or merge
+    // rebuilds the LET plan.  Zero merges a subtree only once it is empty: on
+    // the moving-mesh TDE workload a positive factor (0.2) merged subtrees
+    // hovering near the threshold on a third of the solves, while zero cut the
+    // LET rebuilds from 212 to 7 over the same 322 cycles with the same force
+    // error, warm-solve cost and memory.
     double persistentLeafSplitFactor = 4.0;
-    double persistentLeafMergeFactor = 0.2;
+    double persistentLeafMergeFactor = 0.0;
 
     // Retained particle subscriptions reserve more than the current leaf
     // occupancy.  This keeps count-only moving-mesh changes from rebuilding the
@@ -150,6 +159,34 @@ struct FmmDistributedOptions
     // an unbounded MPI_Allgatherv allocation.
     std::size_t maxReplicatedDescriptorBytes =
         static_cast<std::size_t>(256) * 1024 * 1024;
+
+    // Gravity-owner splitters are kept across warm solves, because resampling
+    // every step invalidates the LET plan.  They are always resampled when the
+    // solve domain changes, since the redistribution keys are normalised by it.
+    // They are also resampled when the worst gravity owner would receive more
+    // than this multiple of the worst owner count the latest sampling produced
+    // (at least the mean), so slow drift of particles relative to the frozen
+    // splitters cannot build up.  Must be > 1.
+    double gravityOwnerImbalanceTrigger = 8.0;
+
+    // Most gravity-owner records one rank may receive, in bytes.  Exceeding it
+    // after a resample is a collective error naming the worst owner.  The
+    // default is the MPI int limit of the exchange itself; it bounds only the
+    // temporary gravity ownership, not the return of results to hydro owners.
+    // Must lie in [record size, INT_MAX].
+    std::size_t maxGravityOwnerBytesPerRank =
+        static_cast<std::size_t>(std::numeric_limits<int>::max());
+
+    // Diagnostics only, no effect on results: on every solve, measure how far
+    // the retained compat LET plan has drifted from the current geometry (see
+    // the LET reuse fields of FmmSolveStats).  Costs O(nodes + retained
+    // interactions + M2P target particles) per solve.
+    bool letStalenessDiagnostics = false;
+
+    // With directErrorSampleCount, repeat the direct-sum comparison every
+    // directErrorSamplePeriod solves after the selected solve
+    // (directErrorSampleSolve); zero disables repetition.
+    std::uint64_t directErrorSamplePeriod = 0;
 };
 
 #endif // FMM_DISTRIBUTED_OPTIONS_HPP

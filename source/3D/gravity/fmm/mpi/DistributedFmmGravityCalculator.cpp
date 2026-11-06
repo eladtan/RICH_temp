@@ -24,6 +24,7 @@
 #include "3D/gravity/fmm/mpi/FmmPatchDistributedSolver.hpp"
 #include "3D/gravity/fmm/mpi/FmmGlobalDyadicLattice.hpp"
 #include "3D/gravity/fmm/mpi/FmmPackets.hpp"
+#include "3D/gravity/fmm/mpi/FmmRecordExchange.hpp"
 #include <MeshDecomposer3D/hilbert/HilbertOrder3D.hpp>
 #include "misc/universal_error.hpp"
 
@@ -61,78 +62,173 @@ static_assert(std::is_trivially_copyable<GravityOwnerParticle>::value,
 static_assert(std::is_trivially_copyable<GravityOwnerResult>::value,
               "Gravity redistribution results must be wire-copyable");
 
-template<typename T>
-std::vector<T> exchangeRecordsByRank(
-    const std::vector<std::vector<T>>& sendByRank,
+// Collective on comm. Chooses size - 1 splitters from up to size - 1
+// stratified key samples per rank (sortedParticles must be in key order).
+// Rank 0 picks equal-count quantiles, optionally blended with Hilbert volume,
+// and broadcasts them, so every rank holds identical splitters.
+std::vector<std::uint64_t> sampleGravitySplitters(
+    const std::vector<GravityOwnerParticle>& sortedParticles,
+    int rank,
+    int size,
     const MPI_Comm& comm,
-    const char* context)
+    double volumeWeight,
+    int keyLevel)
 {
-    int size = 1;
-    MPI_Comm_size(comm, &size);
-    if(sendByRank.size() != static_cast<std::size_t>(size))
-        throw UniversalError(std::string(context) + ": invalid peer table");
-    std::vector<int> sendCounts(static_cast<std::size_t>(size), 0);
-    std::vector<int> receiveCounts(static_cast<std::size_t>(size), 0);
-    std::vector<int> sendDisplacements(static_cast<std::size_t>(size), 0);
-    std::vector<int> receiveDisplacements(static_cast<std::size_t>(size), 0);
-    std::size_t totalSendRecords = 0;
-    bool localValid = true;
-    for(int peer = 0; peer < size; ++peer)
+    std::vector<std::uint64_t> splitters;
+    const std::size_t localSampleCount = std::min(
+        sortedParticles.size(),
+        static_cast<std::size_t>(std::max(0, size - 1)));
+    std::vector<std::uint64_t> localSamples(localSampleCount);
+    for(std::size_t sample = 0; sample < localSampleCount; ++sample)
     {
-        const std::size_t count = sendByRank[static_cast<std::size_t>(peer)].size();
-        localValid = localValid && count <= static_cast<std::size_t>(
-            std::numeric_limits<int>::max()) / sizeof(T) &&
-            totalSendRecords <= static_cast<std::size_t>(
-                std::numeric_limits<int>::max()) / sizeof(T) - count;
-        if(!localValid)
-            break;
-        sendCounts[static_cast<std::size_t>(peer)] = static_cast<int>(
-            count * sizeof(T));
-        sendDisplacements[static_cast<std::size_t>(peer)] = static_cast<int>(
-            totalSendRecords * sizeof(T));
-        totalSendRecords += count;
+        const std::size_t index =
+            ((sample + 1) * sortedParticles.size()) /
+            (localSampleCount + 1);
+        localSamples[sample] = sortedParticles[
+            std::min(index, sortedParticles.size() - 1)].mortonKey;
     }
-    int localValidInt = localValid ? 1 : 0;
-    int globalValidInt = 0;
-    MPI_Allreduce(&localValidInt, &globalValidInt, 1, MPI_INT, MPI_LAND, comm);
-    if(globalValidInt == 0)
-        throw UniversalError(std::string(context) +
-                             ": byte counts exceed MPI int");
-
-    std::vector<T> sendFlat;
-    sendFlat.reserve(totalSendRecords);
-    for(const std::vector<T>& peer : sendByRank)
-        sendFlat.insert(sendFlat.end(), peer.begin(), peer.end());
-    MPI_Alltoall(sendCounts.data(), 1, MPI_INT,
-                 receiveCounts.data(), 1, MPI_INT, comm);
-    std::size_t totalReceiveBytes = 0;
-    for(int peer = 0; peer < size; ++peer)
+    const int localSampleCountInt = static_cast<int>(localSampleCount);
+    std::vector<int> sampleCounts;
+    if(rank == 0)
+        sampleCounts.resize(static_cast<std::size_t>(size));
+    MPI_Gather(&localSampleCountInt, 1, MPI_INT,
+               rank == 0 ? sampleCounts.data() : nullptr,
+               1, MPI_INT, 0, comm);
+    std::vector<int> sampleDisplacements;
+    std::vector<std::uint64_t> gatheredSamples;
+    if(rank == 0)
     {
-        const int bytes = receiveCounts[static_cast<std::size_t>(peer)];
-        if(bytes < 0 || bytes % static_cast<int>(sizeof(T)) != 0 ||
-           totalReceiveBytes > static_cast<std::size_t>(
-               std::numeric_limits<int>::max()) -
-               static_cast<std::size_t>(bytes))
-            localValid = false;
-        if(localValid)
+        sampleDisplacements.resize(static_cast<std::size_t>(size));
+        std::size_t totalSamples = 0;
+        for(int peer = 0; peer < size; ++peer)
         {
-            receiveDisplacements[static_cast<std::size_t>(peer)] =
-                static_cast<int>(totalReceiveBytes);
-            totalReceiveBytes += static_cast<std::size_t>(bytes);
+            sampleDisplacements[static_cast<std::size_t>(peer)] =
+                static_cast<int>(totalSamples);
+            totalSamples += static_cast<std::size_t>(
+                sampleCounts[static_cast<std::size_t>(peer)]);
+        }
+        if(totalSamples > static_cast<std::size_t>(
+               std::numeric_limits<int>::max()))
+            throw UniversalError(
+                "DistributedFmmGravityCalculator: too many Morton samples");
+        gatheredSamples.resize(totalSamples);
+    }
+    MPI_Gatherv(
+        localSamples.empty() ? nullptr : localSamples.data(),
+        localSampleCountInt, MPI_UNSIGNED_LONG_LONG,
+        rank == 0 && !gatheredSamples.empty() ?
+            gatheredSamples.data() : nullptr,
+        rank == 0 ? sampleCounts.data() : nullptr,
+        rank == 0 ? sampleDisplacements.data() : nullptr,
+        MPI_UNSIGNED_LONG_LONG, 0, comm);
+
+    splitters.assign(
+        static_cast<std::size_t>(std::max(0, size - 1)),
+        std::numeric_limits<std::uint64_t>::max());
+    if(rank == 0 && !gatheredSamples.empty())
+    {
+        std::sort(gatheredSamples.begin(), gatheredSamples.end());
+        const long double maximumHilbertKey = static_cast<long double>(
+            (UINT64_C(1) << (3 * keyLevel)) - UINT64_C(1));
+        // Never give a rank fewer than one eighth of the equal-particle
+        // sample occupancy. This prevents large empty key gaps from
+        // creating idle ranks while still allowing an 8x shift of rank
+        // capacity toward the sparse atmosphere.
+        const std::size_t minimumSamplesPerRank = std::max<std::size_t>(
+            1, gatheredSamples.size() /
+               (static_cast<std::size_t>(size) * 8));
+        std::size_t previousIndex = 0;
+        for(int boundary = 1; boundary < size; ++boundary)
+        {
+            std::size_t index = 0;
+            if(volumeWeight == 0.0)
+            {
+                index = std::min(gatheredSamples.size() - 1,
+                    static_cast<std::size_t>(boundary) *
+                        gatheredSamples.size() /
+                        static_cast<std::size_t>(size));
+            }
+            else
+            {
+                const long double target =
+                    static_cast<long double>(boundary) /
+                    static_cast<long double>(size);
+                std::size_t lower = 0;
+                std::size_t upper = gatheredSamples.size();
+                while(lower < upper)
+                {
+                    const std::size_t middle = lower + (upper - lower) / 2;
+                    const long double particleFraction =
+                        static_cast<long double>(middle + 1) /
+                        static_cast<long double>(gatheredSamples.size());
+                    const long double volumeFraction =
+                        static_cast<long double>(gatheredSamples[middle]) /
+                        maximumHilbertKey;
+                    const long double score =
+                        (1.0L - volumeWeight) * particleFraction +
+                        volumeWeight * volumeFraction;
+                    if(score < target)
+                        lower = middle + 1;
+                    else
+                        upper = middle;
+                }
+                index = std::min(lower, gatheredSamples.size() - 1);
+                const std::size_t minimumIndex = boundary == 1 ?
+                    minimumSamplesPerRank - 1 :
+                    previousIndex + minimumSamplesPerRank;
+                const std::size_t remainingRanks =
+                    static_cast<std::size_t>(size - boundary);
+                const std::size_t maximumIndex =
+                    gatheredSamples.size() -
+                    remainingRanks * minimumSamplesPerRank - 1;
+                index = std::max(minimumIndex,
+                                 std::min(index, maximumIndex));
+            }
+            splitters[static_cast<std::size_t>(boundary - 1)] =
+                gatheredSamples[index];
+            previousIndex = index;
         }
     }
-    localValidInt = localValid ? 1 : 0;
-    MPI_Allreduce(&localValidInt, &globalValidInt, 1, MPI_INT, MPI_LAND, comm);
-    if(globalValidInt == 0)
-        throw UniversalError(std::string(context) +
-                             ": invalid receive byte counts");
-    std::vector<T> received(totalReceiveBytes / sizeof(T));
-    MPI_Alltoallv(
-        sendFlat.empty() ? nullptr : sendFlat.data(),
-        sendCounts.data(), sendDisplacements.data(), MPI_BYTE,
-        received.empty() ? nullptr : received.data(),
-        receiveCounts.data(), receiveDisplacements.data(), MPI_BYTE, comm);
-    return received;
+    if(!splitters.empty())
+        MPI_Bcast(splitters.data(), static_cast<int>(splitters.size()),
+                  MPI_UNSIGNED_LONG_LONG, 0, comm);
+    return splitters;
+}
+
+struct GravityOwnerLoad
+{
+    unsigned long long incoming = 0;
+    unsigned long long total = 0;
+    unsigned long long maxCount = 0;
+    int maxRank = 0;
+    double mean = 0.0;
+};
+
+// Collective on comm. destinationCounts[d] is how many local records the
+// current splitters send to rank d; the reduce-scatter turns that into what
+// this rank will receive, which is the quantity that must fit the exchange.
+GravityOwnerLoad measureGravityOwnerLoad(
+    const std::vector<unsigned long long>& destinationCounts,
+    std::size_t localCount,
+    int rank,
+    int size,
+    const MPI_Comm& comm)
+{
+    GravityOwnerLoad load;
+    MPI_Reduce_scatter_block(destinationCounts.data(), &load.incoming, 1,
+                             MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
+    const unsigned long long local = static_cast<unsigned long long>(localCount);
+    MPI_Allreduce(&local, &load.total, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, comm);
+    struct
+    {
+        double value;
+        int rank;
+    } localLoad{static_cast<double>(load.incoming), rank}, worst{0.0, 0};
+    MPI_Allreduce(&localLoad, &worst, 1, MPI_DOUBLE_INT, MPI_MAXLOC, comm);
+    load.maxCount = static_cast<unsigned long long>(worst.value);
+    load.maxRank = worst.rank;
+    load.mean = static_cast<double>(load.total) / static_cast<double>(size);
+    return load;
 }
 
 double elapsed(const Clock::time_point& start)
@@ -336,6 +432,12 @@ std::size_t persistentMergeCapacity(std::size_t leafCapacity,
 void progressLetExchange(void* context)
 {
     static_cast<FmmLetPlan*>(context)->progressExecute();
+}
+
+// The radius the LET and process admissibility tests consume for a node.
+double planningRadius(const FmmNode& node)
+{
+    return node.radius > 0.0 ? node.radius : std::sqrt(3.0) * node.halfSize;
 }
 
 std::vector<std::uint64_t> structuralTopologySignature(const FmmTree& tree)
@@ -570,7 +672,16 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
     topologyRebuildCount_(0),
     processTopologyRebuildCount_(0),
     letTopologyRebuildCount_(0),
-    solveCount_(0)
+    solveCount_(0),
+    lastSolveDomain_{0.0, 0.0, 0.0, 0.0, 0.0, 0.0},
+    domainInitialized_(false),
+    pendingSplitterResample_(false),
+    gravityOwnerImbalanceAtSample_(1.0),
+    gravityResampleCount_(0),
+    gravitySplitterEpoch_(0),
+    letPlanAgeSolves_(0),
+    processPlanAgeSolves_(0),
+    processBuildRootRadius_(0.0)
 {
     int initialized = 0;
     MPI_Initialized(&initialized);
@@ -677,6 +788,16 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
         localOptionsError =
             "DistributedFmmGravityCalculator: invalid persistent merge factor";
     }
+    else if(distributedOptions_.letStalenessDiagnostics &&
+            !distributedOptions_.persistentLocalTreeTopology)
+    {
+        // The optimistic stale count takes a source's radius at build as a
+        // lower bound on its radius now, which holds only for the monotone
+        // retained envelope of a persistent tree.
+        localOptionsOk = false;
+        localOptionsError =
+            "DistributedFmmGravityCalculator: letStalenessDiagnostics requires persistentLocalTreeTopology";
+    }
     else if(distributedOptions_.minimumPatchLevel < 0 ||
             distributedOptions_.minimumPatchLevel > FMM_MAX_TREE_DEPTH ||
             distributedOptions_.maximumPatchLevel < 0 ||
@@ -702,6 +823,22 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
         localOptionsOk = false;
         localOptionsError =
             "DistributedFmmGravityCalculator: replicated patch descriptor budget is too small";
+    }
+    else if(!(distributedOptions_.gravityOwnerImbalanceTrigger > 1.0) ||
+            !std::isfinite(distributedOptions_.gravityOwnerImbalanceTrigger))
+    {
+        localOptionsOk = false;
+        localOptionsError =
+            "DistributedFmmGravityCalculator: gravity owner imbalance trigger must be finite and > 1";
+    }
+    else if(distributedOptions_.maxGravityOwnerBytesPerRank <
+                sizeof(GravityOwnerParticle) ||
+            distributedOptions_.maxGravityOwnerBytesPerRank >
+                FmmRecordExchange::kMaxTransportBytes)
+    {
+        localOptionsOk = false;
+        localOptionsError =
+            "DistributedFmmGravityCalculator: gravity owner byte limit must lie in [record size, INT_MAX]";
     }
     if(localOptionsOk && distributedOptions_.persistentLocalTreeTopology)
     {
@@ -733,20 +870,27 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
             localOptionsError);
     }
 
-    const double localDoubleOptions[6] = {
+    constexpr int doubleOptionCount = 8;
+    const double localDoubleOptions[] = {
         options_.thetaCritical, distributedOptions_.rootSlackFactor,
         distributedOptions_.persistentLeafSplitFactor,
         distributedOptions_.persistentLeafMergeFactor,
         options_.maxLeafHalfSize,
-        distributedOptions_.hilbertGravityVolumeWeight};
-    double minimumDoubleOptions[6] = {};
-    double maximumDoubleOptions[6] = {};
-    MPI_Allreduce(localDoubleOptions, minimumDoubleOptions, 6,
+        distributedOptions_.hilbertGravityVolumeWeight,
+        distributedOptions_.gravityOwnerImbalanceTrigger,
+        distributedOptions_.letParticlePayloadSlackFactor};
+    static_assert(sizeof(localDoubleOptions) / sizeof(localDoubleOptions[0]) ==
+                      doubleOptionCount,
+                  "every double option must take part in the consistency check");
+    double minimumDoubleOptions[doubleOptionCount] = {};
+    double maximumDoubleOptions[doubleOptionCount] = {};
+    MPI_Allreduce(localDoubleOptions, minimumDoubleOptions, doubleOptionCount,
                   MPI_DOUBLE, MPI_MIN, comm_);
-    MPI_Allreduce(localDoubleOptions, maximumDoubleOptions, 6,
+    MPI_Allreduce(localDoubleOptions, maximumDoubleOptions, doubleOptionCount,
                   MPI_DOUBLE, MPI_MAX, comm_);
 
-    const unsigned long long localIntegerOptions[32] = {
+    constexpr int integerOptionCount = 38;
+    const unsigned long long localIntegerOptions[] = {
         static_cast<unsigned long long>(options_.expansionOrder),
         static_cast<unsigned long long>(options_.leafCapacity),
         static_cast<unsigned long long>(options_.maxDepth),
@@ -786,19 +930,32 @@ DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
         distributedOptions_.useHilbertGravityRedistribution ? 1ull : 0ull,
         distributedOptions_.compactLetParticlePayload ? 1ull : 0ull,
         distributedOptions_.compactLetMultipolePayload ? 1ull : 0ull,
-        distributedOptions_.quantizedLetParticlePayload ? 1ull : 0ull};
-    unsigned long long minimumIntegerOptions[32] = {};
-    unsigned long long maximumIntegerOptions[32] = {};
-    MPI_Allreduce(localIntegerOptions, minimumIntegerOptions, 32,
-                  MPI_UNSIGNED_LONG_LONG, MPI_MIN, comm_);
-    MPI_Allreduce(localIntegerOptions, maximumIntegerOptions, 32,
-                  MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm_);
+        distributedOptions_.quantizedLetParticlePayload ? 1ull : 0ull,
+        static_cast<unsigned long long>(
+            distributedOptions_.maxGravityOwnerBytesPerRank),
+        distributedOptions_.letStalenessDiagnostics ? 1ull : 0ull,
+        // The trace's reductions are collective, so every rank must agree.
+        distributedOptions_.emitSolveTrace ? 1ull : 0ull,
+        distributedOptions_.globallyBalanceProcessNodeOwners ? 1ull : 0ull,
+        static_cast<unsigned long long>(
+            distributedOptions_.letParticlePayloadSlackCount),
+        static_cast<unsigned long long>(
+            distributedOptions_.directErrorSamplePeriod)};
+    static_assert(sizeof(localIntegerOptions) / sizeof(localIntegerOptions[0]) ==
+                      integerOptionCount,
+                  "every integer option must take part in the consistency check");
+    unsigned long long minimumIntegerOptions[integerOptionCount] = {};
+    unsigned long long maximumIntegerOptions[integerOptionCount] = {};
+    MPI_Allreduce(localIntegerOptions, minimumIntegerOptions,
+                  integerOptionCount, MPI_UNSIGNED_LONG_LONG, MPI_MIN, comm_);
+    MPI_Allreduce(localIntegerOptions, maximumIntegerOptions,
+                  integerOptionCount, MPI_UNSIGNED_LONG_LONG, MPI_MAX, comm_);
 
     bool optionsMatch = true;
-    for(int i = 0; i < 6; ++i)
+    for(int i = 0; i < doubleOptionCount; ++i)
         optionsMatch = optionsMatch &&
             minimumDoubleOptions[i] == maximumDoubleOptions[i];
-    for(int i = 0; i < 32; ++i)
+    for(int i = 0; i < integerOptionCount; ++i)
         optionsMatch = optionsMatch &&
             minimumIntegerOptions[i] == maximumIntegerOptions[i];
     if(!optionsMatch)
@@ -1068,6 +1225,53 @@ FmmPatchRootDescriptor DistributedFmmGravityCalculator::localRootDescriptor() co
     return result;
 }
 
+void DistributedFmmGravityCalculator::updateLetReuseDiagnostics(
+    bool letRebuilt,
+    bool processRebuilt)
+{
+    const std::vector<FmmNode>& nodes = localTree_.nodes();
+    if(processRebuilt)
+        processBuildRootRadius_ = nodes.empty() ? 0.0 : planningRadius(nodes[0]);
+    // -1 marks a rank that holds no tree now or held none at the last
+    // process rebuild.
+    stats_.rootRadiusGrowthRatio =
+        nodes.empty() || !(processBuildRootRadius_ > 0.0) ? -1.0 :
+        planningRadius(nodes[0]) / processBuildRootRadius_;
+    // On a rebuild the growth flags stay false: nothing is retained yet, so
+    // they read "not measured" (let_plan_age_solves is then 0).
+    if(letRebuilt)
+    {
+        letBuildPlanningRadius_.resize(nodes.size());
+        for(std::size_t i = 0; i < nodes.size(); ++i)
+            letBuildPlanningRadius_[i] = planningRadius(nodes[i]);
+        return;
+    }
+    // Without a LET rebuild the local tree keeps its structure, and with it
+    // the node order the retained plan indexes.
+    // Throwing would leave the other ranks waiting in the next collective, so
+    // abort with a printed reason, as for the leaf half-size bound.
+    if(nodes.size() != letBuildPlanningRadius_.size())
+    {
+        std::fprintf(stderr,
+            "DistributedFmmGravityCalculator abort on MPI rank %d: local tree "
+            "changed under a retained LET plan\nnodes=%zu snapshot=%zu\n",
+            rank_, nodes.size(), letBuildPlanningRadius_.size());
+        std::fflush(stderr);
+        MPI_Abort(comm_, 95);
+        // Should MPI_Abort return, never read past the snapshot below.
+        throw UniversalError("DistributedFmmGravityCalculator: local tree "
+                             "changed under a retained LET plan");
+    }
+    const double growthLimits[4] = {1.0, 1.1, 1.3, 1.6};
+    for(std::size_t i = 0; i < nodes.size(); ++i)
+    {
+        const double current = planningRadius(nodes[i]);
+        for(int e = 0; e < 4; ++e)
+            if(current > growthLimits[e] * letBuildPlanningRadius_[i])
+                stats_.planningRadiusGrowthBeyond[e] = true;
+    }
+}
+
 void DistributedFmmGravityCalculator::rebuildTopology(
     const std::vector<Vector3D>& positions,
     bool rebuildProcessTopology)
@@ -1147,6 +1351,7 @@ void DistributedFmmGravityCalculator::rebuildTopology(
                    options_.thetaCritical, topologyEpoch_, comm_,
                    !rebuildProcessTopology,
                    distributedOptions_.enableLeafM2P,
+                   distributedOptions_.letStalenessDiagnostics,
                    distributedOptions_.compactLetParticlePayload,
                    distributedOptions_.quantizedLetParticlePayload,
                    distributedOptions_.compactLetMultipolePayload,
@@ -1218,161 +1423,145 @@ void DistributedFmmGravityCalculator::solveRedistributed(
     // moving-mesh step shifted a few range boundaries, which changed one rank's
     // retained root and needlessly invalidated the global LET plan. The first
     // solve establishes balanced splitters; later solves preserve them so small
-    // particle motion is handled by the persistent local trees.
+    // particle motion is handled by the persistent local trees. They are
+    // resampled when solve() saw the domain change, because every key above is
+    // normalised by it, and when the partition they produce has become badly
+    // unbalanced. Every decision below derives from collective results, so all
+    // ranks take it together.
+    const double volumeWeight =
+        distributedOptions_.useHilbertGravityRedistribution ?
+        distributedOptions_.hilbertGravityVolumeWeight : 0.0;
+    bool resampledThisSolve = false;
     if(gravityRedistributionSplitters_.size() !=
        static_cast<std::size_t>(std::max(0, size_ - 1)))
     {
-        const std::size_t localSampleCount = std::min(
-            localParticles.size(),
-            static_cast<std::size_t>(std::max(0, size_ - 1)));
-        std::vector<std::uint64_t> localSamples(localSampleCount);
-        for(std::size_t sample = 0; sample < localSampleCount; ++sample)
-        {
-            const std::size_t index =
-                ((sample + 1) * localParticles.size()) /
-                (localSampleCount + 1);
-            localSamples[sample] = localParticles[
-                std::min(index, localParticles.size() - 1)].mortonKey;
-        }
-        const int localSampleCountInt = static_cast<int>(localSampleCount);
-        std::vector<int> sampleCounts;
-        if(rank_ == 0)
-            sampleCounts.resize(static_cast<std::size_t>(size_));
-        MPI_Gather(&localSampleCountInt, 1, MPI_INT,
-                   rank_ == 0 ? sampleCounts.data() : nullptr,
-                   1, MPI_INT, 0, comm_);
-        std::vector<int> sampleDisplacements;
-        std::vector<std::uint64_t> gatheredSamples;
-        if(rank_ == 0)
-        {
-            sampleDisplacements.resize(static_cast<std::size_t>(size_));
-            std::size_t totalSamples = 0;
-            for(int peer = 0; peer < size_; ++peer)
-            {
-                sampleDisplacements[static_cast<std::size_t>(peer)] =
-                    static_cast<int>(totalSamples);
-                totalSamples += static_cast<std::size_t>(
-                    sampleCounts[static_cast<std::size_t>(peer)]);
-            }
-            if(totalSamples > static_cast<std::size_t>(
-                   std::numeric_limits<int>::max()))
-                throw UniversalError(
-                    "DistributedFmmGravityCalculator: too many Morton samples");
-            gatheredSamples.resize(totalSamples);
-        }
-        MPI_Gatherv(
-            localSamples.empty() ? nullptr : localSamples.data(),
-            localSampleCountInt, MPI_UNSIGNED_LONG_LONG,
-            rank_ == 0 && !gatheredSamples.empty() ?
-                gatheredSamples.data() : nullptr,
-            rank_ == 0 ? sampleCounts.data() : nullptr,
-            rank_ == 0 ? sampleDisplacements.data() : nullptr,
-            MPI_UNSIGNED_LONG_LONG, 0, comm_);
-
-        gravityRedistributionSplitters_.assign(
-            static_cast<std::size_t>(std::max(0, size_ - 1)),
-            std::numeric_limits<std::uint64_t>::max());
-        if(rank_ == 0 && !gatheredSamples.empty())
-        {
-            std::sort(gatheredSamples.begin(), gatheredSamples.end());
-            const double volumeWeight =
-                distributedOptions_.useHilbertGravityRedistribution ?
-                distributedOptions_.hilbertGravityVolumeWeight : 0.0;
-            const long double maximumHilbertKey = static_cast<long double>(
-                (UINT64_C(1) << (3 * keyLevel)) - UINT64_C(1));
-            // Never give a rank fewer than one eighth of the equal-particle
-            // sample occupancy. This prevents large empty key gaps from
-            // creating idle ranks while still allowing an 8x shift of rank
-            // capacity toward the sparse atmosphere.
-            const std::size_t minimumSamplesPerRank = std::max<std::size_t>(
-                1, gatheredSamples.size() /
-                   (static_cast<std::size_t>(size_) * 8));
-            std::size_t previousIndex = 0;
-            for(int boundary = 1; boundary < size_; ++boundary)
-            {
-                std::size_t index = 0;
-                if(volumeWeight == 0.0)
-                {
-                    index = std::min(gatheredSamples.size() - 1,
-                        static_cast<std::size_t>(boundary) *
-                            gatheredSamples.size() /
-                            static_cast<std::size_t>(size_));
-                }
-                else
-                {
-                    const long double target =
-                        static_cast<long double>(boundary) /
-                        static_cast<long double>(size_);
-                    std::size_t lower = 0;
-                    std::size_t upper = gatheredSamples.size();
-                    while(lower < upper)
-                    {
-                        const std::size_t middle = lower + (upper - lower) / 2;
-                        const long double particleFraction =
-                            static_cast<long double>(middle + 1) /
-                            static_cast<long double>(gatheredSamples.size());
-                        const long double volumeFraction =
-                            static_cast<long double>(gatheredSamples[middle]) /
-                            maximumHilbertKey;
-                        const long double score =
-                            (1.0L - volumeWeight) * particleFraction +
-                            volumeWeight * volumeFraction;
-                        if(score < target)
-                            lower = middle + 1;
-                        else
-                            upper = middle;
-                    }
-                    index = std::min(lower, gatheredSamples.size() - 1);
-                    const std::size_t minimumIndex = boundary == 1 ?
-                        minimumSamplesPerRank - 1 :
-                        previousIndex + minimumSamplesPerRank;
-                    const std::size_t remainingRanks =
-                        static_cast<std::size_t>(size_ - boundary);
-                    const std::size_t maximumIndex =
-                        gatheredSamples.size() -
-                        remainingRanks * minimumSamplesPerRank - 1;
-                    index = std::max(minimumIndex,
-                                     std::min(index, maximumIndex));
-                }
-                gravityRedistributionSplitters_[
-                    static_cast<std::size_t>(boundary - 1)] =
-                    gatheredSamples[index];
-                previousIndex = index;
-            }
-        }
-        if(!gravityRedistributionSplitters_.empty())
-            MPI_Bcast(gravityRedistributionSplitters_.data(),
-                      static_cast<int>(gravityRedistributionSplitters_.size()),
-                      MPI_UNSIGNED_LONG_LONG, 0, comm_);
+        gravityRedistributionSplitters_ = sampleGravitySplitters(
+            localParticles, rank_, size_, comm_, volumeWeight, keyLevel);
+        resampledThisSolve = true;
+        ++gravitySplitterEpoch_;
     }
-    const std::vector<std::uint64_t>& splitters =
-        gravityRedistributionSplitters_;
+
+    std::vector<int> destinations(localParticles.size(), 0);
+    std::vector<unsigned long long> destinationCounts(
+        static_cast<std::size_t>(size_), 0);
+    const auto assignDestinations = [&]()
+    {
+        const std::vector<std::uint64_t>& splitters =
+            gravityRedistributionSplitters_;
+        std::fill(destinationCounts.begin(), destinationCounts.end(), 0ull);
+        for(std::size_t index = 0; index < localParticles.size(); ++index)
+        {
+            const int destination = static_cast<int>(std::upper_bound(
+                splitters.begin(), splitters.end(),
+                localParticles[index].mortonKey) - splitters.begin());
+            destinations[index] = destination;
+            ++destinationCounts[static_cast<std::size_t>(destination)];
+        }
+    };
+    assignDestinations();
+    // Measure with the splitters in force before any resample, so a stale
+    // partition stays observable in the stats and the log.
+    GravityOwnerLoad load = measureGravityOwnerLoad(
+        destinationCounts, localParticles.size(), rank_, size_, comm_);
+    const GravityOwnerLoad loadBefore = load;
+    const auto imbalanceOf = [](const GravityOwnerLoad& measured)
+    {
+        return measured.mean > 0.0 ?
+            static_cast<double>(measured.maxCount) / measured.mean : 0.0;
+    };
+    // A volume-weighted split is deliberately uneven, so the trigger compares
+    // with what the latest sampling produced rather than with the mean alone.
+    if(resampledThisSolve)
+        gravityOwnerImbalanceAtSample_ = std::max(1.0, imbalanceOf(load));
+    const unsigned long long ownerLimitRecords =
+        static_cast<unsigned long long>(
+            distributedOptions_.maxGravityOwnerBytesPerRank /
+            sizeof(GravityOwnerParticle));
+    const char* resampleReason = nullptr;
+    if(pendingSplitterResample_)
+        resampleReason = "domain-change";
+    else if(load.maxCount > ownerLimitRecords)
+        resampleReason = "owner-limit";
+    else if(imbalanceOf(load) > distributedOptions_.gravityOwnerImbalanceTrigger *
+                                gravityOwnerImbalanceAtSample_)
+        resampleReason = "imbalance";
+    pendingSplitterResample_ = false;
+    // One rank owns everything whatever the splitters are.
+    if(resampleReason != nullptr && !resampledThisSolve && size_ > 1)
+    {
+        gravityRedistributionSplitters_ = sampleGravitySplitters(
+            localParticles, rank_, size_, comm_, volumeWeight, keyLevel);
+        resampledThisSolve = true;
+        ++gravitySplitterEpoch_;
+        ++gravityResampleCount_;
+        assignDestinations();
+        load = measureGravityOwnerLoad(
+            destinationCounts, localParticles.size(), rank_, size_, comm_);
+        gravityOwnerImbalanceAtSample_ = std::max(1.0, imbalanceOf(load));
+        if(rank_ == 0)
+        {
+            std::printf(
+                "FMM gravity splitters resampled: reason=%s epoch=%llu "
+                "resamples=%llu owner_max_before=%llu (%.2fx mean, rank %d) "
+                "owner_max_after=%llu (%.2fx mean, rank %d) mean=%.1f "
+                "particles=%llu ranks=%d\n",
+                resampleReason,
+                static_cast<unsigned long long>(gravitySplitterEpoch_),
+                static_cast<unsigned long long>(gravityResampleCount_),
+                loadBefore.maxCount,
+                loadBefore.mean > 0.0 ?
+                    static_cast<double>(loadBefore.maxCount) / loadBefore.mean : 0.0,
+                loadBefore.maxRank, load.maxCount,
+                load.mean > 0.0 ?
+                    static_cast<double>(load.maxCount) / load.mean : 0.0,
+                load.maxRank, load.mean, load.total, size_);
+            std::fflush(stdout);
+        }
+    }
+    else if(resampledThisSolve && rank_ == 0)
+    {
+        std::printf(
+            "FMM gravity splitters sampled: epoch=%llu owner_max=%llu "
+            "(%.2fx mean, rank %d) mean=%.1f particles=%llu ranks=%d\n",
+            static_cast<unsigned long long>(gravitySplitterEpoch_),
+            load.maxCount,
+            load.mean > 0.0 ? static_cast<double>(load.maxCount) / load.mean : 0.0,
+            load.maxRank, load.mean, load.total, size_);
+        std::fflush(stdout);
+    }
+    if(load.maxCount > ownerLimitRecords)
+    {
+        UniversalError error(
+            "DistributedFmmGravityCalculator: a gravity owner exceeds its byte limit");
+        error.addEntry("worst_rank", load.maxRank);
+        error.addEntry("worst_owner_records", load.maxCount);
+        error.addEntry("mean_owner_records", load.mean);
+        error.addEntry("imbalance_max_over_mean", load.mean > 0.0 ?
+            static_cast<double>(load.maxCount) / load.mean : 0.0);
+        error.addEntry("global_particle_total", load.total);
+        error.addEntry("record_bytes", sizeof(GravityOwnerParticle));
+        error.addEntry("limit_bytes",
+                       distributedOptions_.maxGravityOwnerBytesPerRank);
+        error.addEntry("worst_owner_records_before_resample",
+                       loadBefore.maxCount);
+        error.addEntry("resampled_this_solve", resampledThisSolve ? 1 : 0);
+        error.addEntry("splitter_epoch", gravitySplitterEpoch_);
+        throw error;
+    }
 
     std::vector<std::vector<GravityOwnerParticle>> sendParticles(
         static_cast<std::size_t>(size_));
-    std::vector<std::size_t> destinationCounts(
-        static_cast<std::size_t>(size_), 0);
-    for(const GravityOwnerParticle& particle : localParticles)
-    {
-        const int destination = static_cast<int>(std::upper_bound(
-            splitters.begin(), splitters.end(), particle.mortonKey) -
-            splitters.begin());
-        ++destinationCounts[static_cast<std::size_t>(destination)];
-    }
     for(int destination = 0; destination < size_; ++destination)
         sendParticles[static_cast<std::size_t>(destination)].reserve(
-            destinationCounts[static_cast<std::size_t>(destination)]);
-    for(const GravityOwnerParticle& particle : localParticles)
-    {
-        const int destination = static_cast<int>(std::upper_bound(
-            splitters.begin(), splitters.end(), particle.mortonKey) -
-            splitters.begin());
-        sendParticles[static_cast<std::size_t>(destination)].push_back(
-            particle);
-    }
-    localParticles = exchangeRecordsByRank(
+            static_cast<std::size_t>(
+                destinationCounts[static_cast<std::size_t>(destination)]));
+    for(std::size_t index = 0; index < localParticles.size(); ++index)
+        sendParticles[static_cast<std::size_t>(destinations[index])].push_back(
+            localParticles[index]);
+    localParticles = FmmRecordExchange::exchangeByRank(
         sendParticles, comm_,
-        "DistributedFmmGravityCalculator gravity-owner exchange");
+        "DistributedFmmGravityCalculator gravity-owner exchange",
+        load.incoming, distributedOptions_.maxGravityOwnerBytesPerRank);
     std::sort(localParticles.begin(), localParticles.end(),
         [](const GravityOwnerParticle& first,
            const GravityOwnerParticle& second) {
@@ -1402,6 +1591,15 @@ void DistributedFmmGravityCalculator::solveRedistributed(
     solveOwned(ownedPositions, ownedMasses, ownedCellIds,
                domainLower, domainUpper, ownedAcceleration,
                positiveKernelPotential == nullptr ? nullptr : &ownedPotential);
+    // solveOwned starts from fresh stats, so the redistribution figures are
+    // recorded after it.
+    stats_.gravitySplittersResampled = resampledThisSolve;
+    stats_.gravityParticleTotal = load.total;
+    stats_.gravityOwnerMaxCount = load.maxCount;
+    stats_.gravityOwnerMaxCountBeforeResample = loadBefore.maxCount;
+    stats_.gravityOwnerMeanCount = load.mean;
+    stats_.gravityResampleCount = gravityResampleCount_;
+    stats_.gravitySplitterEpoch = gravitySplitterEpoch_;
 
     const Clock::time_point returnStart = Clock::now();
     std::vector<std::vector<GravityOwnerResult>> sendResults(
@@ -1420,9 +1618,11 @@ void DistributedFmmGravityCalculator::solveRedistributed(
         sendResults[static_cast<std::size_t>(particle.originRank)].push_back(
             result);
     }
-    const std::vector<GravityOwnerResult> returned = exchangeRecordsByRank(
-        sendResults, comm_,
-        "DistributedFmmGravityCalculator gravity-result exchange");
+    const std::vector<GravityOwnerResult> returned =
+        FmmRecordExchange::exchangeByRank(
+            sendResults, comm_,
+            "DistributedFmmGravityCalculator gravity-result exchange",
+            static_cast<std::uint64_t>(positions.size()));
     acceleration.assign(positions.size(), Vector3D());
     if(positiveKernelPotential != nullptr)
         positiveKernelPotential->assign(positions.size(), 0.0);
@@ -1510,6 +1710,27 @@ void DistributedFmmGravityCalculator::solve(
 
     ++solveCount_;
 
+    // The reduced domain is bit-identical on every rank, so comparing it with
+    // the previous solve's is a rank-uniform decision without a collective.
+    // A resize (UpdateBox) moves every redistribution key, so the splitters
+    // are marked stale; solveRedistributed measures the stale partition before
+    // replacing them. Retained local roots stay on the dyadic lattice of the
+    // old domain while rebuilt ones snap to the new lattice, and the LET plan
+    // rejects that mix, so every rank rebuilds its root.
+    bool domainChanged = false;
+    for(int i = 0; i < 6; ++i)
+        domainChanged = domainChanged ||
+            globalValidation[1 + i] != lastSolveDomain_[i];
+    domainChanged = domainChanged && domainInitialized_;
+    if(domainChanged)
+    {
+        if(distributedOptions_.spatiallyRedistributeForGravity)
+            pendingSplitterResample_ = true;
+        rootInitialized_ = false;
+    }
+    std::copy(globalValidation + 1, globalValidation + 7, lastSolveDomain_);
+    domainInitialized_ = true;
+
     if(distributedOptions_.spatiallyRedistributeForGravity)
         solveRedistributed(positions, masses, cellIds, domainLower,
                            domainUpper, acceleration,
@@ -1517,9 +1738,15 @@ void DistributedFmmGravityCalculator::solve(
     else
         solveOwned(positions, masses, cellIds, domainLower, domainUpper,
                    acceleration, positiveKernelPotential);
+    stats_.gravityDomainChanged = domainChanged;
 
+    const std::uint64_t firstSample = distributedOptions_.directErrorSampleSolve;
+    const std::uint64_t samplePeriod =
+        distributedOptions_.directErrorSamplePeriod;
     if(distributedOptions_.directErrorSampleCount != 0 &&
-       solveCount_ == distributedOptions_.directErrorSampleSolve)
+       (solveCount_ == firstSample ||
+        (samplePeriod != 0 && solveCount_ > firstSample &&
+         (solveCount_ - firstSample) % samplePeriod == 0)))
         sampleDirectAccelerationError(positions, masses, acceleration);
 }
 
@@ -1855,6 +2082,17 @@ void DistributedFmmGravityCalculator::solveOwned(
         stats_.processCommunicatorsReused = true;
         stats_.letCommunicatorReused = true;
     }
+    letPlanAgeSolves_ = letTopologyChanged ? 0 : letPlanAgeSolves_ + 1;
+    processPlanAgeSolves_ = processTopologyChanged ? 0 :
+        processPlanAgeSolves_ + 1;
+    stats_.letPlanAgeSolves = letPlanAgeSolves_;
+    stats_.processPlanAgeSolves = processPlanAgeSolves_;
+    stats_.letM2LSourceCount = letPlan_.m2lSourceCount();
+    stats_.letP2PSourceCount = letPlan_.p2pSourceCount();
+    // The stale-interaction counts are taken later, in FmmLetPlan's
+    // finishExecute, where only interactions that actually run are seen.
+    if(distributedOptions_.letStalenessDiagnostics)
+        updateLetReuseDiagnostics(letTopologyChanged, processTopologyChanged);
 
     stats_.topologyEpoch = topologyEpoch_;
     stats_.topologyRebuildCount = topologyRebuildCount_;
@@ -2249,7 +2487,8 @@ void DistributedFmmGravityCalculator::solveOwned(
         lastLocalOccupancySignature_.capacity() * sizeof(std::uint64_t) +
         processTree_.bytesOwned() + processPlan_.bytesOwned() +
         stats_.letPlanBytes + processUpExchange_.bytesOwned() +
-        processM2LExchange_.bytesOwned() + processDownExchange_.bytesOwned();
+        processM2LExchange_.bytesOwned() + processDownExchange_.bytesOwned() +
+        letBuildPlanningRadius_.capacity() * sizeof(double);
 
     if(options_.validateFinite)
     {

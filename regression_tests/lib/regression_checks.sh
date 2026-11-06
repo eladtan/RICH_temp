@@ -1932,6 +1932,196 @@ check_fmm_gravity_mpi_guard_case() {
     return 0
 }
 
+check_fmm_gravity_mpi_redistribute_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_gravity_mpi_redistribute_metrics.txt"
+    local ok_count
+    local failed
+    local pass_flag
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_gravity_mpi_redistribute_metrics.txt"
+        return 1
+    fi
+
+    # Every assertion is written as "<name>_ok 0|1"; a scenario that throws
+    # early omits its dependent assertions, so require the full set.
+    ok_count=$(awk '$1 ~ /_ok$/ { n++ } END { print n + 0 }' "$metrics_file")
+    failed=$(awk '$1 ~ /_ok$/ && $2 != 1 { printf "%s%s", sep, $1; sep = "," }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+
+    if [[ -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse FMM redistribution metrics"
+        return 1
+    fi
+    if [[ -n "$failed" ]]; then
+        set_check_msg "FMM redistribution assertions failed: ${failed}"
+        return 1
+    fi
+    if [[ "$ok_count" -ne 29 ]]; then
+        set_check_msg "FMM redistribution metrics hold ${ok_count} assertions, expected 29"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "FMM redistribution test reported pass=0"
+        return 1
+    fi
+
+    set_check_msg "FMM redistribution check passed (${ok_count} assertions)"
+    return 0
+}
+
+check_fmm_trace_smoke_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_trace_smoke_metrics.txt"
+    local trace_log="${run_dir}/fmm_trace_smoke_rank0.log"
+    local steps
+    local final_time
+    local pass_flag
+    local verdict
+    local records
+    local rebuilds
+    # The let_sub_*/let_fin_* phases, the rebuild flag and the LET reuse
+    # fields; the last one is also the last field of a record.
+    local required_keys="let_sub_build_max let_sub_wave_sync_max let_sub_pack_max let_sub_exchange_max let_sub_receive_max let_fin_sort_max let_fin_sources_max let_fin_geometry_max let_fin_p2p_max let_rebuilt let_plan_age_solves process_plan_age_solves let_m2l_sources_sum let_p2p_sources_sum g_growth_beyond_0_ranks g_growth_beyond_0p1_ranks g_growth_beyond_0p3_ranks g_growth_beyond_0p6_ranks root_radius_growth_ratio_max let_m2l_optimistic_stale_active_sum let_m2l_bound_stale_active_sum let_m2p_optimistic_stale_active_sum let_m2p_bound_stale_active_sum"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_trace_smoke_metrics.txt"
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$trace_log" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_trace_smoke_rank0.log"
+        return 1
+    fi
+    steps=$(awk '$1 == "steps" { print $2 }' "$metrics_file")
+    final_time=$(awk '$1 == "time" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    if [[ "$pass_flag" != "1" || ! "$steps" =~ ^[1-9][0-9]*$ ]]; then
+        set_check_msg "FMM trace smoke run did not complete its steps"
+        return 1
+    fi
+    if ! awk -v t="$final_time" 'BEGIN { exit !(t ~ /^-?([0-9]+(\.[0-9]*)?|\.[0-9]+)([eE][-+]?[0-9]+)?$/ && t + 0 > 0) }'; then
+        set_check_msg "FMM trace smoke: simulation time did not advance (time=${final_time})"
+        return 1
+    fi
+
+    # Rank 0 writes the trace to a log no other rank writes to.  Each hydro
+    # step solves gravity twice, so the log must hold exactly one complete
+    # record for every call 1..2*steps and no partial record.  The
+    # diagnostics option must have run on every solve (the root growth ratio
+    # is 0 without it), at least one solve must have rebuilt the LET, the
+    # optimistic stale counts must be zero on rebuild solves, and the LET must
+    # have had remote sources at least once.  Every field of a record is
+    # key=number, with each key once.
+    if ! verdict=$(awk -v steps="$steps" -v required="$required_keys" '
+        BEGIN {
+            n = split(required, keys, " "); expected = 2 * steps
+            number = "^-?([0-9]+(\\.[0-9]*)?|\\.[0-9]+)([eE][-+]?[0-9]+)?$"
+        }
+        /fmm_solve_trace/ {
+            if($1 != "fmm_solve_trace" || $2 !~ /^call=[1-9][0-9]*$/) {
+                bad = "malformed trace record at log line " NR; exit
+            }
+            delete f
+            for(i = 2; i <= NF; ++i) {
+                if(split($i, kv, "=") != 2 || kv[1] == "" || kv[2] !~ number) {
+                    bad = "malformed field " $i " at log line " NR; exit
+                }
+                if(kv[1] in f) {
+                    bad = "repeated field " kv[1] " at log line " NR; exit
+                }
+                f[kv[1]] = kv[2]
+            }
+            for(k = 1; k <= n; ++k)
+                if(!(keys[k] in f)) {
+                    bad = "call " f["call"] " lacks " keys[k]; exit
+                }
+            if($NF !~ "^" keys[n] "=") {
+                bad = "call " f["call"] " has trailing fields"; exit
+            }
+            c = f["call"] + 0
+            if(c in seen) { bad = "duplicate record for call " c; exit }
+            seen[c] = 1
+            ++records
+            if(f["root_radius_growth_ratio_max"] + 0 == 0) {
+                bad = "call " c " ran without the staleness diagnostics"; exit
+            }
+            if(f["let_rebuilt"] == 1) {
+                ++rebuilds
+                if(f["let_m2l_optimistic_stale_active_sum"] + 0 != 0 ||
+                   f["let_m2p_optimistic_stale_active_sum"] + 0 != 0) {
+                    bad = "optimistic stale count nonzero on rebuild call " c; exit
+                }
+            }
+            if(f["let_m2l_sources_sum"] + 0 > 0)
+                sources = 1
+        }
+        END {
+            if(bad != "") { print bad; exit }
+            for(c = 1; c <= expected; ++c)
+                if(!(c in seen)) { print "no record for call " c; exit }
+            if(records != expected) print records + 0 " records for " expected " expected calls"
+            else if(rebuilds + 0 == 0) print "no solve rebuilt the LET"
+            else if(!sources) print "no remote LET sources in any solve"
+            else print "ok " records " " rebuilds
+        }' "$trace_log"); then
+        set_check_msg "FMM trace smoke: awk failed on ${trace_log}"
+        return 1
+    fi
+    if [[ "$verdict" != ok* ]]; then
+        set_check_msg "FMM trace smoke: ${verdict}"
+        return 1
+    fi
+    read -r _ records rebuilds <<< "$verdict"
+    set_check_msg "FMM trace smoke passed (${records} complete records for ${steps} steps, ${rebuilds} LET rebuilds, time ${final_time})"
+    return 0
+}
+
+check_fmm_let_staleness_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/fmm_let_staleness_metrics.txt"
+    local failures
+    local pass_flag
+    local rows
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale fmm_let_staleness_metrics.txt"
+        return 1
+    fi
+    failures=$(awk '$1 == "failures" { print $2 }' "$metrics_file")
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    # Two wave settings x four solves x two ranks.
+    rows=$(grep -c '^staleness ' "$stdout_log" || true)
+    if [[ "$pass_flag" != "1" || "$failures" != "0" ]]; then
+        set_check_msg "LET staleness counters: $(grep -m3 '^mismatch' "$metrics_file" | tr '\n' ';')"
+        return 1
+    fi
+    if [[ "$rows" != "16" ]]; then
+        set_check_msg "LET staleness counters: ${rows} result rows, expected 16"
+        return 1
+    fi
+    set_check_msg "LET staleness counters match the geometry (16 rank-solve rows, one and eight waves)"
+    return 0
+}
+
 check_fmm_gravity_mpi_case() {
     local run_dir="$1"
     local run_start_epoch="$2"

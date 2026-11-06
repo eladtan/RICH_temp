@@ -64,8 +64,17 @@ solve.  By default, the distributed solver uses the previous local tree as a
 hysteresis template: an existing leaf splits only above
 `persistentLeafSplitFactor * leafCapacity`, while an existing internal subtree
 merges only at or below `persistentLeafMergeFactor * leafCapacity`.  The
-defaults are 1.5 and 0.5 respectively. A newly initialized tree still
-refines at `leafCapacity`; the wider thresholds apply only to later refits.
+defaults are 4.0 and 0, so a subtree merges only once it is empty. A newly
+initialized tree still refines at `leafCapacity`; the wider thresholds apply
+only to later refits, and a rank whose root cube changes starts from scratch.
+
+Every split or merge changes the topology and rebuilds the LET plan.  On the
+moving-mesh TDE workload a merge factor of 0.2 merged subtrees that hovered
+near the threshold on a third of the solves, and those rebuilds took 80% of the
+FMM time; with 0 the LET plan was rebuilt 7 times instead of 212 over the same
+322 cycles, with unchanged force error, warm-solve cost and memory.  Over
+about 1,000 solves without a root change the number of empty leaves grew by
+0.6%.
 
 Every persistent internal node materializes all eight spatial children,
 including empty leaf children.  A particle crossing into or out of an octant
@@ -127,6 +136,87 @@ separate process/LET rebuild counters, communicator reuse, and topology phase
 timings.  Set `RICH_FMM_TRACE=1` to print one maximum-rank timing/rebuild line
 per gravity solve; this is intended for short profiling runs rather than normal
 production output.
+
+The trace splits the two most expensive parts of a LET rebuild.
+`let_subscription` is split into
+- `let_sub_build`: local record and wave planning;
+- `let_sub_wave_sync`: the elapsed time of the wave-count `MPI_Allreduce`,
+  which includes waiting for the slowest rank as well as the collective
+  itself;
+- `let_sub_pack`: packing and interaction reordering;
+- `let_sub_exchange`: the subscription exchange;
+- `let_sub_receive`: decoding.
+
+`let_finalize` is split into `let_fin_sort`, `let_fin_sources`,
+`let_fin_geometry` (M2L operator grouping) and `let_fin_p2p`.
+
+Every solve also reports `let_plan_age_solves` and `process_plan_age_solves`
+(solves since each plan was rebuilt) and the remote source counts.  With
+`FmmDistributedOptions::letStalenessDiagnostics`, which is off by default and
+changes no result, it also reports how far a retained compat LET plan has
+drifted from the current geometry:
+- `g_growth_beyond_<eps>_ranks`: ranks where some node's planning radius `g`
+  (the retained radius, or the cube radius when that is zero) grew by more than
+  `1+eps` since the LET rebuild;
+- `root_radius_growth_ratio_max`: rank-root growth since the process rebuild;
+- a bracket on executed M2L/M2P interactions that would fail their build-time
+  admissibility test today. The optimistic count takes a source's radius at
+  build as its current radius, a lower bound that is zero on a rebuild solve.
+  The bound count takes its cube radius, an upper bound.
+
+The optimistic bound relies on the monotone retained envelope, so the option
+requires `persistentLocalTreeTopology`.  The one-tree-per-rank solver alone
+fills these fields.
+
+To measure the force error of a run, set `directErrorSampleCount`.  On solve
+`directErrorSampleSolve` (one-based), a deterministic sample of target
+accelerations is compared with a distributed direct sum over all particles.
+The comparison repeats every `directErrorSamplePeriod` solves after the
+selected solve; zero disables repetition.  Rank 0 prints one
+`fmm_tde_sample_error` line per sampled solve with the mean, RMS, median, p90,
+p99 and maximum relative errors.  Each sampled solve costs every rank about
+samples times its local particle count in pair evaluations; the accelerations
+are unchanged.
+
+For comparing two builds of the compat LET planner, set `RICH_FMM_PLAN_DUMP=1`.
+Every LET rebuild then writes `fmm_plan_dump_r<rank>_<n>.bin` to the working
+directory: the source tables, interactions, prepared M2L geometries and their
+use counts, wave and target ranges, the subscription bytes sent, the
+subscriptions received and the remote descriptors kept after pruning.  `<n>`
+counts rebuilds in the process.  Two runs of the same input are compared file
+by file with `cmp`.  This is a debugging aid: it writes one file per rank and
+rebuild.
+
+## Gravity-owner redistribution
+
+With `spatiallyRedistributeForGravity` (the default), every solve first moves
+the particles to temporary gravity owners: each particle gets a level-20 Hilbert
+key of its position normalised by the solve domain, and `size - 1` splitters
+cut the key range into one interval per rank.  The splitters are sampled once
+and then frozen, because resampling every step moves interval boundaries and
+invalidates the LET plan.
+
+Frozen splitters are only valid while the keys mean the same thing.  They are
+resampled when:
+
+- the solve domain changes (for example `UpdateBox`), since that moves every
+  key.  The same change also forces every rank to rebuild its local root,
+  because a retained root keeps the old domain's dyadic lattice while a rebuilt
+  one snaps to the new lattice, and the LET plan rejects that mix;
+- the worst owner would receive more than `gravityOwnerImbalanceTrigger`
+  (default 8) times the owner count the last sampling produced (at least the
+  mean), which catches drift of the particles relative to the splitters;
+- the worst owner would exceed `maxGravityOwnerBytesPerRank` (default and
+  maximum `INT_MAX`, the MPI count limit of the exchange).
+
+The load is measured with a reduce-scatter of the per-destination counts before
+the exchange, so a stale partition is visible before it is replaced.  Rank 0
+prints one `FMM gravity splitters sampled` line on the first solve and one
+`FMM gravity splitters resampled: reason=...` line per resample, with the worst
+owner before and after.  An owner still over its byte limit after resampling is
+a collective `UniversalError` naming the worst rank, its count and the mean.
+The record exchange also checks each rank's received count against the
+prediction, which separates corrupted counts from a genuine imbalance.
 
 ## Identity
 
@@ -202,6 +292,25 @@ heterogeneous-cluster serialization format.
   deliberately duplicates application cell IDs, includes an empty rank for
   three or more ranks, checks mass-only plan reuse, forces a topology rebuild,
   and verifies mismatched domain bounds are rejected collectively.
+- `fmm_gravity_mpi_redistribute`: gravity-owner redistribution lifecycle on a
+  clustered body set: a domain change and a drift each collapse the stale
+  partition and trigger exactly one resample, the warm result matches a fresh
+  calculator, the owner byte limit fails collectively with diagnostics but does
+  not limit the result return, the record exchange detects count mismatches and
+  over-limit receives, and a domain change with a partial root rebuild (no
+  redistribution) moves every rank to the new lattice.
+- `fmm_trace_smoke`: three hydro steps of a small self-gravitating sphere
+  through `FastMultipoleAcceleration3D` with the trace and the LET reuse
+  diagnostics on.  Rank 0's output goes to a log of its own.  The check
+  requires exactly one complete `fmm_solve_trace` record per gravity solve,
+  with the phase and diagnostic fields, at least one LET rebuild, zero
+  optimistic stale counts on rebuild solves, and forward simulation time.
+- `fmm_let_staleness`: the staleness diagnostics on a two-rank geometry whose
+  interaction classes and stale verdicts follow from distances alone (the
+  derivation is in the test source).  Four solves of one retained plan
+  (rebuild, unchanged, three particles moved, one leaf emptied) are checked rank
+  by rank against the expected active, inactive and stale counts, growth flags
+  and root growth ratio, once with one LET wave and once with eight.
 - `fmm_process_pair_coverage`: checks exact ordered-rank-pair coverage for
   separated, overlapping/empty-rank, and irregular process geometries.
 

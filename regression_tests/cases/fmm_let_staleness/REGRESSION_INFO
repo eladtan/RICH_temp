@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+
+TEST_ID="fmm_let_staleness"
+TAGS="mpi"
+CATEGORY="code_correctness"
+BUILD_TEST_NAME="regression_tests/cases/fmm_let_staleness"
+RUN_DIR_REL="regression_tests/cases/fmm_let_staleness"
+CHECK_FUNCTION="check_fmm_let_staleness_case"
+RUN_MODE="slurm"
+SLURM_NTASKS="2"
+SLURM_PARTITION="genoa"
+SLURM_TIME_LIMIT="00:05:00"
+RUN_COMMAND='mpirun -np ${SLURM_NTASKS} "${RICH_BIN}"'
+
+# letStalenessDiagnostics on a hand-built two-rank geometry whose stale counts,
+# growth flags and inactive interactions are known from distances alone, over
+# four solves of one retained LET plan, with one wave and with eight.
+# Exactly two ranks. SLURM only.

@@ -88,6 +88,7 @@ private:
     void rebuildTopology(const std::vector<Vector3D>& positions,
                          bool rebuildProcessTopology);
     FmmPatchRootDescriptor localRootDescriptor() const;
+    void updateLetReuseDiagnostics(bool letRebuilt, bool processRebuilt);
     double effectiveMaxLeafHalfSize(const Vector3D& domainLower,
                                     const Vector3D& domainUpper) const;
     // Collective on comm_.
@@ -113,6 +114,24 @@ private:
     std::uint64_t processTopologyRebuildCount_;
     std::uint64_t letTopologyRebuildCount_;
     std::uint64_t solveCount_;
+    // Domain of the previous solve, identical on every rank. A change marks the
+    // gravity-owner splitters stale and forces every local root onto the new
+    // dyadic lattice.
+    double lastSolveDomain_[6];
+    bool domainInitialized_;
+    bool pendingSplitterResample_;
+    // Worst owner over mean right after the latest sampling: the imbalance
+    // the trigger compares against, as a ratio so it follows the particle count.
+    double gravityOwnerImbalanceAtSample_;
+    std::uint64_t gravityResampleCount_;
+    std::uint64_t gravitySplitterEpoch_;
+    // Solves since the LET plan and the process plan were last rebuilt.
+    std::uint64_t letPlanAgeSolves_;
+    std::uint64_t processPlanAgeSolves_;
+    // letStalenessDiagnostics: each local node's planning radius at the last
+    // LET rebuild, and the local root's at the last process rebuild.
+    std::vector<double> letBuildPlanningRadius_;
+    double processBuildRootRadius_;
 
     FmmTree localTree_;
     FmmM2LOperatorCache operatorCache_;
