@@ -99,7 +99,6 @@ if(DEFINED GNU)
     list(APPEND CMAKE_CXX_FLAGS
             "-static-libgcc"
             "-static-libstdc++"
-            "-Wl,-Bstatic -lgomp -Wl,-Bdynamic"
             "-Wdouble-promotion"
             "-rdynamic"
             "-fstrict-aliasing"

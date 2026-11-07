@@ -175,7 +175,10 @@ if(_h5_parallel)
             message(WARNING "HDF5 requires MPI headers (H5_HAVE_PARALLEL) but MPI was not found")
         endif()
     else()
-        find_package(MPI REQUIRED)
+        # Only MPI::MPI_C is used here. A bare find_package(MPI) would also
+        # require Fortran MPI, which fails when the Fortran compiler cannot read
+        # the MPI suite's module files (ifx with a gfortran-built OpenMPI).
+        find_package(MPI REQUIRED COMPONENTS C)
         if(NOT DEFINED DYNAMIC_LIBS)
             list(APPEND HDF5_LIBS MPI::MPI_C)
         endif()
@@ -283,6 +286,20 @@ add_subdirectory("${MADCART_DIR}" "${CMAKE_BINARY_DIR}/dependencies/madcart"
 add_subdirectory("${STORM_DIR}" "${CMAKE_BINARY_DIR}/dependencies/storm"
                  EXCLUDE_FROM_ALL)
 
+# STORM's Compton tables (MACE) are OpenMP code inside static libraries, so the
+# final link must bring in the OpenMP runtime after them. FindOpenMP does not
+# always name the runtime library (OpenMP_CXX_LIB_NAMES lacked gomp while
+# CMAKE_CXX_FLAGS carried -lgomp, and is empty for the Intel compilers); the
+# imported target then carries only the compile flag, and with GCC nothing links
+# libgomp, leaving GOMP_* symbols unresolved. Passing the OpenMP flag to the link driver
+# makes it append the runtime (libgomp for GCC, libiomp5 for the Intel
+# compilers) after every object and archive.
+find_package(OpenMP REQUIRED COMPONENTS CXX)
+function(rich_link_openmp target)
+    target_link_libraries(${target} PRIVATE OpenMP::OpenMP_CXX)
+    target_link_options(${target} PRIVATE "SHELL:${OpenMP_CXX_FLAGS}")
+endfunction()
+
 # Header-only dependencies do not currently define targets in their native
 # CMake files, so expose their include trees as local interface targets.
 add_library(spatial_ds INTERFACE)
@@ -326,6 +343,7 @@ target_link_libraries(
     ${CMAKE_DL_LIBS}
 )
 target_link_options(${EXE_NAME} PRIVATE -rdynamic)
+rich_link_openmp(${EXE_NAME})
 
 if(STORM_WITH_GPU)
     set(_rocm_root "$ENV{ROCM_PATH}")
@@ -350,6 +368,7 @@ if(DEFINED MPI)
         $<TARGET_PROPERTY:${EXE_NAME},INCLUDE_DIRECTORIES>)
     target_link_libraries(rich_particle_mpi_dtype_test PRIVATE
         MPI::MPI_CXX storm mpi_utils mesh_decomposer)
+    rich_link_openmp(rich_particle_mpi_dtype_test)
     add_test(NAME rich_particle_mpi_dtype_test COMMAND ${MPIEXEC_EXECUTABLE}
         ${MPIEXEC_NUMPROC_FLAG} 2 $<TARGET_FILE:rich_particle_mpi_dtype_test>)
     set_tests_properties(rich_particle_mpi_dtype_test PROPERTIES TIMEOUT 30 PROCESSORS 2)
@@ -361,6 +380,7 @@ if(DEFINED MPI)
         STORM_DEBUG=1 STORM_WITH_TRACING_HISTORY=3 MONTECARLO_POLARIZATION)
     target_link_libraries(rich_particle_mpi_dtype_extended_test PRIVATE
         MPI::MPI_CXX storm mpi_utils mesh_decomposer)
+    rich_link_openmp(rich_particle_mpi_dtype_extended_test)
     add_test(NAME rich_particle_mpi_dtype_extended_test COMMAND ${MPIEXEC_EXECUTABLE}
         ${MPIEXEC_NUMPROC_FLAG} 2 $<TARGET_FILE:rich_particle_mpi_dtype_extended_test>)
     set_tests_properties(rich_particle_mpi_dtype_extended_test PROPERTIES TIMEOUT 30 PROCESSORS 2)
