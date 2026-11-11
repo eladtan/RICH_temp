@@ -2475,7 +2475,7 @@ AdaptiveGroupSourceUpdateSummary UpdateAdaptiveSourceGroupScores(
     std::vector<std::vector<double>> totalW2ByOG(nObs, std::vector<double>(nGrp, 0.0));
 
     for (auto const& s : localGroupStats) {
-        if (s.observerIndex < nObs && s.groupIndex < nGrp) {
+        if (s.observerIndex < nObs && s.groupIndex < nGrp && s.energy > 0.0 && std::isfinite(s.energy)) {
             totalEnergyByOG[s.observerIndex][s.groupIndex] += s.energy;
             totalW2ByOG[s.observerIndex][s.groupIndex] +=
                 (s.weightSq > 0.0 && std::isfinite(s.weightSq))
@@ -2501,7 +2501,6 @@ AdaptiveGroupSourceUpdateSummary UpdateAdaptiveSourceGroupScores(
         }
 #endif
 
-    double const eps = 1e-30;
     bool const polMode = groupQuality.polarizationMode;
     double const varianceMix = polMode ? 0.85 : 0.50;
     double const ema = cfg.adaptiveGroupScoreEma;
@@ -2601,17 +2600,17 @@ AdaptiveGroupSourceUpdateSummary UpdateAdaptiveSourceGroupScores(
 
         double const totE = totalEnergyByOG[s.observerIndex][s.groupIndex];
         double const totW2 = totalW2ByOG[s.observerIndex][s.groupIndex];
-        double const eFrac = (totE > eps) ? s.energy / totE : 0.0;
+        double const eFrac = (totE > 0.0) ? s.energy / totE : 0.0;
         double const statW2 = (s.weightSq > 0.0 && std::isfinite(s.weightSq))
             ? s.weightSq
             : s.energy * s.energy;
-        double const w2Frac = (totW2 > eps) ? statW2 / totW2 : eFrac;
+        double const w2Frac = (totW2 > 0.0) ? statW2 / totW2 : eFrac;
         double const sourceQuality = (1.0 - varianceMix) * eFrac + varianceMix * w2Frac;
 
         double const priority =
             PredictedGroupPriority(groupQuality, s.observerIndex, s.groupIndex);
 
-        double delta = ema * priority * sourceQuality;
+        double delta = ema * (priority * sourceQuality);
         if (!(delta > 0.0) || !std::isfinite(delta))
             continue;
 
