@@ -1012,9 +1012,6 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 diag.adaptiveGroupMinLuminosity = cfg.adaptiveGroupMinLuminosity;
                 diag.adaptiveGroupMinLuminosityFracOfGroupMax =
                     cfg.adaptiveGroupMinLuminosityFracOfGroupMax;
-                diag.adaptiveGroupLatestWeight = cfg.adaptiveGroupLatestWeight;
-                diag.adaptiveGroupCumulativeWeight = cfg.adaptiveGroupCumulativeWeight;
-                diag.adaptiveGroupEmaWeight = cfg.adaptiveGroupEmaWeight;
                 diag.adaptiveGroupSamplingStrength = cfg.adaptiveGroupStrength;
                 diag.adaptiveGroupSamplingPdfFloor = cfg.adaptiveGroupPdfFloor;
                 diag.adaptiveGroupSamplingMaxBias = cfg.adaptiveGroupMaxBias;

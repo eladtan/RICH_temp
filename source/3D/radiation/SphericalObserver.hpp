@@ -97,9 +97,6 @@ public:
         int adaptiveGroupMinCrossings = 0;
         double adaptiveGroupMinLuminosity = 0.0;
         double adaptiveGroupMinLuminosityFracOfGroupMax = 0.0;
-        double adaptiveGroupLatestWeight = 0.0;
-        double adaptiveGroupCumulativeWeight = 0.0;
-        double adaptiveGroupEmaWeight = 0.0;
         double adaptiveGroupSamplingStrength = 0.0;
         double adaptiveGroupSamplingPdfFloor = 0.0;
         double adaptiveGroupSamplingMaxBias = 1.0;

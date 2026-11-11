@@ -41,7 +41,6 @@ public:
     std::vector<double> const& reference() const { return reference_; }
 
     static size_t xBin(double weight, double reference);
-    bool isTailBin(size_t bin) const { return bin >= kTailFirstBin && bin < kMissingBin; }
 
     void record(size_t escapeGroup, double weight, double splitFactor,
                 std::uint8_t birthGroup, std::uint8_t provenance0, std::uint8_t provenance1);

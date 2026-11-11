@@ -3007,9 +3007,6 @@ void SphericalObserver::writeHDF5(std::string const& filename,
     writer.WriteElement("/adaptive/config/group_min_crossings", diagnostics.adaptiveGroupMinCrossings);
     writer.WriteElement("/adaptive/config/group_min_luminosity", diagnostics.adaptiveGroupMinLuminosity);
     writer.WriteElement("/adaptive/config/group_min_luminosity_frac_of_group_max", diagnostics.adaptiveGroupMinLuminosityFracOfGroupMax);
-    writer.WriteElement("/adaptive/config/group_latest_weight", diagnostics.adaptiveGroupLatestWeight);
-    writer.WriteElement("/adaptive/config/group_cumulative_weight", diagnostics.adaptiveGroupCumulativeWeight);
-    writer.WriteElement("/adaptive/config/group_ema_weight", diagnostics.adaptiveGroupEmaWeight);
     writer.WriteElement("/adaptive/group_sampling/enabled", diagnostics.adaptiveGroupFrequencySamplingEnabled);
     writer.WriteElement("/adaptive/group_sampling/strength", diagnostics.adaptiveGroupSamplingStrength);
     writer.WriteElement("/adaptive/group_sampling/pdf_floor", diagnostics.adaptiveGroupSamplingPdfFloor);

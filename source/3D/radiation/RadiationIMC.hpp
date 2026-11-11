@@ -756,7 +756,6 @@ public:
     {
         this->impl_.setPostProcessGroupWindow(std::move(window));
     }
-    PostProcessGroupWindow const& getPostProcessGroupWindow() const { return this->impl_.getPostProcessGroupWindow(); }
     PostProcessGroupSplitCounters const& getPostProcessGroupSplitCounters() const
     {
         return this->impl_.getPostProcessGroupSplitCounters();

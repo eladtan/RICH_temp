@@ -522,9 +522,6 @@ std::vector<Option> MakeRegistry(PostProcessConfig& c)
     AddDouble(options, "adaptive.group.polarization-weight", "Polarization contribution to group score.", c.adaptive.group.polarizationWeight);
     AddDouble(options, "adaptive.group.polarization-floor", "Polarization fraction floor.", c.adaptive.group.polarizationFloor);
     AddDouble(options, "adaptive.group.history-ema", "Historical diagnostic averaging factor.", c.adaptive.group.historyEma);
-    AddDouble(options, "adaptive.group.latest-weight", "Latest-generation score weight.", c.adaptive.group.latestWeight);
-    AddDouble(options, "adaptive.group.cumulative-weight", "Cumulative score weight.", c.adaptive.group.cumulativeWeight);
-    AddDouble(options, "adaptive.group.ema-weight", "EMA score weight.", c.adaptive.group.emaWeight);
     AddDouble(options, "adaptive.group.score-ema", "Group allocation score averaging factor.", c.adaptive.group.scoreEma);
     AddDouble(options, "adaptive.group.strength", "Adaptive frequency PDF mixture strength.", c.adaptive.group.strength);
     AddDouble(options, "adaptive.group.pdf-floor", "Minimum adaptive frequency PDF component.", c.adaptive.group.pdfFloor);

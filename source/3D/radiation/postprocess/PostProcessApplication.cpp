@@ -323,9 +323,6 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.adaptiveGroupPolarizationWeight = publicConfig.adaptive.group.polarizationWeight;
     cfg.adaptiveGroupPolarizationFloor = publicConfig.adaptive.group.polarizationFloor;
     cfg.adaptiveGroupHistoryEma = publicConfig.adaptive.group.historyEma;
-    cfg.adaptiveGroupLatestWeight = publicConfig.adaptive.group.latestWeight;
-    cfg.adaptiveGroupCumulativeWeight = publicConfig.adaptive.group.cumulativeWeight;
-    cfg.adaptiveGroupEmaWeight = publicConfig.adaptive.group.emaWeight;
     cfg.adaptiveGroupScoreEma = publicConfig.adaptive.group.scoreEma;
     cfg.adaptiveGroupStrength = publicConfig.adaptive.group.strength;
     cfg.adaptiveGroupPdfFloor = publicConfig.adaptive.group.pdfFloor;
