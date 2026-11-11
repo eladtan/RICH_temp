@@ -399,9 +399,6 @@ struct PostProcessConfig
             double polarizationWeight = 0.5;
             double polarizationFloor = 0.02;
             double historyEma = 0.35;
-            double latestWeight = 0.25;
-            double cumulativeWeight = 0.50;
-            double emaWeight = 0.25;
             double scoreEma = 0.35;
             double strength = 0.75;
             double pdfFloor = 0.02;

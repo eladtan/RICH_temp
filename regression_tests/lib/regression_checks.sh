@@ -3165,6 +3165,23 @@ check_imc_postprocess_band_window_unit_case() {
     return 0
 }
 
+check_imc_postprocess_group_adaptation_case() {
+    local metrics_file="$1/imc_postprocess_group_adaptation_metrics.txt"
+    if ! check_no_fatal_markers "$3" "$4"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$2"; then
+        set_check_msg "missing or stale group-adaptation metrics"
+        return 1
+    fi
+    if [[ $(awk '$1 == "pass" { print $2 }' "$metrics_file") != 1 ]]; then
+        set_check_msg "group-adaptation checks failed; see FAIL lines in stdout"
+        return 1
+    fi
+    set_check_msg "group source scoring, energy-unit invariance and overflow checks passed"
+    return 0
+}
+
 check_multigroup_thermal_sampling_case() {
     local run_dir="$1"
     local run_start_epoch="$2"

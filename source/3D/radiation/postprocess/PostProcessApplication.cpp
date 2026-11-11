@@ -1,5 +1,6 @@
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <cstdint>
@@ -323,9 +324,6 @@ Config ToInternalConfig(PostProcessIMC::PostProcessConfig const& publicConfig)
     cfg.adaptiveGroupPolarizationWeight = publicConfig.adaptive.group.polarizationWeight;
     cfg.adaptiveGroupPolarizationFloor = publicConfig.adaptive.group.polarizationFloor;
     cfg.adaptiveGroupHistoryEma = publicConfig.adaptive.group.historyEma;
-    cfg.adaptiveGroupLatestWeight = publicConfig.adaptive.group.latestWeight;
-    cfg.adaptiveGroupCumulativeWeight = publicConfig.adaptive.group.cumulativeWeight;
-    cfg.adaptiveGroupEmaWeight = publicConfig.adaptive.group.emaWeight;
     cfg.adaptiveGroupScoreEma = publicConfig.adaptive.group.scoreEma;
     cfg.adaptiveGroupStrength = publicConfig.adaptive.group.strength;
     cfg.adaptiveGroupPdfFloor = publicConfig.adaptive.group.pdfFloor;
@@ -1326,8 +1324,22 @@ int PostProcessIMC::RunPostProcessMain(
             CheckRestartSourceSurface(cfg.restartFrom, runtime, rank);
 
         Config const passConfig = MakePassOutputConfig(cfg);
+#ifdef RICH_MPI
+        MPI_Barrier(MPI_COMM_WORLD);
+#endif
+        auto const MultigroupStart = std::chrono::steady_clock::now();
         ForwardPostprocessResult forwardResult =
             RunForwardPostprocess(passConfig, runtime);
+        double MultigroupSeconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - MultigroupStart).count();
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &MultigroupSeconds, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        if (rank == 0) {
+            std::cout << "MG_BENCHMARK seconds=" << std::setprecision(12) << MultigroupSeconds
+                      << " ranks=" << mpiSize << " rank_hours=" << MultigroupSeconds * mpiSize / 3600.0
+                      << std::endl;
+        }
         ForwardPostprocessResult greyResult =
             RunGreyPostprocess(passConfig, runtime, forwardResult);
         BroadcastPassResult(forwardResult);

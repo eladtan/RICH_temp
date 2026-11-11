@@ -167,9 +167,6 @@ struct Config
     double adaptiveGroupPolarizationWeight = 0.5;
     double adaptiveGroupPolarizationFloor = 0.02;
     double adaptiveGroupHistoryEma = 0.35;
-    double adaptiveGroupLatestWeight = 0.25;
-    double adaptiveGroupCumulativeWeight = 0.50;
-    double adaptiveGroupEmaWeight = 0.25;
     double adaptiveGroupScoreEma = 0.35;
     double adaptiveGroupStrength = 0.75;
     double adaptiveGroupPdfFloor = 0.02;
