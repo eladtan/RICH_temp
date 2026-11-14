@@ -16,6 +16,8 @@ RICH is a compressible hydrodynamic simulation code on a 3D moving Voronoi mesh,
 | [Radiation Transport](user-guide/radiation.md) | Grey diffusion, multigroup, Compton/CMMC |
 | [STORM GPU offload](radiation/gpu_offload.md) | What runs on GPU, what should not, and a review of the current path |
 | [Post-process band weight window](radiation/postprocess-band-weight-window.md) | Per-group weight window, packet provenance, generation Stokes records, seed offset, restart schema 3 |
+| [Post-process restart](radiation/postprocess-restart.md) | Adding Monte Carlo generations to an existing post-process result |
+| [Post-process cooling limit](radiation/postprocess-cooling-limit.md) | Capping volume emission of cells that cool faster than the hydro step |
 | [Gravity](user-guide/gravity.md) | Self-gravity trees, TDE gravity |
 | [AMR](user-guide/amr.md) | Adaptive mesh refinement |
 | [Boundary Conditions](user-guide/boundary-conditions.md) | Rigid wall, periodic, inflow/outflow |
@@ -38,6 +40,7 @@ RICH is a compressible hydrodynamic simulation code on a 3D moving Voronoi mesh,
 | [FAQ](faq.md) | Frequently asked questions |
 | [Troubleshooting](troubleshooting.md) | Common errors and solutions |
 | [Contributing](contributing.md) | Code style, adding tests, workflow |
+| [Scientific Writing](scientific-writing.md) | Manuscript style, citation integrity, LaTeX rules |
 | [Changelog](changelog.md) | Version history |
 
 ## Publications

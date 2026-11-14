@@ -110,6 +110,99 @@ cutoff-crossing time is included in the event competition.  The packet then
 returns to IMC in the same cell with the remaining transport time; it is not
 kept in DDMC until the next unrelated event.
 
+## Advection with the gas
+
+Packets keep lab positions on a mesh that is frozen during transport, in hydro
+and post-process runs alike: after the hydro step the mesh moves but every
+packet keeps its position and is only re-located into its new cell, and a DDMC
+resident at census becomes an IMC packet at a random point of its cell. So the
+gas never carries a DDMC packet with it. IMC gets that motion from the frame
+transformations at each scattering; DDMC needs the advection term of the
+comoving diffusion equation explicitly,
+
+```text
+dE0/dt + div(v E0) + (1/3) E0 div v + div F0 = 0.
+```
+
+With `ddmcAdvection` (default on; post-process option `transport.ddmc-advection`)
+and the comoving frame active (hydro, or post-process with cell velocities):
+
+* Every face between two DDMC cells gets a first-order upwind advection leak
+  `ddmcFraction A max(u, 0) / V`, with `u` the mean of the two cells' gas
+  velocities along the outward normal (the same face velocity as the
+  divergence estimate, so the leak rates sum to the cell divergence). The
+  packet moves to the downstream cell as a resident, with its comoving weight
+  and frequency, and adds nothing to the face-flux moment (which estimates
+  the diffusive flux `F0`). A face without advection draws its random numbers
+  exactly as before.
+* At an interface to IMC the gas carries radiation across a fixed face: the
+  DDMC side must emit `cE0/4 + u E0/2` while the IMC side brings `cE0/4 - u E0/2`.
+  The DDMC-to-IMC leak rate is multiplied by `1 + 2 u/c` (`|u|/c` bounded by
+  `ddmcMaxInterfaceVelocityOverC`).
+* At a CER flux-source face the IMC transport re-emits in the outer cell's
+  comoving frame, so the work term there uses that cell's velocity alone, not
+  the mean with the interior cell.
+* The cell Peclet number `|v| (L/2) / D` is reported every step
+  (`DDMC_ADVECTION` line: maximum and a histogram). `ddmcMaxCellAdvectionPeclet`
+  (post-process `transport.ddmc-max-cell-advection-peclet`, default no limit)
+  can return advection-dominated cells to IMC.
+
+Validation (`examples/ddmc_advection_pulse`, `examples/ddmc_advection_interface`
+in STORM, `regression_tests/cases/imc_postprocess_moving_frame` in RICH):
+
+* A pulse in a uniformly moving thick scatterer moves with the gas: centroid
+  displacement / `vt` = 1.006 (static mesh) and 1.004 (mesh moving with the
+  gas), against 1.007 for IMC and -0.001 for DDMC without advection.
+* A pure-scattering envelope moving at 0.02c around a CER source: DDMC
+  reproduces the IMC energy change within 0.003 in outflow. In inflow it falls
+  short by about 12% of the change on a 12^3 mesh and 6% on an 18^3 mesh:
+  the first-order upwind smearing, about `1.5 beta tau_cell` of the diffusion.
+* Known limit: a fixed IMC-DDMC interface with gas flowing through it keeps
+  an `O(beta sigma h)` jump. The asymptotic interface condition and `G_U` are
+  Lagrangian (interface moving with the gas); the leak factor above removes
+  part of it (0.27 to 0.21 at `beta` = 0.03, `sigma h` = 8; 0.38 without
+  advection). A fixed-interface moving condition is still to be derived.
+
+## Compression in a frozen post-process flow
+
+The `(1/3) E0 div v` term shifts a resident's comoving frequency and weight
+by `exp(-div v dt / 3)` on every DDMC step, `dt` being the step's residence
+time in the cell. When the shift carries a packet across the top of its
+cell's diffusive band (`groupCutoff`), the packet becomes an IMC packet just
+above the band edge with a random direction. In a hydro run the flow evolves
+underneath; in a post-process the snapshot is frozen while a packet may live
+for the whole transport time, so the shift compounds over far more
+compression than the gas could sustain (snap_151: 59% of the multigroup light
+came out just above 100 eV, the edge of the cool envelope's diffusive band).
+
+Post-process option `transport.ddmc-compression-max-dynamical-times` (STORM
+`postProcess.compressionMaxDynamicalTimes`; RICH default 1, STORM default
+unlimited) bounds it. Each packet carries a clock that advances by
+`rate dt` on every DDMC, IMC and random-walk step, with
+`rate = max(|div v|, |v| / max(r, cell size))` of the current cell and `r`
+measured from the observer center; once the clock reaches the limit, DDMC no
+longer shifts the packet's frequency or weight (compression and expansion
+alike), and the band top can no longer be reached by compression. The clock
+is never reset per cell, travels with the packet across ranks and is
+inherited by weight-window copies. 1 allows the compression of one local
+dynamical time `min(1/|div v|, r/|v|)`; 0 turns the shift off; `inf` keeps
+the unlimited shift. A post-process run with cell velocities and a finite
+limit uses the host DDMC engine, not the shared kernel.
+
+The work of the shift on packet weights is part of the energy budget
+(`diagnostics/compression_work`, included in `transport_sink_residual`); each
+generation prints `COMPRESSION` with the band-top conversions and their
+energy, the DDMC steps in which a packet's clock ran out, and the work gained
+and lost. Packets converted at the band top carry a flag: `ESCAPE_ORIGIN`
+reports their escaping energy (`compression_converted`) and `HEAVY_PACKET`
+lines mark them. Frame changes at DDMC exits and IMC scatterings also change
+weights and remain outside the budget.
+
+Validation (`regression_tests/cases/imc_postprocess_moving_frame`): no work
+without DDMC or in a static envelope, negative work in outflow and positive
+in inflow, zero work with a limit of 0, and an inflow work at a limit of 0.25
+between zero and the unlimited value.
+
 ## Optical-depth threshold
 
 The default threshold remains 15.  A larger threshold restricts DDMC to cells
