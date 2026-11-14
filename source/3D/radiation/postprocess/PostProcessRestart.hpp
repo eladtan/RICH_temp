@@ -34,6 +34,12 @@ namespace imc_postprocess_tde {
 constexpr int kRestartSchemaVersion = 3;
 constexpr int kOldestReadableRestartSchema = 2;
 
+// Stored as /comparison/fld_quadrature_version. 2: each FLD sample is taken in
+// its nearest cell over all ranks, so the FLD luminosity does not depend on
+// the MPI size. Files without it used the owning rank's nearest local cell,
+// whose FLD luminosity moves by up to ~1e-3 with the domain decomposition.
+constexpr int kFldQuadratureVersion = 2;
+
 enum class RestartPass { Forward, Grey };
 
 // "/passes/forward" or "/passes/grey".

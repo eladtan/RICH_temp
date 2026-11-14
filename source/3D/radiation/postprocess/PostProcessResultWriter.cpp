@@ -317,6 +317,7 @@ void MergeHdf5(
         writer.WriteElement(DatasetPath(entry.first), entry.second);
 
     writer.WriteElement("/comparison/fld_total_luminosity", runtime.totalFldLuminosity);
+    writer.WriteElement("/comparison/fld_quadrature_version", kFldQuadratureVersion);
     writer.WriteElement("/comparison/fld_observer_luminosity", runtime.fldLuminosity);
     writer.WriteElement("/comparison/source_surface/tau", runtime.fluxSourceTau);
     writer.WriteElement("/comparison/source_surface/directly_resolved_fraction", runtime.fluxSourceDirectlyResolvedFraction);

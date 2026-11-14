@@ -839,23 +839,40 @@ void CheckRestartSourceSurface(
     // of the domain decomposition. A changed snapshot, opacity table or
     // surface setting moves them by far more.
     double const tolerance = 1e-6;
+    // Files written before kFldQuadratureVersion 2 sampled the FLD field with
+    // a decomposition-dependent cell lookup (~1e-3 between MPI sizes on
+    // snap_320), so their FLD luminosity is compared at 1e-2. The FLD
+    // luminosity is a comparison only; it does not enter the Monte Carlo.
+    double const legacyFldTolerance = 1e-2;
     RunOnRankZero(rank, [&]() {
         HDF5Reader reader(path);
         double const storedInjected = state_hdf5::ReadScalar<double>(
             reader, "/comparison/source_surface/injected_luminosity");
         double const storedFld = state_hdf5::ReadScalar<double>(
             reader, "/comparison/fld_total_luminosity");
+        int const storedFldQuadrature = reader.Exists("/comparison/fld_quadrature_version")
+            ? state_hdf5::ReadScalar<int>(reader, "/comparison/fld_quadrature_version")
+            : 1;
+        double const fldTolerance =
+            storedFldQuadrature >= kFldQuadratureVersion ? tolerance : legacyFldTolerance;
+        if (storedFldQuadrature < kFldQuadratureVersion)
+            std::cout << "Restart: " << path << " predates the decomposition-independent FLD "
+                      << "quadrature; FLD luminosity checked at relative tolerance "
+                      << fldTolerance << " (file " << storedFld << ", run "
+                      << runtime.totalFldLuminosity << " erg/s)" << std::endl;
         std::ostringstream differences;
         if (!RelativelyEqual(storedInjected, runtime.fluxSourceInjectedLuminosity, tolerance))
             differences << "\n  source-surface injected luminosity: file " << storedInjected
-                        << " vs run " << runtime.fluxSourceInjectedLuminosity << " erg/s";
-        if (!RelativelyEqual(storedFld, runtime.totalFldLuminosity, tolerance))
+                        << " vs run " << runtime.fluxSourceInjectedLuminosity
+                        << " erg/s (relative tolerance " << tolerance << ")";
+        if (!RelativelyEqual(storedFld, runtime.totalFldLuminosity, fldTolerance))
             differences << "\n  FLD total luminosity: file " << storedFld
-                        << " vs run " << runtime.totalFldLuminosity << " erg/s";
+                        << " vs run " << runtime.totalFldLuminosity
+                        << " erg/s (relative tolerance " << fldTolerance << ")";
         if (!differences.str().empty())
             throw UniversalError(
-                "Cannot continue " + path + ": the recomputed source differs from the file "
-                "(relative tolerance 1e-6):" + differences.str());
+                "Cannot continue " + path + ": the recomputed source differs from the file:" +
+                differences.str());
     });
 }
 

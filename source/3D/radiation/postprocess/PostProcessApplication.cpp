@@ -350,16 +350,15 @@ std::vector<double> IntegrateFldFluxOverObserverPatches(
 
     if (fldFlux.size() < nCells)
         throw UniversalError("FLD surface integration received too few cell fluxes");
-    if (nCells == 0 || nObservers == 0)
-        throw UniversalError("FLD surface integration requires cells and observers");
-    if (nObservers > static_cast<size_t>(INT_MAX))
-        throw UniversalError("Too many FLD observer bins for MPI reduction");
-    if (nObservers > std::numeric_limits<size_t>::max() / samplesPerObserver)
-        throw UniversalError("FLD surface quadrature sample count overflow");
-
+    if (nObservers == 0)
+        throw UniversalError("FLD surface integration requires observers");
 #ifndef RICH_MPI
+    if (nCells == 0)
+        throw UniversalError("FLD surface integration requires cells");
     (void)rank;
 #endif
+    if (nObservers > static_cast<size_t>(INT_MAX) / samplesPerObserver)
+        throw UniversalError("Too many FLD quadrature samples for MPI reduction");
 
     size_t const sampleCount = samplesPerObserver * nObservers;
     std::vector<Vector3D> const sampleDirections =
@@ -376,7 +375,53 @@ std::vector<double> IntegrateFldFluxOverObserverPatches(
     // piecewise-constant value in each Voronoi cell. Sub-sampling each angular
     // bin removes nearest-generator aliasing without smoothing across shocks,
     // opacity jumps, or resolution transitions.
-    for (Vector3D const& direction : sampleDirections) {
+    //
+    // A sample belongs to the cell of its nearest generator, which can live on
+    // a rank other than the one whose domain holds the point, and each rank
+    // only searches its own generators. Every rank therefore offers its
+    // nearest local generator and the closest over all ranks evaluates the
+    // sample (ties go to the lowest rank), so the integral does not depend on
+    // the domain decomposition or the MPI size.
+    std::vector<size_t> localCell(sampleCount, 0);
+#ifdef RICH_MPI
+    struct DistanceRank {
+        double distance2;
+        int rank;
+    };
+    std::vector<DistanceRank> nearest(
+        sampleCount, DistanceRank{std::numeric_limits<double>::infinity(), rank});
+#endif
+    for (size_t s = 0; s < sampleCount; ++s) {
+#ifdef RICH_MPI
+        if (nCells == 0)
+            continue;
+#endif
+        Vector3D const point = observer.getCenter() + sampleDirections[s] * radius;
+        localCell[s] = tess.GetContainingCell(point);
+        if (localCell[s] >= nCells) {
+            UniversalError eo("FLD quadrature point did not map to a local cell");
+            eo.addEntry("Cell index", localCell[s]);
+            eo.addEntry("Local cells", nCells);
+            throw eo;
+        }
+#ifdef RICH_MPI
+        double const distance = fastabs(tess.GetMeshPoint(localCell[s]) - point);
+        nearest[s].distance2 = distance * distance;
+#endif
+    }
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, nearest.data(), static_cast<int>(sampleCount),
+                  MPI_DOUBLE_INT, MPI_MINLOC, MPI_COMM_WORLD);
+#endif
+
+    for (size_t s = 0; s < sampleCount; ++s) {
+#ifdef RICH_MPI
+        if (nearest[s].rank != rank)
+            continue;
+        if (nCells == 0)
+            throw UniversalError("FLD quadrature sample assigned to a rank without cells");
+#endif
+        Vector3D const& direction = sampleDirections[s];
         size_t observerIndex = 0;
         double bestAlignment = -std::numeric_limits<double>::infinity();
         for (size_t p = 0; p < nObservers; ++p) {
@@ -387,20 +432,7 @@ std::vector<double> IntegrateFldFluxOverObserverPatches(
             }
         }
 
-        Vector3D const point = observer.getCenter() + direction * radius;
-#ifdef RICH_MPI
-        if (tess.GetOwner(point) != rank)
-            continue;
-#endif
-        size_t const cell = tess.GetContainingCell(point);
-        if (cell >= fldFlux.size()) {
-            UniversalError eo("FLD quadrature point did not map to an available cell");
-            eo.addEntry("Cell index", cell);
-            eo.addEntry("Available flux entries", fldFlux.size());
-            throw eo;
-        }
-
-        double const radialFlux = ScalarProd(fldFlux[cell], direction);
+        double const radialFlux = ScalarProd(fldFlux[localCell[s]], direction);
         luminosity[observerIndex] += std::max(0.0, radialFlux) * sampleArea;
         ++localEvaluated;
     }
