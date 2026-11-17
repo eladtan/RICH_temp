@@ -24,6 +24,7 @@
 #include "source/3D/tessellation/voronoi/Voronoi3D.hpp"
 #include "source/3D/monte/MonteCarloManager3D.hpp"
 #include "PostProcessCommunication.hpp"
+#include "NearestCellOwner.hpp"
 #ifdef RICH_MPI
 #include "source/monte/manager/communication/RDMACommunicationEngine.hpp"
 #endif // RICH_MPI
@@ -355,10 +356,7 @@ std::vector<double> IntegrateFldFluxOverObserverPatches(
 #ifndef RICH_MPI
     if (nCells == 0)
         throw UniversalError("FLD surface integration requires cells");
-    (void)rank;
 #endif
-    if (nObservers > static_cast<size_t>(INT_MAX) / samplesPerObserver)
-        throw UniversalError("Too many FLD quadrature samples for MPI reduction");
 
     size_t const sampleCount = samplesPerObserver * nObservers;
     std::vector<Vector3D> const sampleDirections =
@@ -377,50 +375,19 @@ std::vector<double> IntegrateFldFluxOverObserverPatches(
     // opacity jumps, or resolution transitions.
     //
     // A sample belongs to the cell of its nearest generator, which can live on
-    // a rank other than the one whose domain holds the point, and each rank
-    // only searches its own generators. Every rank therefore offers its
-    // nearest local generator and the closest over all ranks evaluates the
-    // sample (ties go to the lowest rank), so the integral does not depend on
-    // the domain decomposition or the MPI size.
-    std::vector<size_t> localCell(sampleCount, 0);
-#ifdef RICH_MPI
-    struct DistanceRank {
-        double distance2;
-        int rank;
-    };
-    std::vector<DistanceRank> nearest(
-        sampleCount, DistanceRank{std::numeric_limits<double>::infinity(), rank});
-#endif
-    for (size_t s = 0; s < sampleCount; ++s) {
-#ifdef RICH_MPI
-        if (nCells == 0)
-            continue;
-#endif
-        Vector3D const point = observer.getCenter() + sampleDirections[s] * radius;
-        localCell[s] = tess.GetContainingCell(point);
-        if (localCell[s] >= nCells) {
-            UniversalError eo("FLD quadrature point did not map to a local cell");
-            eo.addEntry("Cell index", localCell[s]);
-            eo.addEntry("Local cells", nCells);
-            throw eo;
-        }
-#ifdef RICH_MPI
-        double const distance = fastabs(tess.GetMeshPoint(localCell[s]) - point);
-        nearest[s].distance2 = distance * distance;
-#endif
-    }
-#ifdef RICH_MPI
-    MPI_Allreduce(MPI_IN_PLACE, nearest.data(), static_cast<int>(sampleCount),
-                  MPI_DOUBLE_INT, MPI_MINLOC, MPI_COMM_WORLD);
-#endif
+    // a rank other than the one whose domain holds the point; NearestLocalCells
+    // hands each sample to the rank owning that cell, so the integral does not
+    // depend on the domain decomposition or the MPI size. Every sample is
+    // evaluated, including any outside the box.
+    std::vector<Vector3D> samplePoints(sampleCount);
+    for (size_t s = 0; s < sampleCount; ++s)
+        samplePoints[s] = observer.getCenter() + sampleDirections[s] * radius;
+    std::vector<size_t> const localCell =
+        NearestLocalCells(tess, samplePoints, rank, true);
 
     for (size_t s = 0; s < sampleCount; ++s) {
-#ifdef RICH_MPI
-        if (nearest[s].rank != rank)
+        if (localCell[s] >= nCells)
             continue;
-        if (nCells == 0)
-            throw UniversalError("FLD quadrature sample assigned to a rank without cells");
-#endif
         Vector3D const& direction = sampleDirections[s];
         size_t observerIndex = 0;
         double bestAlignment = -std::numeric_limits<double>::infinity();

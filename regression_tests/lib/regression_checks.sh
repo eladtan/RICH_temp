@@ -3241,3 +3241,34 @@ check_imc_postprocess_moving_frame_case() {
     set_check_msg "static envelope conserves energy; outflow loses and inflow gains energy in IMC and DDMC; DDMC matches IMC (${gains})"
     return 0
 }
+
+check_imc_postprocess_nearest_cell_mpi_case() {
+    local run_dir="$1"
+    local run_start_epoch="$2"
+    local stdout_log="$3"
+    local stderr_log="$4"
+    local metrics_file="${run_dir}/imc_postprocess_nearest_cell_mpi_metrics.txt"
+
+    if ! check_no_fatal_markers "$stdout_log" "$stderr_log"; then
+        return 1
+    fi
+    if ! is_nonempty_and_newer "$metrics_file" "$run_start_epoch"; then
+        set_check_msg "missing or stale imc_postprocess_nearest_cell_mpi_metrics.txt"
+        return 1
+    fi
+
+    local pass_flag mismatch old_wrong
+    pass_flag=$(awk '$1 == "pass" { print $2 }' "$metrics_file")
+    mismatch=$(awk '$1 == "nearest_mismatch" { print $2 }' "$metrics_file")
+    old_wrong=$(awk '$1 == "old_lookup_wrong" { print $2 }' "$metrics_file")
+    if [[ -z "$pass_flag" ]]; then
+        set_check_msg "failed to parse imc_postprocess_nearest_cell_mpi metrics"
+        return 1
+    fi
+    if [[ "$pass_flag" != "1" ]]; then
+        set_check_msg "nearest-cell assignment failed (nearest_mismatch=${mismatch:-?}, old_lookup_wrong=${old_wrong:-?}); see the FAIL lines in stdout"
+        return 1
+    fi
+    set_check_msg "every point taken once, by the cell of its global nearest generator (the old lookup misses ${old_wrong:-?} points here)"
+    return 0
+}

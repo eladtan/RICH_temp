@@ -1,5 +1,6 @@
 #include "FluxSourceCalculation.hpp"
 #include "CoolingLimit.hpp"
+#include "NearestCellOwner.hpp"
 
 #include <algorithm>
 #include <chrono>
@@ -1262,26 +1263,36 @@ void InitializeFluxSourceSurface(
         particles.reserve(
             channelCount * (batchEnd - batchBegin) / std::max(1, runtime.mpiSize) + channelCount);
 
-        for(size_t rayIndex = batchBegin; rayIndex < batchEnd; ++rayIndex)
+        // Each ray starts in the cell that contains its sphere point, on the
+        // rank that owns that cell (NearestLocalCells); the owner of the
+        // point's domain region may hold a different, wrong cell. A ray with
+        // a zero direction is skipped (its start point stays at the centre).
+        size_t const batchSize = batchEnd - batchBegin;
+        std::vector<Vector3D> unitDirections(batchSize);
+        std::vector<char> validDirection(batchSize, 0);
+        std::vector<Vector3D> startPoints(batchSize, cfg.center);
+        for(size_t k = 0; k < batchSize; ++k)
         {
-            Vector3D direction = directions[rayIndex];
+            Vector3D direction = directions[batchBegin + k];
             double const directionNorm = abs(direction);
             if(!(directionNorm > 0.0))
                 continue;
             direction *= 1.0 / directionNorm;
-            Vector3D const spherePoint = cfg.center + cfg.radius * direction;
+            unitDirections[k] = direction;
+            validDirection[k] = 1;
+            startPoints[k] = cfg.center + cfg.radius * direction;
+        }
+        std::vector<size_t> const startCells =
+            NearestLocalCells(runtime.tess, startPoints, runtime.rank);
 
-            bool local = false;
-#ifdef RICH_MPI
-            if(!runtime.tess.IsPointOutsideBox(spherePoint))
-                local = runtime.tess.GetOwner(spherePoint) == runtime.rank;
-#else
-            local = !runtime.tess.IsPointOutsideBox(spherePoint);
-#endif
-            if(!local)
+        for(size_t rayIndex = batchBegin; rayIndex < batchEnd; ++rayIndex)
+        {
+            size_t const k = rayIndex - batchBegin;
+            if(!validDirection[k])
                 continue;
-
-            size_t const cellIndex = runtime.tess.GetContainingCell(spherePoint);
+            Vector3D const& direction = unitDirections[k];
+            Vector3D const& spherePoint = startPoints[k];
+            size_t const cellIndex = startCells[k];
             if(cellIndex >= runtime.tess.GetPointNo())
                 continue;
             for(size_t channel = 0; channel < channelCount; ++channel)

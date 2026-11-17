@@ -3,6 +3,7 @@
 #include "source/monte/physics/MonteCarloPhysics.hpp"
 #include "source/monte/particle/StepResult.hpp"
 #include "source/monte/particle/ParticleStatus.hpp"
+#include "NearestCellOwner.hpp"
 #ifdef RICH_MPI
 #include "source/monte/manager/communication/RDMACommunicationEngine.hpp"
 #include "PostProcessCommunication.hpp"
@@ -401,29 +402,34 @@ ProbePassResult RunInwardProbePass(Config const& cfg,
     size_t const chunkRayCount = (obsEnd > obsBegin) ? (obsEnd - obsBegin) * rayChannelCount : 0;
     particles.reserve(chunkRayCount / std::max(1, runtime.mpiSize));
 
-    for (size_t obs = obsBegin; obs < obsEnd; ++obs) {
-        Vector3D dir = directions[obs];
+    // Each ray starts in the cell that contains its sphere point, on the rank
+    // that owns that cell (NearestLocalCells); the owner of the point's domain
+    // region may hold a different, wrong cell. A ray with a zero direction is
+    // skipped (its start point stays at the centre).
+    size_t const chunkSize = obsEnd > obsBegin ? obsEnd - obsBegin : 0;
+    std::vector<Vector3D> unitDirections(chunkSize);
+    std::vector<char> validDirection(chunkSize, 0);
+    std::vector<Vector3D> startPoints(chunkSize, cfg.center);
+    for (size_t k = 0; k < chunkSize; ++k) {
+        Vector3D dir = directions[obsBegin + k];
         double const norm = abs(dir);
         if (!(norm > 0.0))
             continue;
         dir = dir * (1.0 / norm);
+        unitDirections[k] = dir;
+        validDirection[k] = 1;
+        startPoints[k] = cfg.center + dir * cfg.radius;
+    }
+    std::vector<size_t> const startCells =
+        NearestLocalCells(runtime.tess, startPoints, runtime.rank);
 
-        Vector3D spherePoint = cfg.center + dir * cfg.radius;
-
-        bool isLocal = false;
-#ifdef RICH_MPI
-        if (!runtime.tess.IsPointOutsideBox(spherePoint)) {
-            int owner = runtime.tess.GetOwner(spherePoint);
-            isLocal = (owner == runtime.rank);
-        }
-#else
-        isLocal = !runtime.tess.IsPointOutsideBox(spherePoint);
-#endif
-
-        if (!isLocal)
+    for (size_t obs = obsBegin; obs < obsEnd; ++obs) {
+        size_t const k = obs - obsBegin;
+        if (!validDirection[k])
             continue;
-
-        size_t startCell = runtime.tess.GetContainingCell(spherePoint);
+        Vector3D const& dir = unitDirections[k];
+        Vector3D const& spherePoint = startPoints[k];
+        size_t const startCell = startCells[k];
         if (startCell >= runtime.tess.GetPointNo())
             continue;
 
