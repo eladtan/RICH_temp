@@ -1,4 +1,5 @@
 #include "PhotosphereCalculation.hpp"
+#include "TransportStep.hpp"
 
 #include "source/monte/physics/MonteCarloPhysics.hpp"
 #include "source/monte/particle/StepResult.hpp"
@@ -489,7 +490,7 @@ ProbePassResult RunInwardProbePass(Config const& cfg,
     double const fullDistance = cfg.radius * 2.01;
     auto const chunkStart = std::chrono::steady_clock::now();
     probeManager->getParticles() = std::move(particles);
-    probeManager->step(runtime.cells, fullDistance);
+    StepOrAbort(*probeManager, runtime.cells, fullDistance, "the photosphere probe", runtime.rank);
 
     ProbePassResult result;
     result.value = probePhysics->values();

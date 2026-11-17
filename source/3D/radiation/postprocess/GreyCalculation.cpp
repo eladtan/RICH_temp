@@ -1,4 +1,5 @@
 #include "GreyCalculation.hpp"
+#include "TransportStep.hpp"
 
 #ifdef RICH_MPI
 #include "source/monte/manager/communication/RDMACommunicationEngine.hpp"
@@ -602,7 +603,7 @@ ForwardPostprocessResult RunGreyPostprocess(
                 greyObserver->setGenerationRecordId(greyFinalThisGen
                     ? static_cast<long long>(greyGenerationOrigin) + static_cast<long long>(greyFinalGenerationIndex)
                     : static_cast<long long>(gen));
-                greyManager->step(cells, cfg.transportTime);
+                StepOrAbort(*greyManager, cells, cfg.transportTime, "grey transport", rank);
                 if (cfg.volumeEmissionEnabled && greyPhysics->hasPostProcessVolumeEmission()) {
                     double volumeEnergy = greyPhysics->getLastVolumeEmissionEnergy();
                     unsigned long long counts[2] = {

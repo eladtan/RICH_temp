@@ -1,4 +1,5 @@
 #include "ForwardCalculation.hpp"
+#include "TransportStep.hpp"
 
 #ifdef RICH_MPI
 #include "source/monte/manager/communication/RDMACommunicationEngine.hpp"
@@ -634,7 +635,7 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                 }
                 observer->setGenerationRecords(cfg.generationStokes);
                 observer->setGenerationRecordId(mgAbsoluteGeneration(gen, finalThisGen, finalGenerationIndex));
-                manager->step(cells, cfg.transportTime);
+                StepOrAbort(*manager, cells, cfg.transportTime, "multigroup transport", rank);
                 if (cfg.volumeEmissionEnabled && physics->hasPostProcessVolumeEmission()) {
                     double volumeEnergy = physics->getLastVolumeEmissionEnergy();
                     unsigned long long counts[2] = {

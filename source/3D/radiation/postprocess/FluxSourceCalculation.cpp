@@ -1,4 +1,5 @@
 #include "FluxSourceCalculation.hpp"
+#include "TransportStep.hpp"
 #include "CoolingLimit.hpp"
 #include "NearestCellOwner.hpp"
 
@@ -1343,7 +1344,7 @@ void InitializeFluxSourceSurface(
         if(globalLaunched > 0)
         {
             manager->getParticles() = std::move(particles);
-            manager->step(runtime.cells, 2.01 * cfg.radius);
+            StepOrAbort(*manager, runtime.cells, 2.01 * cfg.radius, "the flux-source probe", runtime.rank);
         }
     }
 
