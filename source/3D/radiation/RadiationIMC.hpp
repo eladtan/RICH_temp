@@ -386,7 +386,15 @@ public:
                                      double maxTime) const override
         {
             auto const crossing = observer_->nextOutwardCrossing(position, velocity, maxTime);
-            return Crossing{crossing.hit, crossing.time, crossing.point};
+            Crossing result{crossing.hit, crossing.time, crossing.point};
+            if(crossing.hit)
+            {
+                Vector3D const radius = crossing.point - observer_->getCenter();
+                double const length = abs(radius);
+                if(length > 0.0)
+                    result.normal = radius * (1.0 / length);
+            }
+            return result;
         }
 
         void recordCrossing(const STORM::ObserverCrossingRecord<Vector3D> &record) override
