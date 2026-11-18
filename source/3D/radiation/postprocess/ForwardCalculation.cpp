@@ -229,16 +229,17 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                     // a thin set of source cells.  The generic global-mean
                     // clamp otherwise reduces those source cells to almost
                     // zero partition weight and can place millions of
-                    // particles on one rank.  Charge source origins the
-                    // measured average downstream work per emitted packet,
-                    // and add that term after the generic cell-cost clamp.
+                    // particles on one rank.  Charge each emitted packet one
+                    // step at its source cell, after the generic cell-cost
+                    // clamp.  The packet's downstream steps are already in
+                    // the step counters of the cells where they happen, so
+                    // charging the mean steps per packet here (as before)
+                    // counted every step twice and made emitting ranks look
+                    // busier than the ranks doing the transport.
                     if (cfg.fluxSourceCompare &&
                         globalTotalSteps > 0 &&
                         globalTotalSourceParticles > 0) {
-                        measuredLBParamsThisPass.particleWeight = std::max(
-                            1.0,
-                            static_cast<double>(globalTotalSteps) /
-                                static_cast<double>(globalTotalSourceParticles));
+                        measuredLBParamsThisPass.particleWeight = 1.0;
                         measuredLBParamsThisPass.particleCostAfterClamp = true;
                         if (rank == 0) {
                             std::cerr
@@ -247,6 +248,9 @@ ForwardPostprocessResult RunForwardPostprocess(Config const& cfg, PostprocessRun
                                 << " global_source_particles="
                                 << globalTotalSourceParticles
                                 << " steps_per_source_particle="
+                                << static_cast<double>(globalTotalSteps) /
+                                       static_cast<double>(globalTotalSourceParticles)
+                                << " charge_per_source_particle="
                                 << measuredLBParamsThisPass.particleWeight
                                 << " post_clamp=yes\n";
                         }

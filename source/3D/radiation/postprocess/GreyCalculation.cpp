@@ -282,13 +282,12 @@ ForwardPostprocessResult RunGreyPostprocess(
                                   &greyGlobalTotalSourceParticles, 1,
                                   MPI_UINT64_T, MPI_SUM, MPI_COMM_WORLD);
 
+                    // One step per emitted packet at its source cell, as in
+                    // the multigroup pass (ForwardCalculation.cpp).
                     if (cfg.fluxSourceCompare &&
                         greyGlobalTotalSteps > 0 &&
                         greyGlobalTotalSourceParticles > 0) {
-                        greyLBParamsThisPass.particleWeight = std::max(
-                            1.0,
-                            static_cast<double>(greyGlobalTotalSteps) /
-                                static_cast<double>(greyGlobalTotalSourceParticles));
+                        greyLBParamsThisPass.particleWeight = 1.0;
                         greyLBParamsThisPass.particleCostAfterClamp = true;
                         if (rank == 0) {
                             std::cerr
@@ -297,6 +296,9 @@ ForwardPostprocessResult RunGreyPostprocess(
                                 << " global_source_particles="
                                 << greyGlobalTotalSourceParticles
                                 << " steps_per_source_particle="
+                                << static_cast<double>(greyGlobalTotalSteps) /
+                                       static_cast<double>(greyGlobalTotalSourceParticles)
+                                << " charge_per_source_particle="
                                 << greyLBParamsThisPass.particleWeight
                                 << " post_clamp=yes\n";
                         }
