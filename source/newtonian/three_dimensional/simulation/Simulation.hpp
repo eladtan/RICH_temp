@@ -101,6 +101,21 @@ public:
      */
     std::vector<Vector3D> CommittedGeneratorPoints(void) const;
 
+    /** Limit probe of the re-anchor shadow (RICH_INDIVIDUAL_REANCHOR=2).
+     * Called collectively at a synchronized individual boundary (full mesh,
+     * owned cells in mesh order) with every owned cell's committed point
+     * velocity and cached acceleration (zero where the cache is invalid).  It
+     * fills `Limits` with each owned cell's wave-speed CFL limit and source
+     * limit times the source factor, without the mesh-drift guard, without a
+     * new gravity solve and without changing any state, and returns false on
+     * every rank when it cannot.
+     */
+    using IndividualReanchorLimitProbe = std::function<bool(std::vector<Vector3D> const&,
+                                                            std::vector<Vector3D> const&, std::vector<double>&)>;
+
+    void SetIndividualReanchorLimitProbe(IndividualReanchorLimitProbe Probe)
+    {this->IndividualReanchorProbe = std::move(Probe);};
+
     /** Collective totals of one domain growth, see
      * GrowDomainAtSynchronizedIndividualState. */
     struct DomainGrowthReport
@@ -315,6 +330,16 @@ private:
         std::size_t gainSkipStreak = 0;
         std::size_t decisions = 0;
         std::size_t switches = 0;
+        // An individual probe abandoned for a stale global baseline, kept for
+        // a two-block re-measurement of global in the same domain epoch.
+        bool StaleProbeValid = false;
+        double StaleProbeTau = 0;
+        std::uint64_t StaleProbeEpoch = 0;
+        int StaleBlocks = 0;
+        double StaleBlockTau[2] = {0, 0};
+        double StaleBlockWall = 0;
+        double StaleBlockSim = 0;
+        std::size_t StaleBlockSteps = 0;
     };
     AdaptiveModeState adaptiveMode;
     bool adaptiveDecisionsDeferred = false;
@@ -362,6 +387,11 @@ private:
         std::vector<double> explicitWeights = std::vector<double>(),
         std::shared_ptr<LoadBalancer<Vector3D>> exactLoadBalance = nullptr);
 
+    // Collective, after afterLB() of an applied migration: the adjacency capture on the migrated mesh
+    // (RICH_INDIVIDUAL_LB_ADJACENCY_CAPTURE) and the full-event-mesh request
+    // (RICH_INDIVIDUAL_FULL_MESH_AFTER_MIGRATION).  Both off by default.
+    void afterAppliedIndividualMigration(void);
+
     // Collective: migrates segmented Hilbert ownership back to one
     // equal-count curve range per rank (an exact partition; a weighted
     // Rebalance would keep a segmented partition whose weights balance).
@@ -377,6 +407,14 @@ private:
         double step_seconds, double step_mpi_seconds);
     void maybeBalanceIndividualEventByActiveBins(
         IndividualStepContext& context, std::uint64_t eventTick);
+
+    // RICH_INDIVIDUAL_ACTIVE_HILBERT_TARGET_PLAN (1, 2).  Local, no communication: restarts the target counts when
+    // the ownership epoch changed, and otherwise keeps each count with its cell by stable ID after AMR changed the
+    // owned cells (new cells start at zero, removed cells drop).
+    void AlignIndividualTargetCounts(void);
+    // Adds the event's final event-mesh targets (IndividualEventTargets) to the counts.  Local; its inputs are the
+    // same on every rank, so the event counters stay replicated.
+    void ObserveIndividualEventTargets(bool AllActiveEvent);
 #endif
 
     int rank, size;
@@ -394,6 +432,24 @@ private:
     std::unique_ptr<IndividualTimeStepScheduler> individualScheduler;
     IndividualAMRCallback individualAMR;
     IndividualPostPhysicsCallback individualPostPhysics;
+    // Re-anchor shadow (RICH_INDIVIDUAL_REANCHOR=2): its probe, and its state,
+    // derived from reduced values only, so identical on every rank.
+    IndividualReanchorLimitProbe IndividualReanchorProbe;
+    struct IndividualReanchorShadowState
+    {
+        // The last event left every cell at the current tick (the scheduler's
+        // start counts as one): only then can the state be synchronized.
+        bool PreviousEventAllActive = true;
+        int UpStreak = 0;
+        int DownStreak = 0;
+        double UpStreakMinimum = 0;
+        double DownStreakMinimum = 0;
+        std::uint64_t Boundaries = 0;
+    };
+    IndividualReanchorShadowState IndividualReanchorShadow;
+    // Evaluates and prints the shadow at a synchronized individual boundary.
+    // Collective.
+    void ReportIndividualReanchorShadow(void);
     bool individualEventInProgress = false;
     bool individualSynchronizedEventRequested = false;
     std::map<std::string, double> lastPhysicsTimes;
@@ -451,6 +507,19 @@ private:
         // Positional reference: event-mesh seconds per class.
         std::array<double, classes> positional_sum{};
         std::array<std::uint64_t, classes> positional_count{};
+        // Positional sample retained by a measuring revert: completes a class
+        // reference that has exactly one fresh sample.
+        std::array<double, classes> RetainedPositionalSeconds{};
+        std::array<bool, classes> RetainedPositionalValid{};
+        // Latest positional sample of each class: event-mesh seconds and the
+        // event_counter value at which it was taken.
+        std::array<double, classes> LastPositionalSeconds{};
+        std::array<std::uint64_t, classes> LastPositionalEvent{};
+        std::array<bool, classes> HasLastPositional{};
+        bool HasPositionalReference(std::size_t k) const
+        {
+            return positional_count[k] >= 2 || (positional_count[k] == 1 && RetainedPositionalValid[k]);
+        }
         // Class of the event whose mesh the next decision reads (-1: none).
         int pending_class = -1;
         // Events of the current segmented probe (since leaving positional
@@ -498,7 +567,44 @@ private:
         std::uint64_t measure_deadline_event = 0;
         // Planning seconds of a proposal awaiting its migration.
         double pending_planning_seconds = 0;
+        // Ledger-selected segment work weight (RICH_INDIVIDUAL_ACTIVE_HILBERT_SEGMENT_WORK_AUTO): per candidate
+        // beta (SegmentWorkCandidates), the ledger seconds of the measured segmented events run on its plans, by
+        // class, with their counts and events, the migration plus planning seconds of its plans, its plan count
+        // and the event its latest plan started.  Sums and counts halve when a new plan of the same candidate
+        // starts, so recent plans dominate.  Kept through reverts, reset with the rest of this state (domain
+        // changes, mode switches), so every candidate is measured again on a new domain.
+        static constexpr int WorkCandidates = 3;
+        std::array<std::array<double, classes>, WorkCandidates> WorkSum{};
+        std::array<std::array<double, classes>, WorkCandidates> WorkCount{};
+        std::array<double, WorkCandidates> WorkEvents{};
+        std::array<double, WorkCandidates> WorkCharges{};
+        std::array<std::uint64_t, WorkCandidates> WorkPlans{};
+        std::array<std::uint64_t, WorkCandidates> WorkLastPlanEvent{};
+        // Candidate of the current segmented plan (-1: positional, or a plan made without the selection), and the
+        // candidate of an accepted proposal awaiting its migration.
+        int CurrentWork = -1;
+        int PendingWork = -1;
     } individualSegmentDecision;
+    // RICH_INDIVIDUAL_ACTIVE_HILBERT_TARGET_PLAN (1, 2): for each owned cell (in the order of cells), how many
+    // partial events since the last ownership migration had it in their final event-mesh target set, active or
+    // passive; a partial event whose event mesh was full counts every owned cell (its target set is the owned
+    // population).  Ids holds the stable ID each count belongs to.  The counts restart when individualOwnershipEpoch
+    // changes (every migration) and with the decision state (domain growth, mode switches).  The event counters, per
+    // class, are replicated: every input that sets them is collective.  Empty and unused at 0.
+    struct IndividualTargetObservationState
+    {
+        std::vector<std::uint32_t> Counts;
+        std::vector<std::size_t> Ids;
+        std::uint64_t Epoch = std::numeric_limits<std::uint64_t>::max();
+        // Partial events on a partial event mesh, partial events on a full event mesh, all-active events (counted,
+        // add no target demand), and partial events the hydro step did not record (not counted).
+        std::uint64_t PartialEvents = 0;
+        std::uint64_t FullMeshEvents = 0;
+        std::uint64_t AllActiveEvents = 0;
+        std::uint64_t UnrecordedEvents = 0;
+    } IndividualTargetObservation;
+    // Filled by the hydro step through IndividualStepContext::event_target_record (set only at 1 and 2).
+    IndividualEventTargetRecord IndividualEventTargets;
     // Cleared (collectively) if a built rebuild ever contradicts the bound;
     // no rebuild is skipped after that.
     bool individualActiveHilbertBoundTrusted = true;

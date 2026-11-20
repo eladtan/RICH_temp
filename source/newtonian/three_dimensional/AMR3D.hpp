@@ -14,6 +14,9 @@
 #include "3D/tessellation/utils/PolyClip.hpp"
 #include "LinearGauss3D.hpp"
 #include "newtonian/three_dimensional/simulation/Simulation.hpp"
+#include <string>
+#include <utility>
+#include <vector>
 
 //! \brief Abstract class for cell update scheme in amr
 class AMRCellUpdater3D
@@ -197,6 +200,18 @@ private:
 	AMRExtensiveUpdater3D* eu_;
 	bool distribute_clips_;
 	IndividualAMRChangeSet last_change_set_;
+    // RICH_D2_TIMERS=1: per-rank stage seconds and cell counts of the passes since the last ReportD2Pass, and the
+    // replicated pass facts (number of passes and of rebuilding passes, the last pass's kind, cycle and time).
+    std::vector<double> D2StageSeconds;
+    std::vector<double> D2Counts;
+    // Removal-selection sub-stage seconds and the number of volume-limit rounds (replicated) since the last report.
+    std::vector<double> D2SelectSeconds;
+    int D2SelectRounds = 0;
+    int D2Passes = 0;
+    int D2Rebuilds = 0;
+    bool D2LastIndividual = false;
+    size_t D2LastCycle = 0;
+    double D2LastTime = 0;
 	AMR3D(AMR3D const& amr);
 	AMR3D& operator=(AMR3D const&);
 	
@@ -233,6 +248,21 @@ public:
 	//! \brief Enable or disable distributed clip offloading
 	void SetDistributeClips(bool v) { distribute_clips_ = v; }
 
+    /*! \brief RICH_D2_TIMERS (unset, 0 or 1): AMR pass stage timers.  Parsed once and agreed over MPI_COMM_WORLD on
+     * the first call, which must be one every rank makes together (every AMR pass calls it on entry).
+     */
+    static bool D2TimersEnabled(void);
+
+    //! True when RICH_D2_TIMERS=1 and an AMR pass ran since the last ReportD2Pass; the same on every rank.
+    bool D2PassPending(void) const { return D2Passes > 0; }
+
+    /*! \brief Prints one RICH_D2_AMR line on rank 0 for the passes since the last call (normally one), with the
+     * rank maximum, mean and rank of the maximum of every stage and the summed cell counts, then resets the
+     * accumulators.  ExtraStages adds per-rank seconds the caller measured around the pass (the same names in the
+     * same order on every rank).  Collective: call it on every rank, and only when D2PassPending() is true.
+     */
+    void ReportD2Pass(std::vector<std::pair<std::string, double> > const& ExtraStages);
+
 	//! Class destructor
 	~AMR3D();
 
@@ -240,6 +270,16 @@ private:
 	IndividualAMRChangeSet Apply(Simulation &sim,
 		vector<size_t> const* active_indices,
 		vector<Vector3D> const* canonical_points);
+
+    //! Sizes the RICH_D2_TIMERS accumulators on first use.
+    void D2PrepareAccumulators(void);
+
+    //! Adds one finished pass (its cell counts, kind and whether it rebuilt the mesh) to the accumulators.
+    void D2FinishPass(Simulation const& Sim, std::vector<double> const& PassCounts, bool Individual, bool Rebuilt);
+
+    //! Adds the removal-selection sub-stage seconds, local counts and round count of one pass to the accumulators.
+    void D2AddSelectTiming(double Anchors, double Partners, double Targets, double Rounds, double Final,
+        double FastTotal, double AnchorCount, double ProposedCount, double FirstRoundClaims, int RoundCount);
 };
 
 #endif // AMR3D_HPP

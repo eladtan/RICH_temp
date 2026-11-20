@@ -1,6 +1,7 @@
 #ifndef DIFFUSION_HPP
 #define DIFFUSION_HPP 1
 
+#include <typeinfo>
 #include <cmath>
 
 #include "conj_grad_solve.hpp"
@@ -226,6 +227,11 @@ public:
 	    bool prestep(Tessellation3D const& tess,
 	                 std::vector<ComputationalCell3D> const& cells) const override;
 
+	    // Uses the base stepIndividual, whose single canonical write is journalled.
+	    // Exact type only: a subclass may override stepIndividual and must opt in itself.
+	    bool JournalsAllCanonicalWrites() const override { return typeid(*this) == typeid(Diffusion); }
+	    // Diffusion::PostCG skips every inactive row (individualCellActive) and writes only row i.
+	    bool PostCGWritesActiveRowsOnly() const override { return typeid(*this) == typeid(Diffusion); }
 	    bool prestepIndividual(
 	        Tessellation3D const& tess,
 	        std::vector<ComputationalCell3D> const& cells,

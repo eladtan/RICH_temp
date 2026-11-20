@@ -12,6 +12,8 @@ void FluxCalculator3D::CalculateIndividual(
 	const IndividualStepContext& context,
 	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> >& face_values) const
 {
+	// The individual hydro step leaves face_values as the previous event left it; this path starts from an empty one.
+	face_values.clear();
 	Calculate(fluxes, tess, edge_velocities, cells, extensives, eos,
 		context.event_time, 0, face_values);
 	const std::size_t norg = context.active_mask.size();

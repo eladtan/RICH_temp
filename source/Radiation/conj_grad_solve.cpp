@@ -1165,6 +1165,17 @@ namespace CG
             reduction_seconds, false, nullptr, 0, nullptr, nullptr);
     }
 
+    HistoricalMGMetrics MeasureHistoricalMGCounted(std::vector<double> const& PhysicalSolution,
+        std::vector<double> const& PreviousPhysicalSolution, std::vector<double> const& PhysicalResidual,
+        std::vector<double> const& PhysicalRhs, std::vector<double> const& Diagonal,
+        std::size_t const RuntimeGroupCount, double* const ReductionSeconds, bool const ConcurrentReductions,
+        unsigned long long* const CollectiveCalls, unsigned long long* const CausalRounds)
+    {
+        return MeasureHistoricalMGImpl(PhysicalSolution, PreviousPhysicalSolution, PhysicalResidual, PhysicalRhs,
+            Diagonal, RuntimeGroupCount, ReductionSeconds, ConcurrentReductions, nullptr, 0, CollectiveCalls,
+            CausalRounds);
+    }
+
     HistoricalMGDecision ClassifyHistoricalMG(
         HistoricalMGMetrics const& metrics,
         std::size_t const zero_based_iteration,

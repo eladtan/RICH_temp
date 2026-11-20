@@ -3,6 +3,7 @@
 
 #include <cstddef>
 #include <limits>
+#include <unordered_map>
 #include <vector>
 
 #include "3D/tessellation/Tessellation3D.hpp"
@@ -135,8 +136,15 @@ public:
         local.active_mask.assign(meshLocalSize(), 0);
         local.cell_time_steps.assign(meshLocalSize(),
             std::numeric_limits<double>::infinity());
-        bool const have_time_bins =
-            global.cell_time_bins.size() == global.cell_time_steps.size();
+        // Whether bins are synced must be one decision on every rank: an empty
+        // owner (no time steps) votes neutral, otherwise it would take the bin
+        // sync (0 == 0) while populated owners without bins skip it.
+        int BinsVote = global.cell_time_steps.empty() ? 1 :
+            (global.cell_time_bins.size() == global.cell_time_steps.size() ? 1 : 0);
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &BinsVote, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+#endif
+        bool const have_time_bins = BinsVote != 0;
         if(have_time_bins)
             local.cell_time_bins.assign(meshLocalSize(), 0);
         local.primitive_ticks.resize(meshLocalSize());
@@ -171,11 +179,20 @@ public:
         // partial-build exchange metadata so face operators can see remote
         // activity and remote cell intervals without extending the canonical
         // scheduler arrays.
+        //
+        // Every owned target (local index < localSize()) was filled above with
+        // its canonical value, so the write-back half of SyncPartialBuildData
+        // would only rewrite equal values: the arrays are synced read-only
+        // against the canonical ones instead of being copied first (seven
+        // owned-size copies per call).  The activity mask keeps the copy: a
+        // target holds 1 for any nonzero canonical entry.
+        {
+            std::vector<unsigned char> all_active = global.active_mask;
+            tess_->SyncPartialBuildData(local.active_mask, all_active);
+        }
         auto sync = [this](auto& local_data, auto const& global_data) {
-            auto all_data = global_data;
-            tess_->SyncPartialBuildData(local_data, all_data);
+            tess_->SyncPartialBuildDataReadOnly(local_data, global_data);
         };
-        sync(local.active_mask, global.active_mask);
         sync(local.cell_time_steps, global.cell_time_steps);
         if(have_time_bins)
             sync(local.cell_time_bins, global.cell_time_bins);
@@ -184,6 +201,30 @@ public:
         sync(local.cached_accelerations, global.cached_accelerations);
         sync(local.gravity_half_kick_pending,
              global.gravity_half_kick_pending);
+#endif
+        return local;
+    }
+
+    /**
+     * remapContext(global).active_mask and .active_indices alone, built the
+     * same way, for callers that only ask isActive() of the mesh points: one
+     * collective sync instead of seven and no other per-cell arrays.  The
+     * remaining fields keep their defaults.
+     */
+    IndividualStepContext RemapActivity(IndividualStepContext const& global) const
+    {
+        IndividualStepContext local;
+        local.active_mask.assign(meshLocalSize(), 0);
+        for(std::size_t LocalIndex = 0; LocalIndex < localSize(); ++LocalIndex) {
+            std::size_t const GlobalIndex = mesh_local_to_global_[LocalIndex];
+            if(GlobalIndex != invalidIndex() && global.isActive(GlobalIndex)) {
+                local.active_mask[LocalIndex] = 1;
+                local.active_indices.push_back(LocalIndex);
+            }
+        }
+#ifdef RICH_MPI
+        std::vector<unsigned char> AllActive = global.active_mask;
+        tess_->SyncPartialBuildData(local.active_mask, AllActive);
 #endif
         return local;
     }
@@ -248,5 +289,72 @@ private:
     std::vector<std::size_t> global_to_local_;
     std::vector<std::size_t> mesh_local_to_global_;
 };
+
+/**
+ * Stable cell ID -> canonical index of a canonical cell array, kept across
+ * events.  Map() answers every lookup exactly as an unordered_map filled by
+ * emplace(cells[i].ID, i) for i = 0, 1, ... would (the first index wins for a
+ * repeated ID; Unique() reports whether any ID repeated).  Refresh compares the
+ * IDs with the stored ones in one sequential pass and hashes them again only
+ * after they changed (AMR, rebalancing, box growth), instead of hashing every
+ * owned cell on every event.
+ */
+class CanonicalIdIndex
+{
+public:
+    template<typename CellT>
+    void Refresh(std::vector<CellT> const& Cells, std::size_t Count)
+    {
+        if(Count > Cells.size())
+            throw UniversalError("CanonicalIdIndex::Refresh: count exceeds the cell array");
+        bool Unchanged = Valid_ && Ids_.size() == Count;
+        for(std::size_t Index = 0; Unchanged && Index < Count; ++Index)
+            Unchanged = Ids_[Index] == static_cast<std::size_t>(Cells[Index].ID);
+        if(Unchanged)
+            return;
+        Valid_ = false;
+        Ids_.resize(Count);
+        IndexById_.clear();
+        IndexById_.reserve(Count);
+        Unique_ = true;
+        for(std::size_t Index = 0; Index < Count; ++Index) {
+            Ids_[Index] = static_cast<std::size_t>(Cells[Index].ID);
+            if(!IndexById_.emplace(Ids_[Index], Index).second)
+                Unique_ = false;
+        }
+        Valid_ = true;
+    }
+
+    std::unordered_map<std::size_t, std::size_t> const& Map() const { return IndexById_; }
+
+    bool Unique() const { return Unique_; }
+
+    void Release() noexcept
+    {
+        std::vector<std::size_t>().swap(Ids_);
+        std::unordered_map<std::size_t, std::size_t>().swap(IndexById_);
+        Valid_ = false;
+        Unique_ = true;
+    }
+
+private:
+    std::vector<std::size_t> Ids_;
+    std::unordered_map<std::size_t, std::size_t> IndexById_;
+    bool Valid_ = false;
+    bool Unique_ = true;
+};
+
+/**
+ * The calling thread's CanonicalIdIndex.  The hydro step and its extensive
+ * updater index the same canonical cells, and ConditionExtensiveUpdater3D
+ * builds a new DefaultExtensiveUpdater for every event, so the index is kept
+ * here rather than in either object.  A reference from Map() stays valid until
+ * the next Refresh.
+ */
+inline CanonicalIdIndex& SharedCanonicalIdIndex()
+{
+    thread_local CanonicalIdIndex Index;
+    return Index;
+}
 
 #endif // ACTIVE_MESH_VIEW_HPP

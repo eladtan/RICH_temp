@@ -24,6 +24,7 @@
 #include "SourceTerm3D.hpp"
 #include "newtonian/three_dimensional/simulation/ProgressTracker.hpp"
 #include "newtonian/three_dimensional/simulation/IndividualTimeStep.hpp"
+#include "newtonian/three_dimensional/simulation/ActiveMeshView.hpp"
 #include "newtonian/three_dimensional/simulation/StepDiagnostics.hpp"
 #include "CostCalculator3D.hpp"
 #include "Hllc3D.hpp"
@@ -310,6 +311,43 @@ public:
     individual_event_mesh_reusable_ = false;
   }
 
+  /*! \brief Replaces the partial-build adjacency cache with records captured
+    on the mesh an individual AMR pass rebuilt (one per owned cell, in the new
+    canonical order).  Call after ResetIndividualMeshState.  Local: a rank
+    whose entries do not match its cells, slot by slot, keeps its cache, which
+    is then realigned by ID as before; records only seed partial targets, and
+    closure stays exact either way.
+    \return true when installed
+  */
+  bool InstallIndividualAMRAdjacency(vector<IndividualAMRChangeSet::AdjacencyEntry>& entries)
+  {
+    if(entries.size() != cells_.size())
+      return false;
+    for(size_t i = 0; i < entries.size(); ++i)
+      if(entries[i].cell_id != cells_[i].ID ||
+         entries[i].neighbor_ids.size() != entries[i].neighbor_owners.size())
+        return false;
+    vector<IndividualAdjacencyRecord> records(entries.size());
+    for(size_t i = 0; i < entries.size(); ++i)
+    {
+      records[i].cell_id = entries[i].cell_id;
+      records[i].neighbor_ids.swap(entries[i].neighbor_ids);
+      records[i].neighbor_owners.swap(entries[i].neighbor_owners);
+    }
+    individual_adjacency_.swap(records);
+    individual_adjacency_realign_pending_ = false;
+    return true;
+  }
+
+  /*! \brief Builds the next individual event mesh in full instead of
+    partially (RICH_INDIVIDUAL_FULL_MESH_AFTER_MIGRATION), so the adjacency
+    recorder refreshes every owned cell.  Must be requested on every rank.
+  */
+  void RequestIndividualFullEventMesh(void)
+  {
+    individual_full_event_mesh_requested_ = true;
+  }
+
   void ReleaseIndividualPartialMeshScratch(void) noexcept
   {
     vector<size_t>().swap(individual_mesh_target_ids_);
@@ -339,6 +377,8 @@ public:
     // Indexed by owned cell: an ownership change misaligns it even when the
     // count survives.
     std::vector<unsigned char>().swap(individual_limit_reason_);
+    // Stable-ID lookup shared with the extensive updater; rebuilt on next use.
+    SharedCanonicalIdIndex().Release();
     individual_mesh_restore_pending_ = false;
     individual_event_mesh_reusable_ = false;
   }
@@ -455,7 +495,14 @@ private:
 	    double fraction = 0;  // 0 until enough samples
 	  };
 	  mutable IndividualPartialBuildCostModel individual_partial_cost_;
-	  vector<Conserved3D> individual_pre_flux_extensives_scratch_;
+	  // Pre-flux values the conserved-change accounting compares (timeAdvanceIndividual).
+	  struct IndividualPreFluxState
+	  {
+	    double Mass;
+	    double Energy;
+	    double InternalEnergy;
+	  };
+	  vector<IndividualPreFluxState> individual_pre_flux_extensives_scratch_;
 	  bool individual_event_mesh_reusable_ = false;
 	  vector<size_t> individual_mesh_target_ids_;
 	  bool individual_mesh_restore_pending_ = false;
@@ -470,11 +517,15 @@ private:
 	    size_t cell_id = std::numeric_limits<size_t>::max();
 	    vector<size_t> neighbor_ids;
 	    vector<int> neighbor_owners;
+	    // Diagnostics only (RICH_INDIVIDUAL_MESH_TRACE >= 1): why an empty record is empty; never read otherwise.
+	    unsigned char MissingReason = 0;
 	  };
 	  vector<IndividualAdjacencyRecord> individual_adjacency_;
 	  // Set when cell order may have changed (ResetIndividualMeshState): the
 	  // cache is realigned by ID before its next use.
 	  bool individual_adjacency_realign_pending_ = false;
+	  // RequestIndividualFullEventMesh: consumed by the next event mesh, which is then full.
+	  bool individual_full_event_mesh_requested_ = false;
 	  vector<Vector3D> oldpoints_scratch_;
   vector<Vector3D> tessellation_points_scratch_;
   vector<Conserved3D> fluxes_scratch_;

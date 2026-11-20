@@ -4,9 +4,12 @@
 #include <algorithm>
 #include <array>
 #include <iostream>
+#include <cstdlib>
 #include <cstring>  // for memcpy in fused operations
 #include <limits>
 #include <map>
+#include <stdexcept>
+#include <string>
 #ifdef RICH_MPI
 #include "../../mpi/mpi_commands.hpp"
 #include "../../mpi/IndividualGhostSources.hpp"
@@ -14,6 +17,28 @@
 
 namespace
 {
+    // A 0/1/2 switch, strict (unset means 0), read once by the caller's static and agreed across ranks in one
+    // reduction, as the other individual-time-step switches.
+    int AgreedIndividualSwitch(char const* Name)
+    {
+        char const* const Value = std::getenv(Name);
+        std::string const Text = Value == nullptr ? "" : Value;
+        int Local = -1;
+        if(Text.empty())
+            Local = 0;
+        else if(Text.size() == 1 && Text[0] >= '0' && Text[0] <= '2')
+            Local = Text[0] - '0';
+        int Extrema[2] = {Local, -Local};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, Extrema, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        if(Extrema[0] != -Extrema[1])
+            throw std::invalid_argument(std::string(Name) + " differs across MPI ranks or is invalid on some rank");
+        if(Extrema[0] < 0)
+            throw std::invalid_argument(std::string(Name) + " must be 0, 1 or 2");
+        return Extrema[0];
+    }
+
 	void CheckCell(ComputationalCell3D const& cell)
 	{
 		if (!(cell.density > 0) || !std::isfinite(cell.density) ||
@@ -907,19 +932,22 @@ namespace
 
 	void exchange_ghost_slopes(Tessellation3D const& tess, vector<Slope3D> & slopes)
 	{
-		vector<Slope3D> all_slopes;
-		tess.SyncPartialBuildData(slopes, all_slopes);
+		// Same output and peer messages as syncing through a discarded empty
+		// canonical array, without allocating one Slope3D per canonical cell.
+		tess.SyncPartialBuildDataWithoutCanonical(slopes);
 	}
 
 	// Use the tessellation's canonical duplicated-point map for sends.  Partial
 	// boundary-face topology is rank-local and cannot safely infer the remote
 	// owner of every ghost slope after a restart or partial rebuild.
+	// RequestValid carries the local checks of RequestGhostSlopeSources into the metadata reduction (true otherwise).
 	void exchange_active_ghost_slopes(
 		Tessellation3D const& tess,
 		vector<ComputationalCell3D> const& cells,
 		vector<Slope3D>& slopes,
 		vector<size_t> const& boundary_faces,
-		vector<vector<size_t> > const& source_cells)
+		vector<vector<size_t> > const& source_cells,
+		bool RequestValid)
 	{
 		using TaggedSlope = std::pair<size_t, Slope3D>;
 		const size_t owned_cell_count = tess.GetPointNo();
@@ -928,7 +956,7 @@ namespace
 
 		bool metadata_valid = peers.size() == source_cells.size() &&
 			slopes.size() >= owned_cell_count &&
-			cells.size() >= total_point_count;
+			cells.size() >= total_point_count && RequestValid;
 		if(slopes.size() < total_point_count)
 			slopes.resize(total_point_count);
 
@@ -1059,7 +1087,70 @@ namespace
 			throw error;
 		}
 	}
+
+    // RICH_INDIVIDUAL_GHOST_SLOPE_REQUEST.  ReadGhosts are the ghost endpoints whose slopes this rank reads (one owned
+    // endpoint, an active endpoint, not a boundary face): exactly the ghosts exchange_active_ghost_slopes expects.  Each
+    // rank names to every duplicated-point peer the stable IDs of those ghosts held in that peer's ghost slots, then keeps
+    // the entries of its own ghost-slope sources that a peer named.  A peer sends an ID in the full exchange exactly when
+    // that ID fills one of its ghost slots here, so every slope written by the full exchange arrives from the same peers.
+    // One exchange; every rank enters it, with empty requests if it reads nothing.
+    vector<vector<size_t> > RequestGhostSlopeSources(Tessellation3D const& Tess, vector<ComputationalCell3D> const& Cells,
+        vector<size_t> const& ReadGhosts, vector<vector<size_t> > const& Sources, bool& RequestValid)
+    {
+        vector<int> const Peers = Tess.GetDuplicatedProcs();
+        vector<vector<size_t> > const& GhostSlots = Tess.GetGhostIndeces();
+        RequestValid = GhostSlots.size() == Peers.size() && Sources.size() == Peers.size();
+        vector<size_t> ReadIds;
+        ReadIds.reserve(ReadGhosts.size());
+        for(size_t Ghost : ReadGhosts) {
+            if(Ghost < Cells.size())
+                ReadIds.push_back(Cells[Ghost].ID);
+            else
+                RequestValid = false;
+        }
+        std::sort(ReadIds.begin(), ReadIds.end());
+        ReadIds.erase(std::unique(ReadIds.begin(), ReadIds.end()), ReadIds.end());
+        vector<vector<size_t> > Requests(Peers.size());
+        for(size_t Peer = 0; Peer < Peers.size() && Peer < GhostSlots.size(); ++Peer) {
+            for(size_t Slot : GhostSlots[Peer]) {
+                if(Slot >= Cells.size()) {
+                    RequestValid = false;
+                    continue;
+                }
+                if(std::binary_search(ReadIds.begin(), ReadIds.end(), Cells[Slot].ID))
+                    Requests[Peer].push_back(Cells[Slot].ID);
+            }
+            std::sort(Requests[Peer].begin(), Requests[Peer].end());
+            Requests[Peer].erase(std::unique(Requests[Peer].begin(), Requests[Peer].end()), Requests[Peer].end());
+        }
+        vector<vector<size_t> > Named = MPI_exchange_data(Peers, Requests);
+        vector<vector<size_t> > Requested(Sources.size());
+        for(size_t Peer = 0; Peer < Sources.size() && Peer < Named.size(); ++Peer) {
+            std::sort(Named[Peer].begin(), Named[Peer].end());
+            for(size_t Local : Sources[Peer]) {
+                if(Local >= Cells.size()) {
+                    RequestValid = false;
+                    continue;
+                }
+                if(std::binary_search(Named[Peer].begin(), Named[Peer].end(), Cells[Local].ID))
+                    Requested[Peer].push_back(Local);
+            }
+        }
+        return Requested;
+    }
 #endif//RICH_MPI
+}
+
+int IndividualFluxPassesMode(void)
+{
+    static int const Mode = AgreedIndividualSwitch("RICH_INDIVIDUAL_FLUX_PASSES");
+    return Mode;
+}
+
+int IndividualGhostSlopeRequestMode(void)
+{
+    static int const Mode = AgreedIndividualSwitch("RICH_INDIVIDUAL_GHOST_SLOPE_REQUEST");
+    return Mode;
 }
 
 void LinearGauss3D::Interp(ComputationalCell3D &res, ComputationalCell3D const& cell, size_t cell_index, Vector3D const& cm,
@@ -1151,7 +1242,7 @@ void LinearGauss3D::operator()(const Tessellation3D& tess, const vector<Computat
 	vector<pair<ComputationalCell3D, ComputationalCell3D> > &res) const
 
 {
-	InterpolateImpl(tess, cells, time, nullptr, res);
+	InterpolateImpl(tess, cells, time, nullptr, res, IndividualInterpolationOptions());
 }
 
 void LinearGauss3D::InterpolateIndividual(
@@ -1162,7 +1253,14 @@ void LinearGauss3D::InterpolateIndividual(
 	vector<pair<ComputationalCell3D, ComputationalCell3D> >& res) const
 
 {
-	InterpolateImpl(tess, cells, time, &active_mask, res);
+	InterpolateImpl(tess, cells, time, &active_mask, res, IndividualInterpolationOptions());
+}
+
+void LinearGauss3D::InterpolateIndividualWithOptions(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
+    double time, const vector<unsigned char>& active_mask, vector<pair<ComputationalCell3D, ComputationalCell3D> >& res,
+    IndividualInterpolationOptions const& Options) const
+{
+    InterpolateImpl(tess, cells, time, &active_mask, res, Options);
 }
 
 void LinearGauss3D::InterpolateImpl(
@@ -1170,9 +1268,30 @@ void LinearGauss3D::InterpolateImpl(
 	const vector<ComputationalCell3D>& cells,
 	double time,
 	const vector<unsigned char>* active_mask,
-	vector<pair<ComputationalCell3D, ComputationalCell3D> >& res) const
+	vector<pair<ComputationalCell3D, ComputationalCell3D> >& res,
+	IndividualInterpolationOptions const& Options) const
 {
 	const size_t CellNumber = tess.GetPointNo();
+    // RICH_INDIVIDUAL_FLUX_PASSES: the face-state array keeps its entries; every face with an active endpoint is reset
+    // below to the value the full reinitialization gives it, and no reader of an individual event reads the others.
+    bool const KeepFaces = active_mask != nullptr && Options.KeepInactiveFaceStates && !SR_ && CellNumber > 0;
+    size_t KeptFaceCount = 0;
+    pair<ComputationalCell3D, ComputationalCell3D> Placeholder;
+    if(KeepFaces) {
+        KeptFaceCount = std::min(res.size(), tess.GetTotalFacesNumber());
+        res.resize(tess.GetTotalFacesNumber(), pair<ComputationalCell3D, ComputationalCell3D>(cells[0], cells[0]));
+        if(KeptFaceCount > 0)
+            Placeholder = pair<ComputationalCell3D, ComputationalCell3D>(cells[0], cells[0]);
+    }
+    else if(active_mask != nullptr && Options.KeepInactiveFaceStates) {
+        // Special relativity or no owned cell: today's path, which starts from a cleared array.
+        res.clear();
+    }
+#ifdef RICH_MPI
+    // RICH_INDIVIDUAL_GHOST_SLOPE_REQUEST: the ghosts whose slopes this rank reads, collected in the activity scan.
+    bool const RequestSlopes = active_mask != nullptr && Options.RequestGhostSlopes;
+    vector<size_t> ReadGhosts;
+#endif
 	vector<unsigned char> reconstruct(CellNumber,
 		active_mask == nullptr ? static_cast<unsigned char>(1) :
 		static_cast<unsigned char>(0));
@@ -1187,10 +1306,17 @@ void LinearGauss3D::InterpolateImpl(
 				active_mask->at(neighbors.second) != 0;
 			if(!first_active && !second_active)
 				continue;
+            if(face < KeptFaceCount)
+                res[face] = Placeholder;
 			if(neighbors.first < CellNumber)
 				reconstruct[neighbors.first] = 1;
 			if(neighbors.second < CellNumber)
 				reconstruct[neighbors.second] = 1;
+#ifdef RICH_MPI
+            if(RequestSlopes && (neighbors.first < CellNumber) != (neighbors.second < CellNumber) &&
+                !tess.BoundaryFace(face))
+                ReadGhosts.push_back(neighbors.first < CellNumber ? neighbors.second : neighbors.first);
+#endif
 		}
 	}
 #ifdef RICH_MPI
@@ -1198,25 +1324,51 @@ void LinearGauss3D::InterpolateImpl(
 	if(active_mask != nullptr)
 	{
 		ghost_slope_sources = CollectIndividualGhostSourceIndices(tess);
-		for(auto const& peer_sources : ghost_slope_sources)
-			for(size_t local : peer_sources)
-				reconstruct[local] = 1;
+		if(!RequestSlopes)
+			for(auto const& peer_sources : ghost_slope_sources)
+				for(size_t local : peer_sources)
+					reconstruct[local] = 1;
 	}
 #endif
 	vector<size_t> boundaryedges;
 	boundaryedges.reserve(static_cast<size_t>(std::pow(static_cast<double>(CellNumber), 0.6666)*8.0));
-	// Reuse persistent buffer instead of allocating a new vector each call
-	new_cells_.assign(cells.begin(), cells.end());
-	new_cells_.resize(tess.GetTotalPointNumber());
-	if (SR_)
+    // RICH_INDIVIDUAL_FLUX_PASSES: without special relativity the copy holds the input cells unchanged, so with equal
+    // sizes the input is read in place.  new_cells_ is then left as it was; only BuildSlopes callers read it later.
+    bool const CellsInPlace = active_mask != nullptr && Options.ReadCellsInPlace && !SR_ &&
+        cells.size() == tess.GetTotalPointNumber();
+	if(!CellsInPlace)
 	{
-		size_t Nall = new_cells_.size();
-		for (size_t j = 0; j < Nall; ++j)
+		// Reuse persistent buffer instead of allocating a new vector each call
+		new_cells_.assign(cells.begin(), cells.end());
+		new_cells_.resize(tess.GetTotalPointNumber());
+		if (SR_)
 		{
-			double gamma = 1.0 / std::sqrt(1 - ScalarProd(new_cells_[j].velocity, new_cells_[j].velocity));
-			new_cells_[j].velocity *= gamma;
+			size_t Nall = new_cells_.size();
+			for (size_t j = 0; j < Nall; ++j)
+			{
+				double gamma = 1.0 / std::sqrt(1 - ScalarProd(new_cells_[j].velocity, new_cells_[j].velocity));
+				new_cells_[j].velocity *= gamma;
+			}
 		}
 	}
+    vector<ComputationalCell3D> const& CellSource = CellsInPlace ? cells : new_cells_;
+    IndividualInterpolationCounts Counts;
+#ifdef RICH_MPI
+    // RICH_INDIVIDUAL_GHOST_SLOPE_REQUEST: only the duplicated owned cells a peer reads are reconstructed and sent.
+    bool RequestValid = true;
+    vector<vector<size_t> > RequestedSources;
+    if(RequestSlopes) {
+        RequestedSources = RequestGhostSlopeSources(tess, CellSource, ReadGhosts, ghost_slope_sources, RequestValid);
+        for(auto const& PeerSources : RequestedSources)
+            for(size_t Local : PeerSources)
+                reconstruct[Local] = 1;
+    }
+    vector<vector<size_t> > const& SentSources = RequestSlopes ? RequestedSources : ghost_slope_sources;
+    for(size_t Peer = 0; Peer < ghost_slope_sources.size(); ++Peer)
+        Counts.GhostSources += ghost_slope_sources[Peer].size();
+    for(size_t Peer = 0; Peer < SentSources.size(); ++Peer)
+        Counts.SentGhostSources += SentSources[Peer].size();
+#endif
 	if (CellNumber > 0)
 		rslopes_.resize(CellNumber, Slope3D(cells[0], cells[0], cells[0]));
 	else
@@ -1251,10 +1403,13 @@ void LinearGauss3D::InterpolateImpl(
 		if(reconstruct[i] != 0)
 			all_cell_cms[i] = tess.GetCellCM(i);
 	
-	if (CellNumber > 0)
-		res.resize(tess.GetTotalFacesNumber(), pair<ComputationalCell3D, ComputationalCell3D>(cells[0], cells[0]));
-	else
-		res.clear();
+	if(!KeepFaces)
+	{
+		if (CellNumber > 0)
+			res.resize(tess.GetTotalFacesNumber(), pair<ComputationalCell3D, ComputationalCell3D>(cells[0], cells[0]));
+		else
+			res.clear();
+	}
 	ComputationalCell3D* cell_ref = nullptr;
 	size_t energy_index = ComputationalCell3D::tracerNames.size();
 	vector<string>::const_iterator it = binary_find(ComputationalCell3D::tracerNames.begin(),
@@ -1266,7 +1421,8 @@ void LinearGauss3D::InterpolateImpl(
 	{
 		if(reconstruct[i] == 0)
 			continue;
-		calc_slope(tess, new_cells_, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_, eos_, ghost_, time,
+        ++Counts.Reconstructed;
+		calc_slope(tess, CellSource, i, slf_, shockratio_, diffusecoeff_, pressure_ratio_, eos_, ghost_, time,
 			calc_tracers_, naive_rslopes_[i], rslopes_[i], temp1, temp2, temp3, temp4, temp5,
 			neighbor_mesh_list, neighbor_cm_list, skip_key_, c_ij, neighbor_list,
 			face_cms_cache, face_areas_cache, apply_principal_limit_,
@@ -1277,7 +1433,7 @@ void LinearGauss3D::InterpolateImpl(
 		// Use pre-computed cell CM - avoid repeated lookups
 		const Vector3D& cell_cm = all_cell_cms[i];
 		// Get reference to source cell - avoid repeated indexing
-		const ComputationalCell3D& source_cell = new_cells_[i];
+		const ComputationalCell3D& source_cell = CellSource[i];
 		const Slope3D& cell_slope = rslopes_[i];
 		
 		for (size_t j = 0; j < nloop; ++j)
@@ -1383,9 +1539,12 @@ void LinearGauss3D::InterpolateImpl(
 		exchange_ghost_slopes(tess, rslopes_);
 	else
 		exchange_active_ghost_slopes(
-			tess, new_cells_, rslopes_, boundaryedges,
-			ghost_slope_sources);
+			tess, CellSource, rslopes_, boundaryedges,
+			SentSources, RequestValid);
 #endif //RICH_MPI
+    if(active_mask != nullptr) {
+        LastIndividualCounts_ = Counts;
+    }
 	// Interpolate the boundary edges
 	size_t Nboundary = boundaryedges.size();
 	for (size_t i = 0; i < Nboundary; ++i)
@@ -1396,7 +1555,7 @@ void LinearGauss3D::InterpolateImpl(
 			size_t const real_index = tess.GetFaceNeighbors(boundaryedges[i]).second;
 			ComputationalCell3D const boundary_cell = tess.BoundaryFace(boundaryedges[i]) ?
 				ghost_.GetGhostCell(tess, cells, real_index, N0, time, boundaryedges[i]) :
-				new_cells_.at(N0);
+				CellSource.at(N0);
 			cell_ref = &res[boundaryedges[i]].first;
 			ReplaceComputationalCell(*cell_ref, boundary_cell);
 			try
@@ -1460,12 +1619,12 @@ void LinearGauss3D::InterpolateImpl(
 				eo.addEntry("Cell CMy", tess.GetCellCM(N0).y);
 				eo.addEntry("Cell CMz", tess.GetCellCM(N0).z);
 				size_t N1 = tess.GetFaceNeighbors(boundaryedges[i]).second;
-				eo.addEntry("Other cell ID", static_cast<double>(new_cells_[N1].ID));
+				eo.addEntry("Other cell ID", static_cast<double>(CellSource[N1].ID));
 				eo.addEntry("Other Cell CMx", tess.GetCellCM(N1).x);
 				eo.addEntry("Other Cell CMy", tess.GetCellCM(N1).y);
 				eo.addEntry("Other Cell CMz", tess.GetCellCM(N1).z);
-				eo.addEntry("Other Cell density", new_cells_[N1].density);
-				eo.addEntry("Other Cell pressure", new_cells_[N1].pressure);
+				eo.addEntry("Other Cell density", CellSource[N1].density);
+				eo.addEntry("Other Cell pressure", CellSource[N1].pressure);
 				eo.addEntry("Slopex", rslopes_[N0].xderivative.density);
 				eo.addEntry("Slopey", rslopes_[N0].yderivative.density);
 				eo.addEntry("Slopez", rslopes_[N0].zderivative.density);
@@ -1491,7 +1650,7 @@ void LinearGauss3D::InterpolateImpl(
 			size_t const real_index = tess.GetFaceNeighbors(boundaryedges[i]).first;
 			ComputationalCell3D const boundary_cell = tess.BoundaryFace(boundaryedges[i]) ?
 				ghost_.GetGhostCell(tess, cells, real_index, N0, time, boundaryedges[i]) :
-				new_cells_.at(N0);
+				CellSource.at(N0);
 			cell_ref = &res[boundaryedges[i]].second;
 			ReplaceComputationalCell(*cell_ref, boundary_cell);
 			try
@@ -1555,12 +1714,12 @@ void LinearGauss3D::InterpolateImpl(
 				eo.addEntry("Cell CMy", tess.GetCellCM(N0).y);
 				eo.addEntry("Cell CMz", tess.GetCellCM(N0).z);
 				size_t N1 = tess.GetFaceNeighbors(boundaryedges[i]).first;
-				eo.addEntry("Other cell ID", static_cast<double>(new_cells_[N1].ID));
+				eo.addEntry("Other cell ID", static_cast<double>(CellSource[N1].ID));
 				eo.addEntry("Other Cell CMx", tess.GetCellCM(N1).x);
 				eo.addEntry("Other Cell CMy", tess.GetCellCM(N1).y);
 				eo.addEntry("Other Cell CMz", tess.GetCellCM(N1).z);
-				eo.addEntry("Other Cell density", new_cells_[N1].density);
-				eo.addEntry("Other Cell pressure", new_cells_[N1].pressure);
+				eo.addEntry("Other Cell density", CellSource[N1].density);
+				eo.addEntry("Other Cell pressure", CellSource[N1].pressure);
 #ifdef RICH_MPI
 				int rank = 0;
 				MPI_Comm_rank(MPI_COMM_WORLD, &rank);

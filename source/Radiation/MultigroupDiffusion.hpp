@@ -1,6 +1,7 @@
 #ifndef MULTIGROUP_DIFFUSION_HPP
 #define MULTIGROUP_DIFFUSION_HPP
 
+#include <typeinfo>
 #include <cmath>
 #include <limits>
 #include <set>
@@ -101,6 +102,9 @@ public:
     bool prestep(Tessellation3D const& tess,
                  std::vector<ComputationalCell3D> const& cells) const override;
 
+    // stepIndividual delegates to the base implementation, whose single canonical write is journalled.
+    // Exact type only: a subclass may override stepIndividual and must opt in itself.
+    bool JournalsAllCanonicalWrites() const override { return typeid(*this) == typeid(MultigroupDiffusion); }
     bool prestepIndividual(
         Tessellation3D const& tess,
         std::vector<ComputationalCell3D> const& cells,
@@ -358,6 +362,11 @@ private:
         std::vector<std::size_t> const& local_to_global,
         std::vector<ComputationalCell3D> const& cells,
         char const* scope) const override;
+
+    bool UsesPostSolveRadiationMaximum() const override
+    {
+        return true;
+    }
 
     bool applyIndividualPostSolvePhysics(
         Tessellation3D const& tess,

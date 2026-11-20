@@ -26,7 +26,11 @@
 #include <malloc.h>
 #include <sys/resource.h>
 #endif
+#include <cerrno>
+#include <sys/stat.h>
+#include <sys/types.h>
 
+#include "misc/mpi_wait_profiler.hpp"
 #include "misc/universal_error.hpp"
 #ifdef RICH_MPI
 #include "mpi/mpi_commands.hpp"
@@ -444,6 +448,11 @@ struct ActiveBiCGSTABTiming
     unsigned long long dot_reductions = 0;
     unsigned long long true_residual_reductions = 0;
     unsigned long long report_identity_reductions = 0;
+    // Collective calls and blocking waits of the historical metrics, and matvec validity flags carried by a dot
+    // reduction (two-stage path); accounting only.
+    unsigned long long measure_collective_calls = 0;
+    unsigned long long measure_causal_rounds = 0;
+    unsigned long long fused_validity_flags = 0;
 };
 
 using ActiveBiCGSTABMetrics = CG::HistoricalMGMetrics;
@@ -1882,6 +1891,207 @@ individualPassiveRadiationRuntimeOption()
         return result;
     }();
     return option;
+}
+
+double D2Now()
+{
+#ifdef RICH_MPI
+    return MPI_Wtime();
+#else
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+#endif
+}
+
+// Per-rank D2 radiation sums over the current individual radiation event (RICH_D2_TIMERS=1).  Distributed-path rows
+// do not add up: matvec, exchange, reduction, preconditioner and acceptance overlap inside the solver (the true
+// residual's matvec and the metrics' reductions appear in both the acceptance column and their own column).
+struct RadiationD2Totals
+{
+    double CandidateSeconds = 0;      // own wall of driver candidates, both paths (nested retries excluded)
+    double SetupSeconds = 0;          // candidate start to solver call: snapshot, matrix, mapping, CSR, halo setup
+    double SolverSeconds = 0;         // solver wall of the solve whose result is used
+    double SolverBusySeconds = 0;     // solver wall minus MPI time inside it (equals SolverSeconds without profiling)
+    double MatvecSeconds = 0;         // local and remote row products
+    double ExchangeSeconds = 0;       // halo pack, start, wait and unpack
+    double ReductionSeconds = 0;      // blocking reductions inside the solver
+    double PreconditionerSeconds = 0; // block-Jacobi setup and application
+    double AcceptanceSeconds = 0;     // historical metrics, true residuals and final corrections
+    double PostSeconds = 0;           // solver return to candidate return, without capture and shadow
+    double FastSeconds = 0;           // all-active equal-interval global path
+    double ShadowSeconds = 0;         // second solves of the two-stage shadow
+    double CaptureSeconds = 0;        // system capture
+    // Setup parts (from the driver's phase clocks): snapshot and candidate preparation, matrix build, active
+    // mapping and CSR extraction, halo setup and fixed-cell scales.
+    double SetupPrepareSeconds = 0;
+    double SetupMatrixSeconds = 0;
+    double SetupMappingSeconds = 0;
+    double SetupExchangeSeconds = 0;
+    // Post parts: solution and PostCG; passive faces, defect ledger and restore; limiter, corrections and the
+    // radiation maximum; final validation, canonical commit and accounting.
+    double PostSolveSeconds = 0;
+    double PostPassiveSeconds = 0;
+    double PostCorrectionSeconds = 0;
+    double PostCommitSeconds = 0;
+    unsigned long long DistributedSolves = 0;
+    unsigned long long FastSolves = 0;
+    unsigned long long Iterations = 0;
+    unsigned long long ReductionCalls = 0;
+    unsigned long long ReductionRounds = 0;
+    unsigned long long LocalRows = 0;
+};
+
+RadiationD2Totals& RadiationD2EventTotals()
+{
+    static RadiationD2Totals Totals;
+    return Totals;
+}
+
+// Mode-2 checks of the B4 switches: checks run and mismatches found (a mismatch aborts, so it stays 0 in a log).
+struct RadiationVerifyCounters
+{
+    unsigned long long SkipPassiveChecks = 0;
+    unsigned long long RemapChecks = 0;
+    unsigned long long PartialSetupIndexChecks = 0;
+    unsigned long long PartialSetupRowChecks = 0;
+};
+
+RadiationVerifyCounters& RadiationVerifyTotals()
+{
+    static RadiationVerifyCounters Counters;
+    return Counters;
+}
+
+// Rank 0 confirms the first clean check and every 100th; any mismatch has aborted before.
+void ReportRadiationVerifyProgress(char const* const Switch, unsigned long long const Checks)
+{
+    int Rank = 0;
+#ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+#endif
+    if(Rank == 0 && (Checks == 1 || Checks % 100 == 0))
+        std::clog << "RICH_RAD_VERIFY switch=" << Switch << " checks=" << Checks << " mismatches=0" << std::endl;
+}
+
+bool SameDoubleBits(double const Left, double const Right)
+{
+    return std::memcmp(&Left, &Right, sizeof(double)) == 0;
+}
+
+// Bitwise equality of every stored field.
+bool SameCellBits(ComputationalCell3D const& Left, ComputationalCell3D const& Right)
+{
+    bool Same = SameDoubleBits(Left.density, Right.density) && SameDoubleBits(Left.pressure, Right.pressure) &&
+        SameDoubleBits(Left.internal_energy, Right.internal_energy) &&
+        SameDoubleBits(Left.temperature, Right.temperature) && Left.ID == Right.ID &&
+        SameDoubleBits(Left.velocity.x, Right.velocity.x) && SameDoubleBits(Left.velocity.y, Right.velocity.y) &&
+        SameDoubleBits(Left.velocity.z, Right.velocity.z) && SameDoubleBits(Left.dt, Right.dt) &&
+        SameDoubleBits(Left.Erad, Right.Erad) && SameDoubleBits(Left.Erad_dt, Right.Erad_dt) &&
+        SameDoubleBits(Left.Erad_dt_dt, Right.Erad_dt_dt) && SameDoubleBits(Left.cs, Right.cs) &&
+        Left.Eg.size() == Right.Eg.size() && Left.stickers == Right.stickers;
+    for(std::size_t Group = 0; Same && Group < Left.Eg.size(); ++Group)
+        Same = SameDoubleBits(Left.Eg[Group], Right.Eg[Group]);
+    for(std::size_t Tracer = 0; Same && Tracer < Left.tracers.size(); ++Tracer)
+        Same = SameDoubleBits(Left.tracers[Tracer], Right.tracers[Tracer]);
+    return Same;
+}
+
+bool SameExtensiveBits(Conserved3D const& Left, Conserved3D const& Right)
+{
+    bool Same = SameDoubleBits(Left.mass, Right.mass) && SameDoubleBits(Left.momentum.x, Right.momentum.x) &&
+        SameDoubleBits(Left.momentum.y, Right.momentum.y) && SameDoubleBits(Left.momentum.z, Right.momentum.z) &&
+        SameDoubleBits(Left.energy, Right.energy) && SameDoubleBits(Left.internal_energy, Right.internal_energy) &&
+        SameDoubleBits(Left.Erad, Right.Erad) && SameDoubleBits(Left.Erad_dt, Right.Erad_dt) &&
+        SameDoubleBits(Left.Erad_dt_dt, Right.Erad_dt_dt) && Left.Eg.size() == Right.Eg.size();
+    for(std::size_t Group = 0; Same && Group < Left.Eg.size(); ++Group)
+        Same = SameDoubleBits(Left.Eg[Group], Right.Eg[Group]);
+    for(std::size_t Tracer = 0; Same && Tracer < Left.tracers.size(); ++Tracer)
+        Same = SameDoubleBits(Left.tracers[Tracer], Right.tracers[Tracer]);
+    return Same;
+}
+
+[[noreturn]] void AbortRadiationS49(std::string const& Message)
+{
+    std::cerr << Message << std::endl;
+#ifdef RICH_MPI
+    MPI_Abort(MPI_COMM_WORLD, 1);
+#endif
+    std::abort();
+}
+
+// Parses one s49 switch: unset or empty is 0; otherwise exactly one decimal digit in [0, MaximumValue].
+long long ParseRadiationS49Digit(char const* const Name, int const MaximumValue)
+{
+    char const* const Text = std::getenv(Name);
+    if(Text == nullptr || Text[0] == '\0')
+        return 0;
+    if(Text[1] == '\0' && Text[0] >= '0' && Text[0] <= '0' + MaximumValue)
+        return Text[0] - '0';
+    return -1;
+}
+
+// Parses a non-negative decimal count (at most nine digits); unset or empty is 0, anything else is -1.
+long long ParseRadiationS49Count(char const* const Name)
+{
+    char const* const Text = std::getenv(Name);
+    if(Text == nullptr || Text[0] == '\0')
+        return 0;
+    long long Value = 0;
+    std::size_t Digits = 0;
+    for(char const* Character = Text; *Character != '\0'; ++Character, ++Digits) {
+        if(*Character < '0' || *Character > '9' || Digits >= 9)
+            return -1;
+        Value = 10 * Value + (*Character - '0');
+    }
+    return Value;
+}
+
+RadiationS49Switches ReadRadiationS49Switches()
+{
+    RadiationS49Switches Result;
+    int constexpr NamedCount = 6;
+    char const* const Names[NamedCount] = {"RICH_D2_TIMERS", "RICH_MG_DISTRIBUTED_ACTIVE_TWO_STAGE",
+        "RICH_RADIATION_ALL_ACTIVE_SKIP_PASSIVE", "RICH_RADIATION_REMAP_MINIMAL", "RICH_MG_CAPTURE_SYSTEMS",
+        "RICH_RADIATION_PARTIAL_SETUP_FAST"};
+    char const* const Allowed[NamedCount] = {"0 or 1", "0, 1 or 2", "0, 1 or 2", "0, 1 or 2", "a non-negative integer",
+        "0, 1 or 2"};
+    char const* const DirectoryText = std::getenv("RICH_MG_CAPTURE_DIR");
+    std::string const Directory = DirectoryText == nullptr ? std::string() : std::string(DirectoryText);
+    // FNV-1a of the directory, split into two non-negative halves so the max/min agreement below covers it.
+    std::uint64_t Hash = 1469598103934665603ULL;
+    for(char const Character : Directory)
+        Hash = (Hash ^ static_cast<unsigned char>(Character)) * 1099511628211ULL;
+    int constexpr FieldCount = NamedCount + 2;
+    long long Local[FieldCount] = {ParseRadiationS49Digit(Names[0], 1), ParseRadiationS49Digit(Names[1], 2),
+        ParseRadiationS49Digit(Names[2], 2), ParseRadiationS49Digit(Names[3], 2), ParseRadiationS49Count(Names[4]),
+        ParseRadiationS49Digit(Names[5], 2), static_cast<long long>(Hash >> 33),
+        static_cast<long long>(Hash & 0x1ffffffffULL)};
+    // Maximum of each value and of its negation gives the maximum and minimum in one reduction.
+    long long Extrema[2 * FieldCount];
+    for(int Field = 0; Field < FieldCount; ++Field) {
+        Extrema[2 * Field] = Local[Field];
+        Extrema[2 * Field + 1] = -Local[Field];
+    }
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, Extrema, 2 * FieldCount, MPI_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+#endif
+    for(int Field = 0; Field < FieldCount; ++Field) {
+        bool const Agreed = Extrema[2 * Field] == -Extrema[2 * Field + 1];
+        char const* const Name = Field < NamedCount ? Names[Field] : "RICH_MG_CAPTURE_DIR";
+        if(!Agreed)
+            AbortRadiationS49(std::string(Name) + " differs across MPI ranks");
+        if(Field < NamedCount && Extrema[2 * Field] < 0)
+            AbortRadiationS49(std::string(Name) + " must be unset or " + Allowed[Field]);
+    }
+    Result.Timers = static_cast<int>(Extrema[0]);
+    Result.TwoStage = static_cast<int>(Extrema[2]);
+    Result.SkipPassive = static_cast<int>(Extrema[4]);
+    Result.RemapMinimal = static_cast<int>(Extrema[6]);
+    Result.CaptureSystems = Extrema[8];
+    Result.PartialSetupFast = static_cast<int>(Extrema[10]);
+    Result.CaptureDirectory = Directory;
+    if(Result.CaptureSystems > 0 && Directory.empty())
+        AbortRadiationS49("RICH_MG_CAPTURE_SYSTEMS > 0 requires RICH_MG_CAPTURE_DIR");
+    return Result;
 }
 
 #ifdef RICH_MPI
@@ -3414,7 +3624,8 @@ bool multiplyDistributed(
     std::vector<double> const& input,
     std::vector<double>& output,
     ActiveBiCGSTABTiming& timing,
-    bool const accurately = false)
+    bool const accurately = false,
+    bool const reduce_validity = true)
 {
     output.assign(input.size(), 0);
     bool valid = startRemoteActiveValues(exchange, input, timing);
@@ -3447,6 +3658,11 @@ bool multiplyDistributed(
     timing.remote_matvec_seconds += remote_seconds;
     timing.matvec_seconds += remote_seconds;
 
+    // Two-stage path: the caller carries this rank's validity in its next dot reduction instead.
+    if(!reduce_validity) {
+        ++timing.matvec_calls;
+        return valid;
+    }
     auto const reduction_start = std::chrono::steady_clock::now();
     valid = collectiveAllTrue(valid);
     timing.reduction_seconds += std::chrono::duration<double>(
@@ -3714,6 +3930,35 @@ std::pair<double, double> distributedDotPair(
         std::chrono::steady_clock::now() - reduction_start).count();
     ++timing.dot_reductions;
     return std::make_pair(global[0], global[1]);
+}
+
+// Two-stage path: one or two dot products and the preceding matvec's validity in one sum.  The flag is the number of
+// ranks whose matvec failed, summed as a double (exact for any rank count), so InvalidRanks > 0 exactly when the
+// separate validity reduction would have reported failure.  Callers test it before the dots' finiteness.
+std::pair<double, double> distributedDotsWithValidity(
+    std::vector<double> const& shared_left, std::vector<double> const& first_right,
+    std::vector<double> const* const second_right, bool const LocalValid, ActiveBiCGSTABTiming& timing,
+    double& InvalidRanks)
+{
+    double values[3] = {dot(shared_left, first_right), 0, LocalValid ? 0.0 : 1.0};
+    int count = 2;
+    if(second_right != nullptr) {
+        values[1] = dot(shared_left, *second_right);
+        count = 3;
+    }
+    else
+        values[1] = values[2];
+    double global[3] = {0, 0, 0};
+    auto const reduction_start = std::chrono::steady_clock::now();
+    requireDistributedMpiSuccess(
+        MPI_Allreduce(values, global, count, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD),
+        "MPI_Allreduce(distributed dot with matvec validity)");
+    timing.reduction_seconds += std::chrono::duration<double>(
+        std::chrono::steady_clock::now() - reduction_start).count();
+    ++timing.dot_reductions;
+    ++timing.fused_validity_flags;
+    InvalidRanks = second_right != nullptr ? global[2] : global[1];
+    return std::make_pair(global[0], second_right != nullptr ? global[1] : 0.0);
 }
 
 #if 0
@@ -4001,6 +4246,91 @@ DistributedGMRESResult recoverDistributedActiveWithGMRES(
 }
 #endif
 
+// Own wall time of one distributed candidate for the D2 timers: setup before the solver call, post after it, with
+// nested retries (recursive candidates) and system capture excluded.  Records on every exit path.
+class RadiationD2CandidateScope
+{
+public:
+    explicit RadiationD2CandidateScope(bool const Enabled) : Enabled_(Enabled)
+    {
+        if(!Enabled_)
+            return;
+        Start_ = D2Now();
+        NestedAtStart_ = RadiationD2EventTotals().CandidateSeconds;
+    }
+
+    void ExcludeFromSetup(double const Seconds)
+    {
+        Excluded_ += Seconds;
+    }
+
+    void SolverStarted()
+    {
+        if(Enabled_)
+            SolverStart_ = D2Now();
+    }
+
+    void SolverFinished()
+    {
+        if(!Enabled_)
+            return;
+        SolverEnd_ = D2Now();
+        SolverSeen_ = true;
+    }
+
+    ~RadiationD2CandidateScope()
+    {
+        if(!Enabled_)
+            return;
+        RadiationD2Totals& Totals = RadiationD2EventTotals();
+        double const End = D2Now();
+        double const Nested = Totals.CandidateSeconds - NestedAtStart_;
+        double const Own = End - Start_ - Nested - Excluded_;
+        if(SolverSeen_) {
+            Totals.SetupSeconds += SolverStart_ - Start_ - Excluded_;
+            Totals.PostSeconds += End - SolverEnd_ - Nested;
+        }
+        else
+            Totals.SetupSeconds += Own;
+        Totals.CandidateSeconds += Own;
+    }
+
+    RadiationD2CandidateScope(RadiationD2CandidateScope const&) = delete;
+    RadiationD2CandidateScope& operator=(RadiationD2CandidateScope const&) = delete;
+
+private:
+    bool Enabled_ = false;
+    bool SolverSeen_ = false;
+    double Start_ = 0;
+    double NestedAtStart_ = 0;
+    double Excluded_ = 0;
+    double SolverStart_ = 0;
+    double SolverEnd_ = 0;
+};
+
+// Optional outputs of one distributed-active solve: the D2 timer sample and, for the two-stage shadow, the outcome and
+// the solver's accept/reject/restart decisions as (iteration << 8) | code.  Filling it changes no arithmetic.
+struct DistributedSolveRecord
+{
+    bool CollectTimers = false;
+    bool CollectDecisions = false;
+    double MatvecSeconds = 0;
+    double ExchangeSeconds = 0;
+    double ReductionSeconds = 0;
+    double PreconditionerSeconds = 0;
+    double AcceptanceSeconds = 0;
+    unsigned long long ReductionCalls = 0;
+    unsigned long long ReductionRounds = 0;
+    std::vector<std::uint64_t> Decisions;
+    bool Result = false;
+    std::string Outcome;
+    std::string Reason;
+    std::size_t Iterations = 0;
+    // Set by the two-stage shadow for the solve whose result is used: its wall and MPI time.
+    double WallSeconds = 0;
+    double MpiSeconds = 0;
+};
+
 bool solveDistributedActiveBiCGSTAB(
     double tolerance,
     int& total_iters,
@@ -4019,10 +4349,34 @@ bool solveDistributedActiveBiCGSTAB(
     CG::PreconditionerKind const preconditioner_kind,
     std::vector<std::size_t> const& block_cell_ids,
     CG::MatrixBuilder const& matrix_builder,
-    CG::HistoricalMGResidualCorrectionDiagnostics& correction_diagnostics)
+    CG::HistoricalMGResidualCorrectionDiagnostics& correction_diagnostics,
+    bool const TwoStage = false,
+    bool const Quiet = false,
+    DistributedSolveRecord* const Record = nullptr)
 {
     auto const total_start = std::chrono::steady_clock::now();
     ActiveBiCGSTABTiming timing;
+    // D2 timers and the shadow's decision trace; both only record.
+    bool const CollectTimers = Record != nullptr && Record->CollectTimers;
+    double AcceptanceSeconds = 0;
+    int AcceptanceDepth = 0;
+    auto const RecordDecision = [&](std::size_t const Iteration, std::uint64_t const Code)
+    {
+        if(Record != nullptr && Record->CollectDecisions)
+            Record->Decisions.push_back((static_cast<std::uint64_t>(Iteration) << 8) | Code);
+    };
+    // Times the outermost acceptance call only; nested calls run inside it.
+    auto const TimedAcceptance = [&](auto&& Body)
+    {
+        if(!CollectTimers || AcceptanceDepth > 0)
+            return Body();
+        ++AcceptanceDepth;
+        double const Start = D2Now();
+        auto Result = Body();
+        AcceptanceSeconds += D2Now() - Start;
+        --AcceptanceDepth;
+        return Result;
+    };
     std::size_t const size = rhs.size();
     int rank = 0;
     requireDistributedMpiSuccess(
@@ -4078,14 +4432,33 @@ bool solveDistributedActiveBiCGSTAB(
             CG::ReportHistoricalMGPositivityContinuationClose(
                 "distributed_active", positivity_continuation,
                 positivity_continuation.LastNegativity, "solver_failure",
-                rank == 0);
+                rank == 0 && !Quiet);
             CG::RecordHistoricalMGPositivityContinuation(
                 positivity_continuation, correction_diagnostics);
         }
         total_iters = static_cast<int>(std::min<std::size_t>(
             iterations, static_cast<std::size_t>(
                 std::numeric_limits<int>::max())));
-        bool const detailed_report = exchange.rank_profile_enabled || !result;
+        if(Record != nullptr) {
+            Record->Result = result;
+            Record->Outcome = outcome != nullptr ? outcome : "";
+            Record->Reason = reason != nullptr ? reason : "";
+            Record->Iterations = iterations;
+            if(CollectTimers) {
+                Record->MatvecSeconds = timing.matvec_seconds;
+                Record->ExchangeSeconds = timing.exchange_seconds;
+                Record->ReductionSeconds = timing.reduction_seconds;
+                Record->PreconditionerSeconds = timing.preconditioner_setup_seconds +
+                    (preconditioner_ready ? direction_preconditioner.ApplySeconds() : 0.0);
+                Record->AcceptanceSeconds = AcceptanceSeconds;
+                Record->ReductionCalls = timing.dot_reductions + timing.exchange_validity_reductions +
+                    timing.measure_collective_calls + timing.true_residual_reductions;
+                Record->ReductionRounds = timing.dot_reductions + timing.exchange_validity_reductions +
+                    timing.measure_causal_rounds + timing.true_residual_reductions;
+            }
+        }
+        // A quiet (shadow) solve skips every report on every rank, so the reports' collectives stay matched.
+        bool const detailed_report = !Quiet && (exchange.rank_profile_enabled || !result);
         if(detailed_report)
             ReportDistributedActiveBiCGSTAB(
                 "MG_BICGSTAB_CONVERGENCE", outcome, reason, iterations,
@@ -4256,7 +4629,7 @@ bool solveDistributedActiveBiCGSTAB(
                       << " true_residual_reductions_max=" << counts[10]
                       << " report_identity_reductions_max=" << counts[11]
                       << std::endl;
-        if(exchange.rank_profile_enabled) {
+        if(exchange.rank_profile_enabled && !Quiet) {
             reportDistributedActiveRankProfile(
                 timing, matrix, exchange,
                 static_cast<unsigned long long>(
@@ -4349,14 +4722,14 @@ bool solveDistributedActiveBiCGSTAB(
         return finish(false, "breakdown", "preconditioner_setup", 0,
                       last_error, last_metrics);
     preconditioner_ready = true;
-    if(exchange.rank_profile_enabled || (setup_state & 2) != 0) {
+    if(!Quiet && (exchange.rank_profile_enabled || (setup_state & 2) != 0)) {
         auto const setup_report_start = std::chrono::steady_clock::now();
         ReportDistributedPreconditionerSetup(direction_preconditioner,
                                              block_cell_ids);
         timing.reduction_seconds += std::chrono::duration<double>(
             std::chrono::steady_clock::now() - setup_report_start).count();
     }
-    if(exchange.rank_profile_enabled)
+    if(exchange.rank_profile_enabled && !Quiet)
         reportDistributedMemoryPhase("preconditioner_setup");
     if(exchange.global_size == 0) {
         last_true_assessment.backward_error = 0;
@@ -4367,7 +4740,7 @@ bool solveDistributedActiveBiCGSTAB(
                       0, last_metrics);
     }
 
-    if(exchange.rank_profile_enabled && rank == 0)
+    if(exchange.rank_profile_enabled && rank == 0 && !Quiet)
         std::clog << "MG_BICGSTAB_TOLERANCE scope=distributed_active"
                   << " requested=" << tolerance
                   << " squared_scaled_tolerance=" << tolerance
@@ -4388,13 +4761,21 @@ bool solveDistributedActiveBiCGSTAB(
         for(std::size_t i = 0; i < size; ++i)
             physical_solution[i] = base_solution[i] + solution[i];
     };
+    // TwoStage: two waits of nonblocking reductions instead of six blocking ones.  Otherwise the same function as
+    // CG::MeasureHistoricalMG with the reductions counted.
+    auto const measure_metrics = [&](std::vector<double> const& values)
+    {
+        return CG::MeasureHistoricalMGCounted(physical_solution, previous_physical_solution, values,
+            verification_rhs, diagonal, unknowns_per_cell, &timing.reduction_seconds, TwoStage,
+            &timing.measure_collective_calls, &timing.measure_causal_rounds);
+    };
     auto const measure_current = [&](std::vector<double> const& values)
     {
-        refresh_physical_solution();
-        return CG::MeasureHistoricalMG(
-            physical_solution, previous_physical_solution, values,
-            verification_rhs, diagonal, unknowns_per_cell,
-            &timing.reduction_seconds);
+        return TimedAcceptance([&]()
+        {
+            refresh_physical_solution();
+            return measure_metrics(values);
+        });
     };
     auto const measure_update = [&](std::vector<double> const& values,
                                     std::vector<double> const& first_update,
@@ -4402,20 +4783,20 @@ bool solveDistributedActiveBiCGSTAB(
                                     std::vector<double> const& second_update,
                                     double const second_scale)
     {
-        refresh_physical_solution();
-        previous_physical_solution = physical_solution;
-        for(std::size_t i = 0; i < previous_physical_solution.size(); ++i) {
-            if(i < first_update.size())
-                previous_physical_solution[i] -=
-                    first_scale * first_update[i];
-            if(i < second_update.size())
-                previous_physical_solution[i] -=
-                    second_scale * second_update[i];
-        }
-        return CG::MeasureHistoricalMG(
-            physical_solution, previous_physical_solution, values,
-            verification_rhs, diagonal, unknowns_per_cell,
-            &timing.reduction_seconds);
+        return TimedAcceptance([&]()
+        {
+            refresh_physical_solution();
+            previous_physical_solution = physical_solution;
+            for(std::size_t i = 0; i < previous_physical_solution.size(); ++i) {
+                if(i < first_update.size())
+                    previous_physical_solution[i] -=
+                        first_scale * first_update[i];
+                if(i < second_update.size())
+                    previous_physical_solution[i] -=
+                        second_scale * second_update[i];
+            }
+            return measure_metrics(values);
+        });
     };
 
     std::vector<double> product;
@@ -4461,7 +4842,7 @@ bool solveDistributedActiveBiCGSTAB(
     };
     std::vector<double> sampled_true_residual;
     std::size_t requested_true_eta_iteration = 0;
-    auto const recompute_true_residual = [&]()
+    auto const recompute_true_residual_body = [&]()
     {
         refresh_physical_solution();
         bool const valid = computeDistributedResidualAccurately(
@@ -4475,6 +4856,10 @@ bool solveDistributedActiveBiCGSTAB(
         return last_true_assessment.finite &&
             std::isfinite(scaled_norm(sampled_true_residual));
     };
+    auto const recompute_true_residual = [&]()
+    {
+        return TimedAcceptance(recompute_true_residual_body);
+    };
     if(!recompute_true_residual())
         return finish(false, "breakdown", "true_initial_residual_matvec",
                       0, last_error, last_metrics);
@@ -4485,7 +4870,7 @@ bool solveDistributedActiveBiCGSTAB(
     last_metrics = measure_current(residual);
     last_error = last_metrics.historical_error;
 
-    auto const attempt_historical_final_correction =
+    auto const attempt_historical_final_correction_body =
         [&](std::size_t const iterations)
     {
         pre_correction_eta_inf = last_true_assessment.backward_error;
@@ -4524,18 +4909,18 @@ bool solveDistributedActiveBiCGSTAB(
         if(continuation_decision ==
            CG::HistoricalMGPositivityContinuationDecision::Restart)
             CG::ReportHistoricalMGPositivityContinuationOpen(
-                "distributed_active", positivity_continuation, rank == 0);
+                "distributed_active", positivity_continuation, rank == 0 && !Quiet);
         else if(continuation_decision ==
                 CG::HistoricalMGPositivityContinuationDecision::Cleared)
             CG::ReportHistoricalMGPositivityContinuationClose(
                 "distributed_active", positivity_continuation,
-                candidate.corrected_negativity, "cleared", rank == 0);
+                candidate.corrected_negativity, "cleared", rank == 0 && !Quiet);
         else if(continuation_decision ==
                 CG::HistoricalMGPositivityContinuationDecision::Exhausted)
             CG::ReportHistoricalMGPositivityContinuationClose(
                 "distributed_active", positivity_continuation,
                 candidate.corrected_negativity, "budget_exhausted",
-                rank == 0);
+                rank == 0 && !Quiet);
         CG::RecordHistoricalMGPositivityContinuation(
             positivity_continuation, correction_diagnostics);
         if(continuation_decision ==
@@ -4592,11 +4977,20 @@ bool solveDistributedActiveBiCGSTAB(
         }
         return CG::HistoricalMGCorrectionDisposition::Commit;
     };
+    auto const attempt_historical_final_correction = [&](std::size_t const iterations)
+    {
+        CG::HistoricalMGCorrectionDisposition const Disposition =
+            TimedAcceptance([&]() { return attempt_historical_final_correction_body(iterations); });
+        RecordDecision(iterations, 16 + static_cast<std::uint64_t>(Disposition));
+        return Disposition;
+    };
     double rho_previous = 1;
     double alpha = 1;
     double omega = 1;
+    std::size_t DecisionIteration = 0;
     auto const restart_from_true_residual = [&]()
     {
+        RecordDecision(DecisionIteration, 1);
         residual = sampled_true_residual;
         shadow = residual;
         std::fill(direction.begin(), direction.end(), 0);
@@ -4610,6 +5004,7 @@ bool solveDistributedActiveBiCGSTAB(
             std::size_t const zero_based_iteration)
     {
         std::size_t const iterations = zero_based_iteration + 1;
+        RecordDecision(iterations, 32 + static_cast<std::uint64_t>(breakdown));
         requested_true_eta_iteration = iterations;
         if(!recompute_true_residual()) {
             finish(false, "rejected", "diagnostic_eta_nonfinite",
@@ -4664,6 +5059,7 @@ bool solveDistributedActiveBiCGSTAB(
         if(iteration >= maximum_iterations &&
            !positivity_continuation.Active)
             break;
+        DecisionIteration = iteration + 1;
         double const rho = distributedDot(shadow, residual, timing);
         if(!std::isfinite(rho)) {
             ActiveBreakdownResolution const resolution = finish_breakdown(
@@ -4695,12 +5091,26 @@ bool solveDistributedActiveBiCGSTAB(
             return finish(false, "breakdown",
                           "direction_preconditioner_neighbor_matvec",
                           iteration + 1, last_error, last_metrics);
-        if(!multiplyDistributed(matrix, exchange, preconditioned,
-                                matrix_direction, timing))
-            return finish(false, "breakdown", "direction_matvec",
-                          iteration + 1, last_error, last_metrics);
-        double const denominator = distributedDot(shadow, matrix_direction,
-                                                   timing);
+        double denominator = 0;
+        if(TwoStage) {
+            // The matvec's validity travels in the denominator's sum and is tested first, as before.
+            bool const local_matvec_valid = multiplyDistributed(matrix, exchange, preconditioned,
+                matrix_direction, timing, false, false);
+            double invalid_ranks = 0;
+            denominator = distributedDotsWithValidity(shadow, matrix_direction, nullptr, local_matvec_valid, timing,
+                invalid_ranks).first;
+            if(invalid_ranks != 0)
+                return finish(false, "breakdown", "direction_matvec",
+                              iteration + 1, last_error, last_metrics);
+        }
+        else {
+            if(!multiplyDistributed(matrix, exchange, preconditioned,
+                                    matrix_direction, timing))
+                return finish(false, "breakdown", "direction_matvec",
+                              iteration + 1, last_error, last_metrics);
+            denominator = distributedDot(shadow, matrix_direction,
+                                         timing);
+        }
         if(!std::isfinite(denominator)) {
             ActiveBreakdownResolution const resolution = finish_breakdown(
                 CG::HistoricalMGBreakdown::NonFinite, iteration);
@@ -4732,6 +5142,7 @@ bool solveDistributedActiveBiCGSTAB(
                               intermediate_decision.branch),
                           iteration + 1, last_error, last_metrics);
         if(intermediate_decision.accept) {
+            RecordDecision(iteration + 1, 2);
             requested_true_eta_iteration = iteration + 1;
             if(!recompute_true_residual())
                 return finish(false, "rejected", "diagnostic_eta_nonfinite",
@@ -4776,15 +5187,31 @@ bool solveDistributedActiveBiCGSTAB(
             return finish(false, "breakdown",
                           "intermediate_preconditioner_neighbor_matvec",
                           iteration + 1, last_error, last_metrics);
-        if(!multiplyDistributed(matrix, exchange,
-                                preconditioned_intermediate,
-                                matrix_intermediate, timing))
-            return finish(false, "breakdown", "intermediate_matvec",
-                          iteration + 1, last_error, last_metrics);
-        std::pair<double, double> const omega_products =
-            distributedDotPair(matrix_intermediate, matrix_intermediate,
-                               intermediate, timing,
-                               exchange.pair_omega_reduction);
+        std::pair<double, double> omega_products(0, 0);
+        if(TwoStage) {
+            // The matvec's validity travels in the first omega sum and is tested first, as before.
+            bool const local_matvec_valid = multiplyDistributed(matrix, exchange, preconditioned_intermediate,
+                matrix_intermediate, timing, false, false);
+            double invalid_ranks = 0;
+            omega_products = distributedDotsWithValidity(matrix_intermediate, matrix_intermediate,
+                exchange.pair_omega_reduction ? &intermediate : nullptr, local_matvec_valid, timing, invalid_ranks);
+            if(invalid_ranks != 0)
+                return finish(false, "breakdown", "intermediate_matvec",
+                              iteration + 1, last_error, last_metrics);
+            if(!exchange.pair_omega_reduction)
+                omega_products.second = distributedDot(matrix_intermediate, intermediate, timing);
+        }
+        else {
+            if(!multiplyDistributed(matrix, exchange,
+                                    preconditioned_intermediate,
+                                    matrix_intermediate, timing))
+                return finish(false, "breakdown", "intermediate_matvec",
+                              iteration + 1, last_error, last_metrics);
+            omega_products =
+                distributedDotPair(matrix_intermediate, matrix_intermediate,
+                                   intermediate, timing,
+                                   exchange.pair_omega_reduction);
+        }
         double const omega_denominator = omega_products.first;
         if(!std::isfinite(omega_denominator)) {
             ActiveBreakdownResolution const resolution = finish_breakdown(
@@ -4822,7 +5249,7 @@ bool solveDistributedActiveBiCGSTAB(
             solution[i] += omega * preconditioned_intermediate[i];
             residual[i] = intermediate[i] - omega * matrix_intermediate[i];
         }
-        bool const report_progress = exchange.rank_profile_enabled &&
+        bool const report_progress = exchange.rank_profile_enabled && !Quiet &&
             (iteration == 0 || (iteration + 1) % 100 == 0);
         last_metrics = measure_update(
             residual, preconditioned, alpha,
@@ -4849,6 +5276,8 @@ bool solveDistributedActiveBiCGSTAB(
                 positivity_continuation, iteration + 1);
         if((iteration + 1) % 50 == 0 || decision.accept ||
            positivity_block_boundary) {
+            if(decision.accept)
+                RecordDecision(iteration + 1, 3);
             requested_true_eta_iteration = iteration + 1;
             if(!recompute_true_residual())
                 return finish(false, "rejected",
@@ -4866,6 +5295,7 @@ bool solveDistributedActiveBiCGSTAB(
         if(CG::ShouldRestartHistoricalMGPositivityContinuation(
                decision.accept, positivity_block_boundary,
                positivity_budget_reached)) {
+            RecordDecision(iteration + 1, 64);
             positivity_continuation.AdditionalIterationsUsed = iteration + 1 -
                 positivity_continuation.InitialIteration;
             positivity_continuation.BlocksCompleted = std::min(
@@ -4927,6 +5357,342 @@ bool solveDistributedActiveBiCGSTAB(
     return finish(false, "not_converged", "maximum_iterations",
                   maximum_iterations, last_error, last_metrics);
 }
+// RICH_MG_DISTRIBUTED_ACTIVE_TWO_STAGE=2: solve one system with the sequential and with the two-stage reductions from
+// identical inputs, alternating which runs first from solve to solve, keep the sequential result and print one
+// RICH_D2_RAD_TWO_STAGE_SHADOW line.  The two-stage solve runs quietly on copies of the solution, halo buffers and
+// diagnostics, so it leaves no state, log record, counter or retry decision behind; only its wall time is returned.
+bool solveDistributedActiveTwoStageShadow(
+    double tolerance, int& total_iters, DistributedActiveCSR const& matrix, std::vector<double> const& rhs,
+    std::vector<double> const& verification_rhs, std::vector<double> const& verification_scale,
+    std::vector<double> const& base_solution, std::vector<double> const& final_correction_volume,
+    double const fixed_cell_maximum_absolute_Eg, double const fixed_maximum_positive_cell_energy,
+    double const fixed_positive_energy, std::vector<double>& solution, DistributedActiveExchange& exchange,
+    std::size_t const unknowns_per_cell, CG::PreconditionerKind const preconditioner_kind,
+    std::vector<std::size_t> const& block_cell_ids, CG::MatrixBuilder const& matrix_builder,
+    CG::HistoricalMGResidualCorrectionDiagnostics& correction_diagnostics, char const* const Kind,
+    DistributedSolveRecord& OldRecord, double& ShadowSeconds)
+{
+    static unsigned long long ShadowSolveCount = 0;
+    unsigned long long const SolveIndex = ShadowSolveCount++;
+    bool const NewFirst = SolveIndex % 2 == 1;
+    std::vector<double> NewSolution = solution;
+    DistributedActiveExchange NewExchange = exchange;
+    CG::HistoricalMGResidualCorrectionDiagnostics NewDiagnostics = correction_diagnostics;
+    int NewIterations = 0;
+    DistributedSolveRecord NewRecord;
+    NewRecord.CollectTimers = true;
+    NewRecord.CollectDecisions = true;
+    OldRecord.CollectTimers = true;
+    OldRecord.CollectDecisions = true;
+    double OldSeconds = 0;
+    double NewSeconds = 0;
+    bool OldResult = false;
+    auto const RunOld = [&]()
+    {
+        double const Start = D2Now();
+        double const MpiStart = mpi_wait_profiler::Seconds();
+        OldResult = solveDistributedActiveBiCGSTAB(tolerance, total_iters, matrix, rhs, verification_rhs,
+            verification_scale, base_solution, final_correction_volume, fixed_cell_maximum_absolute_Eg,
+            fixed_maximum_positive_cell_energy, fixed_positive_energy, solution, exchange, unknowns_per_cell,
+            preconditioner_kind, block_cell_ids, matrix_builder, correction_diagnostics, false, false, &OldRecord);
+        OldSeconds = D2Now() - Start;
+        OldRecord.WallSeconds = OldSeconds;
+        OldRecord.MpiSeconds = mpi_wait_profiler::Seconds() - MpiStart;
+    };
+    auto const RunNew = [&]()
+    {
+        double const Start = D2Now();
+        solveDistributedActiveBiCGSTAB(tolerance, NewIterations, matrix, rhs, verification_rhs, verification_scale,
+            base_solution, final_correction_volume, fixed_cell_maximum_absolute_Eg,
+            fixed_maximum_positive_cell_energy, fixed_positive_energy, NewSolution, NewExchange, unknowns_per_cell,
+            preconditioner_kind, block_cell_ids, matrix_builder, NewDiagnostics, true, true, &NewRecord);
+        NewSeconds = D2Now() - Start;
+    };
+    if(NewFirst) {
+        RunNew();
+        RunOld();
+    }
+    else {
+        RunOld();
+        RunNew();
+    }
+    ShadowSeconds += NewSeconds;
+
+    // Compare the physical solutions (base plus Krylov correction).
+    double MaximumRelative = 0;
+    double Differing = 0;
+    bool const SizesMatch = NewSolution.size() == solution.size() && base_solution.size() == solution.size();
+    for(std::size_t Index = 0; SizesMatch && Index < solution.size(); ++Index) {
+        double const Old = base_solution[Index] + solution[Index];
+        double const New = base_solution[Index] + NewSolution[Index];
+        if(SameDoubleBits(Old, New))
+            continue;
+        Differing += 1;
+        double const Scale = std::max(std::abs(Old), std::abs(New));
+        double const Relative = Scale > 0 ? std::abs(Old - New) / Scale : 0.0;
+        MaximumRelative = std::max(MaximumRelative, std::isfinite(Relative) ? Relative : 1.0);
+    }
+    if(!SizesMatch)
+        MaximumRelative = 1;
+    double Maxima[5] = {MaximumRelative, OldSeconds, NewSeconds, OldRecord.ReductionSeconds,
+        NewRecord.ReductionSeconds};
+    requireDistributedMpiSuccess(
+        MPI_Allreduce(MPI_IN_PLACE, Maxima, 5, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD),
+        "MPI_Allreduce(two-stage shadow maxima)");
+    requireDistributedMpiSuccess(
+        MPI_Allreduce(MPI_IN_PLACE, &Differing, 1, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD),
+        "MPI_Allreduce(two-stage shadow differing values)");
+    int Rank = 0;
+    requireDistributedMpiSuccess(MPI_Comm_rank(MPI_COMM_WORLD, &Rank), "MPI_Comm_rank(two-stage shadow)");
+    if(Rank == 0) {
+        std::size_t FirstDifference = 0;
+        std::size_t const Common = std::min(OldRecord.Decisions.size(), NewRecord.Decisions.size());
+        while(FirstDifference < Common &&
+              OldRecord.Decisions[FirstDifference] == NewRecord.Decisions[FirstDifference])
+            ++FirstDifference;
+        bool const DecisionsIdentical = OldRecord.Decisions == NewRecord.Decisions &&
+            OldRecord.Result == NewRecord.Result && OldRecord.Reason == NewRecord.Reason &&
+            OldRecord.Iterations == NewRecord.Iterations;
+        // Formatted apart so the precision of std::clog stays as it was.
+        std::ostringstream Line;
+        Line << std::setprecision(6) << "RICH_D2_RAD_TWO_STAGE_SHADOW solve=" << SolveIndex << " kind=" << Kind
+             << " first=" << (NewFirst ? "new" : "old") << " old_result=" << (OldRecord.Result ? 1 : 0)
+             << " new_result=" << (NewRecord.Result ? 1 : 0) << " old_iterations=" << OldRecord.Iterations
+             << " new_iterations=" << NewRecord.Iterations << " old_reason=" << OldRecord.Reason
+             << " new_reason=" << NewRecord.Reason << " old_s_max=" << Maxima[1] << " new_s_max=" << Maxima[2]
+             << " old_reduction_s_max=" << Maxima[3] << " new_reduction_s_max=" << Maxima[4]
+             << " old_reduction_calls=" << OldRecord.ReductionCalls
+             << " new_reduction_calls=" << NewRecord.ReductionCalls
+             << " old_reduction_rounds=" << OldRecord.ReductionRounds
+             << " new_reduction_rounds=" << NewRecord.ReductionRounds
+             << std::setprecision(17) << " max_relative_difference=" << Maxima[0]
+             << " differing_values=" << static_cast<unsigned long long>(Differing)
+             << " decisions_identical=" << (DecisionsIdentical ? 1 : 0)
+             << " decisions_old=" << OldRecord.Decisions.size() << " decisions_new="
+             << NewRecord.Decisions.size();
+        if(FirstDifference < std::max(OldRecord.Decisions.size(), NewRecord.Decisions.size()))
+            Line << " first_decision_difference=" << FirstDifference << " old_code="
+                 << (FirstDifference < OldRecord.Decisions.size() ? OldRecord.Decisions[FirstDifference] : 0)
+                 << " new_code="
+                 << (FirstDifference < NewRecord.Decisions.size() ? NewRecord.Decisions[FirstDifference] : 0);
+        std::clog << Line.str() << std::endl;
+    }
+    return OldResult;
+}
+
+// Creates Path and its missing parents; true when it exists as a directory afterwards.
+bool MakeCaptureDirectories(std::string const& Path)
+{
+    std::string Partial;
+    std::size_t Position = 0;
+    while(Position <= Path.size()) {
+        std::size_t const Next = Path.find('/', Position);
+        std::size_t const End = Next == std::string::npos ? Path.size() : Next;
+        Partial = Path.substr(0, End);
+        if(!Partial.empty())
+            if(mkdir(Partial.c_str(), 0755) != 0 && errno != EEXIST)
+                return false;
+        if(Next == std::string::npos)
+            break;
+        Position = Next + 1;
+    }
+    struct stat Status;
+    return stat(Path.c_str(), &Status) == 0 && S_ISDIR(Status.st_mode);
+}
+
+// Inputs of one distributed-active solve for RICH_MG_CAPTURE_SYSTEMS (format in impl_rad_s49.md).
+struct DistributedSystemCaptureInput
+{
+    char const* Kind = "sparse";
+    std::uint64_t Index = 0;
+    double Tolerance = 0;
+    double FixedCellMaximumAbsoluteEg = 0;
+    double FixedMaximumPositiveCellEnergy = 0;
+    double FixedPositiveEnergy = 0;
+    double Time = 0;
+    double IntervalFraction = 0;
+    std::uint64_t EventTick = 0;
+    std::size_t UnknownsPerCell = 0;
+    CG::PreconditionerKind Preconditioner = CG::PreconditionerKind::ScalarJacobi;
+};
+
+// Writes <dir>/<kind>_<index>/rank_<r>.bin on every rank and header.txt on rank 0.  Collective: one exclusive scan,
+// one sum, one point-to-point halo exchange of global indices, one broadcast and one minimum.  Reads only; a write
+// failure is reported and leaves the run unchanged.
+void CaptureDistributedActiveSystem(
+    std::string const& Directory, DistributedSystemCaptureInput const& Input, DistributedActiveCSR const& Matrix,
+    DistributedActiveExchange const& Exchange, std::vector<RemoteUnknownKey> const& RemoteUnknowns,
+    std::vector<double> const& Rhs, std::vector<double> const& VerificationRhs,
+    std::vector<double> const& VerificationScale, std::vector<double> const& BaseSolution,
+    std::vector<double> const& FinalCorrectionVolume, std::vector<std::size_t> const& BlockCellIds)
+{
+    int Rank = 0;
+    int RankCount = 1;
+    requireDistributedMpiSuccess(MPI_Comm_rank(MPI_COMM_WORLD, &Rank), "MPI_Comm_rank(system capture)");
+    requireDistributedMpiSuccess(MPI_Comm_size(MPI_COMM_WORLD, &RankCount), "MPI_Comm_size(system capture)");
+    unsigned long long const LocalRows = static_cast<unsigned long long>(Exchange.local_size);
+    unsigned long long RowOffset = 0;
+    requireDistributedMpiSuccess(
+        MPI_Exscan(&LocalRows, &RowOffset, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD),
+        "MPI_Exscan(system capture row offset)");
+    if(Rank == 0)
+        RowOffset = 0;
+    unsigned long long Totals[2] = {LocalRows, static_cast<unsigned long long>(Matrix.values.size())};
+    requireDistributedMpiSuccess(
+        MPI_Allreduce(MPI_IN_PLACE, Totals, 2, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD),
+        "MPI_Allreduce(system capture totals)");
+
+    // Global index of every halo slot: each owner sends RowOffset + local index along the solver's own schedule.
+    std::vector<unsigned long long> SendGlobal(Exchange.send_local_indices.size());
+    for(std::size_t Entry = 0; Entry < SendGlobal.size(); ++Entry)
+        SendGlobal[Entry] = RowOffset + static_cast<unsigned long long>(Exchange.send_local_indices[Entry]);
+    std::vector<unsigned long long> ReceiveGlobal(Exchange.receive_remote_slots.size(), 0);
+    std::vector<MPI_Request> Requests;
+    Requests.reserve(Exchange.send_transfers.size() + Exchange.receive_transfers.size());
+    int constexpr CaptureTag = 21074;
+    for(DistributedActivePeerTransfer const& Transfer : Exchange.receive_transfers) {
+        Requests.push_back(MPI_REQUEST_NULL);
+        requireDistributedMpiSuccess(
+            MPI_Irecv(ReceiveGlobal.data() + Transfer.offset, Transfer.count, MPI_UNSIGNED_LONG_LONG, Transfer.peer,
+                      CaptureTag, MPI_COMM_WORLD, &Requests.back()),
+            "MPI_Irecv(system capture halo indices)");
+    }
+    for(DistributedActivePeerTransfer const& Transfer : Exchange.send_transfers) {
+        Requests.push_back(MPI_REQUEST_NULL);
+        requireDistributedMpiSuccess(
+            MPI_Isend(SendGlobal.data() + Transfer.offset, Transfer.count, MPI_UNSIGNED_LONG_LONG, Transfer.peer,
+                      CaptureTag, MPI_COMM_WORLD, &Requests.back()),
+            "MPI_Isend(system capture halo indices)");
+    }
+    if(!Requests.empty())
+        requireDistributedMpiSuccess(
+            MPI_Waitall(static_cast<int>(Requests.size()), Requests.data(), MPI_STATUSES_IGNORE),
+            "MPI_Waitall(system capture halo indices)");
+    std::uint64_t constexpr Unmapped = std::numeric_limits<std::uint64_t>::max();
+    std::vector<std::uint64_t> HaloGlobal(Exchange.remote_size, Unmapped);
+    for(std::size_t Entry = 0; Entry < Exchange.receive_remote_slots.size(); ++Entry)
+        if(Exchange.receive_remote_slots[Entry] < HaloGlobal.size())
+            HaloGlobal[Exchange.receive_remote_slots[Entry]] = ReceiveGlobal[Entry];
+
+    std::ostringstream SystemPath;
+    SystemPath << Directory << '/' << Input.Kind << '_' << Input.Index;
+    int DirectoryReady = 0;
+    if(Rank == 0)
+        DirectoryReady = MakeCaptureDirectories(SystemPath.str()) ? 1 : 0;
+    requireDistributedMpiSuccess(MPI_Bcast(&DirectoryReady, 1, MPI_INT, 0, MPI_COMM_WORLD),
+                                 "MPI_Bcast(system capture directory)");
+    int Written = 0;
+    if(DirectoryReady != 0) {
+        std::ostringstream RankPath;
+        RankPath << SystemPath.str() << "/rank_" << Rank << ".bin";
+        std::ofstream Out(RankPath.str().c_str(), std::ios::binary | std::ios::trunc);
+        auto const Put = [&Out](auto const Value) { Out.write(reinterpret_cast<char const*>(&Value), sizeof(Value)); };
+        auto const PutU64Array = [&Put](auto const& Values)
+        {
+            Put(static_cast<std::uint64_t>(Values.size()));
+            for(auto const Value : Values)
+                Put(static_cast<std::uint64_t>(Value));
+        };
+        auto const PutDoubleArray = [&Out, &Put](std::vector<double> const& Values)
+        {
+            Put(static_cast<std::uint64_t>(Values.size()));
+            if(!Values.empty())
+                Out.write(reinterpret_cast<char const*>(Values.data()),
+                          static_cast<std::streamsize>(Values.size() * sizeof(double)));
+        };
+        std::size_t const N = Exchange.local_size;
+        Out.write("RICHMGS1", 8);
+        Put(static_cast<std::uint32_t>(1));
+        Put(static_cast<std::int32_t>(Rank));
+        Put(static_cast<std::int32_t>(RankCount));
+        Put(static_cast<std::uint32_t>(std::strcmp(Input.Kind, "dense") == 0 ? 0 : 1));
+        Put(static_cast<std::uint64_t>(Input.Index));
+        Put(static_cast<std::uint64_t>(N));
+        Put(static_cast<std::uint64_t>(Totals[0]));
+        Put(static_cast<std::uint64_t>(RowOffset));
+        Put(static_cast<std::uint64_t>(Input.UnknownsPerCell));
+        Put(static_cast<std::uint64_t>(Matrix.values.size()));
+        Put(static_cast<std::uint64_t>(Exchange.remote_size));
+        Put(Input.Tolerance);
+        Put(static_cast<std::uint64_t>(CG::historical_mg_maximum_iterations));
+        Put(static_cast<std::uint64_t>(CG::historical_mg_positivity_continuation_iteration_budget));
+        Put(static_cast<std::int32_t>(Input.Preconditioner));
+        Put(static_cast<std::int32_t>(1));
+        Put(static_cast<std::int32_t>(Exchange.pair_omega_reduction ? 1 : 0));
+        Put(static_cast<std::int32_t>(Exchange.overlap_local_rows ? 1 : 0));
+        Put(Input.FixedCellMaximumAbsoluteEg);
+        Put(Input.FixedMaximumPositiveCellEnergy);
+        Put(Input.FixedPositiveEnergy);
+        Put(Input.Time);
+        Put(Input.IntervalFraction);
+        Put(static_cast<std::uint64_t>(Input.EventTick));
+        PutU64Array(Matrix.row_offsets);
+        Put(static_cast<std::uint64_t>(Matrix.values.size()));
+        for(std::size_t Entry = 0; Entry < Matrix.values.size(); ++Entry) {
+            std::size_t const Column = Matrix.Column(Entry);
+            std::uint64_t Global = Unmapped;
+            if(Column < N)
+                Global = RowOffset + static_cast<std::uint64_t>(Column);
+            else if(Column != CG::max_size_t && Column - N < HaloGlobal.size())
+                Global = HaloGlobal[Column - N];
+            Put(Global);
+        }
+        Put(static_cast<std::uint64_t>(Matrix.values.size()));
+        for(std::size_t Entry = 0; Entry < Matrix.values.size(); ++Entry)
+            Put(static_cast<std::uint64_t>(Matrix.Column(Entry)));
+        PutDoubleArray(Matrix.values);
+        PutDoubleArray(Rhs);
+        PutDoubleArray(VerificationRhs);
+        PutDoubleArray(VerificationScale);
+        PutDoubleArray(BaseSolution);
+        PutDoubleArray(FinalCorrectionVolume);
+        PutU64Array(BlockCellIds);
+        PutU64Array(Matrix.local_rows);
+        PutU64Array(Matrix.remote_rows);
+        PutU64Array(HaloGlobal);
+        Put(static_cast<std::uint64_t>(RemoteUnknowns.size()));
+        for(RemoteUnknownKey const& Key : RemoteUnknowns) {
+            Put(static_cast<std::int32_t>(Key.owner));
+            Put(static_cast<std::uint64_t>(Key.cell_id));
+            Put(static_cast<std::uint64_t>(Key.group));
+        }
+        PutU64Array(Exchange.send_offsets);
+        PutU64Array(Exchange.send_local_indices);
+        PutU64Array(Exchange.receive_offsets);
+        PutU64Array(Exchange.receive_remote_slots);
+        Out.write("RICHEND1", 8);
+        Out.close();
+        Written = Out ? 1 : 0;
+        if(Written == 0)
+            std::cerr << "RICH_MG_CAPTURE write failed: rank=" << Rank << " path=" << RankPath.str() << std::endl;
+    }
+    int AllWritten = Written;
+    requireDistributedMpiSuccess(
+        MPI_Allreduce(MPI_IN_PLACE, &AllWritten, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD),
+        "MPI_Allreduce(system capture written)");
+    if(Rank != 0)
+        return;
+    if(DirectoryReady != 0) {
+        std::ofstream Header((SystemPath.str() + "/header.txt").c_str(), std::ios::trunc);
+        Header << std::setprecision(17) << "format=RICHMGS1\nversion=1\nkind=" << Input.Kind << "\nindex="
+               << Input.Index << "\nranks=" << RankCount << "\nglobal_rows=" << Totals[0]
+               << "\nglobal_nonzeros=" << Totals[1] << "\nunknowns_per_cell=" << Input.UnknownsPerCell
+               << "\nsquared_scaled_tolerance=" << Input.Tolerance
+               << "\nnorm=historical_diagonal_scaled_squared_residual"
+               << "\nmaximum_iterations=" << CG::historical_mg_maximum_iterations
+               << "\npositivity_continuation_iteration_budget="
+               << CG::historical_mg_positivity_continuation_iteration_budget
+               << "\npreconditioner=" << CG::PreconditionerKindLabel(Input.Preconditioner)
+               << "\npreconditioner_code=" << static_cast<int>(Input.Preconditioner)
+               << "\npair_omega=" << (Exchange.pair_omega_reduction ? 1 : 0)
+               << "\ntime=" << Input.Time << "\ninterval_fraction=" << Input.IntervalFraction
+               << "\nevent_tick=" << Input.EventTick << "\nall_ranks_written=" << AllWritten << '\n';
+    }
+    std::clog << "RICH_MG_CAPTURE kind=" << Input.Kind << " index=" << Input.Index << " path=" << SystemPath.str()
+              << " ranks=" << RankCount << " global_rows=" << Totals[0] << " global_nonzeros=" << Totals[1]
+              << " directory_ready=" << DirectoryReady << " all_ranks_written=" << AllWritten << std::endl;
+}
+
 #endif
 
 class IndividualContextGuard
@@ -5086,6 +5852,99 @@ MappedAllActiveRuntimeOption const& mappedAllActiveRuntimeOption()
 }
 
 } // namespace
+
+RadiationS49Switches const& RadiationS49RuntimeSwitches()
+{
+    static RadiationS49Switches const Switches = ReadRadiationS49Switches();
+    return Switches;
+}
+
+void BeginRadiationD2Event()
+{
+    RadiationD2EventTotals() = RadiationD2Totals();
+}
+
+void RecordRadiationRemapVerification()
+{
+    ReportRadiationVerifyProgress("RICH_RADIATION_REMAP_MINIMAL", ++RadiationVerifyTotals().RemapChecks);
+}
+
+void RecordRadiationPartialSetupRowCheck()
+{
+    ReportRadiationVerifyProgress("RICH_RADIATION_PARTIAL_SETUP_FAST:inactive_rows",
+                                  ++RadiationVerifyTotals().PartialSetupRowChecks);
+}
+
+void EndRadiationD2Event(std::uint64_t const EventTick, double const EventSeconds, double const EventMpiSeconds,
+    std::size_t const Candidates, std::size_t const RejectedCandidates, std::size_t const ActiveTargets)
+{
+    RadiationD2Totals const& Totals = RadiationD2EventTotals();
+    std::size_t constexpr TimerCount = 23;
+    char const* const Names[TimerCount] = {"event", "busy", "driver", "setup", "solver", "solver_busy", "matvec",
+        "exchange", "reduction", "precond", "accept", "post", "fast", "shadow", "capture", "setup_prepare",
+        "setup_matrix", "setup_mapping", "setup_exchange", "post_solve", "post_passive", "post_correct",
+        "post_commit"};
+    double const Values[TimerCount] = {EventSeconds, EventSeconds - EventMpiSeconds, Totals.CandidateSeconds,
+        Totals.SetupSeconds, Totals.SolverSeconds, Totals.SolverBusySeconds, Totals.MatvecSeconds,
+        Totals.ExchangeSeconds, Totals.ReductionSeconds, Totals.PreconditionerSeconds, Totals.AcceptanceSeconds,
+        Totals.PostSeconds, Totals.FastSeconds, Totals.ShadowSeconds, Totals.CaptureSeconds,
+        Totals.SetupPrepareSeconds, Totals.SetupMatrixSeconds, Totals.SetupMappingSeconds,
+        Totals.SetupExchangeSeconds, Totals.PostSolveSeconds, Totals.PostPassiveSeconds,
+        Totals.PostCorrectionSeconds, Totals.PostCommitSeconds};
+    struct ValueRank
+    {
+        double Value;
+        int Rank;
+    };
+    int Rank = 0;
+    int RankCount = 1;
+    ValueRank LocalMaxima[TimerCount];
+    ValueRank Maxima[TimerCount];
+    double LocalSums[TimerCount + 2];
+    double Sums[TimerCount + 2];
+#ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &RankCount);
+#endif
+    for(std::size_t Timer = 0; Timer < TimerCount; ++Timer) {
+        LocalMaxima[Timer].Value = Values[Timer];
+        LocalMaxima[Timer].Rank = Rank;
+        LocalSums[Timer] = Values[Timer];
+    }
+    LocalSums[TimerCount] = static_cast<double>(ActiveTargets);
+    LocalSums[TimerCount + 1] = static_cast<double>(Totals.LocalRows);
+#ifdef RICH_MPI
+    MPI_Reduce(LocalMaxima, Maxima, static_cast<int>(TimerCount), MPI_DOUBLE_INT, MPI_MAXLOC, 0, MPI_COMM_WORLD);
+    MPI_Reduce(LocalSums, Sums, static_cast<int>(TimerCount + 2), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+#else
+    std::copy(LocalMaxima, LocalMaxima + TimerCount, Maxima);
+    std::copy(LocalSums, LocalSums + TimerCount + 2, Sums);
+#endif
+    if(Rank != 0)
+        return;
+    RadiationS49Switches const& Switches = RadiationS49RuntimeSwitches();
+    std::ostringstream Line;
+    Line << std::setprecision(6) << "RICH_D2_RAD event_tick=" << EventTick << " ranks=" << RankCount
+         << " mpi_profile=" << (mpi_wait_profiler::Enabled() ? 1 : 0) << " two_stage=" << Switches.TwoStage
+         << " skip_passive=" << Switches.SkipPassive << " remap_minimal=" << Switches.RemapMinimal
+         << " partial_setup_fast=" << Switches.PartialSetupFast
+         << " candidates=" << Candidates << " rejected=" << RejectedCandidates
+         << " solves=" << Totals.DistributedSolves << " fast_solves=" << Totals.FastSolves
+         << " iterations=" << Totals.Iterations << " reduction_calls=" << Totals.ReductionCalls
+         << " reduction_rounds=" << Totals.ReductionRounds
+         << " active_targets=" << static_cast<unsigned long long>(Sums[TimerCount])
+         << " solver_rows=" << static_cast<unsigned long long>(Sums[TimerCount + 1]);
+    for(std::size_t Timer = 0; Timer < TimerCount; ++Timer)
+        Line << ' ' << Names[Timer] << "_s_max=" << Maxima[Timer].Value << ' ' << Names[Timer] << "_s_mean="
+             << Sums[Timer] / static_cast<double>(RankCount) << ' ' << Names[Timer] << "_s_argmax="
+             << Maxima[Timer].Rank;
+    if(Switches.SkipPassive == 2 || Switches.RemapMinimal == 2 || Switches.PartialSetupFast == 2)
+        Line << " skip_passive_checks=" << RadiationVerifyTotals().SkipPassiveChecks
+             << " remap_checks=" << RadiationVerifyTotals().RemapChecks
+             << " setup_index_checks=" << RadiationVerifyTotals().PartialSetupIndexChecks
+             << " setup_row_checks=" << RadiationVerifyTotals().PartialSetupRowChecks << " verify_mismatches=0";
+    std::clog << Line.str() << std::endl;
+}
 
 RadiationDriver::IndividualRadiationLocalDefectMeasure
 RadiationDriver::measureIndividualRadiationLocalDefect(
@@ -5758,7 +6617,154 @@ void RadiationDriver::releaseIndividualTopologyStorage() const noexcept
 {
     std::vector<IndividualFaceCoefficient>().swap(
         individual_face_coefficients_);
+    // Only forces a rebuild if it ever ran inside an event; the write journal is owned by the caller.
+    EndIndividualCanonicalScope();
     ReleaseDormantGlobalSolverStorage();
+}
+
+void RadiationDriver::BeginIndividualCanonicalScope() const
+{
+    CanonicalScopeActive = true;
+    CanonicalIndexSource = nullptr;
+    CanonicalIndexSize = 0;
+}
+
+void RadiationDriver::EndIndividualCanonicalScope() const noexcept
+{
+    CanonicalScopeActive = false;
+    CanonicalIndexSource = nullptr;
+    CanonicalIndexSize = 0;
+    // RICH_RADIATION_PARTIAL_SETUP_FAST keeps the index for the next event (the switches are read by then).
+    if(CanonicalIndexRetained && RadiationS49RuntimeSwitches().PartialSetupFast != 0)
+        return;
+    CanonicalIndexRetained = false;
+    std::vector<std::pair<std::size_t, std::size_t> >().swap(CanonicalIndexById);
+    std::vector<std::size_t>().swap(CanonicalIndexIds);
+}
+
+void RadiationDriver::BeginIndividualCanonicalWriteJournal() const
+{
+    CanonicalWriteJournalEnabled = true;
+    CanonicalWriteIndices.clear();
+    CanonicalWriteBefore.clear();
+}
+
+void RadiationDriver::EndIndividualCanonicalWriteJournal() const noexcept
+{
+    CanonicalWriteJournalEnabled = false;
+    std::vector<std::size_t>().swap(CanonicalWriteIndices);
+    std::vector<Conserved3D>().swap(CanonicalWriteBefore);
+}
+
+bool RadiationDriver::PrepareCanonicalIndex(std::vector<ComputationalCell3D> const& CanonicalCells) const
+{
+    if(CanonicalScopeActive && CanonicalIndexSource == &CanonicalCells && CanonicalIndexSize == CanonicalCells.size())
+        return CanonicalIndexUnique;
+    CanonicalIndexSource = nullptr;
+    // RICH_RADIATION_PARTIAL_SETUP_FAST: the sorted (ID, index) pairs depend only on the IDs in canonical order, so a
+    // retained index built from the same IDs is the index a rebuild would produce.  One sequential pass over the IDs
+    // replaces the sort of every owned cell.  Mode 2 rebuilds and compares.
+    int const SetupFast = RadiationS49RuntimeSwitches().PartialSetupFast;
+    bool SameIds = SetupFast != 0 && CanonicalIndexRetained && CanonicalIndexIds.size() == CanonicalCells.size() &&
+        CanonicalIndexById.size() == CanonicalCells.size();
+    for(std::size_t Canonical = 0; SameIds && Canonical < CanonicalCells.size(); ++Canonical)
+        SameIds = CanonicalIndexIds[Canonical] == CanonicalCells[Canonical].ID;
+    if(SameIds && SetupFast == 1) {
+        CanonicalIndexSource = &CanonicalCells;
+        CanonicalIndexSize = CanonicalCells.size();
+        return CanonicalIndexUnique;
+    }
+    std::vector<std::pair<std::size_t, std::size_t> > RetainedIndex;
+    bool const RetainedUnique = CanonicalIndexUnique;
+    if(SameIds)
+        RetainedIndex = CanonicalIndexById;
+    CanonicalIndexById.resize(CanonicalCells.size());
+    for(std::size_t Canonical = 0; Canonical < CanonicalCells.size(); ++Canonical)
+        CanonicalIndexById[Canonical] = std::make_pair(CanonicalCells[Canonical].ID, Canonical);
+    std::sort(CanonicalIndexById.begin(), CanonicalIndexById.end());
+    CanonicalIndexUnique = std::adjacent_find(CanonicalIndexById.begin(), CanonicalIndexById.end(),
+        [](std::pair<std::size_t, std::size_t> const& Left, std::pair<std::size_t, std::size_t> const& Right)
+        {return Left.first == Right.first;}) == CanonicalIndexById.end();
+    CanonicalIndexSource = &CanonicalCells;
+    CanonicalIndexSize = CanonicalCells.size();
+    if(SameIds) {
+        ReportRadiationVerifyProgress("RICH_RADIATION_PARTIAL_SETUP_FAST:canonical_index",
+                                      ++RadiationVerifyTotals().PartialSetupIndexChecks);
+        if(RetainedIndex != CanonicalIndexById || RetainedUnique != CanonicalIndexUnique) {
+            std::size_t First = 0;
+            while(First < RetainedIndex.size() && RetainedIndex[First] == CanonicalIndexById[First])
+                ++First;
+            std::ostringstream Message;
+            Message << "RICH_RADIATION_PARTIAL_SETUP_FAST verify mismatch: check=canonical_index entry=" << First
+                    << " unique_retained=" << (RetainedUnique ? 1 : 0)
+                    << " unique_rebuilt=" << (CanonicalIndexUnique ? 1 : 0);
+            AbortRadiationS49(Message.str());
+        }
+    }
+    if(SetupFast != 0) {
+        CanonicalIndexIds.resize(CanonicalCells.size());
+        for(std::size_t Canonical = 0; Canonical < CanonicalCells.size(); ++Canonical)
+            CanonicalIndexIds[Canonical] = CanonicalCells[Canonical].ID;
+        CanonicalIndexRetained = true;
+    }
+    return CanonicalIndexUnique;
+}
+
+bool RadiationDriver::FindCanonicalIndex(std::size_t const Id, std::size_t& Canonical) const
+{
+    auto const Found = std::lower_bound(CanonicalIndexById.begin(), CanonicalIndexById.end(),
+                                        std::make_pair(Id, std::size_t{0}));
+    if(Found == CanonicalIndexById.end() || Found->first != Id)
+        return false;
+    Canonical = Found->second;
+    return true;
+}
+
+// RICH_INDIVIDUAL_RADIATION_REMOTE_ACTIVE_SCATTER (default on): scatter the
+// solved values of remote active neighbours into the PostCG solution under
+// every passive policy.  One boolean on every rank.
+static bool IndividualRemoteActiveScatterEnabled()
+{
+    static bool const Enabled = []()
+    {
+        char const* const Value = std::getenv("RICH_INDIVIDUAL_RADIATION_REMOTE_ACTIVE_SCATTER");
+        int Setting = 1;
+        int Invalid = 0;
+        if(Value != nullptr && *Value != '\0')
+        {
+            std::string const Text(Value);
+            if(Text == "0" || Text == "false" || Text == "off")
+                Setting = 0;
+            else if(!(Text == "1" || Text == "true" || Text == "on"))
+                Invalid = 1;
+        }
+        int Agreement[3] = {Setting, -Setting, Invalid};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, Agreement, 3, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        if(Agreement[2] != 0 || Agreement[0] != -Agreement[1])
+            throw std::invalid_argument(
+                "RICH_INDIVIDUAL_RADIATION_REMOTE_ACTIVE_SCATTER must be one boolean on every rank");
+        return Agreement[0] != 0;
+    }();
+    return Enabled;
+}
+
+bool RadiationDriver::applyTestForcedRejection(bool const valid) const
+{
+    if(test_forced_rejection_rank_ < 0)
+        return valid;
+    int const failing_rank = test_forced_rejection_rank_;
+    test_forced_rejection_rank_ = -1;
+    test_forced_rejection_consumed_ = true;
+    int rank = 0;
+#ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+    if(rank != failing_rank)
+        return valid;
+    setStepFailure("test: forced one-rank rejection");
+    return false;
 }
 
 bool RadiationDriver::stepIndividual(
@@ -5780,6 +6786,11 @@ bool RadiationDriver::stepIndividual(
     // the repaired group sum and the injection is accounted explicitly.
     double constexpr spectral_positivity_repair_tolerance =
         RadiationPositivity::spectral_repair_relative_limit;
+    // Collective on first use (every rank enters stepIndividual together).
+    bool const RemoteActiveScatter = IndividualRemoteActiveScatterEnabled();
+    RadiationS49Switches const& S49 = RadiationS49RuntimeSwitches();
+    // Every target of every rank is active (from the collective counts below); identical on all ranks.
+    bool AllActiveTargets = false;
 
     // A reduced active-row solve is unnecessary when the event is globally
     // synchronized.  In that case the canonical matrix, unknown set, and
@@ -5944,6 +6955,7 @@ bool RadiationDriver::stepIndividual(
             post_rejection_mask |= 1ULL << 15;
         if(global_minimum_dt != minimum_event_interval)
             post_rejection_mask |= 1ULL << 16;
+        AllActiveTargets = global_owned_cells > 0 && global_active_cells == global_owned_cells;
 #ifdef RICH_MPI
         global_rejection_mask |= post_rejection_mask;
 #else
@@ -6067,6 +7079,7 @@ bool RadiationDriver::stepIndividual(
                 outer_transaction_extensives_ = &extensives;
             }
             bool accepted = false;
+            double const D2FastStart = S49.Timers != 0 ? D2Now() : 0;
             try {
                 accepted = step(tolerance, total_iters, tess, cells,
                                 extensives, candidate_dt, time);
@@ -6088,7 +7101,16 @@ bool RadiationDriver::stepIndividual(
                 outer_transaction_extensives_ =
                     previous_transaction_extensives;
             }
+            if(S49.Timers != 0) {
+                RadiationD2Totals& D2Totals = RadiationD2EventTotals();
+                double const FastWall = D2Now() - D2FastStart;
+                D2Totals.FastSeconds += FastWall;
+                D2Totals.CandidateSeconds += FastWall;
+                ++D2Totals.FastSolves;
+                D2Totals.Iterations += static_cast<unsigned long long>(std::max(total_iters, 0));
+            }
 #ifdef RICH_MPI
+            accepted = applyTestForcedRejection(accepted);
             int collective_accepted = accepted ? 1 : 0;
             requireDistributedMpiSuccess(
                 MPI_Allreduce(MPI_IN_PLACE, &collective_accepted, 1, MPI_INT,
@@ -6124,6 +7146,7 @@ bool RadiationDriver::stepIndividual(
         MPI_Comm_size(MPI_COMM_WORLD, &rank_count),
         "MPI_Comm_size(distributed active step)");
     try {
+    RadiationD2CandidateScope D2Candidate(S49.Timers != 0);
     auto const phase_total_start = std::chrono::steady_clock::now();
     auto phase_start = phase_total_start;
     double snapshot_seconds = 0;
@@ -6497,7 +7520,8 @@ bool RadiationDriver::stepIndividual(
         solver_cell_index_by_owner_id;
     std::map<std::size_t, std::size_t>
         interior_owned_cell_index_by_id;
-    for(std::size_t cell = 0; cell < cells.size(); ++cell) {
+    // Both maps are read only by the shadow passive-row blocks below.
+    for(std::size_t cell = 0; runtime_options.usesShadowPassiveRows() && cell < cells.size(); ++cell) {
         if(cell < point_owner.size() && point_owner[cell] >= 0)
             solver_cell_index_by_owner_id.emplace(
                 std::make_pair(point_owner[cell], cells[cell].ID), cell);
@@ -7295,15 +8319,99 @@ bool RadiationDriver::stepIndividual(
         std::chrono::steady_clock::now() - phase_start).count();
     phase_start = std::chrono::steady_clock::now();
     CG::HistoricalMGResidualCorrectionDiagnostics correction_diagnostics;
-    bool const solver_converged = solveDistributedActiveBiCGSTAB(
-        tolerance, total_iters, matrix, rhs, verification_rhs,
-        verification_scale, base_solution, final_correction_volume,
-        fixed_cell_maximum_absolute_Eg,
-        fixed_positive_scale.maximum_cell_energy,
-        fixed_positive_scale.total_energy,
-        solution, exchange, unknowns_per_cell,
-        GetPreconditionerKind(), block_cell_ids,
-        *this, correction_diagnostics);
+    // Dense: every target active but intervals unequal (the global solver's fast path declined); sparse: partial.
+    char const* const SystemKind = AllActiveTargets ? "dense" : "sparse";
+    if(S49.CaptureSystems > 0) {
+        // Solves are collective, so these counts and the decision are identical on every rank.
+        static long long DenseSystemsCaptured = 0;
+        static long long SparseSystemsCaptured = 0;
+        long long& Captured = AllActiveTargets ? DenseSystemsCaptured : SparseSystemsCaptured;
+        if(Captured < S49.CaptureSystems) {
+            double const CaptureStart = D2Now();
+            DistributedSystemCaptureInput CaptureInput;
+            CaptureInput.Kind = SystemKind;
+            CaptureInput.Index = static_cast<std::uint64_t>(Captured);
+            CaptureInput.Tolerance = tolerance;
+            CaptureInput.FixedCellMaximumAbsoluteEg = fixed_cell_maximum_absolute_Eg;
+            CaptureInput.FixedMaximumPositiveCellEnergy = fixed_positive_scale.maximum_cell_energy;
+            CaptureInput.FixedPositiveEnergy = fixed_positive_scale.total_energy;
+            CaptureInput.Time = time;
+            CaptureInput.IntervalFraction = interval_fraction;
+            CaptureInput.EventTick = context.event_tick;
+            CaptureInput.UnknownsPerCell = unknowns_per_cell;
+            CaptureInput.Preconditioner = GetPreconditionerKind();
+            CaptureDistributedActiveSystem(S49.CaptureDirectory, CaptureInput, matrix, exchange,
+                final_remote_unknowns, rhs, verification_rhs, verification_scale, base_solution,
+                final_correction_volume, block_cell_ids);
+            ++Captured;
+            double const CaptureSeconds = D2Now() - CaptureStart;
+            D2Candidate.ExcludeFromSetup(CaptureSeconds);
+            if(S49.Timers != 0)
+                RadiationD2EventTotals().CaptureSeconds += CaptureSeconds;
+            phase_start = std::chrono::steady_clock::now();
+        }
+    }
+    D2Candidate.SolverStarted();
+    DistributedSolveRecord SolveRecord;
+    SolveRecord.CollectTimers = S49.Timers != 0;
+    double const D2SolverStart = S49.Timers != 0 ? D2Now() : 0;
+    double const D2SolverMpiStart = S49.Timers != 0 ? mpi_wait_profiler::Seconds() : 0;
+    double TwoStageShadowSeconds = 0;
+    bool solver_converged = false;
+    if(S49.TwoStage == 2)
+        solver_converged = solveDistributedActiveTwoStageShadow(
+            tolerance, total_iters, matrix, rhs, verification_rhs, verification_scale, base_solution,
+            final_correction_volume, fixed_cell_maximum_absolute_Eg, fixed_positive_scale.maximum_cell_energy,
+            fixed_positive_scale.total_energy, solution, exchange, unknowns_per_cell, GetPreconditionerKind(),
+            block_cell_ids, *this, correction_diagnostics, SystemKind, SolveRecord, TwoStageShadowSeconds);
+    else
+        solver_converged = solveDistributedActiveBiCGSTAB(
+            tolerance, total_iters, matrix, rhs, verification_rhs,
+            verification_scale, base_solution, final_correction_volume,
+            fixed_cell_maximum_absolute_Eg,
+            fixed_positive_scale.maximum_cell_energy,
+            fixed_positive_scale.total_energy,
+            solution, exchange, unknowns_per_cell,
+            GetPreconditionerKind(), block_cell_ids,
+            *this, correction_diagnostics, S49.TwoStage == 1, false,
+            S49.Timers != 0 ? &SolveRecord : nullptr);
+    if(S49.Timers != 0) {
+        RadiationD2Totals& D2Totals = RadiationD2EventTotals();
+        double SolveWall = D2Now() - D2SolverStart;
+        double SolveMpi = mpi_wait_profiler::Seconds() - D2SolverMpiStart;
+        if(S49.TwoStage == 2) {
+            SolveWall = SolveRecord.WallSeconds;
+            SolveMpi = SolveRecord.MpiSeconds;
+        }
+        D2Totals.SolverSeconds += SolveWall;
+        D2Totals.SolverBusySeconds += SolveWall - SolveMpi;
+        D2Totals.MatvecSeconds += SolveRecord.MatvecSeconds;
+        D2Totals.ExchangeSeconds += SolveRecord.ExchangeSeconds;
+        D2Totals.ReductionSeconds += SolveRecord.ReductionSeconds;
+        D2Totals.PreconditionerSeconds += SolveRecord.PreconditionerSeconds;
+        D2Totals.AcceptanceSeconds += SolveRecord.AcceptanceSeconds;
+        D2Totals.ShadowSeconds += TwoStageShadowSeconds;
+        D2Totals.ReductionCalls += SolveRecord.ReductionCalls;
+        D2Totals.ReductionRounds += SolveRecord.ReductionRounds;
+        D2Totals.Iterations += static_cast<unsigned long long>(std::max(total_iters, 0));
+        D2Totals.LocalRows += static_cast<unsigned long long>(local_to_global.size());
+        ++D2Totals.DistributedSolves;
+        D2Totals.SetupPrepareSeconds += snapshot_seconds + candidate_seconds;
+        D2Totals.SetupMatrixSeconds += matrix_build_seconds;
+        D2Totals.SetupMappingSeconds += active_mapping_seconds + csr_extract_seconds;
+        D2Totals.SetupExchangeSeconds += exchange_setup_seconds;
+    }
+    D2Candidate.SolverFinished();
+    // Post laps for the D2 timers: each adds the time since the previous mark to one post part.
+    double D2PostMark = S49.Timers != 0 ? D2Now() : 0;
+    auto const D2PostLap = [&](double RadiationD2Totals::* const Part)
+    {
+        if(S49.Timers == 0)
+            return;
+        double const Now = D2Now();
+        RadiationD2EventTotals().*Part += Now - D2PostMark;
+        D2PostMark = Now;
+    };
     solver_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - phase_start).count();
     phase_start = std::chrono::steady_clock::now();
@@ -7444,19 +8552,35 @@ bool RadiationDriver::stepIndividual(
         return accepted;
     }
 
-    // PostCG needs the solved passive endpoint on the active rank for its
-    // face-gradient/radiation-force work.  Krylov owns only local rows, so
-    // perform one final halo exchange of the physical (base + correction)
-    // solution and scatter remote stable-ID values back into full_solution.
-    if(runtime_options.usesShadowPassiveRows()) {
+    // PostCG reads the solved value of every face neighbour of an owned
+    // active row (radiation force, velocity work and exchange, closure): the
+    // remote active cells, which are other ranks' Krylov rows seen here as
+    // ghosts, and in the shadow policy also the passive endpoints.  Krylov
+    // owns only local rows, so perform one final halo exchange of the
+    // physical (base + correction) solution and scatter the remote stable-ID
+    // values into full_solution under every passive policy.  Frozen Dirichlet
+    // otherwise evaluated active-active rank faces with the remote start
+    // value; its passive neighbours are not unknowns and keep that value.
+    // RICH_INDIVIDUAL_RADIATION_REMOTE_ACTIVE_SCATTER=0 restores the old
+    // shadow-only scatter (for bitwise comparison with earlier binaries).
+    if(runtime_options.usesShadowPassiveRows() || RemoteActiveScatter)
+    {
         ActiveBiCGSTABTiming final_exchange_timing;
         valid = exchangeRemoteActiveValues(
             exchange, solution, exchange.remote_values,
             final_exchange_timing);
+        // Local copies of the requested remote cells only, by stable ID.
         std::map<std::size_t, std::vector<std::size_t> >
             local_indices_by_stable_id;
-        for(std::size_t cell = 0; cell < cells.size(); ++cell)
-            local_indices_by_stable_id[cells[cell].ID].push_back(cell);
+        for(RemoteUnknownKey const& key : final_remote_unknowns)
+            local_indices_by_stable_id.emplace(
+                key.cell_id, std::vector<std::size_t>());
+        for(std::size_t cell = 0; cell < cells.size(); ++cell) {
+            auto const requested =
+                local_indices_by_stable_id.find(cells[cell].ID);
+            if(requested != local_indices_by_stable_id.end())
+                requested->second.push_back(cell);
+        }
         if(final_remote_unknowns.size() !=
            exchange.remote_values.size())
             valid = false;
@@ -7468,6 +8592,7 @@ bool RadiationDriver::stepIndividual(
             auto const indices =
                 local_indices_by_stable_id.find(key.cell_id);
             if(indices == local_indices_by_stable_id.end() ||
+               indices->second.empty() ||
                key.group >= unknowns_per_cell ||
                !std::isfinite(exchange.remote_values[slot])) {
                 valid = false;
@@ -7489,7 +8614,7 @@ bool RadiationDriver::stepIndividual(
         }
         if(!valid)
             setStepFailure(
-                "shadow passive radiation final halo is inconsistent");
+                "individual radiation final remote halo is inconsistent");
         if(!collectiveAllTrue(valid))
             return reject();
     }
@@ -7511,6 +8636,7 @@ bool RadiationDriver::stepIndividual(
     }
     if(!collectiveAllTrue(valid))
         return reject();
+    D2PostLap(&RadiationD2Totals::PostSolveSeconds);
 
     std::map<std::size_t, std::size_t> owned_index_by_id;
     for(std::size_t cell = 0; cell < cells.size(); ++cell) {
@@ -7536,7 +8662,9 @@ bool RadiationDriver::stepIndividual(
     // rank's partial mesh.  Keep those passive updates in the same candidate
     // transaction, keyed by the canonical stable ID, without refreshing their
     // primitive state.
-    std::map<std::size_t, std::size_t> canonical_index_by_id;
+    // The stable-ID index of all canonical owned cells is built once per event
+    // (BeginIndividualCanonicalScope) instead of a std::map per candidate.
+    bool HaveCanonicalIndex = false;
     std::vector<std::pair<std::size_t, std::size_t> > canonical_work_indices;
     if((canonical_cells == nullptr) != (canonical_extensives == nullptr))
         valid = false;
@@ -7544,22 +8672,23 @@ bool RadiationDriver::stepIndividual(
         if(canonical_cells->size() != canonical_extensives->size())
             valid = false;
         else {
-            for(std::size_t canonical = 0;
-                canonical < canonical_cells->size(); ++canonical)
-                if(!canonical_index_by_id.emplace(
-                       (*canonical_cells)[canonical].ID, canonical).second)
-                    valid = false;
+            if(!PrepareCanonicalIndex(*canonical_cells))
+                valid = false;
+            HaveCanonicalIndex = true;
             for(auto const& entry : owned_index_by_id) {
-                auto const canonical = canonical_index_by_id.find(entry.first);
-                if(canonical == canonical_index_by_id.end()) {
+                std::size_t Canonical = 0;
+                if(!FindCanonicalIndex(entry.first, Canonical)) {
                     valid = false;
                     continue;
                 }
-                canonical_work_indices.emplace_back(
-                    entry.second, canonical->second);
+                canonical_work_indices.emplace_back(entry.second, Canonical);
             }
         }
     }
+    auto const FindCanonical = [&](std::size_t const Id, std::size_t& Canonical)
+    {
+        return HaveCanonicalIndex && FindCanonicalIndex(Id, Canonical);
+    };
     if(!valid)
         setStepFailure(
             "individual radiation canonical stable-cell mapping is inconsistent");
@@ -7571,21 +8700,21 @@ bool RadiationDriver::stepIndividual(
     auto const find_or_load_passive_cell = [&](std::size_t const cell_id)
     {
         auto found = owned_index_by_id.find(cell_id);
+        std::size_t Canonical = 0;
         if(found == owned_index_by_id.end() &&
            canonical_extensives != nullptr) {
-            auto const canonical = canonical_index_by_id.find(cell_id);
-            if(canonical != canonical_index_by_id.end() &&
+            if(FindCanonical(cell_id, Canonical) &&
                cells.size() == extensives.size() &&
                extensives.size() == transaction_start_extensives.size()) {
                 std::size_t const work_index = cells.size();
-                cells.push_back((*canonical_cells)[canonical->second]);
+                cells.push_back((*canonical_cells)[Canonical]);
                 extensives.push_back(
-                    (*canonical_extensives)[canonical->second]);
+                    (*canonical_extensives)[Canonical]);
                 transaction_start_extensives.push_back(
-                    (*canonical_extensives)[canonical->second]);
+                    (*canonical_extensives)[Canonical]);
                 found = owned_index_by_id.emplace(cell_id, work_index).first;
                 canonical_work_indices.emplace_back(
-                    work_index, canonical->second);
+                    work_index, Canonical);
             }
         }
         return found;
@@ -7685,11 +8814,48 @@ bool RadiationDriver::stepIndividual(
     }
     if(!valid)
         setStepFailure("individual radiation passive-face ownership is inconsistent");
-    if(!collectiveAllTrue(valid))
+    // RICH_RADIATION_ALL_ACTIVE_SKIP_PASSIVE: in an all-active event the validity reduction also carries "this rank
+    // has no passive transfer".  When no rank has one, nothing is sent, so no transfer arrives, no correction is
+    // queued and the frozen-Dirichlet restore loop finds only cells it would rewrite with their own values; the two
+    // passive all-to-alls and that loop are then skipped (mode 1) or run and checked (mode 2).
+    bool SkipPassiveExchanges = false;
+    if(S49.SkipPassive != 0 && AllActiveTargets) {
+        bool LocalWithoutTransfers = passive_transfers.empty();
+        for(std::vector<IndividualRadiationDelta> const& Packets : outgoing)
+            LocalWithoutTransfers = LocalWithoutTransfers && Packets.empty();
+        int Flags[2] = {valid ? 1 : 0, LocalWithoutTransfers ? 1 : 0};
+        requireDistributedMpiSuccess(
+            MPI_Allreduce(MPI_IN_PLACE, Flags, 2, MPI_INT, MPI_MIN, MPI_COMM_WORLD),
+            "MPI_Allreduce(passive-face validity and emptiness)");
+        if(Flags[0] == 0)
+            return reject();
+        SkipPassiveExchanges = Flags[1] != 0;
+    }
+    else if(!collectiveAllTrue(valid))
         return reject();
+    bool const VerifySkipPassive = SkipPassiveExchanges && S49.SkipPassive == 2;
+    bool const ElideSkipPassive = SkipPassiveExchanges && S49.SkipPassive == 1;
+    auto const AbortSkipPassiveMismatch = [&](char const* const What, std::size_t const Peer,
+                                              std::size_t const Count)
+    {
+        std::ostringstream Message;
+        Message << "RICH_RADIATION_ALL_ACTIVE_SKIP_PASSIVE verify mismatch: rank=" << rank << " check=" << What
+                << " peer_or_cell=" << Peer << " count=" << Count;
+        AbortRadiationS49(Message.str());
+    };
 
-    std::vector<std::vector<IndividualRadiationDelta> > const incoming =
-        MPI_Exchange_all_to_all(outgoing, MPI_COMM_WORLD);
+    std::vector<std::vector<IndividualRadiationDelta> > incoming;
+    if(ElideSkipPassive)
+        incoming.resize(static_cast<std::size_t>(rank_count));
+    else
+        incoming = MPI_Exchange_all_to_all(outgoing, MPI_COMM_WORLD);
+    if(VerifySkipPassive) {
+        ReportRadiationVerifyProgress("RICH_RADIATION_ALL_ACTIVE_SKIP_PASSIVE",
+                                      ++RadiationVerifyTotals().SkipPassiveChecks);
+        for(std::size_t Peer = 0; Peer < incoming.size(); ++Peer)
+            if(!incoming[Peer].empty())
+                AbortSkipPassiveMismatch("passive_delta_incoming", Peer, incoming[Peer].size());
+    }
     valid = incoming.size() == static_cast<std::size_t>(rank_count);
     for(std::size_t peer = 0; peer < incoming.size(); ++peer)
         for(IndividualRadiationDelta const& packet : incoming[peer]) {
@@ -7965,13 +9131,24 @@ bool RadiationDriver::stepIndividual(
                         inserted.first->second, reference_time_step);
             }
         pending_dirichlet_defect = true;
+        // RICH_RADIATION_PARTIAL_SETUP_FAST: when PostCG writes active rows only, nothing has changed an inactive
+        // cell since the snapshot (the matrix build reads the cells, passive transfers are only measured here and
+        // a loaded passive cell carries its snapshot value), so the restore rewrites equal values in any event.
+        bool const RestoreIsCopy = PostCGWritesActiveRowsOnly() && !runtime_options.usesShadowPassiveRows();
+        bool const ElideRestore = ElideSkipPassive || (S49.PartialSetupFast == 1 && RestoreIsCopy);
+        bool const VerifyRestore = VerifySkipPassive || (S49.PartialSetupFast == 2 && RestoreIsCopy);
         for(std::size_t cell = 0;
-            cell < cells.size() &&
+            !ElideRestore && cell < cells.size() &&
             cell < transaction_start_extensives.size(); ++cell) {
             bool const active = cell < context.active_mask.size() &&
                 context.isActive(cell);
             if(active)
                 continue;
+            if(VerifyRestore &&
+               (!SameExtensiveBits(extensives[cell], transaction_start_extensives[cell]) ||
+                (cell < saved_cells.size() && !SameCellBits(cells[cell], saved_cells[cell]))))
+                AbortSkipPassiveMismatch(VerifySkipPassive ? "passive_restore_changes_cell" :
+                                         "partial_setup_fast_restore_changes_cell", cell, 1);
             extensives[cell] = transaction_start_extensives[cell];
             if(cell < saved_cells.size())
                 cells[cell] = saved_cells[cell];
@@ -7991,8 +9168,11 @@ bool RadiationDriver::stepIndividual(
     }
     if(!collectiveAllTrue(valid))
         return reject();
-    std::size_t const passive_value_count =
-        cells.size() * unknowns_per_cell;
+    // Without passive transfers (always under frozen Dirichlet) no value is
+    // touched and both value loops below are no-ops; skip their workspace.
+    bool const HavePassiveTransfers = !passive_transfers.empty();
+    std::size_t const passive_value_count = HavePassiveTransfers ?
+        cells.size() * unknowns_per_cell : 0;
     std::vector<double> positive_gain(passive_value_count, 0);
     std::vector<double> negative_loss(passive_value_count, 0);
     std::vector<double> negative_scale(passive_value_count, 1);
@@ -8023,7 +9203,7 @@ bool RadiationDriver::stepIndividual(
                 negative_transfer_index[key] = transfer_index;
         }
     }
-    for(std::size_t cell = 0; cell < cells.size(); ++cell)
+    for(std::size_t cell = 0; HavePassiveTransfers && cell < cells.size(); ++cell)
         for(std::size_t group = 0; group < unknowns_per_cell; ++group) {
             std::size_t const key = cell * unknowns_per_cell + group;
             if(!touched_value[key])
@@ -8073,6 +9253,7 @@ bool RadiationDriver::stepIndividual(
     if(!collectiveAllTrue(valid))
         return reject();
 
+    D2PostLap(&RadiationD2Totals::PostPassiveSeconds);
     std::vector<unsigned char> touched_passive(cells.size(), 0);
     std::vector<unsigned char> corrected_active(cells.size(), 0);
     std::vector<std::tuple<std::size_t, std::size_t, double> > local_corrections;
@@ -8116,7 +9297,7 @@ bool RadiationDriver::stepIndividual(
             transfer.proposed_gain - transfer.applied_gain;
         queue_active_correction(transfer, correction);
     }
-    for(std::size_t cell = 0; cell < cells.size(); ++cell)
+    for(std::size_t cell = 0; HavePassiveTransfers && cell < cells.size(); ++cell)
         for(std::size_t group = 0; group < unknowns_per_cell; ++group) {
             std::size_t const key = cell * unknowns_per_cell + group;
             if(!touched_value[key])
@@ -8147,9 +9328,18 @@ bool RadiationDriver::stepIndividual(
     if(!collectiveAllTrue(valid))
         return reject();
 
-    std::vector<std::vector<IndividualRadiationDelta> > const
-        correction_incoming =
-            MPI_Exchange_all_to_all(correction_outgoing, MPI_COMM_WORLD);
+    std::vector<std::vector<IndividualRadiationDelta> > correction_incoming;
+    if(ElideSkipPassive)
+        correction_incoming.resize(static_cast<std::size_t>(rank_count));
+    else
+        correction_incoming = MPI_Exchange_all_to_all(correction_outgoing, MPI_COMM_WORLD);
+    if(VerifySkipPassive)
+        for(std::size_t Peer = 0; Peer < correction_incoming.size(); ++Peer) {
+            if(!correction_incoming[Peer].empty())
+                AbortSkipPassiveMismatch("correction_incoming", Peer, correction_incoming[Peer].size());
+            if(Peer < correction_outgoing.size() && !correction_outgoing[Peer].empty())
+                AbortSkipPassiveMismatch("correction_outgoing", Peer, correction_outgoing[Peer].size());
+        }
     valid = correction_incoming.size() ==
         static_cast<std::size_t>(rank_count);
     for(auto const& peer_packets : correction_incoming)
@@ -8348,7 +9538,20 @@ bool RadiationDriver::stepIndividual(
     }
 
     double global_maximum_cell_radiation_extent = 0;
-    if(canonical_extensives != nullptr) {
+    // RICH_RADIATION_PARTIAL_SETUP_FAST=1: with one unknown per cell and a driver whose post-solve physics ignores
+    // it, this maximum over every owned cell feeds only the failure messages below, so its owned scan and its
+    // reduction are skipped (identical on every rank: the switch, the unknown count and the driver type agree).
+    bool const SkipDiagnosticMaximum = S49.PartialSetupFast == 1 && unknowns_per_cell == 1 &&
+        !UsesPostSolveRadiationMaximum();
+    if(SkipDiagnosticMaximum) {
+        global_maximum_cell_radiation_extent = std::numeric_limits<double>::quiet_NaN();
+        // The mapping check of the scan below, which covers the candidate's cells only.
+        if(canonical_extensives != nullptr)
+            for(auto const& mapping : canonical_work_indices)
+                if(mapping.first >= extensives.size() || mapping.second >= canonical_extensives->size())
+                    valid = false;
+    }
+    else if(canonical_extensives != nullptr) {
         std::vector<unsigned char> canonical_overridden(
             canonical_extensives->size(), 0);
         for(auto const& mapping : canonical_work_indices) {
@@ -8380,11 +9583,13 @@ bool RadiationDriver::stepIndividual(
                     global_maximum_cell_radiation_extent,
                     extensives[cell].Erad);
     }
-    requireDistributedMpiSuccess(
-        MPI_Allreduce(MPI_IN_PLACE,
-                      &global_maximum_cell_radiation_extent, 1,
-                      MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD),
-        "MPI_Allreduce(distributed radiation extent)");
+    if(!SkipDiagnosticMaximum)
+        requireDistributedMpiSuccess(
+            MPI_Allreduce(MPI_IN_PLACE,
+                          &global_maximum_cell_radiation_extent, 1,
+                          MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD),
+            "MPI_Allreduce(distributed radiation extent)");
+    D2PostLap(&RadiationD2Totals::PostCorrectionSeconds);
 
     if(unknowns_per_cell > 1) {
         std::vector<unsigned char> repair_target = touched_passive;
@@ -8633,6 +9838,7 @@ bool RadiationDriver::stepIndividual(
             valid = false;
         }
     }
+    valid = applyTestForcedRejection(valid);
     if(!collectiveAllTrue(valid))
         return reject();
 
@@ -8698,10 +9904,16 @@ bool RadiationDriver::stepIndividual(
                   << local_passive_roundoff_extent
                   << " representative_face_scale="
                   << local_passive_roundoff_scale << std::endl;
-    if(canonical_extensives != nullptr)
+    if(canonical_extensives != nullptr) {
+        if(CanonicalWriteJournalEnabled)
+            for(auto const& mapping : canonical_work_indices) {
+                CanonicalWriteIndices.push_back(mapping.second);
+                CanonicalWriteBefore.push_back((*canonical_extensives)[mapping.second]);
+            }
         for(auto const& mapping : canonical_work_indices)
             (*canonical_extensives)[mapping.second] =
                 extensives[mapping.first];
+    }
     if(canonical_extensives != nullptr) {
         for(Conserved3D const& extensive : *canonical_extensives)
             spectral_repair_event.owned_radiation_energy += extensive.Erad;
@@ -8722,27 +9934,25 @@ bool RadiationDriver::stepIndividual(
     for(auto const& wake : pending_dirichlet_wakes) {
         if(wake.first >= cells.size())
             continue;
-        auto const canonical =
-            canonical_index_by_id.find(cells[wake.first].ID);
-        if(canonical == canonical_index_by_id.end() ||
-           canonical->second >=
+        std::size_t Canonical = 0;
+        if(!FindCanonical(cells[wake.first].ID, Canonical) ||
+           Canonical >=
                individual_passive_reference_time_steps_.size())
             continue;
         double& reference =
-            individual_passive_reference_time_steps_[canonical->second];
+            individual_passive_reference_time_steps_[Canonical];
         reference = std::min(reference, wake.second);
     }
     for(PendingPassiveTransfer const& transfer : passive_transfers) {
         if(transfer.applied_gain == 0 || transfer.passive >= cells.size())
             continue;
-        auto const canonical =
-            canonical_index_by_id.find(cells[transfer.passive].ID);
-        if(canonical == canonical_index_by_id.end() ||
-           canonical->second >=
+        std::size_t Canonical = 0;
+        if(!FindCanonical(cells[transfer.passive].ID, Canonical) ||
+           Canonical >=
                individual_passive_reference_time_steps_.size())
             continue;
         double& reference =
-            individual_passive_reference_time_steps_[canonical->second];
+            individual_passive_reference_time_steps_[Canonical];
         reference = std::min(reference, transfer.reference_time_step);
     }
     if(runtime_options.profile) {
@@ -8763,6 +9973,7 @@ bool RadiationDriver::stepIndividual(
     }
     cells.resize(saved_cells.size());
     extensives.resize(saved_extensives_size);
+    D2PostLap(&RadiationD2Totals::PostCommitSeconds);
     return true;
     }
     catch(std::exception const& error) {

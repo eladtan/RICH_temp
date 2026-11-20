@@ -1,9 +1,11 @@
 #ifndef INDIVIDUAL_TIME_STEP_HPP
 #define INDIVIDUAL_TIME_STEP_HPP
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <map>
 #include <utility>
 #include <unordered_map>
 #include <vector>
@@ -16,6 +18,14 @@
 
 class ComputationalCell3D;
 class Tessellation3D;
+
+// RICH_INDIVIDUAL_OVERDUE_ACTIVATION_NOMINAL (default on): a cell whose
+// scheduled interval ended at this event and lasted at least its bin's
+// length (it overran after a mid-interval bin lowering) counts as a nominal
+// completion, so it is a signal-wake source and forwards its pending
+// neighbour-bin request.  Read once per process; Simulation checks that every
+// rank agrees.
+bool IndividualOverdueActivationNominal();
 
 enum class TimeIntegrationMode
 {
@@ -95,6 +105,22 @@ struct IndividualAMRChangeSet
     std::vector<MergeTarget> merge_targets;
     // Rebuild work performed while producing this change set.
     MeshBuildTiming mesh_build_timing;
+
+    // Face neighbours of every owned cell on the mesh the AMR pass rebuilt, by stable ID with the owning rank, in the
+    // new canonical order (RICH_INDIVIDUAL_AMR_ADJACENCY_CAPTURE).  They replace the partial-build adjacency cache,
+    // whose records the pass made obsolete, survivors included.  Filled only when every rank passed the capture
+    // checks; AMR3D::GetLastChangeSet does not keep them.
+    struct AdjacencyEntry
+    {
+        std::size_t cell_id = 0;
+        std::vector<std::size_t> neighbor_ids;
+        std::vector<int> neighbor_owners;
+    };
+    std::vector<AdjacencyEntry> adjacency;
+    // 0 off, 1 captured and to be installed, 2 captured for timing only (not installed).
+    int adjacency_capture_mode = 0;
+    // This rank's seconds in the capture (checks included).
+    double adjacency_capture_seconds = 0;
 
     bool empty() const
     {
@@ -179,6 +205,16 @@ struct IndividualRadiationDefectAccounting
     bool history_complete = true;
 };
 
+// Final event-mesh targets of one individual event (RICH_INDIVIDUAL_ACTIVE_HILBERT_TARGET_PLAN): the hydro step
+// fills it when the event context points at one.  Targets holds the canonical indices of this rank's owned cells in
+// the event mesh, only when the event mesh was partial on some rank (MeshPartial, the same on every rank).
+struct IndividualEventTargetRecord
+{
+    bool Recorded = false;
+    bool MeshPartial = false;
+    std::vector<std::size_t> Targets;
+};
+
 struct IndividualStepContext
 {
     std::uint64_t previous_event_tick = 0;
@@ -224,6 +260,9 @@ struct IndividualStepContext
     // every transactional radiation check has passed.
     RadiationRepairAccounting* radiation_repair_accounting = nullptr;
     IndividualRadiationDefectAccounting* radiation_defect_accounting = nullptr;
+    // Set by Simulation only under RICH_INDIVIDUAL_ACTIVE_HILBERT_TARGET_PLAN: the hydro step records the event's
+    // final event-mesh targets here.  Null otherwise, and nothing is recorded.
+    IndividualEventTargetRecord* event_target_record = nullptr;
 
     bool isActive(std::size_t index) const;
     double cellTimeStep(std::size_t index) const;
@@ -475,11 +514,55 @@ private:
                                std::uint64_t event_tick,
                                double time_step_limit) const;
     void validateCells(const std::vector<ComputationalCell3D> &cells) const;
+    // Per-call closure diagnostics (RICH_D2_TIMERS, RICH_INDIVIDUAL_CLOSURE_SCAN=2); defined in the .cpp.
+    struct ClosureSplit;
+    // Dispatches a full closure by RICH_INDIVIDUAL_CLOSURE_FAST; everything else runs the reference.
     void limitNeighborBins(const Tessellation3D &tess,
                            const std::vector<ComputationalCell3D> &cells,
                            std::uint64_t event_tick,
                            const std::vector<std::uint8_t>& propagation_bins,
-                           bool full_closure);
+                           bool full_closure,
+                           ClosureSplit* Split = nullptr);
+    void LimitNeighborBinsReference(const Tessellation3D& tess, const std::vector<ComputationalCell3D>& cells,
+                                    std::uint64_t event_tick, const std::vector<std::uint8_t>& propagation_bins,
+                                    bool full_closure, ClosureSplit* Split);
+    // The full closure with the same requests, bins and collective outcome as the reference: neighbour lists built
+    // once per call, later iterations rescanning only targets next to a bin that changed, byte-sized bin exchanges
+    // after the first sync.  MPI builds only.
+    void LimitNeighborBinsFast(const Tessellation3D& Tess, const std::vector<ComputationalCell3D>& Cells,
+                               std::uint64_t EventTick, const std::vector<std::uint8_t>& PropagationBins,
+                               ClosureSplit* Split);
+    // RICH_INDIVIDUAL_CLOSURE_FAST=2: the fast closure on a copy, then the reference; aborts on any difference.
+    void VerifyFastNeighborClosure(const Tessellation3D& Tess, const std::vector<ComputationalCell3D>& Cells,
+                                   std::uint64_t EventTick, const std::vector<std::uint8_t>& PropagationBins,
+                                   ClosureSplit* Split);
+    // RICH_INDIVIDUAL_CLOSURE_SCAN: 1 when some rank holds an owned mesh point and a neighbour that the full closure
+    // would act on (a bin difference beyond the rule, or an entry it would report as an error).  Collective.
+    int ScanNeighborBinClosure(const Tessellation3D& Tess, double& ExchangeSeconds) const;
+    // Rank 0 prints one RICH_D2_CLOSURE line; collective (timer reductions).
+    void ReportClosure(char const* Path, int ScanMode, int ScanFlag, bool RanFull, ClosureSplit const& Split,
+                       double ScanSeconds, double ScanExchangeSeconds, double FullSeconds) const;
+
+    // RICH_INDIVIDUAL_SCHEDULER_COUNTS (0 off, 1 tracked, 2 tracked and checked against the scans).  The mode is
+    // agreed at the first commitEvent, which starts tracking with a full rebuild.  Every scheduler writer of a
+    // state's bin, end tick or change-wake flag updates the counts; external reorders (migration, domain growth)
+    // end in rebuildIndex, which rebuilds them.
+    int CountsMode = 0;
+    // Owned states per time bin.
+    std::array<std::uint64_t, 256> BinOccupancy{};
+    // Owned states per end tick; the first key is the local next event.
+    std::map<std::uint64_t, std::uint64_t> EndTickOccupancy;
+    // Indices of states with a pending conserved-change wake, in the order they were set.
+    std::vector<std::size_t> ChangeWakeIndices;
+    mutable std::uint64_t CountsChecks = 0;
+    std::uint64_t CountsCommits = 0;
+    void ActivateScheduleCounts(void);
+    void RebuildScheduleCounts(void);
+    // One state's bin or end tick changed from (OldBin, OldEnd) to its current values.
+    void NoteScheduleChange(std::uint8_t OldBin, std::uint64_t OldEnd, CellTimeState const& State);
+    // Mode 2: rebuild the counts from states_ and abort with one example when they differ from the tracked ones.
+    void VerifyScheduleCounts(char const* Where) const;
+    std::uint64_t ScannedNextEventTick(void) const;
 
     IndividualTimeStepOptions options_;
     bool initialized_ = false;

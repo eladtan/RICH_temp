@@ -1923,8 +1923,11 @@ void runChangeWakeFinalization(double const origin, double const quantum, bool c
     if(lower_after_commit)
     {
         // As AMR or the closure do after the commit: one cell now ends at 11.
-        if(rank == 0 && !far.empty())
+        if(rank == 0 && !far.empty()) {
             scheduler.states()[far.front()].end_tick = 11;
+            // A direct state edit bypasses the scheduler's per-bin counts (RICH_INDIVIDUAL_SCHEDULER_COUNTS=1).
+            scheduler.rebuildIndex(cells);
+        }
         expected = 11;
     }
     std::size_t recipient_id = 0;
@@ -2404,6 +2407,174 @@ void testBinSpreadCap()
             bad = bad || state.time_bin != ceiling;
         requireCollectively(bad == 0, "anchored initialization started above the bin-spread ceiling");
     }
+}
+
+// RICH_INDIVIDUAL_OVERDUE_ACTIVATION_NOMINAL (default on): a cell whose scheduled interval ends at this event and
+// lasted at least its bin's length (it overran after a mid-interval bin lowering) completes a nominal interval, so
+// commitEvent forwards its pending neighbour-bin request.  Rank 0's first cell (bin 3 = 8 ticks, pending neighbour
+// bin 1) is committed at tick 32; every other cell sits in bin 5 over [16, 48).  Three source intervals:
+//   overdue [16, 32), activated at its end, 16 >= 8 ticks: the request is forwarded and cleared, and exactly the
+//           source's face neighbours (one hop, on any rank) drop to bin 2 = 1 + 1, carrying request 2, with end 36
+//           (overdue, so the next bin-2 tick);
+//   short   [28, 32), activated at its end, 4 < 8 ticks: the request stays;
+//   forced  [16, 40), activated early at 32 by an all-active overlay: the request stays.
+// The source grows to bin 4 at the aligned tick 32, so the full closure after the restore lowers nothing and every
+// lowered cell comes from the forwarded request.  With the switch 0 the overdue case keeps its request and the test
+// fails.  Anchor bin 5: any bin-spread ceiling, 5 + K, leaves the bin-5 cells uncapped.
+void TestOverdueActivationNominal()
+{
+    bool const Switch = IndividualOverdueActivationNominal();
+    int Rank = 0;
+    std::vector<Vector3D> Points;
+    for(double const X : {0.1, 0.3, 0.5, 0.7, 0.9})
+        for(double const Y : {0.3, 0.7})
+            for(double const Z : {0.3, 0.7})
+                Points.emplace_back(X, Y, Z);
+    Voronoi3D Tess(Vector3D(0, 0, 0), Vector3D(1, 1, 1));
+#ifdef RICH_MPI
+    int RankCount = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &RankCount);
+    int SwitchExtrema[2] = {Switch ? 1 : 0, Switch ? -1 : 0};
+    MPI_Allreduce(MPI_IN_PLACE, SwitchExtrema, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    require(SwitchExtrema[0] == -SwitchExtrema[1], "RICH_INDIVIDUAL_OVERDUE_ACTIVATION_NOMINAL differs between ranks");
+    for(Vector3D& Point : Points)
+        Point.x = (Rank + Point.x) / RankCount;
+    Tess.BuildParallel(Points);
+    Points = Tess.getAllPoints();
+    std::vector<std::size_t> All(Points.size());
+    std::iota(All.begin(), All.end(), 0);
+    Tess.BuildPartiallyParallel(Points, std::vector<double>(Points.size(), 1.0), All, true, true);
+#else
+    Tess.Build(Points);
+#endif
+    std::vector<ComputationalCell3D> Cells(Points.size());
+    for(std::size_t Index = 0; Index < Cells.size(); ++Index)
+        Cells[Index].ID = 3300 + 100000 * static_cast<std::size_t>(Rank) + Index;
+
+    // One hop from the source: a cell whose owner's mesh shows the source as an in-box neighbour, or that the
+    // source's mesh shows as one.  limitNeighborBins honours both views, so their union is exact even for a lattice
+    // face that only one rank's tessellation resolves.  Ghost IDs come from SyncPartialBuildData.
+    Tessellation3D::AllPointsMap const& LocalToCanonical = Tess.GetIndicesInAllPoints();
+    std::size_t const OwnedCount = Tess.GetPointNo();
+    std::vector<ComputationalCell3D> MeshCells(OwnedCount);
+    for(std::size_t Local = 0; Local < OwnedCount; ++Local)
+        MeshCells[Local] = Cells.at(LocalToCanonical.at(Local));
+    std::vector<ComputationalCell3D> CanonicalCells = Cells;
+    Tess.SyncPartialBuildData(MeshCells, CanonicalCells);
+    std::size_t const MeshSize = Tess.getMeshPoints().size();
+    auto const InBoxNeighbourIds = [&](std::size_t const Local) {
+        std::vector<std::size_t> Neighbours;
+        Tess.GetNeighbors(Local, Neighbours);
+        std::vector<unsigned long long> Ids;
+        for(std::size_t const Neighbour : Neighbours)
+            if(Neighbour < MeshSize && !Tess.IsPointOutsideBox(Neighbour))
+                Ids.push_back(MeshCells.at(Neighbour).ID);
+        return Ids;
+    };
+    std::size_t const SourceIndex = 0;
+    bool const HasSource = Rank == 0 && !Cells.empty();
+    unsigned long long SourceId = HasSource ? Cells[SourceIndex].ID : 0;
+    std::vector<unsigned long long> SourceView;
+    int SourceFound = 0;
+    if(HasSource)
+        for(std::size_t Local = 0; Local < OwnedCount; ++Local)
+            if(LocalToCanonical.at(Local) == SourceIndex) {
+                ++SourceFound;
+                SourceView = InBoxNeighbourIds(Local);
+            }
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &SourceFound, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Bcast(&SourceId, 1, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+    int SourceViewSize = static_cast<int>(SourceView.size());
+    MPI_Bcast(&SourceViewSize, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    SourceView.resize(static_cast<std::size_t>(SourceViewSize));
+    MPI_Bcast(SourceView.data(), SourceViewSize, MPI_UNSIGNED_LONG_LONG, 0, MPI_COMM_WORLD);
+#endif
+    std::vector<char> Adjacent(Cells.size(), 0);
+    for(std::size_t Local = 0; Local < OwnedCount; ++Local) {
+        std::size_t const Index = LocalToCanonical.at(Local);
+        if(HasSource && Index == SourceIndex)
+            continue;
+        std::vector<unsigned long long> const Ids = InBoxNeighbourIds(Local);
+        bool const Hop = std::find(SourceView.begin(), SourceView.end(), Cells[Index].ID) != SourceView.end() ||
+            std::find(Ids.begin(), Ids.end(), SourceId) != Ids.end();
+        Adjacent.at(Index) = Hop ? 1 : 0;
+    }
+    int SourceNeighbours = static_cast<int>(std::count(Adjacent.begin(), Adjacent.end(), 1));
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &SourceNeighbours, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+#endif
+    requireCollectively(SourceFound == 1 && SourceNeighbours > 0,
+        "overdue-nominal test: no unique source cell with in-box neighbours");
+
+    std::uint8_t const NoPending = std::numeric_limits<std::uint8_t>::max();
+    IndividualTimeStepOptions Options;
+    Options.time_quantum = 1;
+    Options.initial_bin = 5;
+    Options.maximum_bin = 8;
+    // Cleared: the source's request was cleared.  Lowered: one-hop cells at bin 2 with request 2 and end 36.  Stray:
+    // any other cell that left bin 5 or carries a request.  Reduced over ranks.
+    struct OverdueCaseResult {
+        int Cleared = 0;
+        int Lowered = 0;
+        int Stray = 0;
+    };
+    auto const RunCase = [&](std::uint64_t const SourceBegin, std::uint64_t const SourceEnd, bool const Forced) {
+        std::vector<CellTimeState> States(Cells.size());
+        for(std::size_t Index = 0; Index < Cells.size(); ++Index) {
+            bool const Source = HasSource && Index == SourceIndex;
+            States[Index].cell_id = Cells[Index].ID;
+            States[Index].begin_tick = Source ? SourceBegin : 16;
+            States[Index].last_primitive_tick = States[Index].begin_tick;
+            States[Index].end_tick = Source ? SourceEnd : 48;
+            States[Index].time_bin = Source ? 3 : 5;
+            States[Index].pending_neighbor_bin = Source ? 1 : NoPending;
+        }
+        IndividualTimeStepScheduler Scheduler(Options);
+        Scheduler.restore(Cells, 0, 1, 28, States);
+        IndividualStepContext const Event = Scheduler.prepareEvent(Cells, 32, Forced);
+        std::vector<double> const Limits(Cells.size(), std::numeric_limits<double>::infinity());
+        Scheduler.commitEvent(Event, Tess, Cells, Limits);
+        OverdueCaseResult Result;
+        for(std::size_t Index = 0; Index < Cells.size(); ++Index) {
+            CellTimeState const& State = Scheduler.states()[Index];
+            bool const Lowered = State.time_bin == 2 && State.pending_neighbor_bin == 2 && State.end_tick == 36;
+            if(HasSource && Index == SourceIndex)
+                Result.Cleared = State.pending_neighbor_bin == NoPending ? 1 : 0;
+            else if(Lowered && Adjacent[Index] != 0)
+                ++Result.Lowered;
+            else if(State.time_bin != 5 || State.pending_neighbor_bin != NoPending)
+                Result.Stray = 1;
+        }
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &Result.Cleared, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &Result.Lowered, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &Result.Stray, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        return Result;
+    };
+    OverdueCaseResult const Overdue = RunCase(16, 32, false);
+    OverdueCaseResult const Short = RunCase(28, 32, false);
+    OverdueCaseResult const ForcedEarly = RunCase(16, 40, true);
+
+    auto const Forwarded = [](OverdueCaseResult const& Result) { return Result.Cleared != 0 || Result.Lowered > 0; };
+    bool const OverduePass = Overdue.Cleared == 1 && Overdue.Lowered == SourceNeighbours && Overdue.Stray == 0;
+    bool const ControlsPass = !Forwarded(Short) && Short.Stray == 0 && !Forwarded(ForcedEarly) &&
+        ForcedEarly.Stray == 0;
+    std::ostringstream Line;
+    Line << "OVERDUE_NOMINAL switch=" << (Switch ? 1 : 0) << " forwarded=" << (Forwarded(Overdue) ? 1 : 0)
+         << " request_cleared=" << Overdue.Cleared << " lowered=" << Overdue.Lowered
+         << " neighbours=" << SourceNeighbours << " stray=" << Overdue.Stray
+         << " short_forwarded=" << (Forwarded(Short) ? 1 : 0)
+         << " forced_forwarded=" << (Forwarded(ForcedEarly) ? 1 : 0)
+         << " control_stray=" << std::max(Short.Stray, ForcedEarly.Stray);
+    if(Rank == 0)
+        std::cout << Line.str() << " result=" << (OverduePass && ControlsPass ? "PASS" : "FAIL") << std::endl;
+    requireCollectively(OverduePass, "overdue activation (bin-3 cell over [16, 32) committed at 32) did not forward "
+        "its pending neighbour-bin request exactly one hop; " + Line.str());
+    requireCollectively(ControlsPass, "a short interval or a forced early activation forwarded its pending "
+        "neighbour-bin request; " + Line.str());
 }
 
 void testInactiveWakeAlignment()
@@ -9243,6 +9414,349 @@ void testGreyFractionalCandidateRefresh()
     require(changed, "grey fractional retry test produced no radiation update");
 }
 
+#ifdef RICH_MPI
+// Grey diffusion that records every PostCG commit.  For a commit of the reduced (distributed-active) path it also
+// counts the faces from an owned active cell to an active cell owned by another rank and measures how far the value
+// PostCG reads for that neighbour lies from the neighbour's start-of-event value (zero: PostCG used E^n).
+class RemoteActiveFaceProbeDiffusion final : public Diffusion {
+public:
+    RemoteActiveFaceProbeDiffusion(OpacityCalculator const& Opacity, DiffusionBoundaryCalculator const& Boundary,
+                                   EquationOfState const& Eos) :
+        Diffusion(Opacity, Boundary, Eos, std::vector<std::string>(), false, true, false, false) {}
+
+    mutable std::size_t ReducedCommits = 0;
+    mutable std::size_t OtherCommits = 0;
+    mutable std::size_t RemoteActiveFaces = 0;
+    mutable double MaxRemoteNeighborChange = 0;
+
+    void PostCG(Tessellation3D const& Tess, std::vector<Conserved3D>& Extensives, double Dt,
+                std::vector<ComputationalCell3D>& Cells, std::vector<double> const& FullSolution,
+                std::vector<double> const& Solution) const override {
+        // The reduced path commits with Dt = 0 while it holds the individual context; the all-active global path
+        // runs the ordinary step, which has no individual context.
+        if(individual_context_ == nullptr || Dt != 0) {
+            ++OtherCommits;
+            Diffusion::PostCG(Tess, Extensives, Dt, Cells, FullSolution, Solution);
+            return;
+        }
+        ++ReducedCommits;
+        std::size_t const Owned = Tess.GetPointNo();
+        std::vector<std::size_t> Neighbors;
+        for(std::size_t Cell = 0; Cell < Owned; ++Cell) {
+            if(!individualCellActive(Cell))
+                continue;
+            Tess.GetNeighbors(Cell, Neighbors);
+            for(std::size_t const Neighbor : Neighbors) {
+                if(Neighbor < Owned || Neighbor >= Cells.size() || Neighbor >= FullSolution.size() ||
+                   Tess.IsPointOutsideBox(Neighbor) || !individualCellActive(Neighbor))
+                    continue;
+                ++RemoteActiveFaces;
+                double const Start = Cells[Neighbor].Erad * Cells[Neighbor].density;
+                double const Change = std::abs(FullSolution[Neighbor] - Start) / Start;
+                MaxRemoteNeighborChange = std::max(MaxRemoteNeighborChange, Change);
+            }
+        }
+        Diffusion::PostCG(Tess, Extensives, Dt, Cells, FullSolution, Solution);
+    }
+};
+
+// Lattice of the remote-active-face case: 20 x-columns of 4 x 4 generators in the unit box.  Columns 7-12 are
+// active; x = 1/2 lies between columns 9 and 10.
+std::size_t constexpr RemoteFaceColumns = 20;
+std::size_t constexpr RemoteFaceRows = 4;
+std::size_t constexpr RemoteFaceCellsPerColumn = RemoteFaceRows * RemoteFaceRows;
+std::size_t constexpr RemoteFaceFirstActive = 7;
+std::size_t constexpr RemoteFaceLastActive = 12;
+std::size_t constexpr RemoteFaceRightColumn = 10;
+std::size_t constexpr RemoteFaceIdBase = 1060000;
+// Per active cell: ID, momentum change (3), internal-energy change, gas-energy change, Erad change, start Erad.
+std::size_t constexpr RemoteFaceRecordSize = 8;
+
+struct RemoteActiveFaceRun {
+    std::vector<double> Records;
+    unsigned long long ReducedCommitsMin = 0;
+    unsigned long long ReducedCommitsMax = 0;
+    unsigned long long OtherCommits = 0;
+    unsigned long long RemoteActiveFaces = 0;
+    double MaxRemoteNeighborChange = 0;
+};
+
+// RICH_INDIVIDUAL_RADIATION_REMOTE_ACTIVE_SCATTER as RadiationDriver parses it (default on).
+int RemoteActiveScatterSetting() {
+    char const* const Value = std::getenv("RICH_INDIVIDUAL_RADIATION_REMOTE_ACTIVE_SCATTER");
+    if(Value == nullptr || *Value == '\0')
+        return 1;
+    std::string const Text(Value);
+    return Text == "0" || Text == "false" || Text == "off" ? 0 : 1;
+}
+
+std::vector<double> GatherRemoteFaceRecords(std::vector<double> const& Local) {
+    int Rank = 0;
+    int RankCount = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &RankCount);
+    int const LocalCount = static_cast<int>(Local.size());
+    std::vector<int> Counts(static_cast<std::size_t>(RankCount), 0);
+    MPI_Gather(&LocalCount, 1, MPI_INT, Counts.data(), 1, MPI_INT, 0, MPI_COMM_WORLD);
+    std::vector<int> Offsets(Counts.size(), 0);
+    for(std::size_t Peer = 1; Peer < Counts.size(); ++Peer)
+        Offsets[Peer] = Offsets[Peer - 1] + Counts[Peer - 1];
+    std::vector<double> All(Rank == 0 ? static_cast<std::size_t>(Offsets.back() + Counts.back()) : 0);
+    MPI_Gatherv(Local.data(), LocalCount, MPI_DOUBLE, All.data(), Counts.data(), Offsets.data(), MPI_DOUBLE, 0,
+                MPI_COMM_WORLD);
+    return All;
+}
+
+// One decomposition of the remote-active-face case (column c on rank ColumnOwner[c]) and one partial grey event.
+// Returns the per-active-cell records gathered to rank 0 and the collective PostCG probe counts.
+RemoteActiveFaceRun RunRemoteActiveFaceDecomposition(std::vector<int> const& ColumnOwner) {
+    int Rank = 0;
+    MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+    std::vector<Vector3D> Points;
+    std::vector<std::size_t> Lattice;
+    double const Columns = static_cast<double>(RemoteFaceColumns);
+    double const Rows = static_cast<double>(RemoteFaceRows);
+    for(std::size_t Column = 0; Column < RemoteFaceColumns; ++Column) {
+        if(ColumnOwner[Column] != Rank)
+            continue;
+        for(std::size_t Row = 0; Row < RemoteFaceCellsPerColumn; ++Row) {
+            double const Y = (static_cast<double>(Row / RemoteFaceRows) + 0.5) / Rows;
+            double const Z = (static_cast<double>(Row % RemoteFaceRows) + 0.5) / Rows;
+            Points.emplace_back((static_cast<double>(Column) + 0.5) / Columns, Y, Z);
+            Lattice.push_back(Column * RemoteFaceCellsPerColumn + Row);
+        }
+    }
+    // The first build sets up the domain decomposition and may move points between ranks; the second, with
+    // rebalancing and exchange suppressed, keeps every point on the rank chosen above.
+    Voronoi3D Tess(Vector3D(0, 0, 0), Vector3D(1, 1, 1));
+    Tess.BuildParallel(Points);
+    Tess.BuildParallel(Points, true, true);
+    requireCollectively(Tess.GetPointNo() == Points.size(), "remote active face test: the fixed build moved points");
+    ActiveMeshView const View(Tess, Points.size());
+
+    // Radiation in equilibrium with the gas in every cell, four times more energy left of x = 1/2 (T = 1e5 K on the
+    // right), and gas moving at 1e-3 c along x.  The gas is light, so one event changes its momentum by ~1e-4 and
+    // the change is resolved far below the tolerance.  D Dt / dx^2 = 1/4: the cells beside x = 1/2 change their
+    // radiation energy by tens of percent.  Planck and Rosseland opacities are both 50 / cm.
+    IdealGas Eos(5.0 / 3.0, 1.5, 1.0, 0.0);
+    double const Density = 1e-8;
+    double const RightEnergy = CG::radiation_constant * 1e20;
+    double const DiffusionCoefficient = 2e8;
+    double const Dt = 0.25 / (Columns * Columns * DiffusionCoefficient);
+    Vector3D const Velocity(1e-3 * CG::speed_of_light, 0, 0);
+    std::vector<ComputationalCell3D> Cells(Points.size());
+    std::vector<Conserved3D> Extensives(Points.size());
+    for(std::size_t Global = 0; Global < Points.size(); ++Global) {
+        ComputationalCell3D& Cell = Cells[Global];
+        bool const Left = Lattice[Global] / RemoteFaceCellsPerColumn < RemoteFaceRightColumn;
+        double const Energy = (Left ? 4 : 1) * RightEnergy;
+        Cell.ID = RemoteFaceIdBase + Lattice[Global];
+        Cell.density = Density;
+        Cell.velocity = Velocity;
+        Cell.temperature = std::pow(Energy / CG::radiation_constant, 0.25);
+        Cell.internal_energy = Eos.dT2e(Cell.density, Cell.temperature, Cell.tracers, ComputationalCell3D::tracerNames);
+        Cell.pressure = Eos.de2p(Cell.density, Cell.internal_energy, Cell.tracers, ComputationalCell3D::tracerNames);
+        Cell.Erad = Energy / Cell.density;
+        PrimitiveToConserved(Cell, Tess.GetVolume(View.globalToLocal(Global)), Extensives[Global]);
+    }
+    std::vector<Conserved3D> const Initial = Extensives;
+
+    IndividualRadiationDefectAccounting Accounting;
+    IndividualStepContext Context;
+    Context.previous_event_tick = 0;
+    Context.event_tick = 1;
+    Context.previous_event_time = 0;
+    Context.event_time = Dt;
+    Context.time_quantum = Dt;
+    Context.mesh_build_policy = IndividualMeshBuildPolicy::FullReference;
+    Context.active_mask.assign(Points.size(), 0);
+    Context.cell_time_steps.assign(Points.size(), Dt);
+    Context.primitive_ticks.assign(Points.size(), 0);
+    Context.radiation_defect_accounting = &Accounting;
+    for(std::size_t Global = 0; Global < Points.size(); ++Global) {
+        std::size_t const Column = Lattice[Global] / RemoteFaceCellsPerColumn;
+        if(Column >= RemoteFaceFirstActive && Column <= RemoteFaceLastActive) {
+            Context.active_mask[Global] = 1;
+            Context.active_indices.push_back(Global);
+        }
+    }
+
+    PowerLawOpacity Opacity(DiffusionCoefficient, 0, 0, 50, 0, 0);
+    DiffusionClosedBox Boundary;
+    RemoteActiveFaceProbeDiffusion Driver(Opacity, Boundary, Eos);
+    ProgressTracker Tracker;
+    RadiationStep Step(Tess, Cells, Extensives, Tracker, nullptr, Driver, false);
+    std::string Failure;
+    try {
+        Step.stepIndividual(Context);
+    }
+    catch(UniversalError const& Error) {
+        Failure = "UniversalError: " + Error.getErrorMessage();
+    }
+    catch(std::exception const& Error) {
+        Failure = std::string("exception: ") + Error.what();
+    }
+    catch(...) {
+        Failure = "unknown exception";
+    }
+    requireCollectively(Failure.empty(), "remote active face test: the radiation event threw on a rank: " + Failure);
+
+    std::vector<double> Local;
+    for(std::size_t const Global : Context.active_indices) {
+        Conserved3D const& Before = Initial[Global];
+        Conserved3D const& After = Extensives[Global];
+        Vector3D const Impulse = After.momentum - Before.momentum;
+        Local.insert(Local.end(), {static_cast<double>(RemoteFaceIdBase + Lattice[Global]), Impulse.x, Impulse.y,
+            Impulse.z, After.internal_energy - Before.internal_energy, After.energy - Before.energy,
+            After.Erad - Before.Erad, Before.Erad});
+    }
+    RemoteActiveFaceRun Run;
+    Run.Records = GatherRemoteFaceRecords(Local);
+    Run.ReducedCommitsMin = Driver.ReducedCommits;
+    Run.ReducedCommitsMax = Driver.ReducedCommits;
+    Run.OtherCommits = Driver.OtherCommits;
+    Run.RemoteActiveFaces = Driver.RemoteActiveFaces;
+    Run.MaxRemoteNeighborChange = Driver.MaxRemoteNeighborChange;
+    MPI_Allreduce(MPI_IN_PLACE, &Run.ReducedCommitsMin, 1, MPI_UNSIGNED_LONG_LONG, MPI_MIN, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &Run.ReducedCommitsMax, 1, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &Run.OtherCommits, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &Run.RemoteActiveFaces, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &Run.MaxRemoteNeighborChange, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+    return Run;
+}
+
+// C1 (docs/fixes/individual-timesteps-phase0-2026-11-18/impl_rad.md): in the reduced (distributed-active) radiation
+// path, PostCG must read the solved value of an active face neighbour owned by another rank, not its start value.
+// One partial grey event with moving gas runs on two decompositions of the same lattice: A keeps the active band and
+// its passive neighbours on rank 0, so no active face crosses ranks; B cuts the band with a rank face at x = 1/2.
+// The changes of momentum (radiation force), internal energy, gas energy and radiation energy of every active cell
+// must agree between A and B by stable ID.  RICH_INDIVIDUAL_RADIATION_REMOTE_ACTIVE_SCATTER=0 restores the stale
+// remote values; the test then fails on the cells beside x = 1/2 and prints the measured difference.
+void testRemoteActiveFacePostCGMPI() {
+    int Rank = 0;
+    int RankCount = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &RankCount);
+    require(RankCount >= 2, "remote active face test requires at least two ranks");
+    if(RankCount > 7) {
+        if(Rank == 0)
+            std::cout << "REMOTE_ACTIVE_FACE skipped: needs 2-7 ranks, have " << RankCount << std::endl;
+        return;
+    }
+    int const Switch = RemoteActiveScatterSetting();
+    double const Tolerance = 1e-8;
+
+    // A: columns 0-13 on rank 0, columns 14-19 shared by the other ranks.  B: x-slabs, with ranks 0..R/2-1 left of
+    // x = 1/2 and the rest right of it.
+    std::vector<int> OwnerA(RemoteFaceColumns, 0);
+    std::vector<int> OwnerB(RemoteFaceColumns, 0);
+    std::size_t const Others = static_cast<std::size_t>(RankCount - 1);
+    std::size_t const LeftRanks = static_cast<std::size_t>(RankCount / 2);
+    std::size_t const RightRanks = static_cast<std::size_t>(RankCount) - LeftRanks;
+    std::size_t const Half = RemoteFaceRightColumn;
+    for(std::size_t Column = 0; Column < RemoteFaceColumns; ++Column) {
+        OwnerA[Column] = Column < 14 ? 0 : 1 + static_cast<int>((Column - 14) * Others / 6);
+        OwnerB[Column] = static_cast<int>(Column < Half ? Column * LeftRanks / Half :
+            LeftRanks + (Column - Half) * RightRanks / (RemoteFaceColumns - Half));
+    }
+    RemoteActiveFaceRun const RunA = RunRemoteActiveFaceDecomposition(OwnerA);
+    RemoteActiveFaceRun const RunB = RunRemoteActiveFaceDecomposition(OwnerB);
+
+    // Both runs must commit exactly one reduced candidate on every rank (a partial event never takes the global
+    // all-active path), and only B may have active faces across ranks.
+    require(RunA.ReducedCommitsMin == 1 && RunA.ReducedCommitsMax == 1 && RunA.OtherCommits == 0 &&
+            RunB.ReducedCommitsMin == 1 && RunB.ReducedCommitsMax == 1 && RunB.OtherCommits == 0,
+            "remote active face test did not run one reduced distributed-active candidate per decomposition");
+    require(RunA.RemoteActiveFaces == 0, "remote active face test: decomposition A has an active face across ranks");
+    require(RunB.RemoteActiveFaces > 0, "remote active face test: decomposition B has no active face across ranks");
+
+    int Verdict = 0;
+    std::string Message;
+    if(Rank == 0) {
+        using Record = std::array<double, RemoteFaceRecordSize>;
+        auto const RecordsById = [](std::vector<double> const& Records) {
+            std::map<std::size_t, Record> Result;
+            std::size_t const Size = RemoteFaceRecordSize;
+            for(std::size_t Offset = 0; Offset + Size <= Records.size(); Offset += Size) {
+                Record Entry;
+                std::copy(Records.begin() + static_cast<std::ptrdiff_t>(Offset),
+                          Records.begin() + static_cast<std::ptrdiff_t>(Offset + Size), Entry.begin());
+                Result.emplace(static_cast<std::size_t>(Entry[0]), Entry);
+            }
+            return Result;
+        };
+        auto const BesideRankFace = [](std::size_t const Id) {
+            std::size_t const Column = (Id - RemoteFaceIdBase) / RemoteFaceCellsPerColumn;
+            return Column + 1 == RemoteFaceRightColumn || Column == RemoteFaceRightColumn;
+        };
+        std::map<std::size_t, Record> const RecordsA = RecordsById(RunA.Records);
+        std::map<std::size_t, Record> const RecordsB = RecordsById(RunB.Records);
+        std::size_t const ActiveCells = (RemoteFaceLastActive - RemoteFaceFirstActive + 1) * RemoteFaceCellsPerColumn;
+        bool SameCells = RecordsA.size() == ActiveCells && RecordsB.size() == ActiveCells;
+
+        // Scales: the largest change in A of each quantity.  The cells beside x = 1/2 must change their radiation
+        // energy by at least 1%, or the comparison has lost its sensitivity.
+        double ScaleImpulse = 0, ScaleInternal = 0, ScaleGas = 0, ScaleRadiation = 0, FaceRadiationChange = 0;
+        for(auto const& Entry : RecordsA) {
+            Record const& Values = Entry.second;
+            ScaleImpulse = std::max(ScaleImpulse, abs(Vector3D(Values[1], Values[2], Values[3])));
+            ScaleInternal = std::max(ScaleInternal, std::abs(Values[4]));
+            ScaleGas = std::max(ScaleGas, std::abs(Values[5]));
+            ScaleRadiation = std::max(ScaleRadiation, std::abs(Values[6]));
+            if(BesideRankFace(Entry.first))
+                FaceRadiationChange = std::max(FaceRadiationChange, std::abs(Values[6]) / Values[7]);
+        }
+        bool const Sensitive = ScaleImpulse > 0 && ScaleInternal > 0 && ScaleGas > 0 && ScaleRadiation > 0 &&
+            FaceRadiationChange >= 1e-2;
+
+        double ImpulseFace = 0, ImpulseOther = 0, Internal = 0, Gas = 0, Radiation = 0;
+        for(auto const& Entry : RecordsA) {
+            auto const Match = RecordsB.find(Entry.first);
+            if(Match == RecordsB.end() || !Sensitive) {
+                SameCells = SameCells && Match != RecordsB.end();
+                continue;
+            }
+            Record const& ValuesA = Entry.second;
+            Record const& ValuesB = Match->second;
+            Vector3D const ImpulseDifference(ValuesB[1] - ValuesA[1], ValuesB[2] - ValuesA[2], ValuesB[3] - ValuesA[3]);
+            double& ImpulseSlot = BesideRankFace(Entry.first) ? ImpulseFace : ImpulseOther;
+            ImpulseSlot = std::max(ImpulseSlot, abs(ImpulseDifference) / ScaleImpulse);
+            Internal = std::max(Internal, std::abs(ValuesB[4] - ValuesA[4]) / ScaleInternal);
+            Gas = std::max(Gas, std::abs(ValuesB[5] - ValuesA[5]) / ScaleGas);
+            Radiation = std::max(Radiation, std::abs(ValuesB[6] - ValuesA[6]) / ScaleRadiation);
+        }
+        double const MaxRelDiff = std::max({ImpulseFace, ImpulseOther, Internal, Gas, Radiation});
+
+        std::ostringstream Line;
+        Line.precision(3);
+        Line << std::scientific << "REMOTE_ACTIVE_FACE switch=" << Switch << " max_rel_diff=" << MaxRelDiff
+             << " tolerance=" << Tolerance << " momentum_beside_rank_face=" << ImpulseFace
+             << " momentum_elsewhere=" << ImpulseOther << " internal_energy=" << Internal << " gas_energy=" << Gas
+             << " radiation_energy=" << Radiation << " face_radiation_change=" << FaceRadiationChange
+             << " remote_active_faces_B=" << RunB.RemoteActiveFaces
+             << " postcg_remote_neighbor_change_B=" << RunB.MaxRemoteNeighborChange
+             << " active_cells=" << RecordsA.size() << "/" << RecordsB.size();
+        if(!SameCells) {
+            Verdict = 2;
+            Message = "remote active face test: decompositions A and B have different active cells; " + Line.str();
+        }
+        else if(!Sensitive) {
+            Verdict = 2;
+            Message = "remote active face test lost its sensitivity (no change, or the cells beside x = 1/2 changed "
+                "their radiation energy by less than 1%); " + Line.str();
+        }
+        else if(!(MaxRelDiff <= Tolerance)) {
+            Verdict = 1;
+            Message = "remote active face: decompositions A (no active face across ranks) and B (rank face inside the "
+                "active band) disagree by more than the tolerance; " + Line.str();
+        }
+        std::cout << Line.str() << " result=" << (Verdict == 0 ? "PASS" : "FAIL") << std::endl;
+    }
+    MPI_Bcast(&Verdict, 1, MPI_INT, 0, MPI_COMM_WORLD);
+    require(Verdict == 0, Rank == 0 ? Message : std::string("remote active face test failed (details on rank 0)"));
+}
+#endif
+
 } // namespace
 
 int main(int argc, char** argv)
@@ -9290,8 +9804,28 @@ int main(int argc, char** argv)
     {
         char const* const active_hilbert_compatibility_test =
             std::getenv("RICH_TEST_ACTIVE_HILBERT_COMPATIBILITY");
+#ifdef RICH_MPI
+        // RICH_TEST_REMOTE_ACTIVE_FACE_ONLY=1 runs only testRemoteActiveFacePostCGMPI (agreed across ranks).
+        int RemoteActiveFaceOnly = std::getenv("RICH_TEST_REMOTE_ACTIVE_FACE_ONLY") != nullptr ? 1 : 0;
+        MPI_Allreduce(MPI_IN_PLACE, &RemoteActiveFaceOnly, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        // RICH_TEST_OVERDUE_NOMINAL_ONLY=1 runs only TestOverdueActivationNominal (agreed across ranks).
+        int OverdueNominalOnly = std::getenv("RICH_TEST_OVERDUE_NOMINAL_ONLY") != nullptr ? 1 : 0;
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &OverdueNominalOnly, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
         if(active_hilbert_compatibility_test != nullptr)
             testActiveHilbertSelectorCompatibility();
+#ifdef RICH_MPI
+        else if(RemoteActiveFaceOnly != 0) {
+            TEST_MARKER("remote_active_face_postcg");
+            testRemoteActiveFacePostCGMPI();
+        }
+#endif
+        else if(OverdueNominalOnly != 0) {
+            TEST_MARKER("overdue_nominal");
+            TestOverdueActivationNominal();
+        }
         else
         {
             testHistoricalFinalCorrectionGate();
@@ -9320,6 +9854,8 @@ int main(int argc, char** argv)
 				testChangeWakeSpacingReference();
 				testBinSpreadCap();
 				testRestoreBinSpreadCap();
+            TEST_MARKER("overdue_nominal");
+            TestOverdueActivationNominal();
 				testRemoteNeighborBinClosureMPI();
 				testClosureReexpandPromotionMPI();
 				testCompetingRemoteBinRequestsMPI();
@@ -9342,6 +9878,8 @@ int main(int argc, char** argv)
             testIndividualRadiationEntryProbeRealSolver();
             TEST_MARKER("grey_fractional_candidate_refresh");
             testGreyFractionalCandidateRefresh();
+            TEST_MARKER("remote_active_face_postcg");
+            testRemoteActiveFacePostCGMPI();
             TEST_MARKER("all_done");
 #else
             testSchedulerAndAMR();
@@ -9353,6 +9891,7 @@ int main(int argc, char** argv)
             testChangeWakeSpacingReference();
             testBinSpreadCap();
             testRestoreBinSpreadCap();
+            TestOverdueActivationNominal();
             testInactiveWakeAlignment();
             testHydroWakeFaceIntervals();
             testForcedAllActiveEventOverlay();

@@ -55,6 +55,9 @@ private:
 #endif
     mutable std::vector<Vector3D> points_;
     mutable std::vector<double> masses_;
+    // Open-addressing slots of EvaluateIndividualTargets' source-position
+    // lookup, kept to reuse the allocation.
+    mutable std::vector<std::size_t> SourceSlots_;
 #ifdef RICH_MPI
     mutable std::vector<std::uint64_t> cellIds_;
     mutable std::vector<unsigned char> targetMask_;

@@ -36,7 +36,10 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
+#include <cstring>
 #include <fenv.h>
+#include <map>
+#include <utility>
 #include <filesystem>
 namespace fs = std::filesystem;
 #include <fstream>
@@ -1159,12 +1162,105 @@ namespace
 		}
 	}
 
+    double TdeD2Now(void) {
+#ifdef RICH_MPI
+        return MPI_Wtime();
+#else
+        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+#endif
+    }
+
+    bool TdeSameBits(double A, double B) {
+        return std::memcmp(&A, &B, sizeof(double)) == 0;
+    }
+
+    // RemoveBig and MassRefine both need every cell's volume (owned, then the exchanged ghosts) and the rho_x
+    // maximum.  AMR3D::Apply calls RemoveBig first and MassRefine next, with only const uses of the mesh and the
+    // cells in between, so under RICH_TDE_AMR_SHARED_VOLUMES (B6) RemoveBig leaves both here for MassRefine:
+    //   0  each criterion computes them (default);
+    //   1  MassRefine takes RemoveBig's (one GetAllVolumes, one exchange and one reduction fewer per pass);
+    //   2  MassRefine computes its own, uses them, and compares RemoveBig's bit for bit (aborts on a mismatch).
+    // The seconds fields hold the criteria sub-stages of the current AMR pass under RICH_D2_TIMERS=1.
+    struct TdeAmrSharedCriteria {
+        int Mode = 0;
+        bool Timers = false;
+        bool Valid = false;
+        Tessellation3D const* Tess = nullptr;
+        size_t Norg = 0;
+        size_t CellCount = 0;
+        double Time = 0;
+        std::vector<double> Volumes;
+        double RhoX = 0;
+        double RemoveVolumeSeconds = 0;
+        double RemoveReductionSeconds = 0;
+        double RefineVolumeSeconds = 0;
+        double RefineReductionSeconds = 0;
+    };
+
+    // RICH_TDE_AMR_SHARED_VOLUMES=2: compares MassRefine's own volumes and rho_x with RemoveBig's bit for bit.  Rank 0
+    // prints one RICH_TDE_AMR_SHARED_VOLUMES line; on a mismatch the lowest rank holding one prints its first example
+    // and every rank throws.  Collective.
+    void VerifyTdeSharedCriteria(TdeAmrSharedCriteria const& Shared, std::vector<double> const& Volumes, double RhoX,
+        double Time) {
+        unsigned long long Mismatches = TdeSameBits(Shared.RhoX, RhoX) ? 0 : 1;
+        size_t FirstIndex = Volumes.size();
+        if(Shared.Volumes.size() != Volumes.size()) {
+            ++Mismatches;
+            FirstIndex = std::min(Shared.Volumes.size(), Volumes.size());
+        }
+        else {
+            for(size_t Index = 0; Index < Volumes.size(); ++Index) {
+                if(TdeSameBits(Shared.Volumes[Index], Volumes[Index]))
+                    continue;
+                if(FirstIndex == Volumes.size())
+                    FirstIndex = Index;
+                ++Mismatches;
+            }
+        }
+        int Rank = 0;
+        unsigned long long Totals[2] = {Mismatches, static_cast<unsigned long long>(Volumes.size())};
+        int FirstRank = Mismatches > 0 ? 0 : 1;
+#ifdef RICH_MPI
+        int Ranks = 1;
+        MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &Ranks);
+        FirstRank = Mismatches > 0 ? Rank : Ranks;
+        MPI_Allreduce(MPI_IN_PLACE, Totals, 2, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &FirstRank, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+#endif
+        if(Rank == 0)
+            std::cout << std::setprecision(12) << "RICH_TDE_AMR_SHARED_VOLUMES mode=2 time=" << Time << " volumes="
+                << Totals[1] << " mismatches=" << Totals[0] << " rho_x_match="
+                << (TdeSameBits(Shared.RhoX, RhoX) ? 1 : 0) << std::endl;
+        if(Totals[0] == 0)
+            return;
+        if(Rank == FirstRank) {
+            std::ostringstream Example;
+            Example << std::setprecision(17) << "RICH_TDE_AMR_SHARED_VOLUMES mismatch rank=" << Rank
+                << " local_mismatches=" << Mismatches << " rho_x_shared=" << Shared.RhoX << " rho_x_own=" << RhoX
+                << " shared_size=" << Shared.Volumes.size() << " own_size=" << Volumes.size() << " index="
+                << FirstIndex;
+            if(FirstIndex < Volumes.size() && FirstIndex < Shared.Volumes.size())
+                Example << " volume_shared=" << Shared.Volumes[FirstIndex] << " volume_own=" << Volumes[FirstIndex];
+            std::cerr << Example.str() << std::endl;
+        }
+#ifdef RICH_MPI
+        MPI_Barrier(MPI_COMM_WORLD);
+#endif
+        throw std::logic_error("RICH_TDE_AMR_SHARED_VOLUMES=2: MassRefine's volumes or rho_x differ from RemoveBig's");
+    }
+
 	class MassRefine : public CellsToRefine3D
 	{
 	private:
 		double domain_size_, Mbh_, Mstar_, Rstar_, beta_;
+        TdeAmrSharedCriteria* SharedCriteria = nullptr;
 
 	public:
+        void SetSharedCriteria(TdeAmrSharedCriteria* Shared) {
+            SharedCriteria = Shared;
+        }
+
 		void SetSize(double s)
 		{
 			domain_size_ = s;
@@ -1191,22 +1287,53 @@ namespace
 			min_cell_size *= std::pow(4.0, 0.33333);
 #endif
 			std::vector<size_t> neigh;
-			std::vector<double> volumes = tess.GetAllVolumes();
+            // B6: take RemoveBig's volumes and rho_x in mode 1, compute them as before otherwise.  Valid is set by
+            // RemoveBig earlier in the same AMR pass on every rank, so the branch is the same on every rank.
+            int const SharedMode = SharedCriteria != nullptr ? SharedCriteria->Mode : 0;
+            bool const D2Timers = SharedCriteria != nullptr && SharedCriteria->Timers;
+            bool const SharedValid = SharedMode != 0 && SharedCriteria->Valid;
+            if(SharedValid && (SharedCriteria->Tess != &tess || SharedCriteria->Norg != Norg ||
+                SharedCriteria->CellCount != cells.size() || SharedCriteria->Time != time))
+                throw std::logic_error("RICH_TDE_AMR_SHARED_VOLUMES: RemoveBig's volumes belong to another mesh");
+            bool const TakeShared = SharedMode == 1 && SharedValid;
+            double const D2VolumeStart = D2Timers ? TdeD2Now() : 0;
+            std::vector<double> volumes;
+            if(TakeShared)
+                volumes.swap(SharedCriteria->Volumes);
+            else {
+                volumes = tess.GetAllVolumes();
 #ifdef RICH_MPI
-			MPI_exchange_data(tess, volumes, true);
+                MPI_exchange_data(tess, volumes, true);
 #endif
+            }
+            if(D2Timers) {
+                SharedCriteria->RefineVolumeSeconds += TdeD2Now() - D2VolumeStart;
+            }
 			double const apocenter = Rstar_ * std::pow(Mbh_ / Mstar_, 2.0 / 3.0);
 			double rho_s = Mstar_ / (apocenter * apocenter * 10);
 			double rho_x = rho_s * 1e-6;
 			double target_volume = 4 * M_PI * std::pow(min_cell_size * 2, 3.0) / 3;
-			for (size_t i = 0; i < Norg; ++i)
-			{
-				if(tess.GetMeshPoint(i).x > 0.85 * Rt && cells[i].velocity.x > 0 && cells[i].temperature < 1e7)
-					rho_x = std::max(rho_x, cells[i].density);
-			}
+            double const D2ReductionStart = D2Timers ? TdeD2Now() : 0;
+            if(TakeShared)
+                rho_x = SharedCriteria->RhoX;
+            else {
+                for (size_t i = 0; i < Norg; ++i) {
+                    if(tess.GetMeshPoint(i).x > 0.85 * Rt && cells[i].velocity.x > 0 && cells[i].temperature < 1e7)
+                        rho_x = std::max(rho_x, cells[i].density);
+                }
 #ifdef RICH_MPI
-			MPI_Allreduce(MPI_IN_PLACE, &rho_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+                MPI_Allreduce(MPI_IN_PLACE, &rho_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif
+            }
+            if(D2Timers) {
+                SharedCriteria->RefineReductionSeconds += TdeD2Now() - D2ReductionStart;
+            }
+            if(SharedMode == 2 && SharedValid)
+                VerifyTdeSharedCriteria(*SharedCriteria, volumes, rho_x, time);
+            if(SharedMode != 0) {
+                SharedCriteria->Valid = false;
+                std::vector<double>().swap(SharedCriteria->Volumes);
+            }
 			double min_low_density_volume = std::min(8000.0, std::max(2000.0, 2000.0 * (rho_x / (rho_s * 5e-4))));
 			double min_density_factor = min_low_density_volume / 2000.0;
 			if(rank == 0)
@@ -1288,8 +1415,13 @@ namespace
 	private:
 		double domain_size_, Mbh_, Mstar_, Rstar_, beta_;
 		OndrejEOS const &eos_;
+        TdeAmrSharedCriteria* SharedCriteria = nullptr;
 
 	public:
+        void SetSharedCriteria(TdeAmrSharedCriteria* Shared) {
+            SharedCriteria = Shared;
+        }
+
 		void SetSize(double s)
 		{
 			domain_size_ = s;
@@ -1306,10 +1438,15 @@ namespace
 			vector<double> merits;
 			vector<size_t> neigh;
 			size_t Norg = tess.GetPointNo();
+            bool const D2Timers = SharedCriteria != nullptr && SharedCriteria->Timers;
+            double const D2VolumeStart = D2Timers ? TdeD2Now() : 0;
 			std::vector<double> volumes = tess.GetAllVolumes();
 #ifdef RICH_MPI
 			MPI_exchange_data(tess, volumes, true);
 #endif
+            if(D2Timers) {
+                SharedCriteria->RemoveVolumeSeconds += TdeD2Now() - D2VolumeStart;
+            }
 			double const apocenter = Rstar_ * std::pow(Mbh_ / Mstar_, 2.0 / 3.0);
 			double const Rt = Rstar_ * std::pow(Mbh_ / Mstar_, 1.0 / 3.0) / beta_;
 			double const smooth = Rt * smooth_factor / beta_;
@@ -1324,6 +1461,7 @@ namespace
 			min_cell_size *= std::pow(4.0, 0.33333);
 #endif
 			double target_volume = 4 * M_PI * std::pow(1.2 * min_cell_size, 3.0) / 3;
+            double const D2ReductionStart = D2Timers ? TdeD2Now() : 0;
 			for (size_t i = 0; i < Norg; ++i)
 			{
 				if(tess.GetMeshPoint(i).x > Rt * 0.85 && cells[i].velocity.x > 0 && cells[i].temperature < 1e7)
@@ -1332,6 +1470,9 @@ namespace
 #ifdef RICH_MPI
 			MPI_Allreduce(MPI_IN_PLACE, &rho_x, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #endif
+            if(D2Timers) {
+                SharedCriteria->RemoveReductionSeconds += TdeD2Now() - D2ReductionStart;
+            }
 			double min_low_density_volume = std::min(2000.0, std::max(500.0, 500.0 * (rho_x / (rho_s * 5e-4))));
 			double min_density_factor = min_low_density_volume / 500.0;
 			for (size_t i = 0; i < Norg; ++i)
@@ -1403,6 +1544,16 @@ namespace
 					merits.push_back(1.0 / Vol);
 				}
 			}
+            // B6: leave the volumes (no longer needed here) and rho_x for MassRefine, next in this AMR pass.
+            if(SharedCriteria != nullptr && SharedCriteria->Mode != 0) {
+                SharedCriteria->Volumes.swap(volumes);
+                SharedCriteria->RhoX = rho_x;
+                SharedCriteria->Tess = &tess;
+                SharedCriteria->Norg = Norg;
+                SharedCriteria->CellCount = cells.size();
+                SharedCriteria->Time = time;
+                SharedCriteria->Valid = true;
+            }
 			return std::pair<vector<size_t>, vector<double>>(res, merits);
 		}
 	};
@@ -2189,6 +2340,34 @@ int main(int argc, char* argv[])
 	double newvol2 = (box2.second.x - box2.first.x) * (box2.second.y - box2.first.y) * (box2.second.z - box2.first.z);
 	refine.SetSize(newvol2);
 	remove.SetSize(newvol2);
+    // RICH_TDE_AMR_SHARED_VOLUMES (0, 1 or 2; see TdeAmrSharedCriteria) and RICH_D2_TIMERS (0 or 1; AMR3D parses
+    // it): parsed here, where every rank is, and agreed across ranks.
+    TdeAmrSharedCriteria AmrSharedCriteria;
+    {
+        char const* const Configured = std::getenv("RICH_TDE_AMR_SHARED_VOLUMES");
+        std::string const Value = Configured == nullptr ? std::string() : std::string(Configured);
+        RequireOnEveryRank(Value.empty() || Value == "0" || Value == "1" || Value == "2",
+            "RICH_TDE_AMR_SHARED_VOLUMES must be 0, 1 or 2");
+        int Extremes[2] = {Value.empty() ? 0 : Value[0] - '0', 0};
+        Extremes[1] = -Extremes[0];
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, Extremes, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        RequireOnEveryRank(Extremes[0] == -Extremes[1], "RICH_TDE_AMR_SHARED_VOLUMES differs across MPI ranks");
+        AmrSharedCriteria.Mode = Extremes[0];
+        AmrSharedCriteria.Timers = AMR3D::D2TimersEnabled();
+        if(rank == 0 && (AmrSharedCriteria.Mode != 0 || AmrSharedCriteria.Timers))
+            std::cout << "RICH_TDE_AMR_SHARED_VOLUMES mode=" << AmrSharedCriteria.Mode << " RICH_D2_TIMERS="
+                << (AmrSharedCriteria.Timers ? 1 : 0) << std::endl;
+    }
+    remove.SetSharedCriteria(&AmrSharedCriteria);
+    refine.SetSharedCriteria(&AmrSharedCriteria);
+    bool const TdeD2Timers = AmrSharedCriteria.Timers;
+    // RICH_D2_TIMERS=1, replicated: seconds in the AMR callbacks since the last RICH_D2_AMR line, and the events at
+    // which a full pass was due but waited for an all-active event (count since the last full pass, first time).
+    double D2CallbackSeconds = 0;
+    unsigned long long D2DueWaitEvents = 0;
+    double D2DueSince = 0;
 	// Full AMR passes in individual mode.  The every-10th-event pass sees only
 	// that event's active cells, and the all-active events can alias with it
 	// (TDE job 10222679, t=35.32-35.77: 68 all-active events, none on the
@@ -2223,6 +2402,7 @@ int main(int argc, char* argv[])
 	simulation.SetIndividualAMR(
 		[&](IndividualStepContext const& context)
 		{
+            double const D2CallbackStart = TdeD2Timers ? TdeD2Now() : 0;
 			if(!full_gravity)
 				return IndividualAMRChangeSet();
 			IndividualTimeStepScheduler const* const scheduler = simulation.GetIndividualTimeStepScheduler();
@@ -2250,18 +2430,35 @@ int main(int argc, char* argv[])
 				MPI_Allreduce(MPI_IN_PLACE, &all_active, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
 #endif
 			}
-			if(!gate && !(due && all_active != 0))
+			if(!gate && !(due && all_active != 0)) {
+                // D2: a due full pass waiting for an all-active event (the lag option C of the plan would bound).
+                if(TdeD2Timers && due) {
+                    if(D2DueWaitEvents == 0)
+                        D2DueSince = simulation.GetTime();
+                    ++D2DueWaitEvents;
+                }
 				return IndividualAMRChangeSet();
+            }
 			if(rank == 0 && RuntimeLogDetailed())
 				std::cout << "Doing individual AMR" << std::endl;
-			if(rank == 0 && full_amr_interval_bins > 0)
+			if(rank == 0 && full_amr_interval_bins > 0) {
 				std::cout << std::setprecision(12) << "RICH_TDE_FULL_AMR cycle=" << simulation.GetCycle()
 					<< " time=" << simulation.GetTime() << " since_last=" << since_full
-					<< " interval=" << full_interval << " pass=" << (all_active != 0 ? "full" : "overdue_active_only")
-					<< std::endl;
-			if(all_active != 0)
+					<< " interval=" << full_interval << " pass=" << (all_active != 0 ? "full" : "overdue_active_only");
+                if(TdeD2Timers)
+                    std::cout << " due_wait_events=" << D2DueWaitEvents << " due_since="
+                        << (D2DueWaitEvents > 0 ? D2DueSince : simulation.GetTime());
+                std::cout << std::endl;
+            }
+			if(all_active != 0) {
 				last_full_amr_time = simulation.GetTime();
-			return amr.ApplyIndividual(simulation, context);
+                D2DueWaitEvents = 0;
+            }
+            if(!TdeD2Timers)
+                return amr.ApplyIndividual(simulation, context);
+            IndividualAMRChangeSet Changes = amr.ApplyIndividual(simulation, context);
+            D2CallbackSeconds += TdeD2Now() - D2CallbackStart;
+            return Changes;
 		});
 	// The same operations on a global step (adaptive controller), with the
 	// cadence of runs/BaseTDEComptonGlobal: AMR every 10 cycles once full
@@ -2273,7 +2470,12 @@ int main(int argc, char* argv[])
 			{
 				if(rank == 0 && RuntimeLogDetailed())
 					std::cout << "Doing AMR" << std::endl;
+                double const D2CallbackStart = TdeD2Timers ? TdeD2Now() : 0;
 				amr(simulation);
+                if(TdeD2Timers) {
+                    D2CallbackSeconds += TdeD2Now() - D2CallbackStart;
+                    D2DueWaitEvents = 0;
+                }
 				last_full_amr_time = simulation.GetTime();
 			}
 			center_sink.Apply();
@@ -2611,6 +2813,32 @@ int main(int argc, char* argv[])
 			bool const stepped_globally =
 				simulation.GetTimeIntegrationMode() == TimeIntegrationMode::Global;
 				simulation.step();
+            // RICH_D2_TIMERS: one RICH_D2_AMR line per AMR pass (pending is the same on every rank).  The extra
+            // stages are the criteria sub-stages, the AMR callback, and Simulation's own timers of this event:
+            // "sim_post" is its individual-amr phase less the callback (eager generator copy, change-set
+            // application or closure), then the acceleration-cache refresh and the topology release.
+            if(TdeD2Timers && amr.D2PassPending()) {
+                std::map<std::string, double> const& Phases = simulation.getLastLocalPhysicsTimes();
+                auto const PhaseSeconds = [&Phases](char const* Name) {
+                    auto const Found = Phases.find(Name);
+                    return Found == Phases.end() ? 0.0 : Found->second;
+                };
+                double const AMRPhase = PhaseSeconds("individual-amr");
+                std::vector<std::pair<std::string, double>> const Extra = {
+                    {"rm_vol", AmrSharedCriteria.RemoveVolumeSeconds},
+                    {"rm_red", AmrSharedCriteria.RemoveReductionSeconds},
+                    {"rf_vol", AmrSharedCriteria.RefineVolumeSeconds},
+                    {"rf_red", AmrSharedCriteria.RefineReductionSeconds},
+                    {"callback", D2CallbackSeconds}, {"sim_post", AMRPhase > 0 ? AMRPhase - D2CallbackSeconds : 0.0},
+                    {"cache_refresh", PhaseSeconds("individual-amr-cache-refresh")},
+                    {"topology_release", PhaseSeconds("individual-topology-release")}};
+                amr.ReportD2Pass(Extra);
+                AmrSharedCriteria.RemoveVolumeSeconds = 0;
+                AmrSharedCriteria.RemoveReductionSeconds = 0;
+                AmrSharedCriteria.RefineVolumeSeconds = 0;
+                AmrSharedCriteria.RefineReductionSeconds = 0;
+                D2CallbackSeconds = 0;
+            }
 			if(not full_gravity)
 				CheckIfFullGravityIsNeeded(*sim, gravity_name, R, M, Mbh, beta, restart_name,
 					full_individual_restart_name, simulation,

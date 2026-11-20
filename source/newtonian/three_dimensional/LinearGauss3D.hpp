@@ -12,6 +12,28 @@
 #include "../../misc/universal_error.hpp"
 #include "Ghost3D.hpp"
 
+/*! \brief Paths of one individual-event interpolation (LinearGauss3D::InterpolateIndividualWithOptions).  All false is
+  the path of InterpolateIndividual.
+*/
+struct IndividualInterpolationOptions {
+    //! RICH_INDIVIDUAL_FLUX_PASSES: keep the face states of faces without an active endpoint instead of resetting them
+    bool KeepInactiveFaceStates = false;
+    //! RICH_INDIVIDUAL_FLUX_PASSES: read the input cells in place instead of a per-mesh-point copy (non-SR only)
+    bool ReadCellsInPlace = false;
+    //! RICH_INDIVIDUAL_GHOST_SLOPE_REQUEST: compute and send only the ghost slopes that the peers request
+    bool RequestGhostSlopes = false;
+};
+
+//! \brief Counts of the last individual-event interpolation on this rank
+struct IndividualInterpolationCounts {
+    //! Owned cells whose slopes were computed
+    size_t Reconstructed = 0;
+    //! Owned cells duplicated to a peer, summed over peers
+    size_t GhostSources = 0;
+    //! Entries of GhostSources whose slopes were computed and sent
+    size_t SentGhostSources = 0;
+};
+
 //! \brief Linear gauss interpolation
 class LinearGauss3D : public SpatialReconstruction3D
 {
@@ -44,6 +66,16 @@ public:
 		double time,
 		const vector<unsigned char>& active_mask,
 		vector<pair<ComputationalCell3D, ComputationalCell3D> >& res) const override;
+
+    /*! \brief InterpolateIndividual with the paths that Options selects.  With RequestGhostSlopes every rank must call
+        it with the same options: it adds one exchange with the duplicated-point peers.
+    */
+    void InterpolateIndividualWithOptions(const Tessellation3D& tess, const vector<ComputationalCell3D>& cells,
+        double time, const vector<unsigned char>& active_mask,
+        vector<pair<ComputationalCell3D, ComputationalCell3D> >& res, IndividualInterpolationOptions const& Options) const;
+
+    //! \brief Counts of the last individual-event interpolation on this rank
+    IndividualInterpolationCounts const& GetLastIndividualCounts(void) const {return LastIndividualCounts_;}
 
 	/*! \brief Interpolates a cell
 	\param cell The primitives of the cell
@@ -92,7 +124,8 @@ private:
 		const vector<ComputationalCell3D>& cells,
 		double time,
 		const vector<unsigned char>* active_mask,
-		vector<pair<ComputationalCell3D, ComputationalCell3D> >& res) const;
+		vector<pair<ComputationalCell3D, ComputationalCell3D> >& res,
+		IndividualInterpolationOptions const& Options) const;
 
 	EquationOfState const& eos_;
 	Ghost3D const& ghost_;
@@ -109,9 +142,26 @@ private:
 	mutable vector<size_t> to_skip_;
 	const bool pressure_calc_;
 	const bool apply_principal_limit_;
+    mutable IndividualInterpolationCounts LastIndividualCounts_;
 
 	LinearGauss3D(const LinearGauss3D& origin);
 
 	LinearGauss3D& operator=(const LinearGauss3D& origin);
 };
+
+/*! \brief RICH_INDIVIDUAL_FLUX_PASSES (unset, 0, 1 or 2; default 0), individual events only.  0 today's passes.  1 the
+  face states of faces without an active endpoint are not reset (no reader of the event reads them), the cells are read
+  in place instead of copied per mesh point, and the flux array, which the hydro step zeroes just before, is not
+  assigned again.  2 both, compared bit for bit (RICH_B10_FLUX_VERIFY).  Read once and agreed across ranks: collective
+  on first use.
+*/
+int IndividualFluxPassesMode(void);
+
+/*! \brief RICH_INDIVIDUAL_GHOST_SLOPE_REQUEST (unset, 0, 1 or 2; default 0), individual events only.  0 the slopes of
+  every owned cell duplicated to a peer are computed and sent.  1 the peers name the ghosts whose slopes they read in
+  one exchange per event, and only those slopes are computed and sent.  2 both, compared bit for bit
+  (RICH_B10_SLOPE_VERIFY).  Read once and agreed across ranks: collective on first use.
+*/
+int IndividualGhostSlopeRequestMode(void);
+
 #endif //LINEAR_GAUSS3D_HPP

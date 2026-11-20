@@ -5,47 +5,91 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
-#include <functional>
+#include <cstring>
 #include <vector>
 #include <iostream>
 #include <limits>
 #include <sstream>
 #include <string>
-#include <unordered_map>
 
 #include "misc/memory_profile.hpp"
 #include "misc/universal_error.hpp"
 
 namespace
 {
-struct PositionKey
+// Exact position lookup for the individual-target adapter.  Two positions
+// match when every coordinate compares equal (so -0.0 matches 0.0 and a NaN
+// matches nothing), as with the node-based hash map this replaces; the table
+// is a flat open-addressing array reused across calls.
+bool SamePosition(Vector3D const& First, Vector3D const& Second)
 {
-    double x;
-    double y;
-    double z;
+    return First.x == Second.x && First.y == Second.y && First.z == Second.z;
+}
 
-    bool operator==(PositionKey const& other) const
-    {
-        return x == other.x && y == other.y && z == other.z;
+// Bit pattern of a coordinate with -0.0 folded onto 0.0, so that coordinates
+// comparing equal hash equal.
+std::uint64_t CoordinateBits(double Value)
+{
+    const double Canonical = Value == 0.0 ? 0.0 : Value;
+    std::uint64_t Bits = 0;
+    std::memcpy(&Bits, &Canonical, sizeof(Bits));
+    return Bits;
+}
+
+std::uint64_t MixBits(std::uint64_t Value)
+{
+    Value ^= Value >> 33;
+    Value *= UINT64_C(0xff51afd7ed558ccd);
+    Value ^= Value >> 33;
+    Value *= UINT64_C(0xc4ceb9fe1a85ec53);
+    Value ^= Value >> 33;
+    return Value;
+}
+
+std::size_t PositionSlot(Vector3D const& Position, std::size_t Mask)
+{
+    const std::uint64_t Hash =
+        MixBits(CoordinateBits(Position.x) ^ MixBits(CoordinateBits(Position.y) ^ MixBits(CoordinateBits(Position.z))));
+    return static_cast<std::size_t>(Hash) & Mask;
+}
+
+// Fills Slots (power-of-two size, at most half full; entry = source index + 1,
+// 0 = empty) with every source.  Returns false if two sources match; the first
+// of them stays indexed.
+bool IndexSourcePositions(std::vector<Vector3D> const& Sources, std::vector<std::size_t>& Slots)
+{
+    if(Sources.size() > std::numeric_limits<std::size_t>::max() / 4)
+        throw UniversalError("FastMultipoleAcceleration3D: too many individual gravity sources");
+    std::size_t Capacity = 16;
+    while(Capacity < 2 * Sources.size())
+        Capacity *= 2;
+    Slots.assign(Capacity, 0);
+    const std::size_t Mask = Capacity - 1;
+    bool Unique = true;
+    for(std::size_t Source = 0; Source < Sources.size(); ++Source) {
+        std::size_t Slot = PositionSlot(Sources[Source], Mask);
+        while(Slots[Slot] != 0 && !SamePosition(Sources[Slots[Slot] - 1], Sources[Source]))
+            Slot = (Slot + 1) & Mask;
+        if(Slots[Slot] == 0)
+            Slots[Slot] = Source + 1;
+        else
+            Unique = false;
     }
-};
+    return Unique;
+}
 
-struct PositionKeyHash
+// Index of the source matching Position, or Sources.size() if there is none.
+std::size_t FindSourcePosition(std::vector<Vector3D> const& Sources, std::vector<std::size_t> const& Slots,
+                               Vector3D const& Position)
 {
-    std::size_t operator()(PositionKey const& position) const
-    {
-        std::size_t value = std::hash<double>()(position.x);
-        value ^= std::hash<double>()(position.y) +
-            static_cast<std::size_t>(0x9e3779b9) + (value << 6) + (value >> 2);
-        value ^= std::hash<double>()(position.z) +
-            static_cast<std::size_t>(0x9e3779b9) + (value << 6) + (value >> 2);
-        return value;
+    const std::size_t Mask = Slots.size() - 1;
+    std::size_t Slot = PositionSlot(Position, Mask);
+    while(Slots[Slot] != 0) {
+        if(SamePosition(Sources[Slots[Slot] - 1], Position))
+            return Slots[Slot] - 1;
+        Slot = (Slot + 1) & Mask;
     }
-};
-
-PositionKey positionKey(Vector3D const& position)
-{
-    return PositionKey{position.x, position.y, position.z};
+    return Sources.size();
 }
 
 FmmGravityOptions validateAccelerationOptions(FmmGravityOptions options)
@@ -366,7 +410,9 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled,
 
     static std::uint64_t call = 0;
     ++call;
-    const double localTimes[22] = {
+    // The two redistribution parts come last, so the earlier fields keep their order.
+    constexpr int PhaseCount = 24;
+    const double localTimes[PhaseCount] = {
         stats.totalSeconds, stats.gravityRedistributionSeconds,
         stats.buildSeconds, stats.topologyRebuildSeconds,
         stats.rootDescriptorExchangeSeconds, stats.processTopologySeconds,
@@ -377,10 +423,11 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled,
         stats.upwardSeconds, stats.processUpwardSeconds,
         stats.processInteractionSeconds, stats.processDownwardSeconds,
         stats.letExchangeSeconds, stats.letM2LSeconds,
-        stats.letP2PSeconds, stats.downwardSeconds};
-    double minimumTimes[22] = {};
-    double meanTimes[22] = {};
-    double maximumTimes[22] = {};
+        stats.letP2PSeconds, stats.downwardSeconds,
+        stats.gravityRedistributionForwardSeconds, stats.gravityRedistributionReturnSeconds};
+    double minimumTimes[PhaseCount] = {};
+    double meanTimes[PhaseCount] = {};
+    double maximumTimes[PhaseCount] = {};
     unsigned long long reusedActiveRanks =
         stats.localInteractionPlanReused ? 1ull : 0ull;
     unsigned long long globalReusedActiveRanks = reusedActiveRanks;
@@ -485,7 +532,7 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled,
         static_cast<unsigned long long>(stats.letMaxIncomingBytes),
         static_cast<unsigned long long>(stats.letMaxSendCapacityBytes)};
     unsigned long long maximumExchangeBytes[3] = {};
-    const unsigned long long localPruneCounts[9] = {
+    const unsigned long long localPruneCounts[10] = {
         stats.targetPruneActive ? 1ull : 0ull,
         static_cast<unsigned long long>(stats.targetParticleCount),
         static_cast<unsigned long long>(stats.targetNodeCount),
@@ -494,8 +541,9 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled,
         static_cast<unsigned long long>(stats.letTargetPrunedM2LCount),
         static_cast<unsigned long long>(stats.letTargetPrunedP2PBlockCount),
         static_cast<unsigned long long>(stats.letTargetPrunedM2PCount),
-        static_cast<unsigned long long>(stats.downwardTargetPrunedLeafCount)};
-    unsigned long long globalPruneCounts[9] = {};
+        static_cast<unsigned long long>(stats.downwardTargetPrunedLeafCount),
+        static_cast<unsigned long long>(stats.gravityReturnedResultCount)};
+    unsigned long long globalPruneCounts[10] = {};
     const double localIndividualTimes[3] = {
         stats.targetMaskSeconds, individualPrepareSeconds,
         individualFinishSeconds};
@@ -506,11 +554,11 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled,
         traceFmmBalance(stats, call) : std::string();
 #ifdef RICH_MPI
     MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-    MPI_Reduce(localTimes, minimumTimes, 22, MPI_DOUBLE, MPI_MIN, 0,
+    MPI_Reduce(localTimes, minimumTimes, PhaseCount, MPI_DOUBLE, MPI_MIN, 0,
                MPI_COMM_WORLD);
-    MPI_Reduce(localTimes, meanTimes, 22, MPI_DOUBLE, MPI_SUM, 0,
+    MPI_Reduce(localTimes, meanTimes, PhaseCount, MPI_DOUBLE, MPI_SUM, 0,
                MPI_COMM_WORLD);
-    MPI_Reduce(localTimes, maximumTimes, 22, MPI_DOUBLE, MPI_MAX, 0,
+    MPI_Reduce(localTimes, maximumTimes, PhaseCount, MPI_DOUBLE, MPI_MAX, 0,
                MPI_COMM_WORLD);
     MPI_Reduce(&reusedActiveRanks, &globalReusedActiveRanks, 1,
                MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
@@ -546,14 +594,14 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled,
                MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
     MPI_Reduce(localExchangeBytes, maximumExchangeBytes, 3,
                MPI_UNSIGNED_LONG_LONG, MPI_MAX, 0, MPI_COMM_WORLD);
-    MPI_Reduce(localPruneCounts, globalPruneCounts, 9,
+    MPI_Reduce(localPruneCounts, globalPruneCounts, 10,
                MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
     MPI_Reduce(localIndividualTimes, maximumIndividualTimes, 3, MPI_DOUBLE,
                MPI_MAX, 0, MPI_COMM_WORLD);
-    for(int i = 0; i < 22; ++i)
+    for(int i = 0; i < PhaseCount; ++i)
         meanTimes[i] /= static_cast<double>(stats.mpiRankCount);
 #else
-    for(int i = 0; i < 22; ++i) {
+    for(int i = 0; i < PhaseCount; ++i) {
         minimumTimes[i] = localTimes[i];
         meanTimes[i] = localTimes[i];
         maximumTimes[i] = localTimes[i];
@@ -570,26 +618,58 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled,
         maximumDetailedExchangeTimes[i] = localDetailedExchangeTimes[i];
     for(int i = 0; i < 3; ++i)
         maximumExchangeBytes[i] = localExchangeBytes[i];
-    for(int i = 0; i < 9; ++i)
+    for(int i = 0; i < 10; ++i)
         globalPruneCounts[i] = localPruneCounts[i];
     for(int i = 0; i < 3; ++i)
         maximumIndividualTimes[i] = localIndividualTimes[i];
 #endif
+    // RICH_D2_TIMERS: forward-redistribution stages of this solve (rank maximum, mean, rank of the maximum); with
+    // RICH_FMM_FORWARD_DEDUP the solves with unordered destinations summed over ranks. Both flags are the same on every
+    // rank, so these reductions run on all ranks or on none.
+    constexpr int ForwardStageCount = 6;
+    const double LocalForwardStages[ForwardStageCount] = {stats.D2ForwardKeysSeconds, stats.D2ForwardSortSeconds,
+        stats.D2ForwardDecideSeconds, stats.D2ForwardPackSeconds, stats.D2ForwardWireSeconds,
+        stats.D2ForwardUnpackSeconds};
+    struct ForwardStageRank {
+        double Value;
+        int Rank;
+    };
+    ForwardStageRank LocalForwardMax[ForwardStageCount];
+    ForwardStageRank ForwardMax[ForwardStageCount];
+    double ForwardMean[ForwardStageCount] = {};
+    for(int Stage = 0; Stage < ForwardStageCount; ++Stage) {
+        LocalForwardMax[Stage] = {LocalForwardStages[Stage], rank};
+        ForwardMax[Stage] = LocalForwardMax[Stage];
+        ForwardMean[Stage] = LocalForwardStages[Stage];
+    }
+    unsigned long long ForwardUnordered = static_cast<unsigned long long>(stats.ForwardDedupUnorderedSolves);
+#ifdef RICH_MPI
+    if(stats.D2ForwardTimersActive) {
+        MPI_Reduce(LocalForwardMax, ForwardMax, ForwardStageCount, MPI_DOUBLE_INT, MPI_MAXLOC, 0, MPI_COMM_WORLD);
+        MPI_Reduce(LocalForwardStages, ForwardMean, ForwardStageCount, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    }
+    if(stats.ForwardDedupMode != 0) {
+        unsigned long long const LocalUnordered = ForwardUnordered;
+        MPI_Reduce(&LocalUnordered, &ForwardUnordered, 1, MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+    }
+#endif
+    for(int Stage = 0; Stage < ForwardStageCount; ++Stage)
+        ForwardMean[Stage] /= static_cast<double>(stats.mpiRankCount);
     if(rank != 0)
         return;
 
     std::ostringstream line;
     line.setf(std::ios::scientific);
     line.precision(8);
-    const char* const phaseNames[22] = {
+    const char* const phaseNames[PhaseCount] = {
         "total", "redistribution", "build", "topology", "descriptor", "process_topology",
         "let_plan", "let_reset", "let_descriptor_traversal",
         "let_finalize", "let_subscription", "let_prune_compact",
         "local_traversal", "let_execute", "upward", "process_upward",
         "process_interaction", "process_downward", "let_exchange",
-        "let_m2l", "let_p2p", "downward"};
+        "let_m2l", "let_p2p", "downward", "redistribution_forward", "redistribution_return"};
     line << "fmm_solve_trace call=" << call;
-    for(int i = 0; i < 22; ++i)
+    for(int i = 0; i < PhaseCount; ++i)
         line << ' ' << phaseNames[i] << "_min=" << minimumTimes[i]
              << ' ' << phaseNames[i] << "_mean=" << meanTimes[i]
              << ' ' << phaseNames[i] << "_max=" << maximumTimes[i];
@@ -727,9 +807,35 @@ void traceFmmSolve(const FmmSolveStats& stats, bool explicitlyEnabled,
          << " let_target_pruned_p2p_blocks_sum=" << globalPruneCounts[6]
          << " let_target_pruned_m2p_sum=" << globalPruneCounts[7]
          << " downward_target_pruned_leaves_sum=" << globalPruneCounts[8]
+         << " redistribution_returned_results_sum=" << globalPruneCounts[9]
          << " target_mask_max=" << maximumIndividualTimes[0]
          << " individual_prepare_max=" << maximumIndividualTimes[1]
          << " individual_finish_max=" << maximumIndividualTimes[2];
+    if(stats.D2ForwardTimersActive) {
+        // Per call site (0 full solve, 1 individual target evaluation): solves and running sums of the stage maxima
+        // and means, so the summed pool of each site is read from its last line.
+        static std::uint64_t SiteSolves[2] = {0, 0};
+        static double SiteMaxSums[2][ForwardStageCount] = {};
+        static double SiteMeanSums[2][ForwardStageCount] = {};
+        const char* const ForwardStageNames[ForwardStageCount] = {"keys", "sort", "decide", "pack", "wire", "unpack"};
+        const int Site = individualPrepareSeconds >= 0.0 ? 1 : 0;
+        ++SiteSolves[Site];
+        line << " d2_fwd_site=" << (Site == 1 ? "individual" : "full");
+        for(int Stage = 0; Stage < ForwardStageCount; ++Stage) {
+            SiteMaxSums[Site][Stage] += ForwardMax[Stage].Value;
+            SiteMeanSums[Site][Stage] += ForwardMean[Stage];
+            line << " d2_fwd_" << ForwardStageNames[Stage] << "_max=" << ForwardMax[Stage].Value << " d2_fwd_"
+                 << ForwardStageNames[Stage] << "_mean=" << ForwardMean[Stage] << " d2_fwd_"
+                 << ForwardStageNames[Stage] << "_max_rank=" << ForwardMax[Stage].Rank;
+        }
+        line << " d2_fwd_site_solves=" << SiteSolves[Site];
+        for(int Stage = 0; Stage < ForwardStageCount; ++Stage)
+            line << " d2_fwd_site_" << ForwardStageNames[Stage] << "_max_sum=" << SiteMaxSums[Site][Stage]
+                 << " d2_fwd_site_" << ForwardStageNames[Stage] << "_mean_sum=" << SiteMeanSums[Site][Stage];
+    }
+    if(stats.ForwardDedupMode != 0)
+        line << " fwd_dedup=" << stats.ForwardDedupMode << " fwd_dedup_verified_solves="
+             << stats.ForwardDedupVerifiedSolves << " fwd_dedup_unordered_sum=" << ForwardUnordered;
     std::cout << line.str() << std::endl;
     if(!balanceLine.empty())
         std::cout << balanceLine << std::flush;
@@ -879,24 +985,16 @@ void FastMultipoleAcceleration3D::EvaluateIndividualTargets(
     // are exact canonical source centroids, so recover their source slots and
     // extract only those accelerations after the collective solve.
     const auto prepareStart = std::chrono::steady_clock::now();
-    std::unordered_map<PositionKey, std::size_t, PositionKeyHash>
-        source_index_by_position;
-    source_index_by_position.reserve(source_points.size());
-    bool valid_target_mapping = true;
-    for(std::size_t source = 0; source < source_points.size(); ++source)
-        if(!source_index_by_position.emplace(
-            positionKey(source_points[source]), source).second)
-            valid_target_mapping = false;
+    bool valid_target_mapping = IndexSourcePositions(source_points, SourceSlots_);
 
     std::vector<std::size_t> target_source_indices(target_points.size(), 0);
     for(std::size_t target = 0; target < target_points.size(); ++target)
     {
-        auto const source = source_index_by_position.find(
-            positionKey(target_points[target]));
-        if(source == source_index_by_position.end())
+        const std::size_t Source = FindSourcePosition(source_points, SourceSlots_, target_points[target]);
+        if(Source == source_points.size())
             valid_target_mapping = false;
         else
-            target_source_indices[target] = source->second;
+            target_source_indices[target] = Source;
     }
 #ifdef RICH_MPI
     requireOnEveryRank(valid_target_mapping,
@@ -907,31 +1005,34 @@ void FastMultipoleAcceleration3D::EvaluateIndividualTargets(
             "FastMultipoleAcceleration3D: an individual target does not match a unique source centroid");
 #endif
 
-    points_ = source_points;
-    masses_ = source_masses;
+    // The solve reads the caller's source arrays in place (it keeps no
+    // reference past the call); the points are copied only if acc is the same
+    // vector, since the solve overwrites acc while it reads them.
+    const bool AccIsSourcePoints = &acc == &source_points;
+    if(AccIsSourcePoints)
+        points_ = source_points;
+    vector<Vector3D> const& SolvePoints = AccIsSourcePoints ? points_ : source_points;
 #ifdef RICH_MPI
-    cellIds_ = source_ids;
     // Only the target slots are read back, so the solve may skip work that
     // reaches no target (DistributedFmmGravityCalculator::solve).
-    targetMask_.assign(points_.size(), 0u);
+    targetMask_.assign(SolvePoints.size(), 0u);
     for(std::size_t source : target_source_indices)
         targetMask_[source] = 1u;
     const double prepareSeconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - prepareStart).count();
-    calculator_.solve(points_, masses_, cellIds_, bounds.first, bounds.second,
-                      acc, nullptr, &targetMask_);
+    calculator_.solve(SolvePoints, source_masses, source_ids, bounds.first, bounds.second, acc, nullptr, &targetMask_);
 #else
     const double prepareSeconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - prepareStart).count();
-    calculator_.solve(points_, masses_, bounds.first, bounds.second, acc);
+    calculator_.solve(SolvePoints, source_masses, bounds.first, bounds.second, acc);
 #endif
     const auto finishStart = std::chrono::steady_clock::now();
 
 #ifdef RICH_MPI
-    requireOnEveryRank(acc.size() == points_.size(),
+    requireOnEveryRank(acc.size() == SolvePoints.size(),
         "FastMultipoleAcceleration3D: individual FMM returned the wrong source count");
 #else
-    if(acc.size() != points_.size())
+    if(acc.size() != SolvePoints.size())
         throw UniversalError(
             "FastMultipoleAcceleration3D: individual FMM returned the wrong source count");
 #endif

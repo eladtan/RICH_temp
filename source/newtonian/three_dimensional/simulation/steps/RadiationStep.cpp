@@ -1,6 +1,7 @@
 #include "RadiationStep.hpp"
 #include "Radiation/Diffusion.hpp"
 #include "misc/memory_debug.hpp"
+#include "misc/mpi_wait_profiler.hpp"
 #include "misc/universal_error.hpp"
 #include "newtonian/three_dimensional/simulation/ActiveMeshView.hpp"
 #include "newtonian/three_dimensional/simulation/RuntimeLog.hpp"
@@ -463,6 +464,34 @@ bool radiationRetryLimitsBins()
     return enabled;
 }
 
+// RICH_TEST_FORCED_RADIATION_REJECTION (test seam, strict 0/1, default 0): every individual radiation candidate is
+// first run in full and rejected by one rank (rotating over the ranks) at its last collective acceptance check, then
+// replayed at the same interval, without touching the retry controller, limiter or retry reports.  With bitwise
+// rollback, the run's INDIVIDUAL_STATE_HASH stream equals the same run with the switch off.  Collective on first use;
+// must agree on every rank.
+bool testForcedRadiationRejection()
+{
+    static bool const enabled = []()
+    {
+        char const* const value = std::getenv("RICH_TEST_FORCED_RADIATION_REJECTION");
+        int local = -1;
+        if(value == nullptr || value[0] == '\0' || std::strcmp(value, "0") == 0)
+            local = 0;
+        else if(std::strcmp(value, "1") == 0)
+            local = 1;
+        int extrema[2] = {local, -local};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, extrema, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        if(extrema[0] != -extrema[1])
+            throw std::invalid_argument("RICH_TEST_FORCED_RADIATION_REJECTION differs between MPI ranks");
+        if(extrema[0] < 0)
+            throw std::invalid_argument("RICH_TEST_FORCED_RADIATION_REJECTION must be 0 or 1");
+        return extrema[0] != 0;
+    }();
+    return enabled;
+}
+
 template<typename T>
 class MovedOwnedStorageGuard
 {
@@ -500,6 +529,212 @@ private:
     std::vector<T>& local_;
     std::size_t owned_size_;
     bool active_;
+};
+
+// Ghost sync of the sparse canonical path after an accepted non-final piece.  The full-copy path synchronized from a
+// fresh copy of the canonical array whose target slots the sync overwrote with the local targets.  Syncing through
+// the canonical array itself reads the same values; restoring the target slots afterwards leaves the canonical array
+// exactly as the full-copy path left it.  TargetsAtSync receives the target values the sync wrote.
+template<typename T>
+void SyncThroughCanonical(Tessellation3D const& Tess, std::vector<std::size_t> const& TargetToCanonical,
+                          std::vector<T>& Local, std::vector<T>& Canonical, std::vector<T>& TargetsAtSync)
+{
+    std::size_t const Targets = TargetToCanonical.size();
+    std::vector<T> Saved;
+    Saved.reserve(Targets);
+    for(std::size_t Target = 0; Target < Targets; ++Target)
+        Saved.push_back(Canonical[TargetToCanonical[Target]]);
+    // Every copy that can allocate precedes the first write into Canonical
+    // (the sync does not change Local's owned targets), so a throw can never
+    // leave temporary target values in it.
+    TargetsAtSync.assign(Local.begin(), Local.begin() + static_cast<std::ptrdiff_t>(Targets));
+    try {
+        Tess.SyncPartialBuildData(Local, Canonical);
+    }
+    catch(...) {
+        for(std::size_t Target = 0; Target < Targets; ++Target)
+            Canonical[TargetToCanonical[Target]] = Saved[Target];
+        throw;
+    }
+    for(std::size_t Target = 0; Target < Targets; ++Target)
+        Canonical[TargetToCanonical[Target]] = Saved[Target];
+}
+
+// RICH_INDIVIDUAL_RADIATION_SPARSE_CHECK=1 (default off, rank-local, no collectives): the sparse canonical path also
+// keeps the full copies it replaces and aborts if its rebuilt end-of-event state differs from them in any value the
+// wake estimate reads.  Validation only; it never changes the step.
+bool SparseCanonicalCheckRequested()
+{
+    static bool const Enabled = []()
+    {
+        char const* const Value = std::getenv("RICH_INDIVIDUAL_RADIATION_SPARSE_CHECK");
+        return Value != nullptr && std::strcmp(Value, "1") == 0;
+    }();
+    return Enabled;
+}
+
+bool SameBits(double const Left, double const Right)
+{
+    return std::memcmp(&Left, &Right, sizeof(double)) == 0;
+}
+
+// Equal in every value passive_radiation_change_fraction() and the energy-density maximum read.
+bool SameWakeInputs(ComputationalCell3D const& LeftCell, Conserved3D const& LeftExtensive,
+                    ComputationalCell3D const& RightCell, Conserved3D const& RightExtensive)
+{
+    bool Same = SameBits(LeftCell.density, RightCell.density) && SameBits(LeftExtensive.mass, RightExtensive.mass) &&
+        SameBits(LeftExtensive.Erad, RightExtensive.Erad) && LeftExtensive.Eg.size() == RightExtensive.Eg.size();
+    for(std::size_t Group = 0; Same && Group < LeftExtensive.Eg.size(); ++Group)
+        Same = SameBits(LeftExtensive.Eg[Group], RightExtensive.Eg[Group]);
+    return Same;
+}
+
+double D2Seconds()
+{
+#ifdef RICH_MPI
+    return MPI_Wtime();
+#else
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+#endif
+}
+
+// RICH_RADIATION_REMAP_MINIMAL.  The radiation step reads only the scalars, the activity (mask and indices), the
+// applied intervals and the bins of its remapped context: RadiationStep, RadiationDriver, Diffusion and
+// MultigroupDiffusion never read primitive_ticks, point_velocities, cached_accelerations or
+// gravity_half_kick_pending, and hydroFaceTimeStep (the one accessor of primitive_ticks) is not called there.  This
+// builds what ActiveMeshView::remapContext(Global, false) builds for the fields read, with its collectives in the
+// same order, and leaves the four unread fields empty, which saves their resizes, copies and four ghost syncs.
+IndividualStepContext MinimalRadiationContext(ActiveMeshView const& View, Tessellation3D const& Tess,
+    IndividualStepContext const& Global)
+{
+    IndividualStepContext Local;
+    Local.previous_event_tick = Global.previous_event_tick;
+    Local.event_tick = Global.event_tick;
+    Local.time_origin = Global.time_origin;
+    Local.previous_event_time = Global.previous_event_time;
+    Local.event_time = Global.event_time;
+    Local.time_quantum = Global.time_quantum;
+    Local.mesh_build_policy = Global.mesh_build_policy;
+    Local.partial_build_fraction = Global.partial_build_fraction;
+    Local.verify_partial_build = Global.verify_partial_build;
+    Local.radiation_repair_accounting = Global.radiation_repair_accounting;
+    Local.radiation_defect_accounting = Global.radiation_defect_accounting;
+    std::size_t const MeshSize = View.meshLocalSize();
+    Local.active_mask.assign(MeshSize, 0);
+    Local.cell_time_steps.assign(MeshSize, std::numeric_limits<double>::infinity());
+    // The same collective bin decision as remapContext: an owner without time steps votes neutral.
+    int BinsVote = Global.cell_time_steps.empty() ? 1 :
+        (Global.cell_time_bins.size() == Global.cell_time_steps.size() ? 1 : 0);
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, &BinsVote, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+#endif
+    bool const HaveBins = BinsVote != 0;
+    if(HaveBins)
+        Local.cell_time_bins.assign(MeshSize, 0);
+    for(std::size_t LocalIndex = 0; LocalIndex < MeshSize; ++LocalIndex) {
+        std::size_t const GlobalIndex = View.meshLocalToGlobal(LocalIndex);
+        if(GlobalIndex == ActiveMeshView::invalidIndex())
+            continue;
+        Local.cell_time_steps[LocalIndex] = Global.cellTimeStep(GlobalIndex);
+        if(HaveBins)
+            Local.cell_time_bins[LocalIndex] = Global.cell_time_bins[GlobalIndex];
+        if(LocalIndex < View.localSize() && Global.isActive(GlobalIndex)) {
+            Local.active_mask[LocalIndex] = 1;
+            Local.active_indices.push_back(LocalIndex);
+        }
+    }
+#ifdef RICH_MPI
+    {
+        std::vector<unsigned char> AllActive = Global.active_mask;
+        Tess.SyncPartialBuildData(Local.active_mask, AllActive);
+    }
+    Tess.SyncPartialBuildDataReadOnly(Local.cell_time_steps, Global.cell_time_steps);
+    if(HaveBins)
+        Tess.SyncPartialBuildDataReadOnly(Local.cell_time_bins, Global.cell_time_bins);
+#else
+    (void)Tess;
+#endif
+    return Local;
+}
+
+// RICH_RADIATION_REMAP_MINIMAL=2: every field the radiation step reads must match remapContext bit for bit.
+void VerifyMinimalRadiationContext(IndividualStepContext const& Old, IndividualStepContext const& New, int const Rank)
+{
+    std::string Field;
+    std::size_t Index = 0;
+    auto const SameBitsOf = [](double const Left, double const Right)
+    {
+        return std::memcmp(&Left, &Right, sizeof(double)) == 0;
+    };
+    if(Old.previous_event_tick != New.previous_event_tick || Old.event_tick != New.event_tick ||
+       !SameBitsOf(Old.time_origin, New.time_origin) ||
+       !SameBitsOf(Old.previous_event_time, New.previous_event_time) ||
+       !SameBitsOf(Old.event_time, New.event_time) || !SameBitsOf(Old.time_quantum, New.time_quantum) ||
+       !SameBitsOf(Old.anchor_time_step, New.anchor_time_step) || Old.mesh_build_policy != New.mesh_build_policy ||
+       !SameBitsOf(Old.partial_build_fraction, New.partial_build_fraction) ||
+       Old.verify_partial_build != New.verify_partial_build ||
+       Old.radiation_repair_accounting != New.radiation_repair_accounting ||
+       Old.radiation_defect_accounting != New.radiation_defect_accounting ||
+       !Old.radiation_accuracy_limits.empty() || !New.radiation_accuracy_limits.empty())
+        Field = "scalars";
+    else if(Old.active_indices != New.active_indices) {
+        Field = "active_indices";
+        while(Index < Old.active_indices.size() && Index < New.active_indices.size() &&
+              Old.active_indices[Index] == New.active_indices[Index])
+            ++Index;
+    }
+    else if(Old.active_mask != New.active_mask) {
+        Field = "active_mask";
+        while(Index < Old.active_mask.size() && Index < New.active_mask.size() &&
+              Old.active_mask[Index] == New.active_mask[Index])
+            ++Index;
+    }
+    else if(Old.cell_time_bins != New.cell_time_bins) {
+        Field = "cell_time_bins";
+        while(Index < Old.cell_time_bins.size() && Index < New.cell_time_bins.size() &&
+              Old.cell_time_bins[Index] == New.cell_time_bins[Index])
+            ++Index;
+    }
+    else if(Old.cell_time_steps.size() != New.cell_time_steps.size())
+        Field = "cell_time_steps_size";
+    else
+        for(Index = 0; Index < Old.cell_time_steps.size(); ++Index)
+            if(!SameBitsOf(Old.cell_time_steps[Index], New.cell_time_steps[Index])) {
+                Field = "cell_time_steps";
+                break;
+            }
+    if(Field.empty()) {
+        RecordRadiationRemapVerification();
+        return;
+    }
+    std::cerr << "RICH_RADIATION_REMAP_MINIMAL verify mismatch: rank=" << Rank << " field=" << Field
+              << " index=" << Index << std::endl;
+#ifdef RICH_MPI
+    MPI_Abort(MPI_COMM_WORLD, 1);
+#endif
+    std::abort();
+}
+
+// Event scope of the driver's canonical stable-ID index and write journal; also ends both on an exception.
+class IndividualCanonicalScopeGuard
+{
+public:
+    explicit IndividualCanonicalScopeGuard(RadiationDriver const& Driver) : Driver_(Driver)
+    {
+        Driver_.BeginIndividualCanonicalScope();
+    }
+
+    ~IndividualCanonicalScopeGuard()
+    {
+        Driver_.EndIndividualCanonicalWriteJournal();
+        Driver_.EndIndividualCanonicalScope();
+    }
+
+    IndividualCanonicalScopeGuard(IndividualCanonicalScopeGuard const&) = delete;
+    IndividualCanonicalScopeGuard& operator=(IndividualCanonicalScopeGuard const&) = delete;
+
+private:
+    RadiationDriver const& Driver_;
 };
 
 } // namespace
@@ -732,6 +967,15 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
         return;
 #endif
 
+    // First use is collective: every rank reads the s49 switches here.
+    RadiationS49Switches const& S49 = RadiationS49RuntimeSwitches();
+    bool const D2Timers = S49.Timers != 0;
+    double const D2EventStart = D2Timers ? D2Seconds() : 0;
+    double const D2EventMpiStart = D2Timers ? mpi_wait_profiler::Seconds() : 0;
+    std::size_t D2Candidates = 0;
+    if(D2Timers)
+        BeginRadiationD2Event();
+
     // Global-step limits describe a state individual events have left.
     cell_limit_ids.clear();
     cell_limit_values.clear();
@@ -746,8 +990,11 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
 
     std::size_t const canonical_owned_size = cells.size();
     ActiveMeshView const mesh_view(tess, canonical_owned_size);
-    IndividualStepContext const local_context =
+    IndividualStepContext const local_context = S49.RemapMinimal == 1 ?
+        MinimalRadiationContext(mesh_view, tess, context) :
         mesh_view.remapContext(context, false);
+    if(S49.RemapMinimal == 2)
+        VerifyMinimalRadiationContext(local_context, MinimalRadiationContext(mesh_view, tess, context), rank);
     bool owned_mapping_identity =
         mesh_view.localSize() == canonical_owned_size;
     for(std::size_t local = 0;
@@ -783,6 +1030,27 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
     std::vector<Conserved3D> local_extensives;
     std::vector<ComputationalCell3D> all_cells;
     std::vector<Conserved3D> all_extensives;
+    // Sparse canonical path: when the targets are a small part of the owned cells, the ghost syncs run through the
+    // canonical arrays themselves and the full copies all_cells/all_extensives are never made.  Outside a sync the
+    // canonical arrays hold what they hold in the full-copy path; the end-of-event wake estimate rebuilds the values
+    // all_cells/all_extensives would hold from the last sync's targets, the driver's write journal and the canonical
+    // arrays.  Identity moves and dense target sets keep the full copies.
+    std::size_t const TargetCount = mesh_view.localSize();
+    // RICH_RADIATION_PARTIAL_SETUP_FAST: the sparse path is exact for any target count (the rank-local choice was a
+    // cost heuristic), so a rank whose targets exceed a quarter of its owned cells, typically the busiest rank of a
+    // partial event, stops copying its owned cells and extensives and evaluating every inactive owned cell.  Mode 2
+    // runs such a rank sparse with the full-copy check on.
+    bool const DenseTargets = 4 * TargetCount > canonical_owned_size;
+    bool const SparseCanonical = !use_identity_owned_move && canonical_owned_size > 0 &&
+        extensives.size() == canonical_owned_size && (!DenseTargets || S49.PartialSetupFast != 0) &&
+        matrix_builder.JournalsAllCanonicalWrites();
+    bool TargetsSynced = false;
+    std::vector<ComputationalCell3D> TargetCellsAtSync;
+    std::vector<Conserved3D> TargetExtensivesAtSync;
+    bool const SparseCanonicalCheck = SparseCanonical &&
+        (SparseCanonicalCheckRequested() || (DenseTargets && S49.PartialSetupFast == 2));
+    std::vector<ComputationalCell3D> CheckCells;
+    std::vector<Conserved3D> CheckExtensives;
     if(use_identity_owned_move) {
         all_cells = cells;
         all_extensives = extensives;
@@ -792,8 +1060,14 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
     else {
         local_cells = mesh_view.gatherOwned(cells);
         local_extensives = mesh_view.gatherOwned(extensives);
-        all_cells = cells;
-        all_extensives = extensives;
+        if(!SparseCanonical) {
+            all_cells = cells;
+            all_extensives = extensives;
+        }
+        else if(SparseCanonicalCheck) {
+            CheckCells = cells;
+            CheckExtensives = extensives;
+        }
     }
     MovedOwnedStorageGuard<ComputationalCell3D> cells_move_guard(
         cells, local_cells, canonical_owned_size, use_identity_owned_move);
@@ -804,8 +1078,15 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
         last_individual_performance["radiation-gather-remap"] =
             elapsedSeconds(phase_start);
     phase_start = std::chrono::steady_clock::now();
-    tess.SyncPartialBuildData(local_cells, all_cells);
-    tess.SyncPartialBuildData(local_extensives, all_extensives);
+    if(SparseCanonical) {
+        // The targets were just gathered from their canonical slots, so the sync writes back identical values.
+        tess.SyncPartialBuildData(local_cells, cells);
+        tess.SyncPartialBuildData(local_extensives, extensives);
+    }
+    else {
+        tess.SyncPartialBuildData(local_cells, all_cells);
+        tess.SyncPartialBuildData(local_extensives, all_extensives);
+    }
     if(trace_performance)
         last_individual_performance["radiation-ghost-sync"] =
             elapsedSeconds(phase_start);
@@ -933,6 +1214,14 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
         last_individual_performance["radiation-prestep"] =
             elapsedSeconds(phase_start);
     phase_start = std::chrono::steady_clock::now();
+    IndividualCanonicalScopeGuard canonical_scope(matrix_builder);
+    bool const forced_rejection_test = testForcedRadiationRejection();
+    int forced_rejection_rank_count = 1;
+#ifdef RICH_MPI
+    MPI_Comm_size(MPI_COMM_WORLD, &forced_rejection_rank_count);
+#endif
+    bool replaying_forced_rejection = false;
+    std::size_t forced_test_rejections = 0;
     while(completed_fraction < 1 - 1e-13) {
         candidate_fraction = std::min(candidate_fraction, 1 - completed_fraction);
         event_minimum_candidate_fraction = std::min(
@@ -952,6 +1241,14 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
             (completed_fraction + candidate_fraction) *
             (context.event_time - context.previous_event_time);
         auto const candidate_start = std::chrono::steady_clock::now();
+        // Only an accepted candidate writes canonical extensives, so after the loop the journal holds exactly the
+        // final candidate's writes.
+        if(SparseCanonical)
+            matrix_builder.BeginIndividualCanonicalWriteJournal();
+        if(forced_rejection_test && !replaying_forced_rejection)
+            matrix_builder.ArmTestForcedRejection(static_cast<int>(
+                forced_test_rejections % static_cast<std::size_t>(forced_rejection_rank_count)));
+        ++D2Candidates;
         bool const accepted = matrix_builder.stepIndividual(
             tolerance, iterations, tess, local_cells, local_extensives,
             local_context, candidate_fraction, candidate_end_time,
@@ -960,6 +1257,14 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
             &mesh_view.localToGlobalMapping());
         double const candidate_seconds = std::chrono::duration<double>(
             std::chrono::steady_clock::now() - candidate_start).count();
+        bool const forced_rejection = matrix_builder.TakeTestForcedRejection();
+        if(!accepted && forced_rejection) {
+            // Test seam: replay the same candidate; nothing else of the rejection is recorded.
+            ++forced_test_rejections;
+            replaying_forced_rejection = true;
+            continue;
+        }
+        replaying_forced_rejection = false;
         if(defect_accounting != nullptr &&
            defect_accounting->defect_rejections >
                observed_defect_rejections) {
@@ -976,12 +1281,30 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
                 // An accepted fractional solve changes owned primitives and
                 // extensives.  Refresh the compact ghosts before the next matrix
                 // candidate in canonical all-point index space.
-                if(!use_identity_owned_move) {
-                    all_cells = cells;
-                    all_extensives = extensives;
+                if(SparseCanonical) {
+                    SyncThroughCanonical(tess, mesh_view.localToGlobalMapping(), local_cells, cells,
+                                         TargetCellsAtSync);
+                    SyncThroughCanonical(tess, mesh_view.localToGlobalMapping(), local_extensives, extensives,
+                                         TargetExtensivesAtSync);
+                    TargetsSynced = true;
+                    if(SparseCanonicalCheck) {
+                        // What the full-copy path's all_cells/all_extensives hold after this sync.
+                        CheckCells = cells;
+                        CheckExtensives = extensives;
+                        for(std::size_t Target = 0; Target < TargetCount; ++Target) {
+                            CheckCells[mesh_view.localToGlobal(Target)] = TargetCellsAtSync[Target];
+                            CheckExtensives[mesh_view.localToGlobal(Target)] = TargetExtensivesAtSync[Target];
+                        }
+                    }
                 }
-                tess.SyncPartialBuildData(local_cells, all_cells);
-                tess.SyncPartialBuildData(local_extensives, all_extensives);
+                else {
+                    if(!use_identity_owned_move) {
+                        all_cells = cells;
+                        all_extensives = extensives;
+                    }
+                    tess.SyncPartialBuildData(local_cells, all_cells);
+                    tess.SyncPartialBuildData(local_extensives, all_extensives);
+                }
             }
             retry_probe_backoff.recordAcceptance(candidate_is_retry_probe);
             if(entry_probe && candidate_is_retry_probe)
@@ -1086,6 +1409,12 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
         }
     }
 
+    matrix_builder.EndIndividualCanonicalScope();
+    if(forced_rejection_test && rank == 0)
+        std::cout << "INDIVIDUAL_TEST_FORCED_RADIATION_REJECTIONS event_tick=" << context.event_tick
+                  << " forced=" << forced_test_rejections << " genuine_rejections=" << rejected_candidates
+                  << std::endl;
+
     std::vector<double> local_suggested_dt(
         tess.GetPointNo(), std::numeric_limits<double>::max());
     matrix_builder.calculateIndividualTimeSteps(
@@ -1146,6 +1475,47 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
     phase_start = std::chrono::steady_clock::now();
     matrix_builder.poststepIndividual();
     cumulative_individual_rejected_candidates += rejected_candidates;
+    // Sparse path: the values all_cells/all_extensives would hold here are the canonical state at the last ghost
+    // sync, with the targets as synchronized there.  Since that sync only the final accepted candidate (its write
+    // journal) and the scatter below change canonical slots, so record those slots before the scatter; every other
+    // slot keeps that state.
+    std::size_t const NoSyncViewSlot = std::numeric_limits<std::size_t>::max();
+    std::vector<std::size_t> SyncViewSlot;
+    std::vector<ComputationalCell3D> SyncViewCells;
+    std::vector<Conserved3D> SyncViewExtensives;
+    if(SparseCanonical) {
+        SyncViewSlot.assign(canonical_owned_size, NoSyncViewSlot);
+        auto const AddSyncViewSlot = [&](std::size_t const Global, ComputationalCell3D const& Cell,
+                                         Conserved3D const& Extensive) {
+            SyncViewSlot[Global] = SyncViewCells.size();
+            SyncViewCells.push_back(Cell);
+            SyncViewExtensives.push_back(Extensive);
+        };
+        std::vector<std::size_t> const& Written = matrix_builder.GetIndividualCanonicalWriteIndices();
+        std::vector<Conserved3D> const& WrittenBefore = matrix_builder.GetIndividualCanonicalWriteBefore();
+        for(std::size_t Entry = 0; Entry < Written.size() && Entry < WrittenBefore.size(); ++Entry)
+            if(Written[Entry] < canonical_owned_size && SyncViewSlot[Written[Entry]] == NoSyncViewSlot)
+                AddSyncViewSlot(Written[Entry], cells[Written[Entry]], WrittenBefore[Entry]);
+        for(std::size_t Target = 0; Target < TargetCount; ++Target) {
+            std::size_t const Global = mesh_view.localToGlobal(Target);
+            std::size_t const Slot = SyncViewSlot[Global];
+            if(TargetsSynced && Slot != NoSyncViewSlot) {
+                SyncViewCells[Slot] = TargetCellsAtSync[Target];
+                SyncViewExtensives[Slot] = TargetExtensivesAtSync[Target];
+            }
+            else if(TargetsSynced)
+                AddSyncViewSlot(Global, TargetCellsAtSync[Target], TargetExtensivesAtSync[Target]);
+            else if(Slot == NoSyncViewSlot)
+                AddSyncViewSlot(Global, cells[Global], extensives[Global]);
+        }
+        for(std::size_t Local = TargetCount; Local < mesh_view.meshLocalSize(); ++Local) {
+            std::size_t const Global = mesh_view.meshLocalToGlobal(Local);
+            if(Global != ActiveMeshView::invalidIndex() && !mesh_view.containsGlobal(Global) &&
+               SyncViewSlot[Global] == NoSyncViewSlot)
+                AddSyncViewSlot(Global, cells[Global], extensives[Global]);
+        }
+        matrix_builder.EndIndividualCanonicalWriteJournal();
+    }
     if(use_identity_owned_move) {
         cells_move_guard.commit();
         extensives_move_guard.commit();
@@ -1168,19 +1538,62 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
     // synchronization while leaving that recipient unchanged.  In both cases
     // use the shortest accepted active-passive face timestep; the unrelated
     // global event spacing is not the transfer integration interval.
+    // The pre-transfer state: all_cells/all_extensives, or their sparse rebuild.
+    std::size_t const SyncViewCellCount = SparseCanonical ? canonical_owned_size : all_cells.size();
+    std::size_t const SyncViewExtensiveCount = SparseCanonical ? canonical_owned_size : all_extensives.size();
+    auto const SyncViewCell = [&](std::size_t const Global) -> ComputationalCell3D const& {
+        if(!SparseCanonical)
+            return all_cells[Global];
+        std::size_t const Slot = SyncViewSlot[Global];
+        return Slot == NoSyncViewSlot ? cells[Global] : SyncViewCells[Slot];
+    };
+    auto const SyncViewExtensive = [&](std::size_t const Global) -> Conserved3D const& {
+        if(!SparseCanonical)
+            return all_extensives[Global];
+        std::size_t const Slot = SyncViewSlot[Global];
+        return Slot == NoSyncViewSlot ? extensives[Global] : SyncViewExtensives[Slot];
+    };
+    if(SparseCanonicalCheck) {
+        std::size_t Mismatches = 0;
+        std::size_t FirstMismatch = NoSyncViewSlot;
+        bool const SizesMatch = CheckCells.size() == SyncViewCellCount &&
+            CheckExtensives.size() == SyncViewExtensiveCount;
+        for(std::size_t Global = 0; SizesMatch && Global < SyncViewCellCount; ++Global)
+            if(!SameWakeInputs(SyncViewCell(Global), SyncViewExtensive(Global), CheckCells[Global],
+                               CheckExtensives[Global])) {
+                if(Mismatches == 0)
+                    FirstMismatch = Global;
+                ++Mismatches;
+            }
+        if(!SizesMatch || Mismatches > 0) {
+            std::cerr << "RICH_INDIVIDUAL_RADIATION_SPARSE_CHECK failed: rank=" << rank
+                      << " sizes_match=" << (SizesMatch ? 1 : 0) << " mismatches=" << Mismatches
+                      << " first_canonical_index=" << FirstMismatch
+                      << " first_cell_id=" << (FirstMismatch < cells.size() ? cells[FirstMismatch].ID : 0)
+                      << " in_view=" << (FirstMismatch < SyncViewSlot.size() &&
+                                         SyncViewSlot[FirstMismatch] != NoSyncViewSlot ? 1 : 0)
+                      << " targets_synced=" << (TargetsSynced ? 1 : 0) << std::endl;
+            std::abort();
+        }
+        std::vector<ComputationalCell3D>().swap(CheckCells);
+        std::vector<Conserved3D>().swap(CheckExtensives);
+    }
     double maximum_radiation_energy_density =
         std::numeric_limits<double>::min();
-    if(all_cells.size() == all_extensives.size())
-        for(std::size_t global = 0; global < all_extensives.size(); ++global)
-            if(all_extensives[global].mass > 0 &&
-               std::isfinite(all_extensives[global].mass) &&
-               all_cells[global].density > 0 &&
-               std::isfinite(all_cells[global].density))
+    if(SyncViewCellCount == SyncViewExtensiveCount)
+        for(std::size_t global = 0; global < SyncViewExtensiveCount; ++global) {
+            ComputationalCell3D const& BeforeCell = SyncViewCell(global);
+            Conserved3D const& BeforeExtensive = SyncViewExtensive(global);
+            if(BeforeExtensive.mass > 0 &&
+               std::isfinite(BeforeExtensive.mass) &&
+               BeforeCell.density > 0 &&
+               std::isfinite(BeforeCell.density))
                 maximum_radiation_energy_density = std::max(
                     maximum_radiation_energy_density,
-                    std::abs(all_extensives[global].Erad) *
-                        all_cells[global].density /
-                        all_extensives[global].mass);
+                    std::abs(BeforeExtensive.Erad) *
+                        BeforeCell.density /
+                        BeforeExtensive.mass);
+        }
 #ifdef RICH_MPI
     MPI_Allreduce(MPI_IN_PLACE, &maximum_radiation_energy_density, 1,
                   MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
@@ -1189,8 +1602,8 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
         cells.size(), std::numeric_limits<double>::infinity());
     std::vector<double> const& passive_reference_time_steps =
         matrix_builder.getIndividualPassiveReferenceTimeSteps();
-    if(all_cells.size() == extensives.size() &&
-       all_extensives.size() == extensives.size())
+    if(SyncViewCellCount == extensives.size() &&
+       SyncViewExtensiveCount == extensives.size())
         for(std::size_t global = 0; global < extensives.size(); ++global) {
             if(context.isActive(global))
                 continue;
@@ -1201,8 +1614,11 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
                 passive_reference_time_steps[global] <
                     std::numeric_limits<double>::max();
             double difference = 0;
-            bool const passive_changed = passive_radiation_change_fraction(
-                all_cells[global], all_extensives[global],
+            // A sparse slot outside the view compares an extensive with itself, which the fraction reports as
+            // unchanged (every difference is 0 or NaN), so skip the evaluation.
+            bool const SameExtensive = SparseCanonical && SyncViewSlot[global] == NoSyncViewSlot;
+            bool const passive_changed = !SameExtensive && passive_radiation_change_fraction(
+                SyncViewCell(global), SyncViewExtensive(global),
                 extensives[global], maximum_radiation_energy_density,
                 difference);
             if(!passive_changed && !have_transfer_dt)
@@ -1271,6 +1687,10 @@ void RadiationStep::stepIndividual(IndividualStepContext const& context)
         defect_accounting->defect_retry_substeps +=
             pending_defect_retry_substeps;
     }
+    if(D2Timers)
+        EndRadiationD2Event(context.event_tick, D2Seconds() - D2EventStart,
+                            mpi_wait_profiler::Seconds() - D2EventMpiStart, D2Candidates, rejected_candidates,
+                            local_context.active_indices.size());
 }
 
 void RadiationStep::suggestIndividualTimeSteps(

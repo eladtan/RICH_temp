@@ -2,8 +2,10 @@
 #define RADIATION_DRIVER_HPP
 
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "conj_grad_solve.hpp"
@@ -117,6 +119,13 @@ public:
 
         /** Serial active-row implicit solve used by individual timesteps. */
         virtual bool supportsIndividualTimeSteps() const { return false; }
+        // True only for drivers whose every canonical-extensive write in an individual step goes through the base
+        // RadiationDriver::stepIndividual journalled write (the sparse canonical path of RadiationStep needs it).
+        virtual bool JournalsAllCanonicalWrites() const { return false; }
+
+        // True only for drivers whose PostCG writes the cells and extensives of active rows alone, so that in an
+        // individual step no inactive cell changes before the frozen-Dirichlet restore (PARTIAL_SETUP_FAST).
+        virtual bool PostCGWritesActiveRowsOnly() const { return false; }
 
         virtual std::size_t individualUnknownsPerCell() const { return 1; }
 
@@ -153,6 +162,21 @@ public:
             return individual_passive_reference_time_steps_;
         }
 
+        // One individual radiation event: between these calls the canonical cell IDs passed to stepIndividual()
+        // do not change, so the stable-ID index of the canonical cells is built once and reused by every candidate.
+        void BeginIndividualCanonicalScope() const;
+        void EndIndividualCanonicalScope() const noexcept;
+
+        // Optional journal of the canonical extensives an accepted distributed-active candidate overwrote: each
+        // canonical index with its value before the write, in write order.  BeginIndividualCanonicalWriteJournal()
+        // enables and clears it; the driver only appends to it and never reads it.  RadiationStep's sparse path
+        // rebuilds its wake inputs from it, so every canonical_extensives write made by stepIndividual() (or an
+        // override) must be journalled here.
+        void BeginIndividualCanonicalWriteJournal() const;
+        void EndIndividualCanonicalWriteJournal() const noexcept;
+        std::vector<std::size_t> const& GetIndividualCanonicalWriteIndices() const {return CanonicalWriteIndices;}
+        std::vector<Conserved3D> const& GetIndividualCanonicalWriteBefore() const {return CanonicalWriteBefore;}
+
         // Release state whose shape follows the committed cell ownership or
         // tessellation.  Called only after an event commits, before AMR/LB
         // state is reused.
@@ -166,6 +190,24 @@ public:
             std::vector<ComputationalCell3D> const* canonical_owned_cells = nullptr,
             std::vector<std::size_t> const* local_to_global = nullptr) const;
 
+
+        // Test seam (RICH_TEST_FORCED_RADIATION_REJECTION): arm before an individual candidate, on every rank with
+        // the same rank; the candidate then runs in full and `failing_rank` alone marks it invalid at its last
+        // collective acceptance check, so every rank rejects and rolls it back.  TakeTestForcedRejection() disarms
+        // and returns whether the last stepIndividual() call consumed the seam (identical on every rank).
+        void ArmTestForcedRejection(int failing_rank) const
+        {
+            test_forced_rejection_rank_ = failing_rank;
+            test_forced_rejection_consumed_ = false;
+        }
+
+        bool TakeTestForcedRejection() const
+        {
+            bool const consumed = test_forced_rejection_consumed_;
+            test_forced_rejection_rank_ = -1;
+            test_forced_rejection_consumed_ = false;
+            return consumed;
+        }
 
         void clearStepFailure() const
         {
@@ -396,6 +438,13 @@ protected:
     // matrix.  stepIndividual() calls this only after diffusion face transfers,
     // controlled spectral repair, and Erad/group synchronization.  The final
     // scalar is the canonical owned-cell Erad maximum reduced with MPI_MAX.
+    // Whether applyIndividualPostSolvePhysics reads its global maximum cell radiation extent.  Without it, and with
+    // one unknown per cell, that maximum feeds only failure messages (RICH_RADIATION_PARTIAL_SETUP_FAST).
+    virtual bool UsesPostSolveRadiationMaximum() const
+    {
+        return false;
+    }
+
     virtual bool applyIndividualPostSolvePhysics(
         Tessellation3D const&,
         std::vector<ComputationalCell3D>&,
@@ -428,6 +477,12 @@ protected:
         std::numeric_limits<size_t>::max();
     mutable bool last_step_failure_cell_local_ = false;
     mutable bool last_step_failure_remote_ = false;
+    // ArmTestForcedRejection: the failing rank (-1 disarmed) and whether a stepIndividual() call consumed it.
+    mutable int test_forced_rejection_rank_ = -1;
+    mutable bool test_forced_rejection_consumed_ = false;
+    // At the last collective acceptance check of stepIndividual(): consumes an armed seam on every rank and returns
+    // false on its failing rank (with a step failure), `valid` otherwise.
+    bool applyTestForcedRejection(bool valid) const;
     mutable std::vector<ComputationalCell3D> const*
         outer_transaction_cells_ = nullptr;
     mutable std::vector<Conserved3D> const*
@@ -439,7 +494,62 @@ protected:
     mutable RadiationRepairAccounting standalone_repair_accounting_;
     mutable IndividualRadiationDefectAccounting
         standalone_defect_accounting_;
+
+    // Stable-ID index of the canonical cells.  PrepareCanonicalIndex() (re)builds it unless the current scope
+    // already holds it for the same vector and returns false when an ID repeats.  FindCanonicalIndex() then
+    // answers like std::map::find on a map filled by emplace in canonical order (the lowest index of an ID).
+    bool PrepareCanonicalIndex(std::vector<ComputationalCell3D> const& CanonicalCells) const;
+    bool FindCanonicalIndex(std::size_t Id, std::size_t& Canonical) const;
+
+    mutable bool CanonicalScopeActive = false;
+    mutable std::vector<ComputationalCell3D> const* CanonicalIndexSource = nullptr;
+    mutable std::size_t CanonicalIndexSize = 0;
+    mutable bool CanonicalIndexUnique = false;
+    // RICH_RADIATION_PARTIAL_SETUP_FAST: the index is kept across events with the IDs it was built from, in
+    // canonical order, and reused while they are unchanged.
+    mutable bool CanonicalIndexRetained = false;
+    mutable std::vector<std::size_t> CanonicalIndexIds;
+    // (stable ID, canonical index), sorted.
+    mutable std::vector<std::pair<std::size_t, std::size_t> > CanonicalIndexById;
+    mutable bool CanonicalWriteJournalEnabled = false;
+    mutable std::vector<std::size_t> CanonicalWriteIndices;
+    mutable std::vector<Conserved3D> CanonicalWriteBefore;
 };
+
+// s49 radiation switches.  Read from the environment on the first call, which every rank must make, and agreed across
+// ranks with one reduction; an invalid or differing value aborts.  Unset means 0.
+//   RICH_D2_TIMERS                          0/1    per-event radiation timers, one RICH_D2_RAD line per event
+//   RICH_MG_DISTRIBUTED_ACTIVE_TWO_STAGE    0/1/2  two-stage Krylov reductions (2 = shadow: solve both ways)
+//   RICH_RADIATION_ALL_ACTIVE_SKIP_PASSIVE  0/1/2  skip empty passive exchanges in all-active events (2 = verify)
+//   RICH_RADIATION_REMAP_MINIMAL            0/1/2  remap only the context fields radiation reads (2 = verify)
+//   RICH_MG_CAPTURE_SYSTEMS                 N>=0   write the first N distributed systems of each kind
+//   RICH_MG_CAPTURE_DIR                     path   capture directory, required when N > 0
+//   RICH_RADIATION_PARTIAL_SETUP_FAST       0/1/2  skip per-cell work of partial radiation events that nothing
+//                                                  reads (2 = verify)
+struct RadiationS49Switches
+{
+    int Timers = 0;
+    int TwoStage = 0;
+    int SkipPassive = 0;
+    int RemapMinimal = 0;
+    int PartialSetupFast = 0;
+    long long CaptureSystems = 0;
+    std::string CaptureDirectory;
+};
+
+RadiationS49Switches const& RadiationS49RuntimeSwitches();
+
+// D2 radiation timers (RICH_D2_TIMERS=1).  BeginRadiationD2Event clears this rank's sums; EndRadiationD2Event reduces
+// them to rank 0 (two MPI_Reduce calls) and prints one RICH_D2_RAD line.  Both are collective.
+void BeginRadiationD2Event();
+void EndRadiationD2Event(std::uint64_t EventTick, double EventSeconds, double EventMpiSeconds, std::size_t Candidates,
+    std::size_t RejectedCandidates, std::size_t ActiveTargets);
+
+// Counts one clean RICH_RADIATION_REMAP_MINIMAL=2 check; rank 0 reports the first and every 100th.
+void RecordRadiationRemapVerification();
+
+// Counts one matrix build whose inactive rows passed the RICH_RADIATION_PARTIAL_SETUP_FAST=2 check.
+void RecordRadiationPartialSetupRowCheck();
 
 using boost::math::pow;
 static inline double get_radiation_energy_density(double const T) { return CG::radiation_constant*pow<4>(T); }

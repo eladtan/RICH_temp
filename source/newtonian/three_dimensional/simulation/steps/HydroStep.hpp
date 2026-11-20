@@ -89,6 +89,10 @@ public:
 
     void afterIndividualAMR(void) override;
 
+    bool installIndividualAMRAdjacency(std::vector<IndividualAMRChangeSet::AdjacencyEntry>& entries) override;
+
+    void requestIndividualFullEventMesh(void) override;
+
     void onIndividualForceAllActiveLatch(void) noexcept override;
 
     void beforeIndividualRebalance(void) noexcept override;

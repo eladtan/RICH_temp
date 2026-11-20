@@ -1,12 +1,15 @@
 #include "default_extensive_updater.hpp"
+#include "newtonian/three_dimensional/simulation/ActiveMeshView.hpp"
 #include <algorithm>
 #include <cerrno>
 #include <cmath>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
 #include <fcntl.h>
 #include <functional>
 #include <iomanip>
+#include <iostream>
 #include <limits>
 #include <sstream>
 #include <stdexcept>
@@ -126,6 +129,133 @@ struct StableFaceEndpointHash
 		return first ^ (second + 0x9e3779b9 + (first << 6) + (first >> 2));
 	}
 };
+
+// B9: the all-to-all over the duplicated-point peers only.  Outgoing and the result are indexed by rank, as for
+// MPI_Exchange_all_to_all, and the serialization is the same, so callers see the same packets in the same order.
+// Lost is set when a packet is addressed to a rank that is not a peer (the caller folds it into its error reduction).
+template <class T>
+std::vector<std::vector<T> > ExchangeWithDuplicatedPeers(std::vector<std::vector<T> > const& Outgoing,
+    std::vector<int> const& Peers, bool& Lost)
+{
+    std::vector<unsigned char> IsPeer(Outgoing.size(), 0);
+    std::vector<std::vector<T> > PeerData(Peers.size());
+    for(std::size_t Index = 0; Index < Peers.size(); ++Index) {
+        std::size_t const Peer = static_cast<std::size_t>(Peers[Index]);
+        if(Peer < Outgoing.size()) {
+            IsPeer[Peer] = 1;
+            PeerData[Index] = Outgoing[Peer];
+        }
+    }
+    for(std::size_t Rank = 0; Rank < Outgoing.size(); ++Rank)
+        if(IsPeer[Rank] == 0 && !Outgoing[Rank].empty())
+            Lost = true;
+    std::vector<std::vector<T> > Received = MPI_exchange_data(Peers, PeerData);
+    std::vector<std::vector<T> > Incoming(Outgoing.size());
+    for(std::size_t Index = 0; Index < Peers.size() && Index < Received.size(); ++Index)
+        if(static_cast<std::size_t>(Peers[Index]) < Incoming.size())
+            Incoming[static_cast<std::size_t>(Peers[Index])] = std::move(Received[Index]);
+    return Incoming;
+}
+
+bool SameDoubleBits(double First, double Second)
+{
+    return std::memcmp(&First, &Second, sizeof(double)) == 0;
+}
+
+// True when every conserved component of Own is the exact negation of Other's (thermal energy excluded: each side
+// splits it with its own cell velocity).
+bool OppositeConserved(Conserved3D const& Own, Conserved3D const& Other)
+{
+    bool Opposite = SameDoubleBits(Own.mass, -Other.mass) && SameDoubleBits(Own.energy, -Other.energy) &&
+        SameDoubleBits(Own.momentum.x, -Other.momentum.x) && SameDoubleBits(Own.momentum.y, -Other.momentum.y) &&
+        SameDoubleBits(Own.momentum.z, -Other.momentum.z) && SameDoubleBits(Own.Erad, -Other.Erad) &&
+        SameDoubleBits(Own.Erad_dt, -Other.Erad_dt) && SameDoubleBits(Own.Erad_dt_dt, -Other.Erad_dt_dt) &&
+        Own.Eg.size() == Other.Eg.size();
+    for(std::size_t Group = 0; Opposite && Group < Own.Eg.size(); ++Group)
+        Opposite = SameDoubleBits(Own.Eg[Group], -Other.Eg[Group]);
+    for(std::size_t Tracer = 0; Opposite && Tracer < Own.tracers.size(); ++Tracer)
+        Opposite = SameDoubleBits(Own.tracers[Tracer], -Other.tracers[Tracer]);
+    return Opposite;
+}
+
+// B9 mode 2: cross-rank face conservation at 0 ULP.  After the radiation scales are applied, each rank sends every
+// delta whose counterpart cell lives on another rank to that rank, which finds its own delta of the same face (stable
+// endpoint IDs) and requires exactly opposite conserved components.  Missing or repeated partners count as
+// mismatches.  One peer exchange and one reduction; rank 0 prints RICH_B9_CONSERVATION; on a mismatch the lowest
+// rank that found one prints an example and every rank throws.
+void VerifyCrossRankFaceConservation(std::vector<PendingIndividualHydroDelta> const& Deltas,
+    std::vector<std::size_t> const& WorkCellIds, int Rank, int RankCount, std::vector<int> const& Peers,
+    std::uint64_t EventTick)
+{
+    std::vector<std::vector<IndividualHydroDelta> > Outgoing(static_cast<std::size_t>(RankCount));
+    std::unordered_map<StableFaceEndpoint, std::size_t, StableFaceEndpointHash> OwnByEndpoint;
+    unsigned long long Counts[2] = {0, 0};
+    std::ostringstream Example;
+    Example << std::setprecision(17);
+    auto const NoteMismatch = [&](char const* Kind, std::size_t CellId, std::size_t CounterpartId)
+    {
+        if(Counts[1]++ == 0)
+            Example << " kind=" << Kind << " cell_id=" << CellId << " counterpart_id=" << CounterpartId;
+    };
+    for(std::size_t Index = 0; Index < Deltas.size(); ++Index) {
+        PendingIndividualHydroDelta const& Delta = Deltas[Index];
+        if(Delta.counterpart_owner < 0 || Delta.counterpart_owner == Rank)
+            continue;
+        std::size_t const CellId = WorkCellIds[Delta.cell_index];
+        if(Delta.counterpart_owner >= RankCount) {
+            NoteMismatch("bad_owner", CellId, Delta.counterpart_cell_id);
+            continue;
+        }
+        if(!OwnByEndpoint.emplace(StableFaceEndpoint{CellId, Delta.counterpart_cell_id}, Index).second)
+            NoteMismatch("repeated_face", CellId, Delta.counterpart_cell_id);
+        IndividualHydroDelta Packet;
+        Packet.cell_id = Delta.counterpart_cell_id;
+        Packet.counterpart_cell_id = CellId;
+        Packet.counterpart_owner = Rank;
+        Packet.delta = Delta.delta;
+        Outgoing[static_cast<std::size_t>(Delta.counterpart_owner)].push_back(Packet);
+    }
+    bool Lost = false;
+    std::vector<std::vector<IndividualHydroDelta> > const Incoming = ExchangeWithDuplicatedPeers(Outgoing, Peers, Lost);
+    if(Lost)
+        NoteMismatch("lost_packet", 0, 0);
+    std::size_t Matched = 0;
+    for(std::size_t Source = 0; Source < Incoming.size(); ++Source)
+        for(IndividualHydroDelta const& Packet : Incoming[Source]) {
+            ++Counts[0];
+            auto const Found = OwnByEndpoint.find(StableFaceEndpoint{Packet.cell_id, Packet.counterpart_cell_id});
+            if(Found == OwnByEndpoint.end() ||
+                Deltas[Found->second].counterpart_owner != static_cast<int>(Source)) {
+                NoteMismatch("unmatched", Packet.cell_id, Packet.counterpart_cell_id);
+                continue;
+            }
+            ++Matched;
+            if(!OppositeConserved(Deltas[Found->second].delta, Packet.delta)) {
+                if(Counts[1] == 0)
+                    Example << " own_mass=" << Deltas[Found->second].delta.mass << " other_mass="
+                        << Packet.delta.mass;
+                NoteMismatch("not_opposite", Packet.cell_id, Packet.counterpart_cell_id);
+            }
+        }
+    if(Matched < OwnByEndpoint.size()) {
+        NoteMismatch("unanswered", 0, 0);
+        Counts[1] += OwnByEndpoint.size() - Matched - 1;
+    }
+    unsigned long long const LocalMismatches = Counts[1];
+    MPI_Allreduce(MPI_IN_PLACE, Counts, 2, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    if(Rank == 0)
+        std::cout << "RICH_B9_CONSERVATION event_tick=" << EventTick << " checked=" << Counts[0] << " mismatches="
+            << Counts[1] << std::endl;
+    if(Counts[1] == 0)
+        return;
+    int FirstRank = LocalMismatches != 0 ? Rank : RankCount;
+    MPI_Allreduce(MPI_IN_PLACE, &FirstRank, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    if(Rank == FirstRank)
+        std::cerr << "RICH_B9_CONSERVATION_MISMATCH event_tick=" << EventTick << " rank=" << Rank << " local="
+            << LocalMismatches << Example.str() << std::endl;
+    throw std::runtime_error("RICH_INDIVIDUAL_ALL_ACTIVE_IDENTITY=2: cross-rank face deltas are not exactly opposite (" +
+        std::to_string(Counts[1]) + " mismatches)");
+}
 
 #endif
 
@@ -304,6 +434,46 @@ namespace
 		}();
 		return enabled;
 	}
+
+    // A strict switch: unset or empty is 0, otherwise exactly one digit from 0 to Highest.  Agreed in one reduction;
+    // every rank throws when any rank holds another value or the ranks differ.
+    int AgreedHydroStrictSwitch(char const* Name, int Highest)
+    {
+        char const* const Value = std::getenv(Name);
+        std::string const Text = Value == nullptr ? "" : Value;
+        int Local = -1;
+        if(Text.empty())
+            Local = 0;
+        else if(Text.size() == 1 && Text[0] >= '0' && Text[0] <= static_cast<char>('0' + Highest))
+            Local = Text[0] - '0';
+        int Extrema[2] = {Local, -Local};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, Extrema, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        if(Extrema[0] != -Extrema[1])
+            throw std::invalid_argument(std::string(Name) + " differs across MPI ranks or is invalid on some rank");
+        if(Extrema[0] < 0)
+            throw std::invalid_argument(std::string(Name) + " must be one of 0.." + std::to_string(Highest));
+        return Extrema[0];
+    }
+}
+
+int IndividualExtensiveLogForwardMode(void)
+{
+    static int const Mode = AgreedHydroStrictSwitch("RICH_INDIVIDUAL_EXTENSIVE_LOG_FORWARD", 2);
+    return Mode;
+}
+
+bool HydroD2TimersEnabled(void)
+{
+    static bool const Enabled = AgreedHydroStrictSwitch("RICH_D2_TIMERS", 1) == 1;
+    return Enabled;
+}
+
+int IndividualAllActiveIdentityMode(void)
+{
+    static int const Mode = AgreedHydroStrictSwitch("RICH_INDIVIDUAL_ALL_ACTIVE_IDENTITY", 2);
+    return Mode;
 }
 
 std::uint64_t IndividualHydroInvalidComponentMask(Conserved3D const& state)
@@ -378,6 +548,8 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 	const vector<ComputationalCell3D>* canonical_cells,
 	vector<Conserved3D>* canonical_extensives) const
 {
+	LastCanonicalWrites_.clear();
+	LastCanonicalWritesComplete_ = false;
 	const std::size_t norg = tess.GetPointNo();
 	if(extensives.size() < norg || cells.size() < norg ||
 		context.active_mask.size() < norg ||
@@ -395,28 +567,56 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 		canonical_extensives->size() != canonical_count)
 		throw std::invalid_argument(
 			"Individual hydro canonical cell and extent counts differ");
-	owned_index_by_id.reserve(std::max(norg, canonical_count));
+    // B9 (RICH_INDIVIDUAL_ALL_ACTIVE_IDENTITY): every canonical cell is a target at its own index, so the persistent
+    // canonical index answers every lookup the per-event target map would, and no cell is appended.
+    int const IdentityMode = AllActiveIdentity_;
+    bool const Identity = IdentityMode != 0;
+    constexpr std::size_t NoWorkIndex = std::numeric_limits<std::size_t>::max();
+    if(!Identity) {
+	owned_index_by_id.reserve(norg);
 	for(std::size_t i = 0; i < norg; ++i)
 		if(!owned_index_by_id.emplace(cells[i].ID, i).second)
 			local_mapping_issues |= 128u;
+    }
+    else {
+        bool IdentityTargets = canonical_cells != nullptr && canonical_count == norg;
+        for(std::size_t Index = 0; IdentityTargets && Index < norg; ++Index)
+            IdentityTargets = cells[Index].ID == (*canonical_cells)[Index].ID;
+        if(!IdentityTargets)
+            local_mapping_issues |= 1024u;
+    }
 
 	// A partial target set need not contain an inactive owned recipient of a
 	// remote face flux.  Append such canonical extents to this transaction so
 	// conservation and the radiation positivity limiter remain cell-local,
-	// while the passive primitive stays untouched.
+	// while the passive primitive stays untouched.  A recipient is appended
+	// when its first delta arrives.  Every other canonical cell is checked in
+	// place below; appending it too (every owned cell, each event) only gave
+	// it the same validation and a donor scale of exactly 1.  Its stable-ID
+	// lookup is kept across events and rehashed only when the IDs change.
 	std::vector<std::pair<std::size_t, std::size_t> > canonical_work_indices;
-	std::unordered_map<std::size_t, std::size_t> canonical_index_by_id;
+	std::unordered_map<std::size_t, std::size_t> const* canonical_index_by_id = nullptr;
 	if(canonical_cells != nullptr)
 	{
-		canonical_index_by_id.reserve(canonical_count);
-		for(std::size_t canonical = 0; canonical < canonical_count; ++canonical)
-			if(!canonical_index_by_id.emplace(
-				(*canonical_cells)[canonical].ID, canonical).second)
-				local_mapping_issues |= 256u;
+		CanonicalIdIndex& CanonicalIds = SharedCanonicalIdIndex();
+		CanonicalIds.Refresh(*canonical_cells, canonical_count);
+		canonical_index_by_id = &CanonicalIds.Map();
+		if(!CanonicalIds.Unique())
+			local_mapping_issues |= 256u;
+        if(Identity) {
+            // The targets are the canonical cells, so repeated canonical IDs are repeated target IDs.
+            if(!CanonicalIds.Unique())
+                local_mapping_issues |= 128u;
+            canonical_work_indices.reserve(norg);
+            for(std::size_t Index = 0; Index < norg && Index < canonical_count; ++Index)
+                canonical_work_indices.emplace_back(Index, Index);
+        }
+        else {
+		canonical_work_indices.reserve(owned_index_by_id.size());
 		for(auto const& entry : owned_index_by_id)
 		{
-			auto const canonical = canonical_index_by_id.find(entry.first);
-			if(canonical == canonical_index_by_id.end())
+			auto const canonical = canonical_index_by_id->find(entry.first);
+			if(canonical == canonical_index_by_id->end())
 			{
 				local_mapping_issues |= 512u;
 				continue;
@@ -424,29 +624,27 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 			canonical_work_indices.emplace_back(entry.second,
 				canonical->second);
 		}
-		for(std::size_t canonical = 0; canonical < canonical_count; ++canonical)
-		{
-			const std::size_t cell_id = (*canonical_cells)[canonical].ID;
-			if(owned_index_by_id.find(cell_id) != owned_index_by_id.end())
-				continue;
-			const std::size_t work_index = extensives.size();
-			extensives.push_back((*canonical_extensives)[canonical]);
-			owned_index_by_id.emplace(cell_id, work_index);
-			canonical_work_indices.emplace_back(work_index, canonical);
-		}
+        }
 	}
-	const std::size_t work_count = extensives.size();
-	oldEk_.assign(work_count, 0);
-	oldEtherm_.assign(work_count, 0);
-	oldE_.assign(work_count, 0);
-	std::vector<unsigned char> touched(work_count, 0);
-	std::vector<std::size_t> work_cell_ids(work_count, 0);
-	for(std::size_t i = 0; i < cells.size() && i < work_count; ++i)
-		work_cell_ids[i] = cells[i].ID;
-	if(canonical_cells != nullptr)
-		for(auto const& mapping : canonical_work_indices)
-			work_cell_ids[mapping.first] =
-				(*canonical_cells)[mapping.second].ID;
+    // Work index of an owned (or appended) cell by stable ID, or NoWorkIndex.
+    auto const FindOwned = [&](std::size_t CellId) -> std::size_t {
+        if(Identity) {
+            if(canonical_index_by_id == nullptr)
+                return NoWorkIndex;
+            auto const Found = canonical_index_by_id->find(CellId);
+            return Found == canonical_index_by_id->end() ? NoWorkIndex : Found->second;
+        }
+        auto const Found = owned_index_by_id.find(CellId);
+        return Found == owned_index_by_id.end() ? NoWorkIndex : Found->second;
+    };
+
+	// A canonical cell that is not in the transaction; its radiation donor
+	// scale is exactly 1 (no outflow, validated state).
+	auto const IsPassiveCanonicalId = [&](std::size_t CellId)
+	{
+		return FindOwned(CellId) == NoWorkIndex &&
+			canonical_index_by_id != nullptr && canonical_index_by_id->count(CellId) != 0;
+	};
 #ifndef RICH_MPI
 	if(local_mapping_issues != 0)
 		throw std::runtime_error(
@@ -478,6 +676,14 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 	const std::vector<std::vector<std::size_t> >& ghost_indices = tess.GetGhostIndeces();
 	if(duplicated_procs.size() != ghost_indices.size())
 		local_mapping_issues |= 4u;
+    // The identity exchange goes to each duplicated-point peer once.
+    if(Identity) {
+        std::vector<int> SortedPeers(duplicated_procs);
+        std::sort(SortedPeers.begin(), SortedPeers.end());
+        if(std::adjacent_find(SortedPeers.begin(), SortedPeers.end()) != SortedPeers.end() ||
+            std::binary_search(SortedPeers.begin(), SortedPeers.end(), rank))
+            local_mapping_issues |= 2048u;
+    }
 	for(std::size_t i = 0; i < duplicated_procs.size() && i < ghost_indices.size(); ++i)
 	{
 		if(duplicated_procs[i] < 0 || duplicated_procs[i] >= rank_count)
@@ -667,13 +873,35 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 	// failure record without adding per-correction state to the normal path.
 	const std::size_t locally_constructed_delta_count = local_deltas.size();
 #ifdef RICH_MPI
-	std::vector<std::vector<IndividualHydroDelta> > incoming =
+    // Identity: only duplicated-point peers can receive deltas; the result is indexed by source rank, as the
+    // all-to-all's, so the deltas are appended in the same ascending rank order.
+    bool LostIdentityPackets = false;
+	std::vector<std::vector<IndividualHydroDelta> > incoming = Identity ?
+        ExchangeWithDuplicatedPeers(outgoing, duplicated_procs, LostIdentityPackets) :
 		MPI_Exchange_all_to_all(outgoing, MPI_COMM_WORLD);
-	bool local_packet_error = false;
+	bool local_packet_error = LostIdentityPackets;
 	for(const auto& rank_packets : incoming)
 		for(const IndividualHydroDelta& packet : rank_packets)
-			if(owned_index_by_id.find(packet.cell_id) == owned_index_by_id.end())
+		{
+			if(FindOwned(packet.cell_id) != NoWorkIndex)
+				continue;
+			if(canonical_index_by_id == nullptr)
+			{
 				local_packet_error = true;
+				continue;
+			}
+			auto const canonical = canonical_index_by_id->find(packet.cell_id);
+			if(canonical == canonical_index_by_id->end())
+			{
+				local_packet_error = true;
+				continue;
+			}
+			// First delta for a passive canonical recipient: append its extent.
+			std::size_t const WorkIndex = extensives.size();
+			extensives.push_back((*canonical_extensives)[canonical->second]);
+			owned_index_by_id.emplace(packet.cell_id, WorkIndex);
+			canonical_work_indices.emplace_back(WorkIndex, canonical->second);
+		}
 	int packet_error = local_packet_error ? 1 : 0;
 	MPI_Allreduce(MPI_IN_PLACE, &packet_error, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
 	if(packet_error != 0)
@@ -682,7 +910,9 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 		for(const IndividualHydroDelta& packet : rank_packets)
 		{
 			PendingIndividualHydroDelta pending;
-			pending.cell_index = owned_index_by_id.at(packet.cell_id);
+            pending.cell_index = FindOwned(packet.cell_id);
+            if(pending.cell_index == NoWorkIndex)
+                throw std::out_of_range("Individual hydro delta for a cell outside the transaction");
 			pending.counterpart_cell_id = packet.counterpart_cell_id;
 			pending.counterpart_owner = packet.counterpart_owner;
 			pending.delta = packet.delta;
@@ -691,6 +921,20 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 	std::vector<std::vector<IndividualHydroDelta> >().swap(outgoing);
 	std::vector<std::vector<IndividualHydroDelta> >().swap(incoming);
 #endif
+	// The transaction is complete: owned targets, mesh slots, then the
+	// appended recipients.
+	const std::size_t work_count = extensives.size();
+	oldEk_.assign(work_count, 0);
+	oldEtherm_.assign(work_count, 0);
+	oldE_.assign(work_count, 0);
+	std::vector<unsigned char> touched(work_count, 0);
+	std::vector<std::size_t> work_cell_ids(work_count, 0);
+	for(std::size_t i = 0; i < cells.size() && i < work_count; ++i)
+		work_cell_ids[i] = cells[i].ID;
+	if(canonical_cells != nullptr)
+		for(auto const& mapping : canonical_work_indices)
+			work_cell_ids[mapping.first] =
+				(*canonical_cells)[mapping.second].ID;
 	constexpr std::size_t radiation_group_count = ENERGY_GROUPS_NUM;
 	static_assert(radiation_group_count > 0,
 		"Individual hydro radiation limiting requires at least one group");
@@ -724,14 +968,11 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 	std::uint64_t local_radiation_issue_cell = no_radiation_issue_cell;
 	std::uint64_t local_radiation_issue_mask = 0;
 	std::size_t local_radiation_issue_group = no_radiation_issue_group;
-	auto record_radiation_issue =
-		[&work_cell_ids, &local_radiation_issue_cell,
-			&local_radiation_issue_mask, &local_radiation_issue_group]
-		(std::size_t cell, std::uint64_t issue,
-			std::size_t group = std::numeric_limits<std::size_t>::max())
+	auto RecordRadiationIssueForId =
+		[&local_radiation_issue_cell, &local_radiation_issue_mask,
+			&local_radiation_issue_group]
+		(std::uint64_t cell_id, std::uint64_t issue, std::size_t group)
 	{
-		const std::uint64_t cell_id =
-			static_cast<std::uint64_t>(work_cell_ids[cell]);
 		if(cell_id < local_radiation_issue_cell)
 		{
 			local_radiation_issue_cell = cell_id;
@@ -744,6 +985,14 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 			local_radiation_issue_group =
 				std::min(local_radiation_issue_group, group);
 		}
+	};
+	auto record_radiation_issue =
+		[&work_cell_ids, &RecordRadiationIssueForId]
+		(std::size_t cell, std::uint64_t issue,
+			std::size_t group = std::numeric_limits<std::size_t>::max())
+	{
+		RecordRadiationIssueForId(
+			static_cast<std::uint64_t>(work_cell_ids[cell]), issue, group);
 	};
 	for(std::size_t pending_index = 0;
 		pending_index < local_deltas.size(); ++pending_index)
@@ -788,23 +1037,43 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 		if(has_negative_radiation)
 			radiation_outflow_delta_indices[cell].push_back(pending_index);
 	}
-	for(auto const& owned : owned_index_by_id)
+	auto const RecordStateIssues = [&](Conserved3D const& State, std::uint64_t CellId)
 	{
-		const std::size_t cell = owned.second;
-		const std::uint64_t state_mask = IndividualHydroInvalidComponentMask(extensives[cell]);
+		const std::size_t NoGroup = std::numeric_limits<std::size_t>::max();
+		const std::uint64_t state_mask = IndividualHydroInvalidComponentMask(State);
 		if((state_mask & (16 | 32 | 64 | 128)) != 0)
-			record_radiation_issue(cell, invalid_material_issue);
+			RecordRadiationIssueForId(CellId, invalid_material_issue, NoGroup);
 		if((state_mask & 1) != 0)
-			record_radiation_issue(cell, invalid_erad_issue);
+			RecordRadiationIssueForId(CellId, invalid_erad_issue, NoGroup);
 		if((state_mask & (2 | 4)) != 0)
-			record_radiation_issue(cell, invalid_derivative_issue);
+			RecordRadiationIssueForId(CellId, invalid_derivative_issue, NoGroup);
 		if((state_mask & 8) != 0)
 		for(std::size_t group = 0; group < radiation_group_count; ++group)
 		{
-			const double available = extensives[cell].Eg[group];
+			const double available = State.Eg[group];
 			if(!std::isfinite(available) || available < 0)
-				record_radiation_issue(cell, invalid_group_issue, group);
+				RecordRadiationIssueForId(CellId, invalid_group_issue, group);
 		}
+	};
+	if(Identity) {
+        for(std::size_t Owned = 0; Owned < norg; ++Owned)
+            RecordStateIssues(extensives[Owned], static_cast<std::uint64_t>(work_cell_ids[Owned]));
+    }
+    else
+	for(auto const& owned : owned_index_by_id)
+		RecordStateIssues(extensives[owned.second], static_cast<std::uint64_t>(work_cell_ids[owned.second]));
+	// Canonical cells outside the transaction get the same checks in place.
+	// The result is a minimum over cell IDs with OR-ed masks, so it does not
+	// depend on the order in which cells are checked.
+	if(canonical_cells != nullptr)
+	{
+		std::vector<unsigned char> InTransaction(canonical_count, 0);
+		for(auto const& mapping : canonical_work_indices)
+			InTransaction[mapping.second] = 1;
+		for(std::size_t canonical = 0; canonical < canonical_count; ++canonical)
+			if(InTransaction[canonical] == 0)
+				RecordStateIssues((*canonical_extensives)[canonical],
+					static_cast<std::uint64_t>((*canonical_cells)[canonical].ID));
 	}
 
 	std::uint64_t radiation_issue_cell = local_radiation_issue_cell;
@@ -833,17 +1102,26 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 		if((radiation_issue_mask & invalid_material_issue) != 0)
 		{
 			std::uint64_t component_mask = 0;
-			auto const invalid = owned_index_by_id.find(radiation_issue_cell);
-			if(invalid != owned_index_by_id.end())
+			Conserved3D const* InvalidState = nullptr;
+			std::size_t const InvalidWork = FindOwned(radiation_issue_cell);
+			if(InvalidWork != NoWorkIndex)
+				InvalidState = &extensives[InvalidWork];
+			else if(canonical_index_by_id != nullptr)
 			{
-				component_mask = IndividualHydroInvalidComponentMask(extensives[invalid->second]);
+				auto const canonical = canonical_index_by_id->find(radiation_issue_cell);
+				if(canonical != canonical_index_by_id->end())
+					InvalidState = &(*canonical_extensives)[canonical->second];
+			}
+			if(InvalidState != nullptr)
+			{
+				component_mask = IndividualHydroInvalidComponentMask(*InvalidState);
 				const std::string record_id = std::to_string(rank) + ":" +
 					std::to_string(context.event_tick) + ":" + std::to_string(radiation_issue_cell);
 				std::ostringstream record;
 				record << std::setprecision(17) << "INDIVIDUAL_HYDRO_INVALID_INPUT"
 					<< " record_id=" << record_id << " phase=before_flux_application"
 					<< " component_mask=" << component_mask
-					<< " state=" << extensives[invalid->second] << '\n';
+					<< " state=" << *InvalidState << '\n';
 				PersistIndividualHydroDiagnosticRecord(record_id, record.str());
 			}
 #ifdef RICH_MPI
@@ -863,9 +1141,11 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 	// accepted states away from cancellation; the ordered replay below still
 	// verifies the actual double-precision additions before deltas are changed.
 	constexpr double radiation_reserve_fraction = 1e-12;
-	for(auto const& owned : owned_index_by_id)
+    // Identity visits the targets in index order; otherwise the map's own order, as before.
+    auto OwnedIterator = owned_index_by_id.begin();
+    for(std::size_t OwnedStep = 0; Identity ? OwnedStep < norg : OwnedIterator != owned_index_by_id.end(); ++OwnedStep)
 	{
-		const std::size_t cell = owned.second;
+        const std::size_t cell = Identity ? OwnedStep : (OwnedIterator++)->second;
 		const double safe_erad =
 			std::nextafter(extensives[cell].Erad *
 				(1 - radiation_reserve_fraction), 0.0);
@@ -922,9 +1202,10 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 				return false;
 		return true;
 	};
-	for(auto const& owned : owned_index_by_id)
+    OwnedIterator = owned_index_by_id.begin();
+    for(std::size_t OwnedStep = 0; Identity ? OwnedStep < norg : OwnedIterator != owned_index_by_id.end(); ++OwnedStep)
 	{
-		const std::size_t cell = owned.second;
+        const std::size_t cell = Identity ? OwnedStep : (OwnedIterator++)->second;
 		if(donor_application_is_safe(cell, radiation_scale[cell]))
 			continue;
 		radiation_scale[cell] =
@@ -954,13 +1235,12 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 			continue;
 		if(pending.counterpart_owner == rank)
 		{
-			const auto counterpart =
-				owned_index_by_id.find(pending.counterpart_cell_id);
-			if(counterpart == owned_index_by_id.end())
-				local_radiation_scale_mapping_error = true;
-			else
+			std::size_t const counterpart = FindOwned(pending.counterpart_cell_id);
+			if(counterpart != NoWorkIndex)
 				radiation_counterpart_scale[pending_index] =
-					radiation_scale[counterpart->second];
+					radiation_scale[counterpart];
+			else if(!IsPassiveCanonicalId(pending.counterpart_cell_id))
+				local_radiation_scale_mapping_error = true;
 		}
 		else if(pending.counterpart_owner < rank_count)
 		{
@@ -988,12 +1268,14 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 	if(radiation_scale_mapping_error != 0)
 		throw std::runtime_error(
 			"Individual hydro radiation limiter could not map a face endpoint");
+    bool LostIdentityScales = false;
 	const std::vector<std::vector<IndividualHydroScale> >
-		radiation_scale_incoming = MPI_Exchange_all_to_all(
-			radiation_scale_outgoing, MPI_COMM_WORLD);
+		radiation_scale_incoming = Identity ?
+        ExchangeWithDuplicatedPeers(radiation_scale_outgoing, duplicated_procs, LostIdentityScales) :
+        MPI_Exchange_all_to_all(radiation_scale_outgoing, MPI_COMM_WORLD);
 	std::vector<unsigned char> received_radiation_scale(
 		local_deltas.size(), 0);
-	bool local_radiation_scale_packet_error = false;
+	bool local_radiation_scale_packet_error = LostIdentityScales;
 	for(const auto& rank_packets : radiation_scale_incoming)
 		for(const IndividualHydroScale& packet : rank_packets)
 		{
@@ -1035,14 +1317,14 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 			local_deltas[pending_index];
 		if(pending.counterpart_owner < 0)
 			continue;
-		const auto counterpart =
-			owned_index_by_id.find(pending.counterpart_cell_id);
-		if(counterpart == owned_index_by_id.end())
+		std::size_t const counterpart = FindOwned(pending.counterpart_cell_id);
+		if(counterpart != NoWorkIndex)
+			radiation_counterpart_scale[pending_index] =
+				radiation_scale[counterpart];
+		else if(!IsPassiveCanonicalId(pending.counterpart_cell_id))
 			throw std::runtime_error(
 				"Individual hydro radiation limiter could not map a face "
 				"endpoint");
-		radiation_counterpart_scale[pending_index] =
-			radiation_scale[counterpart->second];
 	}
 #endif
 	for(std::size_t pending_index = 0;
@@ -1073,6 +1355,12 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 		pending.delta.Erad_dt *= face_scale;
 		pending.delta.Erad_dt_dt *= face_scale;
 	}
+#ifdef RICH_MPI
+    // B9 mode 2: both sides of every cross-rank face must hold exactly opposite conserved deltas.
+    if(IdentityMode == 2)
+        VerifyCrossRankFaceConservation(local_deltas, work_cell_ids, rank, rank_count, duplicated_procs,
+            context.event_tick);
+#endif
 
 	for(const PendingIndividualHydroDelta& indexed_delta : local_deltas)
 	{
@@ -1260,10 +1548,17 @@ void DefaultExtensiveUpdater::UpdateIndividual(
 	}
 	require_valid_updated_state("after_dual_energy_synchronization");
 	if(canonical_extensives != nullptr)
+	{
 		for(auto const& mapping : canonical_work_indices)
 			if(touched[mapping.first])
-				(*canonical_extensives)[mapping.second] =
-				extensives[mapping.first];
+			{
+				Conserved3D& Canonical = (*canonical_extensives)[mapping.second];
+				LastCanonicalWrites_.push_back({mapping.second, Canonical.mass, Canonical.energy,
+					Canonical.internal_energy});
+				Canonical = extensives[mapping.first];
+			}
+		LastCanonicalWritesComplete_ = true;
+	}
 	extensives.resize(norg);
 }
 

@@ -2,12 +2,13 @@
 #define CONDITION_EXTENSIVE_UPDATER3D_HPP 1
 
 #include "extensive_updater3d.hpp"
+#include "default_extensive_updater.hpp"
 #include "LinearGauss3D.hpp"
 #include "../common/equation_of_state.hpp"
 #include "misc/utils.hpp"
 
 //! \brief Updates the extensives based on a series of conditions and actions. Does a normal update of all cells before going into the conditions check
-class ConditionExtensiveUpdater3D : public ExtensiveUpdater3D
+class ConditionExtensiveUpdater3D : public ExtensiveUpdater3D, public IndividualCanonicalWriteLog
 {
 public:
 
@@ -76,8 +77,36 @@ public:
 		const vector<ComputationalCell3D>* canonical_cells = nullptr,
 		vector<Conserved3D>* canonical_extensives = nullptr) const override;
 
+    /*! \brief With RICH_INDIVIDUAL_EXTENSIVE_LOG_FORWARD at 1 or 2, for this exact type, when no rank has a
+      condition/action pair: then nothing but the inner DefaultExtensiveUpdater writes canonical cells, and its log is
+      complete.  Collective on its first call in those modes.
+    */
+    bool ForwardsCanonicalWrites(void) const override;
+
+    std::vector<IndividualCanonicalWrite> const* LastForwardedCanonicalWrites(void) const override;
+
+    double LastValidationSeconds(void) const override {return LastValidationSeconds_;}
+
+    //! \brief Passed to the inner DefaultExtensiveUpdater of every following UpdateIndividual call.
+    bool SetAllActiveIdentity(int Mode) const override
+    {
+        AllActiveIdentity_ = Mode;
+        return true;
+    }
+
 private:
+    // True when no rank has a condition/action pair.  Agreed in one reduction on its first call (collective).
+    bool SequenceEmptyOnEveryRank(void) const;
+
 	const vector<pair<const Condition3D*, const Action3D*> > sequence_;
+    // Inner updater kept across calls under log forwarding (modes 1 and 2); mode 0 builds a fresh one per call.
+    DefaultExtensiveUpdater RegularUpdate_;
+    // -1 not agreed yet, 0 some rank has a condition/action pair, 1 no rank has one.
+    mutable int SequenceEmptyAgreed_ = -1;
+    // The last UpdateIndividual call completed with a complete inner log and no condition/action pair anywhere.
+    mutable bool LastCallForwarded_ = false;
+    mutable double LastValidationSeconds_ = 0;
+    mutable int AllActiveIdentity_ = 0;
 };
 
 //! \brief Class that returns true for all cells

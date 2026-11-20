@@ -2,6 +2,7 @@
 
 #ifdef RICH_MPI
 
+#include <cstring>
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -12,7 +13,9 @@
 #ifdef __GLIBC__
 #include <malloc.h>
 #endif
+#include <iostream>
 #include <set>
+#include <sstream>
 #include <string>
 #include <type_traits>
 #include <unordered_map>
@@ -30,6 +33,13 @@
 
 namespace
 {
+
+// True for +0.0 exactly (not -0.0, not NaN).
+bool IsPositiveZero(double Value)
+{
+    double const Zero = 0.0;
+    return std::memcmp(&Value, &Zero, sizeof(double)) == 0;
+}
 typedef std::chrono::steady_clock Clock;
 
 // Each extra forced level costs roughly eight nodes per particle once leaves
@@ -62,12 +72,34 @@ static_assert(std::is_trivially_copyable<GravityOwnerParticle>::value,
 static_assert(std::is_trivially_copyable<GravityOwnerResult>::value,
               "Gravity redistribution results must be wire-copyable");
 
+// Stage seconds of one forward redistribution (RICH_D2_TIMERS), accumulated with MPI_Wtime.
+struct ForwardStageSeconds
+{
+    double Keys = 0.0;
+    double Sort = 0.0;
+    double Decide = 0.0;
+    double Pack = 0.0;
+    double Wire = 0.0;
+    double Unpack = 0.0;
+};
+
+// Adds the seconds since Mark to Bucket and moves Mark to now.
+void lapWtime(double& Bucket, double& Mark)
+{
+    const double Now = MPI_Wtime();
+    Bucket += Now - Mark;
+    Mark = Now;
+}
+
+// Stages (forward redistribution with RICH_D2_TIMERS only) receives the local work as Pack and the collectives as Wire.
 template<typename T>
 std::vector<T> exchangeRecordsByRank(
     const std::vector<std::vector<T>>& sendByRank,
     const MPI_Comm& comm,
-    const char* context)
+    const char* context,
+    ForwardStageSeconds* Stages = nullptr)
 {
+    double StageMark = Stages != nullptr ? MPI_Wtime() : 0.0;
     int size = 1;
     MPI_Comm_size(comm, &size);
     if(sendByRank.size() != static_cast<std::size_t>(size))
@@ -93,17 +125,23 @@ std::vector<T> exchangeRecordsByRank(
             totalSendRecords * sizeof(T));
         totalSendRecords += count;
     }
+    if(Stages != nullptr)
+        lapWtime(Stages->Pack, StageMark);
     int localValidInt = localValid ? 1 : 0;
     int globalValidInt = 0;
     MPI_Allreduce(&localValidInt, &globalValidInt, 1, MPI_INT, MPI_LAND, comm);
     if(globalValidInt == 0)
         throw UniversalError(std::string(context) +
                              ": byte counts exceed MPI int");
+    if(Stages != nullptr)
+        lapWtime(Stages->Wire, StageMark);
 
     std::vector<T> sendFlat;
     sendFlat.reserve(totalSendRecords);
     for(const std::vector<T>& peer : sendByRank)
         sendFlat.insert(sendFlat.end(), peer.begin(), peer.end());
+    if(Stages != nullptr)
+        lapWtime(Stages->Pack, StageMark);
     MPI_Alltoall(sendCounts.data(), 1, MPI_INT,
                  receiveCounts.data(), 1, MPI_INT, comm);
     std::size_t totalReceiveBytes = 0;
@@ -133,7 +171,169 @@ std::vector<T> exchangeRecordsByRank(
         sendCounts.data(), sendDisplacements.data(), MPI_BYTE,
         received.empty() ? nullptr : received.data(),
         receiveCounts.data(), receiveDisplacements.data(), MPI_BYTE, comm);
+    if(Stages != nullptr)
+        lapWtime(Stages->Wire, StageMark);
     return received;
+}
+
+// The exchange of exchangeRecordsByRank for records already laid out by destination: RecordCounts[peer] consecutive
+// records of Flat go to peer. Same collectives in the same order with the same byte counts and displacements, so the
+// received records are identical; Received and the count arrays keep their capacity across calls.
+template<typename T>
+void exchangeFlatRecordsByRank(const T* Flat, const std::vector<std::size_t>& RecordCounts, std::vector<T>& Received,
+    std::vector<int>& SendCounts, std::vector<int>& SendDisplacements, std::vector<int>& ReceiveCounts,
+    std::vector<int>& ReceiveDisplacements, const MPI_Comm& Comm, const char* Context, ForwardStageSeconds* Stages)
+{
+    double StageMark = Stages != nullptr ? MPI_Wtime() : 0.0;
+    int Size = 1;
+    MPI_Comm_size(Comm, &Size);
+    if(RecordCounts.size() != static_cast<std::size_t>(Size))
+        throw UniversalError(std::string(Context) + ": invalid peer table");
+    SendCounts.assign(static_cast<std::size_t>(Size), 0);
+    ReceiveCounts.assign(static_cast<std::size_t>(Size), 0);
+    SendDisplacements.assign(static_cast<std::size_t>(Size), 0);
+    ReceiveDisplacements.assign(static_cast<std::size_t>(Size), 0);
+    const std::size_t IntLimit = static_cast<std::size_t>(std::numeric_limits<int>::max());
+    std::size_t TotalSendRecords = 0;
+    bool LocalValid = true;
+    for(int Peer = 0; Peer < Size; ++Peer)
+    {
+        const std::size_t Count = RecordCounts[static_cast<std::size_t>(Peer)];
+        LocalValid = LocalValid && Count <= IntLimit / sizeof(T) && TotalSendRecords <= IntLimit / sizeof(T) - Count;
+        if(!LocalValid)
+            break;
+        SendCounts[static_cast<std::size_t>(Peer)] = static_cast<int>(Count * sizeof(T));
+        SendDisplacements[static_cast<std::size_t>(Peer)] = static_cast<int>(TotalSendRecords * sizeof(T));
+        TotalSendRecords += Count;
+    }
+    if(Stages != nullptr)
+        lapWtime(Stages->Pack, StageMark);
+    int LocalValidInt = LocalValid ? 1 : 0;
+    int GlobalValidInt = 0;
+    MPI_Allreduce(&LocalValidInt, &GlobalValidInt, 1, MPI_INT, MPI_LAND, Comm);
+    if(GlobalValidInt == 0)
+        throw UniversalError(std::string(Context) + ": byte counts exceed MPI int");
+    MPI_Alltoall(SendCounts.data(), 1, MPI_INT, ReceiveCounts.data(), 1, MPI_INT, Comm);
+    std::size_t TotalReceiveBytes = 0;
+    for(int Peer = 0; Peer < Size; ++Peer)
+    {
+        const int Bytes = ReceiveCounts[static_cast<std::size_t>(Peer)];
+        if(Bytes < 0 || Bytes % static_cast<int>(sizeof(T)) != 0 ||
+           TotalReceiveBytes > IntLimit - static_cast<std::size_t>(Bytes))
+            LocalValid = false;
+        if(LocalValid)
+        {
+            ReceiveDisplacements[static_cast<std::size_t>(Peer)] = static_cast<int>(TotalReceiveBytes);
+            TotalReceiveBytes += static_cast<std::size_t>(Bytes);
+        }
+    }
+    LocalValidInt = LocalValid ? 1 : 0;
+    MPI_Allreduce(&LocalValidInt, &GlobalValidInt, 1, MPI_INT, MPI_LAND, Comm);
+    if(GlobalValidInt == 0)
+        throw UniversalError(std::string(Context) + ": invalid receive byte counts");
+    Received.resize(TotalReceiveBytes / sizeof(T));
+    MPI_Alltoallv(TotalSendRecords == 0 ? nullptr : Flat, SendCounts.data(), SendDisplacements.data(), MPI_BYTE,
+        Received.empty() ? nullptr : Received.data(), ReceiveCounts.data(), ReceiveDisplacements.data(), MPI_BYTE,
+        Comm);
+    if(Stages != nullptr)
+        lapWtime(Stages->Wire, StageMark);
+}
+
+// Gravity owner of each record, computed once per record: the number of splitters not above its key (the original
+// std::upper_bound), found by a cursor that moves forward while the keys do not decrease (std::upper_bound restarts it
+// after a decrease). Fills Destinations and RecordCounts; returns true when the destinations do not decrease along
+// Records, so that Records is already laid out by destination.
+bool computeForwardDestinations(const std::vector<GravityOwnerParticle>& Records,
+    const std::vector<std::uint64_t>& Splitters, int Size, std::vector<int>& Destinations,
+    std::vector<std::size_t>& RecordCounts)
+{
+    Destinations.resize(Records.size());
+    RecordCounts.assign(static_cast<std::size_t>(Size), 0);
+    std::size_t Cursor = 0;
+    bool Ordered = true;
+    for(std::size_t Index = 0; Index < Records.size(); ++Index)
+    {
+        const std::uint64_t Key = Records[Index].mortonKey;
+        if(Index > 0 && Key < Records[Index - 1].mortonKey)
+            Cursor = static_cast<std::size_t>(std::upper_bound(Splitters.begin(), Splitters.end(), Key) -
+                Splitters.begin());
+        while(Cursor < Splitters.size() && Splitters[Cursor] <= Key)
+            ++Cursor;
+        const int Destination = static_cast<int>(Cursor);
+        Ordered = Ordered && (Index == 0 || Destination >= Destinations[Index - 1]);
+        Destinations[Index] = Destination;
+        ++RecordCounts[static_cast<std::size_t>(Destination)];
+    }
+    return Ordered;
+}
+
+// The send records laid out by destination, in Records order within a destination (the order of the original
+// per-destination push_back): Records itself when ordered, otherwise a stable counting sort into Packed.
+const GravityOwnerParticle* layoutForwardRecords(const std::vector<GravityOwnerParticle>& Records, bool Ordered,
+    const std::vector<int>& Destinations, const std::vector<std::size_t>& RecordCounts,
+    std::vector<std::size_t>& Offsets, std::vector<GravityOwnerParticle>& Packed)
+{
+    if(Ordered)
+        return Records.empty() ? nullptr : Records.data();
+    Offsets.assign(RecordCounts.size(), 0);
+    std::size_t Running = 0;
+    for(std::size_t Destination = 0; Destination < RecordCounts.size(); ++Destination)
+    {
+        Offsets[Destination] = Running;
+        Running += RecordCounts[Destination];
+    }
+    Packed.resize(Records.size());
+    for(std::size_t Index = 0; Index < Records.size(); ++Index)
+        Packed[Offsets[static_cast<std::size_t>(Destinations[Index])]++] = Records[Index];
+    return Packed.empty() ? nullptr : Packed.data();
+}
+
+// RICH_FMM_FORWARD_DEDUP=2: the single-pass destinations, counts and send layout against the original pack
+// (std::upper_bound per record, SendParticles per destination), bit for bit. Empty when equal, else one example.
+std::string compareForwardPack(const std::vector<GravityOwnerParticle>& Records,
+    const std::vector<std::uint64_t>& Splitters, const std::vector<std::vector<GravityOwnerParticle>>& SendParticles,
+    const std::vector<int>& Destinations, const std::vector<std::size_t>& RecordCounts,
+    const GravityOwnerParticle* Flat)
+{
+    std::ostringstream Example;
+    for(std::size_t Index = 0; Index < Records.size(); ++Index)
+    {
+        const int Original = static_cast<int>(std::upper_bound(Splitters.begin(), Splitters.end(),
+            Records[Index].mortonKey) - Splitters.begin());
+        if(Original == Destinations[Index])
+            continue;
+        Example << "kind=destination record=" << Index << " key=" << Records[Index].mortonKey << " original="
+                << Original << " single_pass=" << Destinations[Index];
+        return Example.str();
+    }
+    if(SendParticles.size() != RecordCounts.size())
+    {
+        Example << "kind=peer_table original=" << SendParticles.size() << " single_pass=" << RecordCounts.size();
+        return Example.str();
+    }
+    std::size_t Offset = 0;
+    for(std::size_t Destination = 0; Destination < SendParticles.size(); ++Destination)
+    {
+        const std::vector<GravityOwnerParticle>& Original = SendParticles[Destination];
+        if(Original.size() != RecordCounts[Destination])
+        {
+            Example << "kind=count destination=" << Destination << " original=" << Original.size()
+                    << " single_pass=" << RecordCounts[Destination];
+            return Example.str();
+        }
+        for(std::size_t Position = 0; Position < Original.size(); ++Position)
+        {
+            if(std::memcmp(&Original[Position], Flat + Offset + Position, sizeof(GravityOwnerParticle)) == 0)
+                continue;
+            Example << "kind=record destination=" << Destination << " position=" << Position << " original_key="
+                    << Original[Position].mortonKey << " original_cell=" << Original[Position].cellId
+                    << " single_pass_key=" << Flat[Offset + Position].mortonKey << " single_pass_cell="
+                    << Flat[Offset + Position].cellId;
+            return Example.str();
+        }
+        Offset += Original.size();
+    }
+    return std::string();
 }
 
 double elapsed(const Clock::time_point& start)
@@ -698,6 +898,26 @@ void collectiveRequire(bool localOk,
 }
 }
 
+// Storage of the forward redistribution kept across solves (RICH_FMM_FORWARD_DEDUP); every vector is cleared,
+// assigned or resized before use, so only capacity carries over from one solve to the next.
+struct DistributedFmmGravityCalculator::ForwardBuffers
+{
+    std::vector<GravityOwnerParticle> Particles;
+    std::vector<GravityOwnerParticle> Received;
+    std::vector<GravityOwnerParticle> Packed;
+    std::vector<int> Destinations;
+    std::vector<std::size_t> RecordCounts;
+    std::vector<std::size_t> Offsets;
+    std::vector<int> SendCounts;
+    std::vector<int> SendDisplacements;
+    std::vector<int> ReceiveCounts;
+    std::vector<int> ReceiveDisplacements;
+    std::vector<Vector3D> OwnedPositions;
+    std::vector<double> OwnedMasses;
+    std::vector<std::uint64_t> OwnedCellIds;
+    std::vector<unsigned char> OwnedTargets;
+};
+
 DistributedFmmGravityCalculator::DistributedFmmGravityCalculator(
     FmmGravityOptions options,
     FmmDistributedOptions distributedOptions,
@@ -970,14 +1190,14 @@ void DistributedFmmGravityCalculator::readRuntimeSettings()
     enum Field
     {
         fError, fTrace, fResplit, fWindow, fSamples, fEvery, fGeomLog,
-        fTargetPrune, fTargetOwned, fFieldCount
+        fTargetPrune, fTargetOwned, fD2Timers, fForwardDedup, fFieldCount
     };
     unsigned long long values[fFieldCount] = {
         0ull, 0ull,
         distributedOptions_.resampleGravitySplitters ? 1ull : 0ull,
         static_cast<unsigned long long>(
             distributedOptions_.minSolvesBetweenStructuralChanges),
-        0ull, 0ull, 0ull, 1ull, 0ull};
+        0ull, 0ull, 0ull, 1ull, 0ull, 0ull, 0ull};
     if(rank_ == 0)
     {
         const auto set = [](const char* text) {
@@ -1044,11 +1264,23 @@ void DistributedFmmGravityCalculator::readRuntimeSettings()
         };
         readSwitch("RICH_FMM_TARGET_PRUNE", fTargetPrune, 6ull);
         readSwitch("RICH_FMM_TARGET_OWNED", fTargetOwned, 7ull);
+        // D2 stage timers of the forward redistribution (0/1).
+        readSwitch("RICH_D2_TIMERS", fD2Timers, 8ull);
+        // Forward destinations computed once with buffers kept across solves: 0 off, 1 on, 2 run both and compare.
+        const char* const dedup = std::getenv("RICH_FMM_FORWARD_DEDUP");
+        if(values[fError] == 0ull && set(dedup))
+        {
+            if(dedup[0] >= '0' && dedup[0] <= '2' && dedup[1] == '\0')
+                values[fForwardDedup] =
+                    static_cast<unsigned long long>(dedup[0] - '0');
+            else
+                values[fError] = 9ull;
+        }
     }
     MPI_Bcast(values, fFieldCount, MPI_UNSIGNED_LONG_LONG, 0, comm_);
     if(values[fError] != 0ull)
     {
-        const char* const messages[8] = {
+        const char* const messages[10] = {
             "",
             "RICH_FMM_GRAVITY_RESPLIT must be 0 or 1",
             "RICH_FMM_STRUCTURAL_INTERVAL must be an unsigned decimal integer",
@@ -1056,8 +1288,10 @@ void DistributedFmmGravityCalculator::readRuntimeSettings()
             "RICH_FMM_DIRECT_ERROR_EVERY must be an unsigned decimal integer",
             "RICH_FMM_DIRECT_ERROR_SAMPLES > 0 requires RICH_FMM_DIRECT_ERROR_EVERY >= 1",
             "RICH_FMM_TARGET_PRUNE must be 0 or 1",
-            "RICH_FMM_TARGET_OWNED must be 0 or 1"};
-        const unsigned long long code = std::min(values[fError], 7ull);
+            "RICH_FMM_TARGET_OWNED must be 0 or 1",
+            "RICH_D2_TIMERS must be 0 or 1",
+            "RICH_FMM_FORWARD_DEDUP must be 0, 1 or 2"};
+        const unsigned long long code = std::min(values[fError], 9ull);
         MPI_Comm doomed = comm_;
         comm_ = MPI_COMM_NULL;
         MPI_Comm_free(&doomed);
@@ -1074,6 +1308,8 @@ void DistributedFmmGravityCalculator::readRuntimeSettings()
     runtime_.geometryLog = values[fGeomLog] != 0ull;
     runtime_.targetPrune = values[fTargetPrune] != 0ull;
     runtime_.maskedOwned = values[fTargetOwned] != 0ull;
+    runtime_.D2Timers = values[fD2Timers] != 0ull;
+    runtime_.ForwardDedup = static_cast<int>(values[fForwardDedup]);
 }
 
 DistributedFmmGravityCalculator::~DistributedFmmGravityCalculator()
@@ -1463,6 +1699,19 @@ void DistributedFmmGravityCalculator::solveRedistributed(
 {
     const Clock::time_point fullStart = Clock::now();
     const Clock::time_point redistributionStart = Clock::now();
+    // RICH_D2_TIMERS: stage seconds of this solve's forward redistribution (null when off).
+    ForwardStageSeconds StageStorage;
+    ForwardStageSeconds* const Stages = runtime_.D2Timers ? &StageStorage : nullptr;
+    double StageMark = Stages != nullptr ? MPI_Wtime() : 0.0;
+    // RICH_FMM_FORWARD_DEDUP (broadcast, so the same on every rank): 0 the original pack, 1 each destination computed
+    // once and the records sent in place with buffers kept across solves, 2 the original pack checked against mode 1.
+    const int ForwardDedup = runtime_.ForwardDedup;
+    if(ForwardDedup != 0 && !ForwardBuffers_)
+        ForwardBuffers_.reset(new ForwardBuffers());
+    std::vector<GravityOwnerParticle> LocalParticleStorage;
+    std::vector<GravityOwnerParticle>& localParticles = ForwardDedup == 1 ? ForwardBuffers_->Particles :
+        LocalParticleStorage;
+    localParticles.clear();
     const FmmGlobalDyadicLattice lattice =
         FmmGlobalDyadicLattice::fromDomain(domainLower, domainUpper);
     // A level-20 octant path is a 60-bit Morton key. It is fine enough that
@@ -1471,7 +1720,6 @@ void DistributedFmmGravityCalculator::solveRedistributed(
     const int keyLevel = std::min(20, FMM_MAX_TREE_DEPTH);
     HilbertCurve3D<Vector3D> hilbertCurve;
     const Vector3D domainExtent = domainUpper - domainLower;
-    std::vector<GravityOwnerParticle> localParticles;
     localParticles.reserve(positions.size());
     for(std::size_t index = 0; index < positions.size(); ++index)
     {
@@ -1505,6 +1753,8 @@ void DistributedFmmGravityCalculator::solveRedistributed(
             (*targetMask)[index] != 0 ? 1 : 0;
         localParticles.push_back(particle);
     }
+    if(Stages != nullptr)
+        lapWtime(Stages->Keys, StageMark);
     std::sort(localParticles.begin(), localParticles.end(),
         [](const GravityOwnerParticle& first,
            const GravityOwnerParticle& second) {
@@ -1513,6 +1763,8 @@ void DistributedFmmGravityCalculator::solveRedistributed(
                    std::tie(second.mortonKey, second.cellId,
                             second.originRank, second.originIndex);
         });
+    if(Stages != nullptr)
+        lapWtime(Stages->Sort, StageMark);
 
     // Keep gravity ownership stable across warm solves. Re-sampling every
     // moving-mesh step shifted a few range boundaries, which changed one rank's
@@ -1567,6 +1819,8 @@ void DistributedFmmGravityCalculator::solveRedistributed(
     }
     const std::vector<std::uint64_t>& splitters =
         gravityRedistributionSplitters_;
+    if(Stages != nullptr)
+        lapWtime(Stages->Decide, StageMark);
 
     // Print-only (RICH_FMM_TRACE): owned-particle balance that splitters
     // freshly sampled from the current keys (same sampler and weight as the
@@ -1602,32 +1856,81 @@ void DistributedFmmGravityCalculator::solveRedistributed(
     }
     // Keep the redistribution/total timers measuring the same work as before.
     const double diagSeconds = balanceTrace ? elapsed(diagStart) : 0.0;
+    if(Stages != nullptr)
+        StageMark = MPI_Wtime(); // the print-only balance diagnostic above is not a stage
 
-    std::vector<std::vector<GravityOwnerParticle>> sendParticles(
-        static_cast<std::size_t>(size_));
-    std::vector<std::size_t> destinationCounts(
-        static_cast<std::size_t>(size_), 0);
-    for(const GravityOwnerParticle& particle : localParticles)
+    if(ForwardDedup == 1)
     {
-        const int destination = static_cast<int>(std::upper_bound(
-            splitters.begin(), splitters.end(), particle.mortonKey) -
-            splitters.begin());
-        ++destinationCounts[static_cast<std::size_t>(destination)];
+        // The keys are sorted, so the destinations do not decrease and the sorted records are the send buffer.
+        ForwardBuffers& Buffers = *ForwardBuffers_;
+        const bool Ordered = computeForwardDestinations(localParticles, splitters, size_, Buffers.Destinations,
+            Buffers.RecordCounts);
+        if(!Ordered)
+            ++ForwardDedupUnorderedSolves_;
+        const GravityOwnerParticle* const Flat = layoutForwardRecords(localParticles, Ordered, Buffers.Destinations,
+            Buffers.RecordCounts, Buffers.Offsets, Buffers.Packed);
+        if(Stages != nullptr)
+            lapWtime(Stages->Pack, StageMark);
+        exchangeFlatRecordsByRank(Flat, Buffers.RecordCounts, Buffers.Received, Buffers.SendCounts,
+            Buffers.SendDisplacements, Buffers.ReceiveCounts, Buffers.ReceiveDisplacements, comm_,
+            "DistributedFmmGravityCalculator gravity-owner exchange", Stages);
+        localParticles.swap(Buffers.Received);
     }
-    for(int destination = 0; destination < size_; ++destination)
-        sendParticles[static_cast<std::size_t>(destination)].reserve(
-            destinationCounts[static_cast<std::size_t>(destination)]);
-    for(const GravityOwnerParticle& particle : localParticles)
+    else
     {
-        const int destination = static_cast<int>(std::upper_bound(
-            splitters.begin(), splitters.end(), particle.mortonKey) -
-            splitters.begin());
-        sendParticles[static_cast<std::size_t>(destination)].push_back(
-            particle);
+        std::vector<std::vector<GravityOwnerParticle>> sendParticles(
+            static_cast<std::size_t>(size_));
+        std::vector<std::size_t> destinationCounts(
+            static_cast<std::size_t>(size_), 0);
+        for(const GravityOwnerParticle& particle : localParticles)
+        {
+            const int destination = static_cast<int>(std::upper_bound(
+                splitters.begin(), splitters.end(), particle.mortonKey) -
+                splitters.begin());
+            ++destinationCounts[static_cast<std::size_t>(destination)];
+        }
+        for(int destination = 0; destination < size_; ++destination)
+            sendParticles[static_cast<std::size_t>(destination)].reserve(
+                destinationCounts[static_cast<std::size_t>(destination)]);
+        for(const GravityOwnerParticle& particle : localParticles)
+        {
+            const int destination = static_cast<int>(std::upper_bound(
+                splitters.begin(), splitters.end(), particle.mortonKey) -
+                splitters.begin());
+            sendParticles[static_cast<std::size_t>(destination)].push_back(
+                particle);
+        }
+        if(Stages != nullptr)
+            lapWtime(Stages->Pack, StageMark);
+        if(ForwardDedup == 2)
+        {
+            // Verify mode: the original pack is sent; the single-pass pack must match it bit for bit.
+            ForwardBuffers& Buffers = *ForwardBuffers_;
+            const bool Ordered = computeForwardDestinations(localParticles, splitters, size_, Buffers.Destinations,
+                Buffers.RecordCounts);
+            if(!Ordered)
+                ++ForwardDedupUnorderedSolves_;
+            const GravityOwnerParticle* const Flat = layoutForwardRecords(localParticles, Ordered, Buffers.Destinations,
+                Buffers.RecordCounts, Buffers.Offsets, Buffers.Packed);
+            const std::string Mismatch = compareForwardPack(localParticles, splitters, sendParticles,
+                Buffers.Destinations, Buffers.RecordCounts, Flat);
+            if(!Mismatch.empty())
+            {
+                std::cerr << "RICH_FMM_FORWARD_DEDUP_MISMATCH rank=" << rank_ << " solve=" << solveCount_
+                          << " records=" << localParticles.size() << " ordered=" << (Ordered ? 1 : 0) << ' '
+                          << Mismatch << std::endl;
+                MPI_Abort(comm_, 1);
+            }
+            ++ForwardDedupVerifiedSolves_;
+            if(Stages != nullptr)
+                StageMark = MPI_Wtime(); // the comparison is not a stage
+        }
+        localParticles = exchangeRecordsByRank(
+            sendParticles, comm_,
+            "DistributedFmmGravityCalculator gravity-owner exchange", Stages);
     }
-    localParticles = exchangeRecordsByRank(
-        sendParticles, comm_,
-        "DistributedFmmGravityCalculator gravity-owner exchange");
+    if(Stages != nullptr)
+        StageMark = MPI_Wtime();
     std::sort(localParticles.begin(), localParticles.end(),
         [](const GravityOwnerParticle& first,
            const GravityOwnerParticle& second) {
@@ -1650,10 +1953,20 @@ void DistributedFmmGravityCalculator::solveRedistributed(
         mixed = (mixed ^ (mixed >> 27)) * 0x94d049bb133111ebull;
         ownershipChecksum += mixed ^ (mixed >> 31);
     }
-    std::vector<Vector3D> ownedPositions;
-    std::vector<double> ownedMasses;
-    std::vector<std::uint64_t> ownedCellIds;
-    std::vector<unsigned char> ownedTargets;
+    // Mode 1 of RICH_FMM_FORWARD_DEDUP fills the kept buffers; otherwise fresh vectors as before.
+    std::vector<Vector3D> OwnedPositionsStorage;
+    std::vector<double> OwnedMassesStorage;
+    std::vector<std::uint64_t> OwnedCellIdsStorage;
+    std::vector<unsigned char> OwnedTargetsStorage;
+    const bool KeepBuffers = ForwardDedup == 1;
+    std::vector<Vector3D>& ownedPositions = KeepBuffers ? ForwardBuffers_->OwnedPositions : OwnedPositionsStorage;
+    std::vector<double>& ownedMasses = KeepBuffers ? ForwardBuffers_->OwnedMasses : OwnedMassesStorage;
+    std::vector<std::uint64_t>& ownedCellIds = KeepBuffers ? ForwardBuffers_->OwnedCellIds : OwnedCellIdsStorage;
+    std::vector<unsigned char>& ownedTargets = KeepBuffers ? ForwardBuffers_->OwnedTargets : OwnedTargetsStorage;
+    ownedPositions.clear();
+    ownedMasses.clear();
+    ownedCellIds.clear();
+    ownedTargets.clear();
     ownedPositions.reserve(localParticles.size());
     ownedMasses.reserve(localParticles.size());
     ownedCellIds.reserve(localParticles.size());
@@ -1668,6 +1981,8 @@ void DistributedFmmGravityCalculator::solveRedistributed(
         if(targetMask != nullptr)
             ownedTargets.push_back(particle.reserved != 0 ? 1u : 0u);
     }
+    if(Stages != nullptr)
+        lapWtime(Stages->Unpack, StageMark);
     const double beforeSolveRedistributionSeconds = elapsed(
         redistributionStart) - diagSeconds;
     std::vector<Vector3D> ownedAcceleration;
@@ -1750,11 +2065,27 @@ void DistributedFmmGravityCalculator::solveRedistributed(
     }
 
     const Clock::time_point returnStart = Clock::now();
+    // A masked solve returns only its targets: the caller reads only the
+    // target slots (FastMultipoleAcceleration3D::EvaluateIndividualTargets),
+    // and every other slot is left at the zero assigned below.  The target
+    // flag travelled with each particle (reserved).  targetMask is agreed on
+    // every rank and the exchange below is the same collective sequence with
+    // or without it; only the record counts shrink.
+    const bool SparseReturn = targetMask != nullptr;
     std::vector<std::vector<GravityOwnerResult>> sendResults(
         static_cast<std::size_t>(size_));
     for(std::size_t index = 0; index < localParticles.size(); ++index)
     {
         const GravityOwnerParticle& particle = localParticles[index];
+        // A non-target is omitted only when its result is exactly +0 (pruned
+        // subtrees), which the receiver reproduces; a non-target sharing a
+        // leaf with a target keeps its computed value, so every value the
+        // caller scales and validates is the same as without the mask.
+        if(SparseReturn && particle.reserved == 0 &&
+           IsPositiveZero(ownedAcceleration[index].x) && IsPositiveZero(ownedAcceleration[index].y) &&
+           IsPositiveZero(ownedAcceleration[index].z) &&
+           (positiveKernelPotential == nullptr || IsPositiveZero(ownedPotential[index])))
+            continue;
         GravityOwnerResult result;
         result.acceleration[0] = ownedAcceleration[index].x;
         result.acceleration[1] = ownedAcceleration[index].y;
@@ -1789,15 +2120,32 @@ void DistributedFmmGravityCalculator::solveRedistributed(
             (*positiveKernelPotential)[index] = result.potential;
         filled[index] = 1;
     }
-    if(returned.size() != positions.size() ||
-       std::find(filled.begin(), filled.end(), 0) != filled.end())
+    // Every target (every particle without a mask) must have been returned;
+    // an omitted non-target is exactly the +0 assigned above.
+    bool MissingResult = false;
+    for(std::size_t Index = 0; Index < filled.size() && !MissingResult; ++Index)
+        MissingResult = filled[Index] == 0 && (!SparseReturn || (*targetMask)[Index] != 0);
+    if(MissingResult)
         throw UniversalError(
             "DistributedFmmGravityCalculator: missing returned gravity result");
+    const double ReturnSeconds = elapsed(returnStart);
+    stats_.gravityRedistributionForwardSeconds = beforeSolveRedistributionSeconds;
+    stats_.gravityRedistributionReturnSeconds = ReturnSeconds;
+    stats_.gravityReturnedResultCount = static_cast<std::uint64_t>(returned.size());
     stats_.gravityRedistributionSeconds =
-        beforeSolveRedistributionSeconds + elapsed(returnStart);
+        beforeSolveRedistributionSeconds + ReturnSeconds;
     stats_.totalSeconds = elapsed(fullStart) - diagSeconds -
         stats_.diagSeconds;
     stats_.diagSeconds += diagSeconds;
+    if(Stages != nullptr)
+    {
+        stats_.D2ForwardKeysSeconds = Stages->Keys;
+        stats_.D2ForwardSortSeconds = Stages->Sort;
+        stats_.D2ForwardDecideSeconds = Stages->Decide;
+        stats_.D2ForwardPackSeconds = Stages->Pack;
+        stats_.D2ForwardWireSeconds = Stages->Wire;
+        stats_.D2ForwardUnpackSeconds = Stages->Unpack;
+    }
 }
 
 void DistributedFmmGravityCalculator::solve(
@@ -1924,6 +2272,11 @@ void DistributedFmmGravityCalculator::solve(
     else if(distributedOptions_.directErrorSampleCount != 0 &&
        solveCount_ == distributedOptions_.directErrorSampleSolve)
         sampleDirectAccelerationError(positions, masses, acceleration);
+    // Broadcast settings, so the same on every rank (the trace printer may reduce on them).
+    stats_.D2ForwardTimersActive = runtime_.D2Timers;
+    stats_.ForwardDedupMode = runtime_.ForwardDedup;
+    stats_.ForwardDedupVerifiedSolves = ForwardDedupVerifiedSolves_;
+    stats_.ForwardDedupUnorderedSolves = ForwardDedupUnorderedSolves_;
 }
 
 void DistributedFmmGravityCalculator::sampleDirectAccelerationError(

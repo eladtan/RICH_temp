@@ -35,6 +35,9 @@ public:
 
     ~DistributedFmmGravityCalculator();
 
+    // With a targetMask only the target entries of acceleration (and of
+    // positiveKernelPotential) are meaningful: the redistributed solve leaves
+    // the others zero, the owned solve (RICH_FMM_TARGET_OWNED) may fill some.
     void solve(const std::vector<Vector3D>& positions,
                const std::vector<double>& masses,
                const std::vector<std::uint64_t>& cellIds,
@@ -68,8 +71,13 @@ private:
         bool geometryLog = false;                // RICH_FMM_GEOM_LOG
         bool targetPrune = true;                 // RICH_FMM_TARGET_PRUNE
         bool maskedOwned = false;                // RICH_FMM_TARGET_OWNED
+        bool D2Timers = false;                   // RICH_D2_TIMERS
+        int ForwardDedup = 0;                    // RICH_FMM_FORWARD_DEDUP
     };
     void readRuntimeSettings();
+
+    // Forward-redistribution storage kept across solves for RICH_FMM_FORWARD_DEDUP (defined in the .cpp file).
+    struct ForwardBuffers;
 
     struct LocalTopologyChange
     {
@@ -171,6 +179,10 @@ private:
     // describe the previous population.
     int lastOwnershipMode_ = -1;
     bool ownershipModeChanged_ = false;
+    // RICH_FMM_FORWARD_DEDUP: allocated on the first solve that uses it; counters for FmmSolveStats.
+    std::unique_ptr<ForwardBuffers> ForwardBuffers_;
+    std::uint64_t ForwardDedupVerifiedSolves_ = 0;
+    std::uint64_t ForwardDedupUnorderedSolves_ = 0;
 
     FmmTree localTree_;
     FmmM2LOperatorCache operatorCache_;

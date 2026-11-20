@@ -9,8 +9,10 @@
 #include <cerrno>
 #include <cfenv>
 #include <cstdlib>
+#include <cstring>
 #include <exception>
 #include <iomanip>
+#include <iostream>
 #include <limits>
 #include <sstream>
 #include <vector>
@@ -894,6 +896,26 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
         zero_indeces.push_back(binary_index_find(ComputationalCell3D::stickerNames, zero_cells_[i]));
     double const zero_value = 1e-10;
     std::vector<double> new_Er(Nlocal, 0), Er_for_limit(Nlocal, 0);
+    // RICH_RADIATION_PARTIAL_SETUP_FAST (individual events).  An inactive target has dt_cell = 0, so its matrix
+    // diagonal is its volume, its right-hand side volume * Er and its initial value Er, whatever its opacities and
+    // heat capacity, and nothing downstream reads its D, opacities or Fleck factor (the face loops, PostCG and the
+    // individual time steps visit active rows only).  Mode 1 skips the table lookups of such a row when Er > 0 and
+    // the products that meet dt_cell are finite, which makes those identities exact; mode 2 evaluates the row as
+    // before and checks the identities bit for bit.
+    int const PartialSetupFast = individual_context_ != nullptr && typeid(*this) == typeid(Diffusion) ?
+        RadiationS49RuntimeSwitches().PartialSetupFast : 0;
+    std::vector<unsigned char> FastInactiveRow(PartialSetupFast != 0 ? Nlocal : 0, 0);
+    auto const AbortPartialSetupMismatch = [&](char const* const Field, size_t const Index, double const Old,
+                                               double const New)
+    {
+        std::cerr << std::setprecision(17) << "RICH_RADIATION_PARTIAL_SETUP_FAST verify mismatch: rank=" << rank
+                  << " check=" << Field << " cell_id=" << cells[Index].ID << " old=" << Old << " new=" << New
+                  << std::endl;
+#ifdef RICH_MPI
+        MPI_Abort(MPI_COMM_WORLD, 1);
+#endif
+        std::abort();
+    };
     for(size_t i = 0; i < Nlocal; ++i)
     {
         double const dt_cell = individualCellTimeStep(i, dt);
@@ -905,6 +927,23 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
                 set_to_zero = true;
         double const Er = cells_cgs[i].Erad * cells_cgs[i].density * (set_to_zero ? zero_value : 1);
         new_Er[i] = Er;
+        if(PartialSetupFast != 0 && !individualCellActive(i) && Er > 0 && std::isfinite(Er) &&
+           std::isfinite(volume * Er) && volume > 0 &&
+           std::isfinite(CG::radiation_constant * cells_cgs[i].temperature * cells_cgs[i].temperature *
+                         cells_cgs[i].temperature * cells_cgs[i].temperature) &&
+           std::isfinite(cells_cgs[i].Erad_dt * cells_cgs[i].density) &&
+           std::isfinite(0.5 * cells_cgs[i].Erad_dt_dt * cells_cgs[i].density))
+            FastInactiveRow[i] = 1;
+        if(PartialSetupFast == 1 && FastInactiveRow[i] != 0) {
+            D[i] = 0;
+            sigma_planck[i] = 0;
+            sigma_s[i] = 0;
+            fleck_factor[i] = 0;
+            b[i] = volume * Er;
+            x0[i] = Er;
+            Er_for_limit[i] = Er;
+            continue;
+        }
 
         D[i] = D_coefficient_calcualtor.CalcDiffusionCoefficient(cells_cgs[i]);
         if(D[i] < 0)
@@ -988,6 +1027,13 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
             x0[i] = std::min(2 * Er, std::max(0.5 * Er, Er + cells_cgs[i].Erad_dt * cells_cgs[i].density * dt_cell * time_scale_  + 0.5 * cells_cgs[i].Erad_dt_dt * cells_cgs[i].density * dt_cell * dt_cell * time_scale_ * time_scale_));//std::max(Er + 0.5 * std::min(fleck_factor[i] * dt_cell * sigma_planck[i] * CG::speed_of_light * time_scale_, 1.0) * (CG::radiation_constant * T * T * T * T - Er), 0.25 * Er);
         b[i] += volume * fleck_factor[i] * dt_cell * CG::speed_of_light * sigma_planck[i] * T * T * T * T * CG::radiation_constant * time_scale_;
         Er_for_limit[i] = std::min(Er, std::max(1e-5 * Er, Er + dt_cell * time_scale_ * fleck_factor[i] * sigma_planck[i] * CG::speed_of_light * (CG::radiation_constant * T * T * T * T - Er)));
+        if(PartialSetupFast == 2 && FastInactiveRow[i] != 0) {
+            double const FastB = volume * Er;
+            if(std::memcmp(&FastB, &b[i], sizeof(double)) != 0)
+                AbortPartialSetupMismatch("inactive_rhs", i, b[i], FastB);
+            if(std::memcmp(&Er, &x0[i], sizeof(double)) != 0)
+                AbortPartialSetupMismatch("inactive_initial", i, x0[i], Er);
+        }
     }
     if(individual_context_ != nullptr)
         for(size_t i = Nlocal; i < cells_cgs.size(); ++i)
@@ -1008,7 +1054,9 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
 		// from the already synchronized primitive state is exact and avoids using
 		// canonical all-point indices on a compact array.
 		D.resize(cells_cgs.size());
-		for(size_t i = Nlocal; i < cells_cgs.size(); ++i)
+        // RICH_RADIATION_PARTIAL_SETUP_FAST=1: no reader takes D of a non-target (only a detailed-log message of
+        // PostCG prints it), so the lookups are skipped.
+		for(size_t i = Nlocal; PartialSetupFast != 1 && i < cells_cgs.size(); ++i)
 		{
 			// Physical boundary generators have no primitive state and their
 			// diffusion coefficient is never used as an interior-cell value.
@@ -1064,6 +1112,15 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
 	        " sig_P "<<sigma_planck[i]<<" sig_s "<<sigma_s[i]<<" dt "<<dt_cell * time_scale_<<" Erad "<<cells_cgs[i].Erad * cells_cgs[i].density<<" compton term "<<fleck_factor[i] * dt_cell * time_scale_ * 4 * sigma_s[i] * CG::boltzmann_constant / (CG::electron_mass * CG::speed_of_light)<<std::endl;
     }
 
+    if(PartialSetupFast == 2) {
+        // Mode-1 rows keep the diagonal of the loop above only if it is exactly the volume.
+        for(size_t i = 0; i < Nlocal; ++i) {
+            double const Volume = tess.GetVolume(i) * length_scale_ * length_scale_ * length_scale_;
+            if(FastInactiveRow[i] != 0 && std::memcmp(&Volume, &A[i][0], sizeof(double)) != 0)
+                AbortPartialSetupMismatch("inactive_diagonal", i, A[i][0], Volume);
+        }
+        RecordRadiationPartialSetupRowCheck();
+    }
     std::vector<double> max_R;
     max_R.reserve(Nlocal);
     for(size_t i = 0; i < Nlocal; ++i)
@@ -1098,8 +1155,7 @@ void Diffusion::BuildMatrix(Tessellation3D const& tess, mat& A, size_t_mat& A_in
 		// Only constructed owner cells have a complete stencil for max_R.
 		// Sync them through canonical index space; non-target geometric supports
 		// retain zero, matching the partial-build volume convention.
-		std::vector<double> canonical_max_R;
-		tess.SyncPartialBuildData(max_R, canonical_max_R);
+		tess.SyncPartialBuildDataWithoutCanonical(max_R);
 	}
 #endif
     Vector3D dummy_v;
@@ -1566,8 +1622,12 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
     // v_conserved).dP_interior|, cells with no radiation energy available,
     // thermal-capped cells, energy the thermal cap moved from radiation to gas,
     // sum |coefficient closure|, boundary returned work, boundary relativity to
-    // gas, sum |reservoir closure| (interior-only rows)
-    double momentum_exchange_sums[17] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    // gas, sum |reservoir closure| (interior-only rows), rows with a zero closure scale
+    double momentum_exchange_sums[18] = {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0};
+    // First momentum-exchange row on this rank whose coefficient-closure scale is exactly zero (no velocity coupling
+    // on any interior face): cell ID, |v|, Er, flux limiter, dt_cell, interior faces.
+    double ZeroScaleExample[6] = {0, 0, 0, 0, 0, 0};
+    bool HaveZeroScaleExample = false;
     double momentum_minimum_scale = 1;
     double momentum_maximum_closure = 0; // max per-row |coefficient closure| / its scale
     double momentum_maximum_reservoir_closure = 0; // max per-row |reservoir closure| / cell energy
@@ -1705,6 +1765,7 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         // coefficients and lumped excesses (erg, converted to code energy), minus
         // the exchange's (1 - alpha) W'; it checks the weights and alpha.
         double closure = 0, closure_scale = 0, boundary_relativity = 0;
+        std::size_t InteriorFaces = 0;
         double const code_energy = time_scale_ * time_scale_ / (mass_scale_ * length_scale_ * length_scale_);
         for(size_t j = 0; j < Nneigh; ++j)
         {
@@ -1743,6 +1804,7 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
                 matrix_action_total += matrix_action;
                 closure += matrix_action - (1 - matrix_alpha) * momentum_term;
                 closure_scale += std::abs(matrix_action) + std::abs(momentum_term);
+                ++InteriorFaces;
                 momentum_exchange_sums[0] += lumping_energy;
                 momentum_exchange_sums[1] += std::abs(lumping_energy);
                 momentum_exchange_sums[3] += fleck_factor[i] * relativity_term;
@@ -1762,8 +1824,24 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
         {
             momentum_exchange_sums[13] += std::abs(closure);
             momentum_exchange_sums[15] += boundary_relativity;
+            // The guard alone does not stop the compiler from evaluating the quotient before it, and the TDE traps
+            // invalid operations (0/0 on a zero-scale row), so the denominator is kept positive outside the guard.
+            // The ratio is printed only; no state reads it.
+            double const ClosureRatio = std::abs(closure) / std::max(closure_scale, std::numeric_limits<double>::min());
             if(closure_scale > 0)
-                momentum_maximum_closure = std::max(momentum_maximum_closure, std::abs(closure) / closure_scale);
+                momentum_maximum_closure = std::max(momentum_maximum_closure, ClosureRatio);
+            else {
+                momentum_exchange_sums[17] += 1;
+                if(!HaveZeroScaleExample) {
+                    HaveZeroScaleExample = true;
+                    ZeroScaleExample[0] = static_cast<double>(cells[i].ID);
+                    ZeroScaleExample[1] = abs(cells[i].velocity);
+                    ZeroScaleExample[2] = full_CG_result[i];
+                    ZeroScaleExample[3] = cell_flux_limiter[i];
+                    ZeroScaleExample[4] = dt_cell;
+                    ZeroScaleExample[5] = static_cast<double>(InteriorFaces);
+                }
+            }
             // Thermal cap (energy-conserving): the relativistic exchange may take
             // at most the loss fraction of the gas internal energy the cell has
             // after absorption and emission (etherm_mid).  In near-vacuum cells
@@ -2059,17 +2137,33 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
     if(momentum_positivity_post)
     {
         // One rank-0 aggregate per candidate (design section 5, exchange part).
-        double sums[17];
+        double sums[18];
         double minima[2] = {momentum_minimum_scale, momentum_minimum_verification_rhs_};
         double maxima[2] = {momentum_maximum_closure, momentum_maximum_reservoir_closure};
 #ifdef RICH_MPI
-        MPI_Allreduce(momentum_exchange_sums, sums, 17, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(momentum_exchange_sums, sums, 18, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
         MPI_Allreduce(MPI_IN_PLACE, minima, 2, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
         MPI_Allreduce(MPI_IN_PLACE, maxima, 2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
 #else
-        std::copy(momentum_exchange_sums, momentum_exchange_sums + 17, sums);
+        std::copy(momentum_exchange_sums, momentum_exchange_sums + 18, sums);
 #endif
         double const minimum_scale = minima[0];
+        // sums[17] is identical on every rank, so the example exchange runs on all ranks or none: the lowest cell ID
+        // among the ranks' first zero-scale rows is reported.
+        if(sums[17] > 0) {
+#ifdef RICH_MPI
+            struct { double Value; int Rank; } ExampleKey = {HaveZeroScaleExample ? ZeroScaleExample[0] :
+                std::numeric_limits<double>::max(), rank}, ExampleOwner = {0, 0};
+            MPI_Allreduce(&ExampleKey, &ExampleOwner, 1, MPI_DOUBLE_INT, MPI_MINLOC, MPI_COMM_WORLD);
+            MPI_Bcast(ZeroScaleExample, 6, MPI_DOUBLE, ExampleOwner.Rank, MPI_COMM_WORLD);
+#endif
+            if(rank == 0)
+                std::cout << std::setprecision(6) << "RICH_RADIATION_MOMENTUM_ZERO_SCALE rows=" << sums[17]
+                          << " example_cell_id=" << static_cast<long long>(ZeroScaleExample[0]) << " speed="
+                          << ZeroScaleExample[1] << " Er=" << ZeroScaleExample[2] << " flux_limiter="
+                          << ZeroScaleExample[3] << " dt_cell=" << ZeroScaleExample[4] << " interior_faces="
+                          << static_cast<long long>(ZeroScaleExample[5]) << std::endl;
+        }
         // stage_success: this PostCG stage only; later candidate gates may still reject.
         if(rank == 0)
         {
@@ -2089,7 +2183,7 @@ void Diffusion::PostCG(Tessellation3D const& tess, std::vector<Conserved3D>& ext
                 std::cout << minima[1];
             else
                 std::cout << "none";
-            std::cout << std::endl;
+            std::cout << " zero_scale_rows=" << sums[17] << std::endl;
         }
     }
     if((RuntimeLogDetailed() || d5_trace) && good_end == 0)

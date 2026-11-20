@@ -187,6 +187,20 @@ public:
     virtual void afterIndividualAMR(void)
     {}
 
+    // After afterIndividualAMR, or after afterLB of an applied individual migration: adjacency records captured on
+    // the mesh that pass left, one per owned cell in canonical order (may be moved from).  Returns true when this
+    // step installed them.
+    virtual bool installIndividualAMRAdjacency(std::vector<IndividualAMRChangeSet::AdjacencyEntry>& entries)
+    {
+        (void)entries;
+        return false;
+    }
+
+    // After afterLB of an applied individual migration (RICH_INDIVIDUAL_FULL_MESH_AFTER_MIGRATION): build the next
+    // individual event mesh in full, so its adjacency records cover every owned cell.
+    virtual void requestIndividualFullEventMesh(void)
+    {}
+
     // Drop storage that belongs only to the pre-latch partial-active layout.
     // The all-active latch is permanent, so this storage cannot be reused.
     virtual void onIndividualForceAllActiveLatch(void) noexcept

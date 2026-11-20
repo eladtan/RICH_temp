@@ -9,24 +9,32 @@
 #include <MeshDecomposer3D/load_balancing/HilbertLoadBalancer.hpp>
 #endif
 #include "3D/tessellation/voronoi/exception/MadVoroException.hpp"
+#include "3D/tessellation/voronoi/range/ClosestRanksMode.hpp"
 #include "3D/tessellation/Voronoi3D.hpp"
 #include "newtonian/three_dimensional/simulation/ActiveMeshView.hpp"
+#include "newtonian/three_dimensional/default_extensive_updater.hpp"
+#include "newtonian/three_dimensional/RoundCells3D.hpp"
 #include "spherical_symmetry/SphericalShellProjector3D.hpp"
 #include <algorithm>
 #include <tuple>
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <typeinfo>
 #include <cstdlib>
 #include <cstdint>
 #include <iomanip>
 #include <cstring>
 #include <limits>
 #include <numeric>
+#include <map>
+#include <memory>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 
@@ -306,7 +314,270 @@ namespace
 					<< " " << names[phase] << "_mpi_min=" << mpi_min;
 			}
 		std::cout << std::endl;
+    }
+
+    // RICH_D2_TIMERS: one rank's record of an individual event's hydro passes.  The first HydroD2TimerCount entries
+    // are wall seconds, the rest counts.
+    enum HydroD2Field : size_t
+    {
+        HydroD2Recover = 0, HydroD2FinalUpdate, HydroD2FluxSlopes, HydroD2PointMotion, HydroD2ApplyFix,
+        HydroD2Extensive, HydroD2Snapshot, HydroD2Accounting, HydroD2Validation, HydroD2Targets, HydroD2Active,
+        HydroD2Canonical, HydroD2Forwarded, HydroD2FixKicked, HydroD2FixSlowed, HydroD2FixSent, HydroD2FieldCount
+    };
+    constexpr size_t HydroD2TimerCount = HydroD2Targets;
+    using HydroD2Record = std::array<double, HydroD2FieldCount>;
+
+    // Rank 0 prints one RICH_D2_HYDRO line: per timer the slowest rank's seconds, the rank mean and the slowest rank;
+    // cell_update is recover + final_update and point_motion_total is point_motion + apply_fix, per rank.  Targets
+    // are the owned cells of the event mesh, active the cells whose interval closes.  One MPI_Gather.
+    void ReportHydroD2(HydroD2Record const& LocalRecord, std::uint64_t EventTick, int LogForwardMode)
+    {
+        static std::array<char const*, HydroD2TimerCount> const Names = {{"recover", "final_update", "flux_slopes",
+            "point_motion", "apply_fix", "extensive_update", "snapshot", "accounting", "validation"}};
+        int Rank = 0;
+        int RankCount = 1;
+#ifdef RICH_MPI
+        MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &RankCount);
+#endif
+        std::vector<double> Gathered;
+        if(Rank == 0)
+            Gathered.resize(static_cast<size_t>(RankCount) * HydroD2FieldCount);
+#ifdef RICH_MPI
+        MPI_Gather(LocalRecord.data(), static_cast<int>(HydroD2FieldCount), MPI_DOUBLE, Rank == 0 ? Gathered.data() :
+            nullptr, static_cast<int>(HydroD2FieldCount), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+#else
+        Gathered.assign(LocalRecord.begin(), LocalRecord.end());
+#endif
+        if(Rank != 0)
+            return;
+        auto const Field = [&Gathered](int SourceRank, size_t Index)
+        {
+            return Gathered[static_cast<size_t>(SourceRank) * HydroD2FieldCount + Index];
+        };
+        std::ostringstream Line;
+        Line << std::setprecision(6) << "RICH_D2_HYDRO event_tick=" << EventTick << " ranks=" << RankCount
+            << " log_forward=" << LogForwardMode;
+        auto const Timer = [&](char const* Name, size_t First, size_t Second)
+        {
+            double Maximum = -1;
+            double Sum = 0;
+            int Argmax = 0;
+            for(int SourceRank = 0; SourceRank < RankCount; ++SourceRank)
+            {
+                double const Value = Field(SourceRank, First) + (Second < HydroD2TimerCount ? Field(SourceRank,
+                    Second) : 0.0);
+                Sum += Value;
+                if(Value > Maximum)
+                {
+                    Maximum = Value;
+                    Argmax = SourceRank;
+                }
+            }
+            Line << ' ' << Name << "_max=" << Maximum << ' ' << Name << "_mean=" << Sum / RankCount << ' ' << Name
+                << "_argmax=" << Argmax << ' ' << Name << "_argmax_targets="
+                << static_cast<unsigned long long>(Field(Argmax, HydroD2Targets));
+        };
+        Timer("cell_update", HydroD2Recover, HydroD2FinalUpdate);
+        Timer("point_motion_total", HydroD2PointMotion, HydroD2ApplyFix);
+        for(size_t Index = 0; Index < HydroD2TimerCount; ++Index)
+            Timer(Names[Index], Index, HydroD2TimerCount);
+        unsigned long long TargetSum = 0;
+        unsigned long long ActiveSum = 0;
+        unsigned long long CanonicalSum = 0;
+        unsigned long long ZeroActiveTargets = 0;
+        unsigned long long ForwardedRanks = 0;
+        unsigned long long TargetMax = 0;
+        int TargetArgmax = 0;
+        double RatioMax = 0;
+        int RatioArgmax = -1;
+        for(int SourceRank = 0; SourceRank < RankCount; ++SourceRank)
+        {
+            auto const Targets = static_cast<unsigned long long>(Field(SourceRank, HydroD2Targets));
+            auto const Active = static_cast<unsigned long long>(Field(SourceRank, HydroD2Active));
+            TargetSum += Targets;
+            ActiveSum += Active;
+            CanonicalSum += static_cast<unsigned long long>(Field(SourceRank, HydroD2Canonical));
+            ForwardedRanks += Field(SourceRank, HydroD2Forwarded) != 0 ? 1 : 0;
+            if(Targets > TargetMax)
+            {
+                TargetMax = Targets;
+                TargetArgmax = SourceRank;
+            }
+            if(Active == 0)
+            {
+                ZeroActiveTargets += Targets;
+                continue;
+            }
+            double const Ratio = static_cast<double>(Targets) / static_cast<double>(Active);
+            if(Ratio > RatioMax)
+            {
+                RatioMax = Ratio;
+                RatioArgmax = SourceRank;
+            }
+        }
+        Line << " targets_sum=" << TargetSum << " active_sum=" << ActiveSum << " canonical_sum=" << CanonicalSum
+            << " targets_per_active=" << (ActiveSum > 0 ? static_cast<double>(TargetSum) / ActiveSum : 0.0)
+            << " rank_targets_per_active_max=" << RatioMax << " rank_targets_per_active_argmax=" << RatioArgmax
+            << " targets_max=" << TargetMax << " targets_argmax=" << TargetArgmax
+            << " zero_active_rank_targets=" << ZeroActiveTargets << " forwarded_ranks=" << ForwardedRanks;
+        // RICH_INDIVIDUAL_HYDRO_TARGET_PASSES: targets the RoundCells passes kicked, slowed and sent (0 when off),
+        // summed, and on the rank with the most targets.
+        unsigned long long FixCounts[3] = {0, 0, 0};
+        for(int SourceRank = 0; SourceRank < RankCount; ++SourceRank)
+            for(size_t Index = 0; Index < 3; ++Index)
+                FixCounts[Index] += static_cast<unsigned long long>(Field(SourceRank, HydroD2FixKicked + Index));
+        Line << " fix_kicked_sum=" << FixCounts[0] << " fix_slowed_sum=" << FixCounts[1] << " fix_sent_sum="
+            << FixCounts[2] << " fix_kicked_at_targets_argmax="
+            << static_cast<unsigned long long>(Field(TargetArgmax, HydroD2FixKicked));
+        std::cout << Line.str() << std::endl;
+    }
+
+    bool SameDoubleBits(double First, double Second)
+    {
+        return std::memcmp(&First, &Second, sizeof(double)) == 0;
+    }
+
+    // B1 verify (RICH_INDIVIDUAL_EXTENSIVE_LOG_FORWARD=2).  Accumulating the conserved change from the forwarded log
+    // equals the snapshot comparison when the log names each canonical cell at most once, with its pre-flux mass,
+    // energy and thermal energy bit for bit, and every cell it omits kept those three values bit for bit.  One
+    // reduction of the counts; rank 0 prints them.  On a difference the lowest rank that found one prints its first
+    // example and every rank throws.
+    template <class PreFluxState>
+    void VerifyForwardedCanonicalWrites(std::vector<IndividualCanonicalWrite> const* Writes,
+        std::vector<PreFluxState> const& PreFlux, vector<Conserved3D> const& Extensives, size_t CanonicalCount,
+        std::uint64_t EventTick)
+    {
+        // Canonical cells checked, log entries, cells whose snapshot differs from the result, mismatches.
+        unsigned long long Counts[4] = {static_cast<unsigned long long>(CanonicalCount), 0, 0, 0};
+        std::ostringstream Example;
+        Example << std::setprecision(17);
+        auto const NoteMismatch = [&](char const* Kind, size_t Index)
+        {
+            if(Counts[3]++ != 0)
+                return;
+            Example << " kind=" << Kind << " canonical_index=" << Index;
+            if(Index < CanonicalCount)
+                Example << " snapshot_mass=" << PreFlux[Index].Mass << " snapshot_energy=" << PreFlux[Index].Energy
+                    << " snapshot_thermal=" << PreFlux[Index].InternalEnergy << " mass=" << Extensives[Index].mass
+                    << " energy=" << Extensives[Index].energy << " thermal=" << Extensives[Index].internal_energy;
+        };
+        if(Writes == nullptr)
+            NoteMismatch("no_log", CanonicalCount);
+        else
+        {
+            std::vector<unsigned char> Logged(CanonicalCount, 0);
+            Counts[1] = Writes->size();
+            for(IndividualCanonicalWrite const& Write : *Writes)
+            {
+                size_t const Index = Write.CanonicalIndex;
+                if(Index >= CanonicalCount || Logged[Index] != 0)
+                {
+                    NoteMismatch(Index >= CanonicalCount ? "log_index_out_of_range" : "log_duplicate", Index);
+                    continue;
+                }
+                Logged[Index] = 1;
+                if(!SameDoubleBits(Write.Mass, PreFlux[Index].Mass) || !SameDoubleBits(Write.Energy,
+                    PreFlux[Index].Energy) || !SameDoubleBits(Write.InternalEnergy, PreFlux[Index].InternalEnergy))
+                    NoteMismatch("log_value", Index);
+            }
+            for(size_t Index = 0; Index < CanonicalCount; ++Index)
+            {
+                bool const Changed = !SameDoubleBits(PreFlux[Index].Mass, Extensives[Index].mass) ||
+                    !SameDoubleBits(PreFlux[Index].Energy, Extensives[Index].energy) ||
+                    !SameDoubleBits(PreFlux[Index].InternalEnergy, Extensives[Index].internal_energy);
+                if(Changed)
+                    ++Counts[2];
+                if(Changed && Logged[Index] == 0)
+                    NoteMismatch("unlogged_change", Index);
+            }
+        }
+        unsigned long long const LocalMismatches = Counts[3];
+        int Rank = 0;
+        int RankCount = 1;
+#ifdef RICH_MPI
+        MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &RankCount);
+        MPI_Allreduce(MPI_IN_PLACE, Counts, 4, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+#endif
+        if(Rank == 0)
+            std::cout << "RICH_B1_VERIFY event_tick=" << EventTick << " canonical=" << Counts[0] << " logged="
+                << Counts[1] << " changed=" << Counts[2] << " mismatches=" << Counts[3] << std::endl;
+        if(Counts[3] == 0)
+            return;
+        int FirstRank = LocalMismatches != 0 ? Rank : RankCount;
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &FirstRank, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+#endif
+        if(Rank == FirstRank)
+            std::cerr << "RICH_B1_VERIFY_MISMATCH event_tick=" << EventTick << " rank=" << Rank << " local="
+                << LocalMismatches << Example.str() << std::endl;
+        throw std::runtime_error("RICH_INDIVIDUAL_EXTENSIVE_LOG_FORWARD=2: the forwarded canonical write log differs "
+            "from the pre-flux snapshot (" + std::to_string(Counts[3]) + " mismatches)");
 	}
+
+    bool SameConservedBits(Conserved3D const& First, Conserved3D const& Second)
+    {
+        bool Same = SameDoubleBits(First.mass, Second.mass) && SameDoubleBits(First.momentum.x, Second.momentum.x) &&
+            SameDoubleBits(First.momentum.y, Second.momentum.y) && SameDoubleBits(First.momentum.z,
+            Second.momentum.z) && SameDoubleBits(First.energy, Second.energy) && SameDoubleBits(First.internal_energy,
+            Second.internal_energy) && SameDoubleBits(First.Erad, Second.Erad) && SameDoubleBits(First.Erad_dt,
+            Second.Erad_dt) && SameDoubleBits(First.Erad_dt_dt, Second.Erad_dt_dt) && First.Eg.size() ==
+            Second.Eg.size();
+        for(size_t Group = 0; Same && Group < First.Eg.size(); ++Group)
+            Same = SameDoubleBits(First.Eg[Group], Second.Eg[Group]);
+        for(size_t Tracer = 0; Same && Tracer < First.tracers.size(); ++Tracer)
+            Same = SameDoubleBits(First.tracers[Tracer], Second.tracers[Tracer]);
+        return Same;
+    }
+
+    // B9 verify (RICH_INDIVIDUAL_ALL_ACTIVE_IDENTITY=2): the identity transaction's work and canonical extensives
+    // must equal the s48 transaction's bit for bit.  One reduction; rank 0 prints the counts; on a difference the
+    // lowest rank that found one prints its first example and every rank throws.
+    void VerifyIdentityTransaction(vector<Conserved3D> const& IdentityWork, vector<Conserved3D> const& Work,
+        vector<Conserved3D> const& IdentityCanonical, vector<Conserved3D> const& Canonical, std::uint64_t EventTick)
+    {
+        unsigned long long Counts[2] = {static_cast<unsigned long long>(Work.size() + Canonical.size()), 0};
+        std::ostringstream Example;
+        Example << std::setprecision(17);
+        auto const Compare = [&](char const* Kind, vector<Conserved3D> const& First, vector<Conserved3D> const& Second)
+        {
+            if(First.size() != Second.size()) {
+                if(Counts[1]++ == 0)
+                    Example << " kind=" << Kind << "_size identity=" << First.size() << " s48=" << Second.size();
+                return;
+            }
+            for(size_t Index = 0; Index < First.size(); ++Index)
+                if(!SameConservedBits(First[Index], Second[Index]) && Counts[1]++ == 0)
+                    Example << " kind=" << Kind << " index=" << Index << " identity_mass=" << First[Index].mass
+                        << " s48_mass=" << Second[Index].mass << " identity_energy=" << First[Index].energy
+                        << " s48_energy=" << Second[Index].energy;
+        };
+        Compare("work", IdentityWork, Work);
+        Compare("canonical", IdentityCanonical, Canonical);
+        unsigned long long const LocalMismatches = Counts[1];
+        int Rank = 0;
+        int RankCount = 1;
+#ifdef RICH_MPI
+        MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &RankCount);
+        MPI_Allreduce(MPI_IN_PLACE, Counts, 2, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+#endif
+        if(Rank == 0)
+            std::cout << "RICH_B9_VERIFY event_tick=" << EventTick << " checked=" << Counts[0] << " mismatches="
+                << Counts[1] << std::endl;
+        if(Counts[1] == 0)
+            return;
+        int FirstRank = LocalMismatches != 0 ? Rank : RankCount;
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &FirstRank, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+#endif
+        if(Rank == FirstRank)
+            std::cerr << "RICH_B9_VERIFY_MISMATCH event_tick=" << EventTick << " rank=" << Rank << " local="
+                << LocalMismatches << Example.str() << std::endl;
+        throw std::runtime_error("RICH_INDIVIDUAL_ALL_ACTIVE_IDENTITY=2: the identity transaction differs from the s48 "
+            "transaction (" + std::to_string(Counts[1]) + " mismatches)");
+    }
 
 	// Agrees a run-wide value across ranks on first use: every rank must pass
 	// the same value (unset counts as the fallback), else every rank throws.
@@ -429,6 +700,42 @@ namespace
 		return settings;
 	}
 
+	// MADVORO_CLOSEST_RANKS_RESTRICTED: 0 (default) dense closest-rank lookup on a point's first large ghost round,
+	// 1 restricted to the ranks the query intersects, 2 both with a collective check that they agree bit for bit
+	// (MadVoro ClosestRanksMode.hpp). Agreed once over MPI_COMM_WORLD by the first HDSim3D, then set process-wide in
+	// MadVoro, so builds on any communicator use the same agreed value.
+	void AgreeClosestRanksRestrictedMode()
+	{
+		static bool agreed = false;
+		if(agreed)
+			return;
+		char const* const value = std::getenv("MADVORO_CLOSEST_RANKS_RESTRICTED");
+		std::string const text = value == nullptr ? "" : value;
+		int mode = -1;
+		if(text.empty() || text == "0")
+			mode = 0;
+		else if(text == "1")
+			mode = 1;
+		else if(text == "2")
+			mode = 2;
+		int extrema[2] = {mode, -mode};
+#ifdef RICH_MPI
+		MPI_Allreduce(MPI_IN_PLACE, extrema, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+		if(extrema[0] != -extrema[1])
+			throw std::invalid_argument("MADVORO_CLOSEST_RANKS_RESTRICTED differs across MPI ranks");
+		if(extrema[0] < 0)
+			throw std::invalid_argument("MADVORO_CLOSEST_RANKS_RESTRICTED must be 0, 1 or 2");
+		MadVoro::SetClosestRanksRestrictedMode(extrema[0]);
+		agreed = true;
+		int rank = 0;
+#ifdef RICH_MPI
+		MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+#endif
+		if(rank == 0)
+			std::cout << "MADVORO_CLOSEST_RANKS_RESTRICTED mode=" << extrema[0] << std::endl;
+	}
+
 	double IndividualPartialBuildFraction(double configured)
 	{
 		double const override_value =
@@ -465,6 +772,9 @@ namespace
 		double stage_seconds[madvoro_stages] = {};
 		double mapping_seconds = 0;
 		double ghost_rounds = 0;
+		// Seconds of partial-mesh diagnostics inside the call (RICH_INDIVIDUAL_MESH_TRACE >= 1; 0 otherwise), taken
+		// out of the closure residual.
+		double DiagnosticSeconds = 0;
 		static constexpr size_t closure_slots = 4;
 		static constexpr size_t closure_counts = 10;
 		double closure[closure_slots][closure_counts] = {};
@@ -541,11 +851,12 @@ namespace
 			madvoro_sum += record.stage_seconds[stage];
 		}
 		// Residuals are signed (not clamped) so that an accounting error shows.  The closure residual also holds
-		// untimed full/parity-path mappings when those run (full_seconds is reported separately).
+		// untimed full/parity-path mappings when those run (full_seconds is reported separately).  Diagnostic seconds
+		// (RICH_INDIVIDUAL_MESH_TRACE; zero when it is off) are taken out of it.
 		split[IndividualMeshBuildRecord::madvoro_stages] = record.partial_seconds - madvoro_sum;
 		split[IndividualMeshBuildRecord::madvoro_stages + 1] = record.mapping_seconds;
 		split[IndividualMeshBuildRecord::madvoro_stages + 2] =
-			seconds - record.partial_seconds - record.full_seconds - record.mapping_seconds;
+			seconds - record.partial_seconds - record.full_seconds - record.mapping_seconds - record.DiagnosticSeconds;
 		split[IndividualMeshBuildRecord::madvoro_stages + 3] = record.ghost_rounds;
 		double split_max[split_count];
 		double split_sum[split_count];
@@ -628,6 +939,1234 @@ namespace
 		}
 		std::cout << std::endl;
 	}
+
+    // ---------------------------------------------------------------------------------------------------------------
+    // Partial-mesh diagnostics (RICH_INDIVIDUAL_MESH_TRACE: 0 off, 1 aggregates, 2 adds per-rank detail).
+    //
+    // Read only with RICH_INDIVIDUAL_PERF_TRACE=1 and agreed in the reduction that agrees that flag
+    // (timeAdvanceIndividual).  Level 0 runs none of this: no allocation, clock read, MPI call or stored value; each
+    // hook in the build tests a null pointer.  Levels 1-2 keep per partial attempt the MadVoro ghost-loop trace (when
+    // the MadVoro interface is compiled in), the stage seconds, the attempt wall and the closure waits; the provenance
+    // of the seed layers and the cause of every target addition; the shadow drain of deferred built promotions; and
+    // the target utility.  Every diagnostic collective is an extra call that all ranks, empty ones included, enter
+    // at the same point after the work it observes; nothing it computes reaches a decision, a message or a value of
+    // the simulation.  Nothing runs inside MadVoro's query loop: the trace is read after each build returns.
+    // ---------------------------------------------------------------------------------------------------------------
+
+    // RICH_INDIVIDUAL_MESH_TRACE: unset, empty or 0 -> 0; 1 -> 1; 2 -> 2; anything else -> -1 (invalid).
+    int ReadIndividualMeshTraceLevel() {
+        char const* const Value = std::getenv("RICH_INDIVIDUAL_MESH_TRACE");
+        if(Value == nullptr || Value[0] == '\0' || std::strcmp(Value, "0") == 0)
+            return 0;
+        if(std::strcmp(Value, "1") == 0)
+            return 1;
+        if(std::strcmp(Value, "2") == 0)
+            return 2;
+        return -1;
+    }
+
+    // Attempt k of a build is kept in slot min(k, 4) - 1.
+    constexpr size_t MeshDiagSlots = 4;
+
+    // Rank-local seconds and counts per attempt slot.  The first seven are the MadVoro stages, as
+    // IndividualMeshBuildRecord::stage_seconds.
+    enum MeshDiagRichValue : size_t {
+        RichGhostRounds = 7, RichWall, RichWaitSync, RichWaitExchange, RichWaitAgree, RichMpiBuild, RichMpiClosure,
+        RichTarget, RichAdditions, RichDiagnostic, RichWaitTotal, RichValueCount
+    };
+    static_assert(RichGhostRounds == IndividualMeshBuildRecord::madvoro_stages, "stage slots");
+    char const* const MeshDiagRichNames[RichValueCount] = {"prepare", "delaunay", "tree", "radii", "range", "ghosts",
+        "voronoi", "ghost_rounds", "wall", "wait_sync", "wait_exchange", "wait_agree", "mpi_build", "mpi_closure",
+        "target", "additions", "diag", "wait_total"};
+
+    // Why a target cell was missing from the seeded target, in precedence order.
+    enum class MeshAdditionCause : unsigned char {
+        DeferredBuiltPromotion = 0, UnbuiltPromotion, Migration, Amr, StaleOwner, RemoteSupportSkipped,
+        MotionBeyondSeed, Unresolved, Count
+    };
+    constexpr size_t MeshCauseCount = static_cast<size_t>(MeshAdditionCause::Count);
+    char const* const MeshCauseNames[MeshCauseCount] = {"deferred_built", "unbuilt_promotion", "migration", "amr",
+        "stale_owner", "remote_support_skipped", "motion", "unresolved"};
+
+    // Integer counts per attempt slot: the causes, then these.
+    enum MeshDiagCountValue : size_t {
+        CountSiteLocal = MeshCauseCount, CountSiteRemote, CountSiteSupport, CountPromotionRemote,
+        CountPromotionDeferred, CountPromotionUnbuilt, CountShadowRan, CountShadowSize, CountAdditions,
+        CountInPreviousShadow, CountValueCount
+    };
+    char const* const MeshDiagCountNames[CountValueCount - MeshCauseCount] = {"local", "remote", "support",
+        "prom_remote", "prom_deferred", "prom_unbuilt", "shadow", "shadow_size", "add", "in_prev_shadow"};
+
+    // Seed provenance per layer (depth one, second shell, third shell): sources, sources without a valid record
+    // (of which released wholesale, of which without a record after AMR), local neighbour entries (new, already
+    // seeded, ID not found here), entries sent to their recorded owner and entries with an invalid owner, and at the
+    // receiving owner: requests, new, already seeded, ID not found; last, the cells the layer seeded.
+    enum MeshSeedCount : size_t {
+        SeedSources = 0, SeedInvalidRecord, SeedInvalidReleased, SeedInvalidAmr, SeedLocalNew, SeedLocalAlready,
+        SeedLocalMiss, SeedRemoteSent, SeedBadOwner, SeedOwnerReceived, SeedOwnerNew, SeedOwnerAlready,
+        SeedOwnerMiss, SeedShellCells, SeedCountValues
+    };
+    char const* const MeshSeedNames[SeedCountValues] = {"src", "invalid", "invalid_released", "invalid_amr",
+        "local_new", "local_already", "local_miss", "sent", "bad_owner", "recv", "found_new", "found_already",
+        "miss_at_owner", "cells"};
+    constexpr size_t MeshSeedLayers = 3;
+
+    // IndividualAdjacencyRecord::MissingReason of an empty record (set only at RICH_INDIVIDUAL_MESH_TRACE >= 1):
+    // released with the whole cache (rebalance, or never recorded since the start), or new at an AMR realignment.
+    constexpr unsigned char RecordMissingUnknown = 0;
+    constexpr unsigned char RecordMissingReleased = 1;
+    constexpr unsigned char RecordMissingAfterAmr = 2;
+
+    // Facts about the cell whose expansion added a target cell, found on that cell's rank.
+    constexpr unsigned SourceDeferredBuilt = 1u << 0;
+    constexpr unsigned SourceUnbuiltPromotion = 1u << 1;
+    constexpr unsigned SourceRecordReleased = 1u << 2;
+    constexpr unsigned SourceRecordInvalid = 1u << 3;
+    constexpr unsigned SourceRecordStaleLocal = 1u << 4;
+    constexpr unsigned SourceRecordHasTarget = 1u << 5;
+    constexpr unsigned SourceOwnerMismatch = 1u << 6;
+    constexpr unsigned SourceAddedAtDepthOne = 1u << 7;
+    constexpr unsigned SourceRecordOwnerRemote = 1u << 8;
+    constexpr unsigned SourceUnknown = 1u << 9;
+
+    // Per-cell facts during one build (earlier attempts of the same build).
+    constexpr unsigned char CellAddedAtDepthOne = 1;
+    constexpr unsigned char CellUnbuiltPromotion = 2;
+    constexpr unsigned char CellDeferredBuilt = 4;
+
+    // Precedence: deferred built promotion; unbuilt promotion without cached supports; record emptied by
+    // migration; record missing or stale after AMR; stale owner; remote cached support skipped; motion beyond the
+    // seed; unresolved.
+    MeshAdditionCause ClassifyMeshAddition(unsigned Flags, bool InPreviousShadow, bool TargetNewAfterAmr,
+        unsigned char Depth) {
+        if(InPreviousShadow || (Flags & SourceDeferredBuilt) != 0)
+            return MeshAdditionCause::DeferredBuiltPromotion;
+        if((Flags & SourceUnknown) != 0)
+            return MeshAdditionCause::Unresolved;
+        if((Flags & SourceUnbuiltPromotion) != 0)
+            return MeshAdditionCause::UnbuiltPromotion;
+        if((Flags & SourceRecordReleased) != 0)
+            return MeshAdditionCause::Migration;
+        bool const HasTarget = (Flags & SourceRecordHasTarget) != 0;
+        if((Flags & SourceRecordInvalid) != 0 ||
+           (!HasTarget && ((Flags & SourceRecordStaleLocal) != 0 || TargetNewAfterAmr)))
+            return MeshAdditionCause::Amr;
+        if(HasTarget && (Flags & SourceOwnerMismatch) != 0)
+            return MeshAdditionCause::StaleOwner;
+        if(Depth == 2 && HasTarget && (Flags & SourceAddedAtDepthOne) != 0 && (Flags & SourceRecordOwnerRemote) != 0)
+            return MeshAdditionCause::RemoteSupportSkipped;
+        if(!HasTarget)
+            return MeshAdditionCause::MotionBeyondSeed;
+        return MeshAdditionCause::Unresolved;
+    }
+
+    // Seed provenance of one timeAdvanceIndividual call (shared by its builds).
+    struct IndividualMeshSeedDiagnostics {
+        unsigned long long Layers[MeshSeedLayers][SeedCountValues] = {};
+        unsigned long long HaloCells = 0;
+        // Per canonical cell: 0 active, 1 depth-one layer or previous halo, 2 second shell, 3 third shell, 255 not
+        // seeded.
+        std::vector<unsigned char> Shell;
+    };
+
+    template<class RecordVector>
+    void MarkMissingAdjacencyRecords(RecordVector& Records, bool CacheWasEmpty) {
+        for(auto& Record : Records)
+            if(Record.cell_id == std::numeric_limits<size_t>::max() && Record.MissingReason == RecordMissingUnknown)
+                Record.MissingReason = CacheWasEmpty ? RecordMissingReleased : RecordMissingAfterAmr;
+    }
+
+    struct MeshAdditionEntry {
+        size_t Global = 0;
+        size_t SourceId = std::numeric_limits<size_t>::max();
+        size_t RequestIndex = 0;
+        size_t Parent = std::numeric_limits<size_t>::max();
+        unsigned SourceFlags = SourceUnknown;
+        int SourceRank = -1;
+        int AttemptedOwner = -1;
+        unsigned char Depth = 0;
+        // 0 local expansion, 1 remote request, 2 batched cached support.
+        unsigned char Site = 0;
+        MeshAdditionCause Cause = MeshAdditionCause::Unresolved;
+    };
+
+    // MadVoro partial-build trace (Voronoi3D::SetPartialBuildTraceLevel / GetPartialBuildTrace), when compiled in.
+    template<class Engine, class = void>
+    struct HasPartialBuildTrace : std::false_type {};
+    template<class Engine>
+    struct HasPartialBuildTrace<Engine, std::void_t<decltype(std::declval<Engine&>().SetPartialBuildTraceLevel(0)),
+        decltype(std::declval<Engine const&>().GetPartialBuildTrace().Attempts)>> : std::true_type {};
+
+    struct MadVoroAttemptCopy {
+        std::vector<double> Prepare;
+        std::vector<std::vector<double> > Rounds;
+    };
+
+    struct MadVoroTraceNames {
+        std::vector<std::string> Prepare;
+        std::vector<std::string> Round;
+        bool HavePrepare = false;
+        bool HaveRound = false;
+    };
+
+    MadVoroTraceNames& MeshDiagTraceNames() {
+        static MadVoroTraceNames Names;
+        return Names;
+    }
+
+    template<class Engine>
+    void SetMadVoroTraceLevel(Engine& Voronoi, int Level) {
+        if constexpr(HasPartialBuildTrace<Engine>::value)
+            Voronoi.SetPartialBuildTraceLevel(Level);
+        else {
+            (void)Voronoi;
+            (void)Level;
+        }
+    }
+
+    // Appends the attempts of the last BuildPartiallyParallel call (one per call), at most four per build; the names
+    // are kept once per rank, and a value count that differs from them marks the trace inconsistent.
+    template<class Engine>
+    void CopyMadVoroTrace(Engine const& Voronoi, std::vector<MadVoroAttemptCopy>& Out, MadVoroTraceNames& Names,
+        bool& Inconsistent) {
+        if constexpr(HasPartialBuildTrace<Engine>::value) {
+            for(auto const& Attempt : Voronoi.GetPartialBuildTrace().Attempts) {
+                if(Out.size() >= MeshDiagSlots)
+                    return;
+                if(!Names.HavePrepare) {
+                    for(auto const& Item : Attempt.Prepare)
+                        Names.Prepare.push_back(Item.first);
+                    Names.HavePrepare = true;
+                }
+                MadVoroAttemptCopy Copy;
+                Inconsistent = Inconsistent || Attempt.Prepare.size() != Names.Prepare.size();
+                Copy.Prepare.reserve(Attempt.Prepare.size());
+                for(auto const& Item : Attempt.Prepare)
+                    Copy.Prepare.push_back(Item.second);
+                Copy.Rounds.reserve(Attempt.Rounds.size());
+                for(auto const& Round : Attempt.Rounds) {
+                    if(!Names.HaveRound) {
+                        for(auto const& Item : Round.Values)
+                            Names.Round.push_back(Item.first);
+                        Names.HaveRound = true;
+                    }
+                    Inconsistent = Inconsistent || Round.Values.size() != Names.Round.size();
+                    std::vector<double> Values;
+                    Values.reserve(Round.Values.size());
+                    for(auto const& Item : Round.Values)
+                        Values.push_back(Item.second);
+                    Copy.Rounds.push_back(std::move(Values));
+                }
+                Out.push_back(std::move(Copy));
+            }
+        } else {
+            (void)Voronoi;
+            (void)Out;
+            (void)Names;
+            (void)Inconsistent;
+        }
+    }
+
+    MadVoro::Voronoi3D<Vector3D>* MadVoroEngineOf(Tessellation3D& Tess) {
+        Voronoi3D* const Wrapper = dynamic_cast<Voronoi3D*>(&Tess);
+        return Wrapper == nullptr ? nullptr : &Wrapper->engine();
+    }
+
+    // FNV-1a over the trace names, to check once that every rank reports the same names in the same order.
+    std::uint64_t MeshDiagNamesHash(MadVoroTraceNames const& Names) {
+        std::uint64_t Hash = 1469598103934665603ull;
+        auto Mix = [&Hash](std::string const& Text) {
+            for(char Character : Text) {
+                Hash ^= static_cast<unsigned char>(Character);
+                Hash *= 1099511628211ull;
+            }
+            Hash ^= 0x1f;
+            Hash *= 1099511628211ull;
+        };
+        for(std::string const& Name : Names.Prepare)
+            Mix(Name);
+        Mix("#");
+        for(std::string const& Name : Names.Round)
+            Mix(Name);
+        return Hash;
+    }
+
+    // A MadVoro digest (an integer below 2^53 held in a double) as an integer.
+    std::uint64_t MeshDiagDigestInteger(double Value) {
+        return Value >= 0 && Value < 18446744073709551616.0 ? static_cast<std::uint64_t>(Value) : 0;
+    }
+
+    // A rank's digest mixed with its rank, so that the XOR over ranks depends on which rank holds what (equal digests
+    // on two ranks do not cancel).
+    unsigned long long MeshDiagDigestBits(double Value, int RankIndex) {
+        std::uint64_t const Bits = MeshDiagDigestInteger(Value);
+        std::uint64_t Mixed = Bits ^ (0x9E3779B97F4A7C15ull * static_cast<std::uint64_t>(RankIndex + 1));
+        Mixed = (Mixed ^ (Mixed >> 30)) * 0xBF58476D1CE4E5B9ull;
+        Mixed = (Mixed ^ (Mixed >> 27)) * 0x94D049BB133111EBull;
+        return static_cast<unsigned long long>(Mixed ^ (Mixed >> 31));
+    }
+
+    std::string MeshDiagHex(unsigned long long Value) {
+        std::ostringstream Text;
+        Text << "0x" << std::hex << std::setw(16) << std::setfill('0') << Value;
+        return Text.str();
+    }
+
+    // Rank-local state of one event-mesh build.
+    struct IndividualMeshDiagnostics {
+        IndividualMeshDiagnostics(size_t CanonicalCount, int TraceLevel, int RankIndex, int Ranks,
+            std::vector<ComputationalCell3D> const& CellList)
+            : Level(TraceLevel), Rank(RankIndex), RankCount(Ranks), Cells(CellList), CellFlags(CanonicalCount, 0),
+              RemoteTags(static_cast<size_t>(Ranks)) {}
+
+        int Level;
+        int Rank;
+        int RankCount;
+        std::vector<ComputationalCell3D> const& Cells;
+        // Regular partial attempts so far (the current one while it runs); verification rebuilds are not counted.
+        size_t Attempt = 0;
+        bool ClosureReexpand = false;
+        double Rich[MeshDiagSlots][RichValueCount] = {};
+        unsigned long long Counts[MeshDiagSlots][CountValueCount] = {};
+        // Third-shell seeds in the closed target, of which needed by a depth <= 1 cell; depth-two targets, of which
+        // without a depth <= 1 neighbour.
+        unsigned long long Utility[4] = {};
+        double DiagnosticSeconds = 0;
+        double AttemptStart = 0;
+        double FullSecondsAtStart = 0;
+        double DiagnosticAtStart = 0;
+        double MpiBuildStart = 0;
+        double MpiAfterBuild = 0;
+        bool BuildSucceeded = false;
+        std::vector<unsigned char> CellFlags;
+        std::unordered_map<size_t, size_t> const* IdIndex = nullptr;
+        std::vector<size_t> CanonicalIds;
+        // Stable ID of every point of the current attempt's mesh (owned targets, supports and remote ghosts).
+        std::vector<size_t> GhostIds;
+        std::vector<signed char> StaleLocalState;
+        // D_k (canonical index -> shallowest depth): cells the read-only expansion of the built promotions that
+        // attempt k left unexpanded would have added on this rank; previous = attempt k - 1.
+        std::unordered_map<size_t, unsigned char> PreviousShadow;
+        std::unordered_map<size_t, unsigned char> CurrentShadow;
+        std::vector<MeshAdditionEntry> Pending;
+        size_t LastPrimary = std::numeric_limits<size_t>::max();
+        // Per owner, for each remote request that can be an addition there: request pair index, flags | (attempted
+        // owner + 1) << 32, source stable ID.
+        std::vector<std::vector<size_t> > RemoteTags;
+        bool HaveExample = false;
+        size_t ExampleAttempt = 0;
+        unsigned long long ExampleCount = 0;
+        // attempt, site, cause, added ID, source ID, depth, owner, source rank, attempted owner + 1
+        unsigned long long Example[9] = {};
+        std::vector<MadVoroAttemptCopy> Trace;
+        bool TraceInconsistent = false;
+
+        size_t Slot() const {
+            return std::min(std::max<size_t>(Attempt, 1), MeshDiagSlots) - 1;
+        }
+
+        void AddDiagnostic(double Seconds) {
+            DiagnosticSeconds += Seconds;
+            Rich[Slot()][RichDiagnostic] += Seconds;
+        }
+
+        // Wall of the attempt that ends now, without the full builds and diagnostics inside it.
+        void CloseAttempt(double Now, double FullSeconds) {
+            if(Attempt == 0)
+                return;
+            double* const Values = Rich[Slot()];
+            Values[RichWall] += Now - AttemptStart - (FullSeconds - FullSecondsAtStart) -
+                (DiagnosticSeconds - DiagnosticAtStart);
+            if(BuildSucceeded)
+                Values[RichMpiClosure] += mpi_wait_profiler::Seconds() - MpiAfterBuild;
+            BuildSucceeded = false;
+        }
+
+        void BeginAttempt(Tessellation3D& Tess, double FullSeconds, size_t TargetSize) {
+            double const Now = IndividualHydroWallTime();
+            CloseAttempt(Now, FullSeconds);
+            ++Attempt;
+            AttemptStart = Now;
+            FullSecondsAtStart = FullSeconds;
+            DiagnosticAtStart = DiagnosticSeconds;
+            PreviousShadow.swap(CurrentShadow);
+            CurrentShadow.clear();
+            Rich[Slot()][RichTarget] = static_cast<double>(TargetSize);
+#ifdef RICH_MPI
+            if(MadVoro::Voronoi3D<Vector3D>* const Engine = MadVoroEngineOf(Tess))
+                SetMadVoroTraceLevel(*Engine, Level);
+#else
+            (void)Tess;
+#endif
+            MpiBuildStart = mpi_wait_profiler::Seconds();
+        }
+
+        // Called where the attempt's stage seconds are summed into the record (no allocation, cannot throw).
+        void AddAttemptStages(std::array<double, 7> const& Stages, size_t Rounds) {
+            double* const Values = Rich[Slot()];
+            for(size_t Stage = 0; Stage < Stages.size(); ++Stage)
+                Values[Stage] += Stages[Stage];
+            Values[RichGhostRounds] += static_cast<double>(Rounds);
+        }
+
+        // After the attempt's BuildPartiallyParallel returned or threw: copy the trace, switch tracing off.
+        void FinishAttemptBuild(Tessellation3D& Tess, bool Failed) {
+            double const Start = IndividualHydroWallTime();
+            double const MpiNow = mpi_wait_profiler::Seconds();
+            Rich[Slot()][RichMpiBuild] += MpiNow - MpiBuildStart;
+            MpiAfterBuild = MpiNow;
+            BuildSucceeded = !Failed;
+#ifdef RICH_MPI
+            if(MadVoro::Voronoi3D<Vector3D>* const Engine = MadVoroEngineOf(Tess)) {
+                if(!Failed)
+                    CopyMadVoroTrace(*Engine, Trace, MeshDiagTraceNames(), TraceInconsistent);
+                SetMadVoroTraceLevel(*Engine, 0);
+            }
+#else
+            (void)Tess;
+#endif
+            AddDiagnostic(IndividualHydroWallTime() - Start);
+        }
+
+        void AddWait(MeshDiagRichValue Item, double Seconds) {
+            Rich[Slot()][Item] += Seconds;
+        }
+
+        // The stable ID of every mesh point of this attempt (remote ghosts from their owners).  Collective.
+        template<class View>
+        void SyncGhostIds(Tessellation3D const& Tess, View const& MeshView, size_t CanonicalCount) {
+            double const Start = IndividualHydroWallTime();
+            if(CanonicalIds.size() != CanonicalCount) {
+                CanonicalIds.resize(CanonicalCount);
+                for(size_t Global = 0; Global < CanonicalCount; ++Global)
+                    CanonicalIds[Global] = Cells[Global].ID;
+            }
+            size_t const Owned = std::min(MeshView.localSize(), Tess.GetPointNo());
+            GhostIds.assign(Tess.GetPointNo(), std::numeric_limits<size_t>::max());
+            for(size_t Local = 0; Local < Owned; ++Local)
+                GhostIds[Local] = CanonicalIds[MeshView.localToGlobal(Local)];
+            Tess.SyncPartialBuildDataReadOnly(GhostIds, CanonicalIds);
+            AddDiagnostic(IndividualHydroWallTime() - Start);
+        }
+
+        template<class Record>
+        bool StaleLocal(size_t Source, Record const& SourceRecord) {
+            if(IdIndex == nullptr || Source >= CellFlags.size())
+                return false;
+            if(StaleLocalState.size() != CellFlags.size())
+                StaleLocalState.assign(CellFlags.size(), -1);
+            if(StaleLocalState[Source] < 0) {
+                bool Stale = false;
+                for(size_t Entry = 0; Entry < SourceRecord.neighbor_ids.size() && !Stale; ++Entry)
+                    Stale = SourceRecord.neighbor_owners[Entry] == Rank &&
+                        IdIndex->find(SourceRecord.neighbor_ids[Entry]) == IdIndex->end();
+                StaleLocalState[Source] = Stale ? 1 : 0;
+            }
+            return StaleLocalState[Source] == 1;
+        }
+
+        // Facts about the expanding cell Source for a target cell with stable ID TargetId owned by TargetOwner.
+        template<class RecordVector>
+        unsigned SourceFlags(RecordVector const& Records, size_t Source, size_t TargetId, int TargetOwner,
+            int& AttemptedOwner) {
+            AttemptedOwner = -1;
+            unsigned Flags = 0;
+            unsigned char const Cell = Source < CellFlags.size() ? CellFlags[Source] : 0;
+            if((Cell & CellDeferredBuilt) != 0)
+                Flags |= SourceDeferredBuilt;
+            if((Cell & CellUnbuiltPromotion) != 0)
+                Flags |= SourceUnbuiltPromotion;
+            if((Cell & CellAddedAtDepthOne) != 0)
+                Flags |= SourceAddedAtDepthOne;
+            if(Source >= Records.size() || Source >= Cells.size() || Records[Source].cell_id != Cells[Source].ID ||
+               Records[Source].neighbor_ids.size() != Records[Source].neighbor_owners.size()) {
+                Flags |= SourceRecordInvalid;
+                if(Source < Records.size() && Records[Source].cell_id == std::numeric_limits<size_t>::max() &&
+                   Records[Source].MissingReason == RecordMissingReleased)
+                    Flags |= SourceRecordReleased;
+                return Flags;
+            }
+            auto const& Record = Records[Source];
+            bool Found = false;
+            for(size_t Entry = 0; Entry < Record.neighbor_ids.size(); ++Entry)
+                if(Record.neighbor_ids[Entry] == TargetId) {
+                    Found = true;
+                    AttemptedOwner = Record.neighbor_owners[Entry];
+                    break;
+                }
+            if(Found) {
+                Flags |= SourceRecordHasTarget;
+                if(AttemptedOwner != TargetOwner)
+                    Flags |= SourceOwnerMismatch;
+                if(AttemptedOwner != Rank)
+                    Flags |= SourceRecordOwnerRemote;
+            } else if(StaleLocal(Source, Record))
+                Flags |= SourceRecordStaleLocal;
+            return Flags;
+        }
+
+        void PushPrimary(MeshAdditionEntry const& Entry) {
+            if(Entry.Depth < 2 && Entry.Global < CellFlags.size())
+                CellFlags[Entry.Global] |= CellAddedAtDepthOne;
+            LastPrimary = Pending.size();
+            Pending.push_back(Entry);
+        }
+
+        // Addition at the local expansion of Source (H: the frontier loop).
+        template<class RecordVector>
+        void RecordLocalAddition(RecordVector const& Records, size_t Global, unsigned char Depth, size_t Source) {
+            MeshAdditionEntry Entry;
+            Entry.Global = Global;
+            Entry.Depth = Depth;
+            Entry.Site = 0;
+            Entry.SourceRank = Rank;
+            Entry.SourceId = Source < Cells.size() ? Cells[Source].ID : std::numeric_limits<size_t>::max();
+            Entry.SourceFlags = SourceFlags(Records, Source, Cells[Global].ID, Rank, Entry.AttemptedOwner);
+            PushPrimary(Entry);
+        }
+
+        // Addition on a remote request; its source facts arrive with the tag exchange after the round.
+        void RecordRemoteAddition(size_t Global, unsigned char Depth, int SourceRankIndex, size_t RequestIndex) {
+            MeshAdditionEntry Entry;
+            Entry.Global = Global;
+            Entry.Depth = Depth;
+            Entry.Site = 1;
+            Entry.SourceRank = SourceRankIndex;
+            Entry.RequestIndex = RequestIndex;
+            PushPrimary(Entry);
+        }
+
+        // Batched cached support of the depth-one addition recorded last.
+        void RecordSupportAddition(size_t Global) {
+            MeshAdditionEntry Entry;
+            Entry.Global = Global;
+            Entry.Depth = 2;
+            Entry.Site = 2;
+            Entry.SourceRank = Rank;
+            Entry.Parent = LastPrimary;
+            if(LastPrimary < Pending.size())
+                Entry.SourceId = Cells[Pending[LastPrimary].Global].ID;
+            Pending.push_back(Entry);
+        }
+
+        void RecordPromotion(size_t Global, bool Remote, bool Built, unsigned char NewDepth) {
+            if(Remote)
+                ++Counts[Slot()][CountPromotionRemote];
+            if(!Built && NewDepth < 2 && Global < CellFlags.size()) {
+                CellFlags[Global] |= CellUnbuiltPromotion;
+                ++Counts[Slot()][CountPromotionUnbuilt];
+            }
+        }
+
+        // A request for remote ghost Ghost (owned by GhostOwner, not in its owner's target) from the expansion of
+        // Source, sent as pair PairIndex to Owner.
+        template<class RecordVector>
+        void TagRemoteRequest(RecordVector const& Records, size_t Owner, size_t PairIndex, size_t Source, size_t Ghost,
+            int GhostOwner) {
+            size_t const TargetId = Ghost < GhostIds.size() ? GhostIds[Ghost] : std::numeric_limits<size_t>::max();
+            int AttemptedOwner = -1;
+            unsigned const Flags = TargetId == std::numeric_limits<size_t>::max() ? SourceUnknown :
+                SourceFlags(Records, Source, TargetId, GhostOwner, AttemptedOwner);
+            std::vector<size_t>& Tags = RemoteTags.at(Owner);
+            Tags.push_back(PairIndex);
+            Tags.push_back(static_cast<size_t>(Flags) | (static_cast<size_t>(AttemptedOwner + 1) << 32));
+            Tags.push_back(Source < Cells.size() ? Cells[Source].ID : std::numeric_limits<size_t>::max());
+        }
+
+        // After a closure round: one exchange of the request tags (every rank), then the cause of every addition
+        // of the round.  Collective.
+        template<class RecordVector>
+        void ExchangeTagsAndClassify(RecordVector const& Records) {
+            double const Start = IndividualHydroWallTime();
+#ifdef RICH_MPI
+            std::vector<std::vector<size_t> > const Incoming = MPI_Exchange_all_to_all(RemoteTags, MPI_COMM_WORLD);
+#else
+            std::vector<std::vector<size_t> > const Incoming(RemoteTags.size());
+#endif
+            for(std::vector<size_t>& Tags : RemoteTags)
+                Tags.clear();
+            size_t const SlotIndex = Slot();
+            for(size_t EntryIndex = 0; EntryIndex < Pending.size(); ++EntryIndex) {
+                MeshAdditionEntry& Entry = Pending[EntryIndex];
+                if(Entry.Site == 1 && Entry.SourceRank >= 0 &&
+                   static_cast<size_t>(Entry.SourceRank) < Incoming.size()) {
+                    std::vector<size_t> const& Tags = Incoming[static_cast<size_t>(Entry.SourceRank)];
+                    size_t Low = 0;
+                    size_t High = Tags.size() / 3;
+                    while(Low < High) {
+                        size_t const Middle = (Low + High) / 2;
+                        if(Tags[3 * Middle] < Entry.RequestIndex)
+                            Low = Middle + 1;
+                        else
+                            High = Middle;
+                    }
+                    if(Low < Tags.size() / 3 && Tags[3 * Low] == Entry.RequestIndex) {
+                        Entry.SourceFlags = static_cast<unsigned>(Tags[3 * Low + 1] & 0xffffffffull);
+                        Entry.AttemptedOwner = static_cast<int>(Tags[3 * Low + 1] >> 32) - 1;
+                        Entry.SourceId = Tags[3 * Low + 2];
+                    }
+                }
+                auto const Shadow = PreviousShadow.find(Entry.Global);
+                bool const InShadow = Shadow != PreviousShadow.end() && Shadow->second <= Entry.Depth;
+                bool const TargetNew = Entry.Global < Records.size() &&
+                    Records[Entry.Global].cell_id == std::numeric_limits<size_t>::max() &&
+                    Records[Entry.Global].MissingReason == RecordMissingAfterAmr;
+                if(Entry.Site == 2 && Entry.Parent < EntryIndex)
+                    Entry.Cause = InShadow ? MeshAdditionCause::DeferredBuiltPromotion : Pending[Entry.Parent].Cause;
+                else
+                    Entry.Cause = ClassifyMeshAddition(Entry.SourceFlags, InShadow, TargetNew, Entry.Depth);
+                unsigned long long* const SlotCounts = Counts[SlotIndex];
+                ++SlotCounts[static_cast<size_t>(Entry.Cause)];
+                ++SlotCounts[CountSiteLocal + Entry.Site];
+                ++SlotCounts[CountAdditions];
+                if(InShadow)
+                    ++SlotCounts[CountInPreviousShadow];
+                Rich[SlotIndex][RichAdditions] += 1;
+                if(!HaveExample || Attempt > ExampleAttempt) {
+                    HaveExample = true;
+                    ExampleAttempt = Attempt;
+                    ExampleCount = 0;
+                    Example[0] = Attempt;
+                    Example[1] = Entry.Site;
+                    Example[2] = static_cast<unsigned long long>(Entry.Cause);
+                    Example[3] = Entry.Global < Cells.size() ? Cells[Entry.Global].ID : 0;
+                    Example[4] = Entry.SourceId;
+                    Example[5] = Entry.Depth;
+                    Example[6] = static_cast<unsigned long long>(Rank);
+                    Example[7] = static_cast<unsigned long long>(Entry.SourceRank < 0 ? 0 : Entry.SourceRank);
+                    Example[8] = static_cast<unsigned long long>(Entry.AttemptedOwner + 1);
+                }
+                if(Attempt == ExampleAttempt)
+                    ++ExampleCount;
+            }
+            Pending.clear();
+            LastPrimary = std::numeric_limits<size_t>::max();
+            AddDiagnostic(IndividualHydroWallTime() - Start);
+        }
+
+        // Target utility on the closed mesh: depths of remote ghosts from their owners, then the third-shell seeds a
+        // depth <= 1 cell touches and the depth-two targets no depth <= 1 cell touches.  Collective.
+        template<class View>
+        void TargetUtility(Tessellation3D const& Tess, View const& MeshView, std::vector<unsigned char> const& Depth,
+            std::vector<unsigned char> const* Shell, size_t CanonicalCount) {
+            double const Start = IndividualHydroWallTime();
+            size_t const Owned = std::min(MeshView.localSize(), Tess.GetPointNo());
+            std::vector<unsigned char> MeshDepth(Tess.GetPointNo(), 255);
+            for(size_t Local = 0; Local < Owned; ++Local)
+                MeshDepth[Local] = Depth[MeshView.localToGlobal(Local)];
+            Tess.SyncPartialBuildDataReadOnly(MeshDepth, Depth);
+            std::vector<size_t> Neighbors;
+            for(size_t Local = 0; Local < Owned; ++Local) {
+                size_t const Global = MeshView.localToGlobal(Local);
+                bool const ThirdShell = Shell != nullptr && Global < Shell->size() && (*Shell)[Global] == 3;
+                if(!ThirdShell && Depth[Global] != 2)
+                    continue;
+                unsigned char Nearest = 255;
+                Tess.GetNeighbors(Local, Neighbors);
+                for(size_t Neighbor : Neighbors) {
+                    size_t const NeighborGlobal = MeshView.meshLocalToGlobal(Neighbor);
+                    unsigned char const NeighborDepth = NeighborGlobal < CanonicalCount ? Depth[NeighborGlobal] :
+                        (Neighbor < MeshDepth.size() ? MeshDepth[Neighbor] : static_cast<unsigned char>(255));
+                    Nearest = std::min(Nearest, NeighborDepth);
+                }
+                if(ThirdShell) {
+                    ++Utility[0];
+                    if(Depth[Global] <= 1 || Nearest <= 1)
+                        ++Utility[1];
+                }
+                if(Depth[Global] == 2) {
+                    ++Utility[2];
+                    if(Nearest > 1)
+                        ++Utility[3];
+                }
+            }
+            AddDiagnostic(IndividualHydroWallTime() - Start);
+        }
+    };
+
+    // Run-wide state: build counter, MadVoro name check, rank-0 values per event class (INDIVIDUAL_MESH_WINDOW,
+    // name=sum/mean/p95/max) and, at level 2, every rank's detail of the slowest build of the current window.
+    constexpr size_t MeshWindowQuantities = 7;
+    char const* const MeshWindowNames[MeshWindowQuantities] = {"wall", "partial", "ghosts", "rounds", "closure",
+        "avoidable", "diag"};
+    constexpr size_t MeshDiagWindowBuilds = 100;
+
+    // Numerator / Denominator when Denominator > 0, else Fallback.  The divisor is never zero: the TDE drivers enable
+    // FE_DIVBYZERO | FE_INVALID traps and the compiler evaluates a guarded division before its guard.  Not inlined and
+    // never called under a guard on Denominator: a caller's guard would let the compiler drop the substitute divisor.
+    [[gnu::noinline]] double MeshDiagRatio(double Numerator, double Denominator, double Fallback) {
+        double const Divisor = Denominator > 0 ? Denominator : 1.0;
+        double const Ratio = Numerator / Divisor;
+        return Denominator > 0 ? Ratio : Fallback;
+    }
+
+    struct MeshDiagRunState {
+        size_t Builds = 0;
+        // 0 not yet checked, 1 same names on every rank, -1 unavailable or different.
+        int NamesState = 0;
+        bool RankZero = false;
+        std::map<std::string, std::array<std::vector<double>, MeshWindowQuantities> > Classes;
+        size_t WindowBuilds = 0;
+        double WindowSlowest = -1;
+        size_t WindowSlowestBuild = 0;
+        std::uint64_t WindowSlowestTick = 0;
+        std::string WindowSlowestMesh;
+        std::vector<double> WindowDetail;
+        size_t DetailAttempts = 0;
+
+        void PrintWindow(char const* Scope) const {
+            for(auto const& Class : Classes) {
+                std::ostringstream Line;
+                Line << std::setprecision(5) << "INDIVIDUAL_MESH_WINDOW scope=" << Scope << " builds=" << Builds
+                     << " class=" << Class.first << " count=" << Class.second[0].size();
+                for(size_t Quantity = 0; Quantity < MeshWindowQuantities; ++Quantity) {
+                    std::vector<double> Values = Class.second[Quantity];
+                    double Sum = 0;
+                    for(double Value : Values)
+                        Sum += Value;
+                    std::sort(Values.begin(), Values.end());
+                    double const Mean = MeshDiagRatio(Sum, static_cast<double>(Values.size()), 0.0);
+                    double const P95 = Values.empty() ? 0.0 : Values[std::min(Values.size() - 1,
+                        static_cast<size_t>(std::ceil(0.95 * static_cast<double>(Values.size()))) - 1)];
+                    double const Maximum = Values.empty() ? 0.0 : Values.back();
+                    Line << " " << MeshWindowNames[Quantity] << "=" << Sum << "/" << Mean << "/" << P95 << "/"
+                         << Maximum;
+                }
+                std::cout << Line.str() << std::endl;
+            }
+        }
+
+        ~MeshDiagRunState() {
+            if(RankZero && Builds > 0)
+                PrintWindow("end_of_run");
+        }
+    };
+
+    MeshDiagRunState& MeshDiagState() {
+        static MeshDiagRunState State;
+        return State;
+    }
+
+    struct MeshDiagValueRank {
+        double Value;
+        int Rank;
+    };
+
+    // After every event-mesh build at RICH_INDIVIDUAL_MESH_TRACE >= 1; every rank calls it, once per build, after
+    // ReportIndividualMeshBuild.  Reductions only (MAXLOC to choose the largest-target, least-slack and busiest ranks
+    // and the representative addition; MAX and SUM of the per-attempt values; SUM of the counts; XOR of the
+    // digests; at level 2 a gather every 100 builds).  Rank 0 prints INDIVIDUAL_MESH_GHOST_ROUNDS and
+    // INDIVIDUAL_MESH_CAUSES for builds with a partial attempt, and INDIVIDUAL_MESH_WINDOW every 100 builds.
+    void ReportIndividualMeshDiagnostics(IndividualMeshDiagnostics& Diag, IndividualMeshBuildRecord const& Record,
+        IndividualMeshSeedDiagnostics const* Seed, char const* Stage, double Seconds, std::uint64_t EventTick) {
+        MeshDiagRunState& State = MeshDiagState();
+        int const RankIndex = Diag.Rank;
+        int const Ranks = Diag.RankCount;
+        State.RankZero = RankIndex == 0;
+        size_t const Build = ++State.Builds;
+        std::string const StageText(Stage);
+        std::string const Mesh = StageText.find("first-half") == std::string::npos ? "event" :
+            (StageText.find("shadow") == std::string::npos ? "first_half" : "first_half_shadow");
+        MadVoroTraceNames const& Names = MeshDiagTraceNames();
+
+        // MadVoro names: checked once across ranks; the block is left out while unchecked or if they differ.
+        if(State.NamesState == 0) {
+            if(!HasPartialBuildTrace<MadVoro::Voronoi3D<Vector3D> >::value)
+                State.NamesState = -1;
+            else {
+                bool const HaveNames = Names.HavePrepare && Names.HaveRound;
+                std::uint64_t const Hash = HaveNames ? MeshDiagNamesHash(Names) : 0;
+                unsigned long long Check[3] = {Hash, ~Hash, HaveNames ? 0ull : 1ull};
+#ifdef RICH_MPI
+                MPI_Allreduce(MPI_IN_PLACE, Check, 3, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+#endif
+                if(Check[2] == 0) {
+                    State.NamesState = Check[0] == ~Check[1] ? 1 : -1;
+                    if(State.NamesState < 0 && RankIndex == 0)
+                        std::cout << "INDIVIDUAL_MESH_GHOST_ROUNDS warning=madvoro_trace_names_differ_across_ranks"
+                                  << std::endl;
+                }
+            }
+        }
+        bool const UseTrace = State.NamesState == 1;
+        size_t const PrepareCount = UseTrace ? Names.Prepare.size() : 0;
+        size_t const RoundCount = UseTrace ? Names.Round.size() : 0;
+        // Traced attempts, inconsistency, rounds per traced attempt: agreed by MAX.
+        int Shape[2 + MeshDiagSlots] = {};
+        if(UseTrace) {
+            Shape[0] = static_cast<int>(Diag.Trace.size());
+            Shape[1] = Diag.TraceInconsistent ? 1 : 0;
+            for(size_t Attempt = 0; Attempt < Diag.Trace.size() && Attempt < MeshDiagSlots; ++Attempt)
+                Shape[2 + Attempt] = static_cast<int>(Diag.Trace[Attempt].Rounds.size());
+#ifdef RICH_MPI
+            MPI_Allreduce(MPI_IN_PLACE, Shape, static_cast<int>(2 + MeshDiagSlots), MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        }
+        bool const TraceUsable = UseTrace && Shape[1] == 0;
+        size_t const TracedAttempts = TraceUsable ? std::min(static_cast<size_t>(Shape[0]), MeshDiagSlots) : 0;
+
+        // MadVoro fields (PartialBuildTrace.hpp, impl_meshdiag_madvoro.md): digests (names ending "_digest") are
+        // combined as integers, never averaged; exposed wait is the listed waits and barriers plus the idle drain
+        // estimated from the sampled passes, drain_s * sampled_empty_s / (sampled_empty_s + sampled_productive_s), per
+        // batch kind; the idle estimate needs 30 drain samples per executed batch (samples / *_batch_run).
+        auto IndexOf = [](std::vector<std::string> const& List, std::string const& Name) {
+            auto const Found = std::find(List.begin(), List.end(), Name);
+            return Found == List.end() ? std::numeric_limits<size_t>::max() :
+                static_cast<size_t>(Found - List.begin());
+        };
+        std::vector<unsigned char> PrepareWait(PrepareCount, 0);
+        std::vector<unsigned char> PrepareDigest(PrepareCount, 0);
+        std::vector<unsigned char> RoundWait(RoundCount, 0);
+        std::vector<size_t> DigestPositions;
+        for(size_t Item = 0; Item < PrepareCount; ++Item) {
+            std::string const& Name = Names.Prepare[Item];
+            PrepareDigest[Item] = Name.size() >= 7 && Name.compare(Name.size() - 7, 7, "_digest") == 0 ? 1 : 0;
+            if(PrepareDigest[Item] != 0)
+                DigestPositions.push_back(Item);
+        }
+        for(char const* Name : {"prep_reduce_wait_s", "ghost_entry_vote_wait_s", "vor_centroid_sync_barrier_s",
+                "vor_volume_exchange_barrier_s"}) {
+            size_t const Item = IndexOf(Names.Prepare, Name);
+            if(Item < PrepareCount)
+                PrepareWait[Item] = 1;
+        }
+        for(char const* Name : {"vote_wait_s", "small_ctor_barrier_s", "big_ctor_barrier_s", "small_teardown_s",
+                "big_teardown_s", "small_final_barrier_s", "big_final_barrier_s"}) {
+            size_t const Item = IndexOf(Names.Round, Name);
+            if(Item < RoundCount)
+                RoundWait[Item] = 1;
+        }
+        // Per batch kind (small, big): drain_s, sampled empty seconds, sampled productive seconds, sampled empty and
+        // productive passes, drain passes, executed batches.
+        size_t Drain[2][7];
+        bool DrainFieldsFound = UseTrace;
+        for(size_t Kind = 0; Kind < 2; ++Kind) {
+            std::string const Prefix = Kind == 0 ? "small_" : "big_";
+            char const* const Fields[7] = {"drain_s", "drain_sampled_empty_s", "drain_sampled_productive_s",
+                "drain_sampled_empty", "drain_sampled_productive", "drain_polls", "batch_run"};
+            for(size_t Field = 0; Field < 7; ++Field) {
+                Drain[Kind][Field] = IndexOf(Names.Round, Prefix + Fields[Field]);
+                DrainFieldsFound = DrainFieldsFound && Drain[Kind][Field] < RoundCount;
+            }
+        }
+        // Derived per round: exposed wait, idle drain, drain samples per executed batch (the smaller kind; a huge
+        // value when no batch ran) and drain sampling coverage (sampled / passes, 0 without passes).
+        constexpr size_t RoundDerived = 4;
+        constexpr double NoBatches = 1e300;
+
+        // Flat per-rank values: the per-slot block, then per traced attempt the prepare values, their wait sum, and
+        // per round the values and the derived ones.
+        size_t const RichLength = MeshDiagSlots * RichValueCount;
+        std::vector<size_t> AttemptOffset(TracedAttempts + 1, RichLength);
+        for(size_t Attempt = 0; Attempt < TracedAttempts; ++Attempt)
+            AttemptOffset[Attempt + 1] = AttemptOffset[Attempt] + PrepareCount + 1 +
+                static_cast<size_t>(Shape[2 + Attempt]) * (RoundCount + RoundDerived);
+        size_t const Length = AttemptOffset[TracedAttempts];
+        std::vector<double> Local(Length, 0.0);
+        double MadVoroWait[MeshDiagSlots] = {};
+        for(size_t Attempt = 0; Attempt < TracedAttempts && Attempt < Diag.Trace.size(); ++Attempt) {
+            MadVoroAttemptCopy const& Copy = Diag.Trace[Attempt];
+            size_t const Offset = AttemptOffset[Attempt];
+            double PrepareWaitSum = 0;
+            for(size_t Item = 0; Item < PrepareCount && Item < Copy.Prepare.size(); ++Item) {
+                if(PrepareDigest[Item] != 0)
+                    continue;
+                Local[Offset + Item] = Copy.Prepare[Item];
+                if(PrepareWait[Item] != 0)
+                    PrepareWaitSum += Copy.Prepare[Item];
+            }
+            Local[Offset + PrepareCount] = PrepareWaitSum;
+            MadVoroWait[Attempt] += PrepareWaitSum;
+            size_t const Rounds = static_cast<size_t>(Shape[2 + Attempt]);
+            for(size_t Round = 0; Round < Rounds && Round < Copy.Rounds.size(); ++Round) {
+                std::vector<double> const& Values = Copy.Rounds[Round];
+                if(Values.size() < RoundCount)
+                    continue;
+                size_t const RoundOffset = Offset + PrepareCount + 1 + Round * (RoundCount + RoundDerived);
+                double WaitSum = 0;
+                for(size_t Item = 0; Item < RoundCount; ++Item) {
+                    Local[RoundOffset + Item] = Values[Item];
+                    if(RoundWait[Item] != 0)
+                        WaitSum += Values[Item];
+                }
+                double IdleDrain = 0;
+                double SamplesPerBatch = NoBatches;
+                double Sampled = 0;
+                double Passes = 0;
+                if(DrainFieldsFound)
+                    for(size_t Kind = 0; Kind < 2; ++Kind) {
+                        double const SampledSeconds = Values[Drain[Kind][1]] + Values[Drain[Kind][2]];
+                        double const DrainProduct = Values[Drain[Kind][0]] * Values[Drain[Kind][1]];
+                        IdleDrain += MeshDiagRatio(DrainProduct, SampledSeconds, 0.0);
+                        double const KindSampled = Values[Drain[Kind][3]] + Values[Drain[Kind][4]];
+                        SamplesPerBatch = std::min(SamplesPerBatch,
+                            MeshDiagRatio(KindSampled, Values[Drain[Kind][6]], NoBatches));
+                        Sampled += KindSampled;
+                        Passes += Values[Drain[Kind][5]];
+                    }
+                Local[RoundOffset + RoundCount] = WaitSum + IdleDrain;
+                Local[RoundOffset + RoundCount + 1] = IdleDrain;
+                Local[RoundOffset + RoundCount + 2] = SamplesPerBatch;
+                Local[RoundOffset + RoundCount + 3] = MeshDiagRatio(Sampled, Passes, 0.0);
+                MadVoroWait[Attempt] += WaitSum + IdleDrain;
+            }
+        }
+        double TotalWait = 0;
+        for(size_t Slot = 0; Slot < MeshDiagSlots; ++Slot) {
+            double* const Values = Diag.Rich[Slot];
+            Values[RichWaitTotal] = Values[RichWaitSync] + Values[RichWaitExchange] + Values[RichWaitAgree] +
+                MadVoroWait[Slot];
+            TotalWait += Values[RichWaitTotal];
+            std::copy(Values, Values + RichValueCount,
+                Local.begin() + static_cast<std::ptrdiff_t>(Slot * RichValueCount));
+        }
+
+        // Largest final target, least total wait, busiest rank (the H:560 sum, same terms and order) and the
+        // representative addition (latest attempt with additions, then most additions in it).
+        MeshDiagValueRank Chosen[4] = {
+            {static_cast<double>(Record.final_target), RankIndex},
+            {-TotalWait, RankIndex},
+            {Record.stage_seconds[1] + Record.stage_seconds[2] + Record.stage_seconds[3] + Record.stage_seconds[6],
+                RankIndex},
+            {Diag.HaveExample ? static_cast<double>(Diag.ExampleAttempt) * 4294967296.0 +
+                static_cast<double>(std::min<unsigned long long>(Diag.ExampleCount, 4294967295ull)) : -1.0,
+                RankIndex}};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, Chosen, 4, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+#endif
+        int const TargetRank = Chosen[0].Rank;
+        int const SlackRank = Chosen[1].Rank;
+        int const BusyRank = Chosen[2].Rank;
+        int const ExampleRank = Chosen[3].Value >= 0 ? Chosen[3].Rank : -1;
+
+        // Maxima (and minima as negated maxima) on every rank; sums and the three chosen ranks' values on rank 0.
+        constexpr size_t ExtraCount = 7;
+        double const Closure = Seconds - Record.partial_seconds - Record.full_seconds - Record.mapping_seconds -
+            Record.DiagnosticSeconds;
+        double const Extras[ExtraCount] = {Seconds, Record.partial_seconds, Record.full_seconds,
+            Record.DiagnosticSeconds, Closure, Record.stage_seconds[5], Record.ghost_rounds};
+        std::vector<double> Maxima(2 * Length + ExtraCount);
+        for(size_t Item = 0; Item < Length; ++Item) {
+            Maxima[Item] = Local[Item];
+            Maxima[Length + Item] = -Local[Item];
+        }
+        std::copy(Extras, Extras + ExtraCount, Maxima.begin() + static_cast<std::ptrdiff_t>(2 * Length));
+        std::vector<double> Sums(4 * Length, 0.0);
+        for(size_t Item = 0; Item < Length; ++Item) {
+            Sums[Item] = Local[Item];
+            if(RankIndex == TargetRank)
+                Sums[Length + Item] = Local[Item];
+            if(RankIndex == SlackRank)
+                Sums[2 * Length + Item] = Local[Item];
+            if(RankIndex == BusyRank)
+                Sums[3 * Length + Item] = Local[Item];
+        }
+        constexpr size_t CountLength = MeshDiagSlots * CountValueCount;
+        constexpr size_t SeedLength = MeshSeedLayers * SeedCountValues + 1;
+        constexpr size_t UtilityOffset = CountLength + SeedLength;
+        constexpr size_t ExampleOffset = UtilityOffset + 4;
+        std::vector<unsigned long long> Integers(ExampleOffset + 9, 0);
+        std::copy(&Diag.Counts[0][0], &Diag.Counts[0][0] + CountLength, Integers.begin());
+        if(Seed != nullptr) {
+            std::copy(&Seed->Layers[0][0], &Seed->Layers[0][0] + MeshSeedLayers * SeedCountValues,
+                Integers.begin() + static_cast<std::ptrdiff_t>(CountLength));
+            Integers[CountLength + MeshSeedLayers * SeedCountValues] = Seed->HaloCells;
+        }
+        std::copy(Diag.Utility, Diag.Utility + 4, Integers.begin() + static_cast<std::ptrdiff_t>(UtilityOffset));
+        if(RankIndex == ExampleRank)
+            std::copy(Diag.Example, Diag.Example + 9, Integers.begin() + static_cast<std::ptrdiff_t>(ExampleOffset));
+        std::vector<unsigned long long> Digests(TracedAttempts * DigestPositions.size(), 0);
+        for(size_t Attempt = 0; Attempt < TracedAttempts && Attempt < Diag.Trace.size(); ++Attempt)
+            for(size_t Item = 0; Item < DigestPositions.size(); ++Item)
+                if(DigestPositions[Item] < Diag.Trace[Attempt].Prepare.size())
+                    Digests[Attempt * DigestPositions.size() + Item] =
+                        MeshDiagDigestBits(Diag.Trace[Attempt].Prepare[DigestPositions[Item]], RankIndex);
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, Maxima.data(), static_cast<int>(Maxima.size()), MPI_DOUBLE, MPI_MAX,
+            MPI_COMM_WORLD);
+        bool const Root = RankIndex == 0;
+        if(!Sums.empty())
+            MPI_Reduce(Root ? MPI_IN_PLACE : Sums.data(), Root ? Sums.data() : nullptr, static_cast<int>(Sums.size()),
+                MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+        MPI_Reduce(Root ? MPI_IN_PLACE : Integers.data(), Root ? Integers.data() : nullptr,
+            static_cast<int>(Integers.size()), MPI_UNSIGNED_LONG_LONG, MPI_SUM, 0, MPI_COMM_WORLD);
+        if(!Digests.empty())
+            MPI_Reduce(Root ? MPI_IN_PLACE : Digests.data(), Root ? Digests.data() : nullptr,
+                static_cast<int>(Digests.size()), MPI_UNSIGNED_LONG_LONG, MPI_BXOR, 0, MPI_COMM_WORLD);
+#endif
+        double const SecondsMax = Maxima[2 * Length];
+
+        // Level 2: keep this rank's detail if this is the slowest build of the window (agreed: SecondsMax is a
+        // MAX over ranks); every 100 builds rank 0 gathers and prints it.
+        if(Diag.Level >= 2) {
+            ++State.WindowBuilds;
+            if(SecondsMax > State.WindowSlowest) {
+                State.WindowSlowest = SecondsMax;
+                State.WindowSlowestBuild = Build;
+                State.WindowSlowestTick = EventTick;
+                State.WindowSlowestMesh = Mesh;
+                State.DetailAttempts = TracedAttempts;
+                std::vector<double>& Detail = State.WindowDetail;
+                Detail.assign(Local.begin(), Local.begin() + static_cast<std::ptrdiff_t>(RichLength));
+                for(size_t Item = 0; Item < CountLength; ++Item)
+                    Detail.push_back(static_cast<double>((&Diag.Counts[0][0])[Item]));
+                for(size_t Item = 0; Item + 1 < SeedLength; ++Item)
+                    Detail.push_back(Seed != nullptr ? static_cast<double>((&Seed->Layers[0][0])[Item]) : 0.0);
+                Detail.push_back(Seed != nullptr ? static_cast<double>(Seed->HaloCells) : 0.0);
+                for(size_t Item = 0; Item < 4; ++Item)
+                    Detail.push_back(static_cast<double>(Diag.Utility[Item]));
+                for(size_t Attempt = 0; Attempt < TracedAttempts; ++Attempt) {
+                    size_t const Offset = AttemptOffset[Attempt];
+                    for(size_t Item = 0; Item <= PrepareCount; ++Item) {
+                        bool const Digest = Item < PrepareCount && PrepareDigest[Item] != 0;
+                        Detail.push_back(Digest && Attempt < Diag.Trace.size() &&
+                            Item < Diag.Trace[Attempt].Prepare.size() ? Diag.Trace[Attempt].Prepare[Item] :
+                            Local[Offset + Item]);
+                    }
+                    size_t const Rounds = static_cast<size_t>(Shape[2 + Attempt]);
+                    // Sums over the rounds of the values, the exposed wait and the idle drain.
+                    for(size_t Item = 0; Item < RoundCount + 2; ++Item) {
+                        double Sum = 0;
+                        for(size_t Round = 0; Round < Rounds; ++Round)
+                            Sum += Local[Offset + PrepareCount + 1 + Round * (RoundCount + RoundDerived) + Item];
+                        Detail.push_back(Sum);
+                    }
+                }
+            }
+            if(State.WindowBuilds >= MeshDiagWindowBuilds) {
+                size_t const DetailLength = State.WindowDetail.size();
+                std::vector<double> All(RankIndex == 0 ? DetailLength * static_cast<size_t>(Ranks) : 0);
+#ifdef RICH_MPI
+                MPI_Gather(State.WindowDetail.data(), static_cast<int>(DetailLength), MPI_DOUBLE,
+                    RankIndex == 0 ? All.data() : nullptr, static_cast<int>(DetailLength), MPI_DOUBLE, 0,
+                    MPI_COMM_WORLD);
+#else
+                All = State.WindowDetail;
+#endif
+                if(RankIndex == 0)
+                    for(int Source = 0; Source < Ranks; ++Source) {
+                        double const* const Values = All.data() + static_cast<size_t>(Source) * DetailLength;
+                        std::ostringstream Line;
+                        Line << std::setprecision(4) << "INDIVIDUAL_MESH_RANK_DETAIL window_end=" << Build
+                             << " build=" << State.WindowSlowestBuild << " event_tick=" << State.WindowSlowestTick
+                             << " mesh=" << State.WindowSlowestMesh << " seconds_max=" << State.WindowSlowest
+                             << " rank=" << Source;
+                        for(size_t Slot = 0; Slot < MeshDiagSlots; ++Slot) {
+                            Line << " rich_a" << Slot + 1 << "=";
+                            for(size_t Item = 0; Item < RichValueCount; ++Item)
+                                Line << (Item > 0 ? "," : "") << MeshDiagRichNames[Item] << ":"
+                                     << Values[Slot * RichValueCount + Item];
+                        }
+                        size_t Offset = RichLength;
+                        for(size_t Slot = 0; Slot < MeshDiagSlots; ++Slot) {
+                            Line << " counts_a" << Slot + 1 << "=";
+                            for(size_t Item = 0; Item < CountValueCount; ++Item)
+                                Line << (Item > 0 ? "," : "") << (Item < MeshCauseCount ? MeshCauseNames[Item] :
+                                    MeshDiagCountNames[Item - MeshCauseCount]) << ":"
+                                     << static_cast<unsigned long long>(Values[Offset + Slot * CountValueCount + Item]);
+                        }
+                        Offset += CountLength;
+                        for(size_t Layer = 0; Layer < MeshSeedLayers; ++Layer) {
+                            Line << " seed_l" << Layer + 1 << "=";
+                            for(size_t Item = 0; Item < SeedCountValues; ++Item)
+                                Line << (Item > 0 ? "," : "") << MeshSeedNames[Item] << ":"
+                                     << static_cast<unsigned long long>(
+                                            Values[Offset + Layer * SeedCountValues + Item]);
+                        }
+                        Offset += SeedLength;
+                        Line << " seed_halo=" << static_cast<unsigned long long>(Values[Offset - 1]);
+                        Line << " utility=shell3_seeds:" << static_cast<unsigned long long>(Values[Offset])
+                             << ",shell3_needed:" << static_cast<unsigned long long>(Values[Offset + 1])
+                             << ",depth2:" << static_cast<unsigned long long>(Values[Offset + 2])
+                             << ",depth2_unneeded:" << static_cast<unsigned long long>(Values[Offset + 3]);
+                        Offset += 4;
+                        for(size_t Attempt = 0; Attempt < State.DetailAttempts; ++Attempt) {
+                            Line << " madvoro_a" << Attempt + 1 << "=";
+                            for(size_t Item = 0; Item <= PrepareCount; ++Item) {
+                                Line << (Item > 0 ? "," : "")
+                                     << (Item < PrepareCount ? Names.Prepare[Item] : std::string("prepare_wait"))
+                                     << ":";
+                                if(Item < PrepareCount && PrepareDigest[Item] != 0)
+                                    Line << MeshDiagHex(MeshDiagDigestInteger(Values[Offset + Item]));
+                                else
+                                    Line << Values[Offset + Item];
+                            }
+                            Offset += PrepareCount + 1;
+                            for(size_t Item = 0; Item < RoundCount + 2; ++Item)
+                                Line << "," << (Item < RoundCount ? Names.Round[Item] :
+                                    std::string(Item == RoundCount ? "exposed_wait" : "idle_drain")) << "_rounds:"
+                                     << Values[Offset + Item];
+                            Offset += RoundCount + 2;
+                        }
+                        std::cout << Line.str() << std::endl;
+                    }
+                State.WindowBuilds = 0;
+                State.WindowSlowest = -1;
+                State.WindowDetail.clear();
+            }
+        }
+        if(RankIndex != 0)
+            return;
+
+        // Shadow drain verdict: attempt k + 2 was avoidable when the shadow ran at attempt k, attempt k + 1 added
+        // cells (so it triggered attempt k + 2), all of them lie in D_k, and nothing else could have triggered it
+        // (without re-expansion a remote promotion also rebuilds).  Priced at attempt k + 2's own wall (max).
+        size_t const Attempts = Diag.Attempt;
+        auto CountOf = [&Integers](size_t AttemptNumber, size_t Item) {
+            return Integers[(AttemptNumber - 1) * CountValueCount + Item];
+        };
+        size_t AvoidableAttempts = 0;
+        double AvoidableSeconds = 0;
+        std::string AvoidableAt;
+        for(size_t K = 1; K + 2 <= std::min(Attempts, MeshDiagSlots); ++K) {
+            unsigned long long const Added = CountOf(K + 1, CountAdditions);
+            bool const OtherTrigger = !Diag.ClosureReexpand && CountOf(K + 1, CountPromotionRemote) > 0;
+            if(CountOf(K, CountShadowRan) > 0 && Added > 0 && CountOf(K + 1, CountInPreviousShadow) == Added &&
+               !OtherTrigger) {
+                ++AvoidableAttempts;
+                AvoidableSeconds += Maxima[(K + 1) * RichValueCount + RichWall];
+                AvoidableAt += (AvoidableAt.empty() ? "" : ",") + std::to_string(K + 2);
+            }
+        }
+
+        std::string const Result(Record.result);
+        std::string const Reason(Record.reason);
+        std::string const Class = Mesh + "_" + (Result == "partial" ?
+            "p" + std::to_string(std::min(Attempts, MeshDiagSlots)) :
+            (Reason.find("threshold") != std::string::npos ? std::string("full_threshold") : std::string("full")));
+        auto& ClassValues = State.Classes[Class];
+        double const WindowValues[MeshWindowQuantities] = {SecondsMax, Maxima[2 * Length + 1],
+            Maxima[2 * Length + 5], Maxima[2 * Length + 6], Maxima[2 * Length + 4], AvoidableSeconds,
+            Maxima[2 * Length + 3]};
+        for(size_t Quantity = 0; Quantity < MeshWindowQuantities; ++Quantity)
+            ClassValues[Quantity].push_back(WindowValues[Quantity]);
+
+        if(Attempts > 0) {
+            // min/mean/max/T/S/B (T largest target, S least slack, B busiest rank); one number when all six agree.
+            auto Six = [&](std::ostringstream& Line, size_t Index) {
+                double const Values[6] = {-Maxima[Length + Index], Sums[Index] / static_cast<double>(Ranks),
+                    Maxima[Index], Sums[Length + Index], Sums[2 * Length + Index], Sums[3 * Length + Index]};
+                if(std::all_of(Values + 1, Values + 6, [&Values](double Value) { return Value == Values[0]; })) {
+                    Line << Values[0];
+                    return;
+                }
+                Line << Values[0] << "/" << Values[1] << "/" << Values[2] << "/" << Values[3] << "/" << Values[4] << "/"
+                     << Values[5];
+            };
+            for(size_t Slot = 0; Slot < std::min(Attempts, MeshDiagSlots); ++Slot) {
+                bool const Traced = Slot < TracedAttempts;
+                size_t const Rounds = static_cast<size_t>(Maxima[Slot * RichValueCount + RichGhostRounds]);
+                size_t const TracedRounds = Traced ? static_cast<size_t>(Shape[2 + Slot]) : 0;
+                std::ostringstream Line;
+                Line << std::setprecision(4) << "INDIVIDUAL_MESH_GHOST_ROUNDS build=" << Build << " event_tick="
+                     << EventTick << " mesh=" << Mesh << " attempt=" << Slot + 1
+                     << (Slot + 1 == MeshDiagSlots && Attempts > MeshDiagSlots ? "+" : "")
+                     << " round=summary rank_target=" << TargetRank << " rank_least_slack=" << SlackRank
+                     << " rank_busiest=" << BusyRank << " traced=" << (Traced ? 1 : 0) << " rounds=" << Rounds
+                     << " traced_rounds=" << TracedRounds << " coverage="
+                     << MeshDiagRatio(static_cast<double>(std::min(TracedRounds, Rounds)), static_cast<double>(Rounds),
+                         1.0)
+                     << " rich=";
+                for(size_t Item = 0; Item < RichValueCount; ++Item) {
+                    Line << (Item > 0 ? "," : "") << MeshDiagRichNames[Item] << ":";
+                    Six(Line, Slot * RichValueCount + Item);
+                }
+                if(Traced) {
+                    size_t const Offset = AttemptOffset[Slot];
+                    Line << " prepare=";
+                    for(size_t Item = 0; Item < PrepareCount; ++Item) {
+                        if(PrepareDigest[Item] != 0)
+                            continue;
+                        Line << Names.Prepare[Item] << ":";
+                        Six(Line, Offset + Item);
+                        Line << ",";
+                    }
+                    Line << "prepare_wait:";
+                    Six(Line, Offset + PrepareCount);
+                    if(!DigestPositions.empty()) {
+                        Line << " digests=";
+                        for(size_t Item = 0; Item < DigestPositions.size(); ++Item)
+                            Line << (Item > 0 ? "," : "") << Names.Prepare[DigestPositions[Item]] << ":"
+                                 << MeshDiagHex(Digests[Slot * DigestPositions.size() + Item]);
+                    }
+                }
+                std::cout << Line.str() << std::endl;
+                for(size_t Round = 0; Round < TracedRounds; ++Round) {
+                    size_t const RoundOffset = AttemptOffset[Slot] + PrepareCount + 1 +
+                        Round * (RoundCount + RoundDerived);
+                    std::ostringstream RoundLine;
+                    RoundLine << std::setprecision(4) << "INDIVIDUAL_MESH_GHOST_ROUNDS build=" << Build
+                              << " event_tick=" << EventTick << " mesh=" << Mesh << " attempt=" << Slot + 1
+                              << " round=" << Round + 1 << " exposed_wait=";
+                    Six(RoundLine, RoundOffset + RoundCount);
+                    RoundLine << " idle_drain=";
+                    Six(RoundLine, RoundOffset + RoundCount + 1);
+                    // Fewest drain samples per executed batch on any rank that ran a batch; the idle estimate is
+                    // unavailable below 30.
+                    double const SamplesMin = -Maxima[Length + RoundOffset + RoundCount + 2];
+                    RoundLine << " drain_samples_per_batch_min=";
+                    if(SamplesMin >= NoBatches)
+                        RoundLine << "none idle_estimate=no_batches";
+                    else
+                        RoundLine << SamplesMin << " idle_estimate=" << (SamplesMin >= 30 ? "ok" : "unavailable");
+                    RoundLine << " drain_coverage=";
+                    Six(RoundLine, RoundOffset + RoundCount + 3);
+                    RoundLine << " values=";
+                    for(size_t Item = 0; Item < RoundCount; ++Item) {
+                        RoundLine << (Item > 0 ? "," : "") << Names.Round[Item] << ":";
+                        Six(RoundLine, RoundOffset + Item);
+                    }
+                    std::cout << RoundLine.str() << std::endl;
+                }
+            }
+
+            std::ostringstream Line;
+            Line << std::setprecision(4) << "INDIVIDUAL_MESH_CAUSES build=" << Build << " event_tick=" << EventTick
+                 << " mesh=" << Mesh << " result=" << Result << " attempts=" << Attempts
+                 << " reexpand=" << (Diag.ClosureReexpand ? 1 : 0);
+            for(size_t Slot = 0; Slot < std::min(Attempts, MeshDiagSlots); ++Slot) {
+                Line << " a" << Slot + 1 << "=add:" << Integers[Slot * CountValueCount + CountAdditions];
+                for(size_t Item = 0; Item < CountValueCount; ++Item) {
+                    if(Item == CountAdditions)
+                        continue;
+                    unsigned long long const Value = Integers[Slot * CountValueCount + Item];
+                    // Every rank counts the shadow drain it entered: printed as a flag.
+                    Line << "," << (Item < MeshCauseCount ? MeshCauseNames[Item] :
+                        MeshDiagCountNames[Item - MeshCauseCount]) << ":"
+                         << (Item == CountShadowRan ? (Value > 0 ? 1ull : 0ull) : Value);
+                }
+            }
+            Line << " avoidable_attempts=" << AvoidableAttempts << " avoidable_seconds=" << AvoidableSeconds
+                 << " avoidable_at=" << (AvoidableAt.empty() ? std::string("none") : AvoidableAt);
+            if(Seed != nullptr) {
+                for(size_t Layer = 0; Layer < MeshSeedLayers; ++Layer) {
+                    Line << " seed_l" << Layer + 1 << "=";
+                    for(size_t Item = 0; Item < SeedCountValues; ++Item)
+                        Line << (Item > 0 ? "," : "") << MeshSeedNames[Item] << ":"
+                             << Integers[CountLength + Layer * SeedCountValues + Item];
+                }
+                Line << " seed_halo=" << Integers[CountLength + MeshSeedLayers * SeedCountValues];
+            } else
+                Line << " seed=none";
+            Line << " utility=shell3_seeds:" << Integers[UtilityOffset] << ",shell3_needed:"
+                 << Integers[UtilityOffset + 1] << ",depth2:" << Integers[UtilityOffset + 2] << ",depth2_unneeded:"
+                 << Integers[UtilityOffset + 3];
+            if(ExampleRank >= 0) {
+                unsigned long long const* const Example = Integers.data() + ExampleOffset;
+                static char const* const SiteNames[3] = {"local", "remote", "support"};
+                Line << " example=attempt:" << Example[0] << ",site:" << SiteNames[std::min<unsigned long long>(
+                    Example[1], 2)] << ",cause:" << MeshCauseNames[std::min<unsigned long long>(Example[2],
+                    MeshCauseCount - 1)] << ",added_id:" << Example[3] << ",depth:" << Example[5] << ",owner:"
+                     << Example[6] << ",src_id:" << Example[4] << ",src_rank:" << Example[7] << ",attempted_owner:"
+                     << static_cast<long long>(Example[8]) - 1 << ",rank_additions:"
+                     << static_cast<unsigned long long>(std::fmod(Chosen[3].Value, 4294967296.0));
+            } else
+                Line << " example=none";
+            std::cout << Line.str() << std::endl;
+        }
+        if(Build % MeshDiagWindowBuilds == 0)
+            State.PrintWindow("cumulative");
+    }
 
 	// Adaptive per-rank closure threshold.  After every event-mesh build: the
 	// max over ranks of the partial-attempt and full-build times and of the
@@ -1522,6 +3061,7 @@ HDSim3D::HDSim3D(Tessellation3D& tess,
 	, cost_calc_(cost_calc), exchange_chain_(MPI_COMM_WORLD)
 	#endif // RICH_MPI
 {
+	AgreeClosestRanksRestrictedMode();
 	const bool validity_check = tess.GetPointNo() <= cells.size();
 	assert(validity_check);
 	assert(tsn.second.size() <= MAX_STICKERS);
@@ -2034,17 +3574,27 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 	MEMORY_PROFILE_SCOPE("hydro timeAdvanceIndividual");
 	// Agreed across ranks before any rank rejects it: the flag gates
 	// collectives (the phase and mesh-build reports).
+	// RICH_INDIVIDUAL_MESH_TRACE (0, 1 or 2, partial-mesh diagnostics) is read only when the flag is on and is agreed
+	// in the same single reduction: -1 invalid flag, -2 invalid mesh trace, 0 off, otherwise 1 + mesh trace level.
 	static int const phase_trace_agreed = []()
 	{
 		StrictBooleanEnvironment const parsed =
 			ReadStrictBooleanEnvironment("RICH_INDIVIDUAL_PERF_TRACE");
-		return static_cast<int>(AgreedIndividualValue(
-			!parsed.valid ? -1 : (parsed.value ? 1 : 0), "RICH_INDIVIDUAL_PERF_TRACE"));
+		int Code = !parsed.valid ? -1 : (parsed.value ? 1 : 0);
+		if(Code == 1) {
+			int const MeshLevel = ReadIndividualMeshTraceLevel();
+			Code = MeshLevel < 0 ? -2 : 1 + MeshLevel;
+		}
+		return static_cast<int>(AgreedIndividualValue(Code,
+			"RICH_INDIVIDUAL_PERF_TRACE or RICH_INDIVIDUAL_MESH_TRACE"));
 	}();
+	if(phase_trace_agreed == -2)
+		throw std::invalid_argument("RICH_INDIVIDUAL_MESH_TRACE must be 0, 1 or 2");
 	if(phase_trace_agreed < 0)
 		throw std::invalid_argument(
 			"RICH_INDIVIDUAL_PERF_TRACE must be a strict boolean");
 	bool const phase_trace = phase_trace_agreed != 0;
+	int const MeshTraceLevel = phase_trace_agreed > 1 ? phase_trace_agreed - 1 : 0;
 	IndividualHydroPhaseRecord phase_record = {{}};
 	double phase_start = phase_trace ? IndividualHydroWallTime() : 0;
 	double phase_mpi_start = phase_trace ? mpi_wait_profiler::Seconds() : 0;
@@ -2059,6 +3609,16 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 		phase_start = finish;
 		phase_mpi_start = mpi_finish;
 	};
+    // RICH_D2_TIMERS: per-pass seconds of this event (RICH_D2_HYDRO).  Agreed on every rank (collective on first use);
+    // with it off no clock is read.
+    bool const D2Timers = HydroD2TimersEnabled();
+    HydroD2Record D2Record = {{}};
+    auto const D2Now = [D2Timers]() { return D2Timers ? IndividualHydroWallTime() : 0.0; };
+    auto const D2Add = [D2Timers, &D2Record](HydroD2Field Field, double Start)
+    {
+        if(D2Timers)
+            D2Record[Field] += IndividualHydroWallTime() - Start;
+    };
 	const size_t canonical_count = extensive_.size();
 #ifdef RICH_MPI
 	bool const entropy_fix_enabled = std::find(
@@ -2176,6 +3736,11 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 					ActiveMeshView restored_view(tess_, canonical_count);
 					(void)restored_view;
 				}
+				catch(MadVoro::Exception::ClosestRanksVerifyError const&)
+				{
+					// Thrown by every rank together; never a reason for a fallback build.
+					throw;
+				}
 				catch(...)
 				{
 					restore_failed = true;
@@ -2222,6 +3787,13 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 	vector<size_t> seed;
 	vector<size_t> seed_depth_two;
 	vector<size_t> warm_target;
+	// Seed provenance for the partial-mesh diagnostics (RICH_INDIVIDUAL_MESH_TRACE >= 1); null otherwise.
+	std::unique_ptr<IndividualMeshSeedDiagnostics> SeedDiagStorage;
+	if(MeshTraceLevel >= 1 && partial_requested)
+		SeedDiagStorage.reset(new IndividualMeshSeedDiagnostics());
+	IndividualMeshSeedDiagnostics* const SeedDiag = SeedDiagStorage.get();
+	size_t SeedDiagLayer = 0;
+	size_t SeedDiagTwoShell = 0;
 	if(partial_requested)
 	{
 	seed = context.active_indices;
@@ -2271,8 +3843,9 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 		bool previous_sync_failed = false;
 		try
 		{
+			// Only isActive() of the previous mesh points is read below.
 			previous_context.reset(new IndividualStepContext(
-				previous_view->remapContext(context, false)));
+				previous_view->RemapActivity(context)));
 		}
 		catch(...)
 		{
@@ -2309,16 +3882,20 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 		// are resolved by stable ID; remote ones are requested from their
 		// owner, one sparse exchange per depth.  The cache is a predictor
 		// only: the closure check after the build still decides.
+		bool const AdjacencyWasEmpty = SeedDiag != nullptr && individual_adjacency_.empty();
 		if(individual_adjacency_realign_pending_)
 			RealignRecordsById(individual_adjacency_, cells_, canonical_count);
 		individual_adjacency_realign_pending_ = false;
 		if(individual_adjacency_.size() != canonical_count)
 			individual_adjacency_.assign(canonical_count,
 				IndividualAdjacencyRecord());
-		std::unordered_map<size_t, size_t> index_by_id;
-		index_by_id.reserve(canonical_count);
-		for(size_t global = 0; global < canonical_count; ++global)
-			index_by_id.emplace(cells_[global].ID, global);
+		if(SeedDiag != nullptr)
+			MarkMissingAdjacencyRecords(individual_adjacency_, AdjacencyWasEmpty);
+		// The lookups of emplace(cells_[global].ID, global) over every cell in
+		// index order, rehashed only when the IDs changed since the last use.
+		CanonicalIdIndex& CanonicalIds = SharedCanonicalIdIndex();
+		CanonicalIds.Refresh(cells_, canonical_count);
+		std::unordered_map<size_t, size_t> const& index_by_id = CanonicalIds.Map();
 		int rank = 0;
 		int rank_count = 1;
 #ifdef RICH_MPI
@@ -2339,10 +3916,21 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 			vector<unsigned char>& mark, vector<size_t>& shell,
 			vector<vector<size_t> >& remote)
 		{
+			if(SeedDiag != nullptr)
+				SeedDiag->Layers[SeedDiagLayer][SeedSources] += sources.size();
 			for(size_t global : sources)
 			{
-				if(!record_valid(global))
+				if(!record_valid(global)) {
+					if(SeedDiag != nullptr) {
+						unsigned long long* const Counts = SeedDiag->Layers[SeedDiagLayer];
+						unsigned char const Missing = individual_adjacency_[global].MissingReason;
+						bool const Empty = individual_adjacency_[global].cell_id == std::numeric_limits<size_t>::max();
+						++Counts[SeedInvalidRecord];
+						Counts[SeedInvalidReleased] += Empty && Missing == RecordMissingReleased ? 1 : 0;
+						Counts[SeedInvalidAmr] += Empty && Missing == RecordMissingAfterAmr ? 1 : 0;
+					}
 					continue;
+				}
 				IndividualAdjacencyRecord const& record =
 					individual_adjacency_[global];
 				for(size_t entry = 0; entry < record.neighbor_ids.size();
@@ -2354,41 +3942,66 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 						auto const found =
 							index_by_id.find(record.neighbor_ids[entry]);
 						if(found == index_by_id.end() ||
-						   seeded[found->second] || mark[found->second])
+						   seeded[found->second] || mark[found->second]) {
+							if(SeedDiag != nullptr)
+								++SeedDiag->Layers[SeedDiagLayer][found == index_by_id.end() ? SeedLocalMiss :
+									SeedLocalAlready];
 							continue;
+						}
 						mark[found->second] = 1;
 						shell.push_back(found->second);
+						if(SeedDiag != nullptr)
+							++SeedDiag->Layers[SeedDiagLayer][SeedLocalNew];
 					}
-					else if(owner >= 0 && owner < rank_count)
+					else if(owner >= 0 && owner < rank_count) {
 						remote[static_cast<size_t>(owner)].push_back(
 							record.neighbor_ids[entry]);
+						if(SeedDiag != nullptr)
+							++SeedDiag->Layers[SeedDiagLayer][SeedRemoteSent];
+					}
+					else if(SeedDiag != nullptr)
+						++SeedDiag->Layers[SeedDiagLayer][SeedBadOwner];
 				}
 			}
 		};
 		auto receive = [&](vector<vector<size_t> > const& incoming,
 			vector<unsigned char>& mark, vector<size_t>& shell)
 		{
-			for(auto const& requests : incoming)
+			for(auto const& requests : incoming) {
+				if(SeedDiag != nullptr)
+					SeedDiag->Layers[SeedDiagLayer][SeedOwnerReceived] += requests.size();
 				for(size_t id : requests)
 				{
 					auto const found = index_by_id.find(id);
 					if(found == index_by_id.end() ||
-					   seeded[found->second] || mark[found->second])
+					   seeded[found->second] || mark[found->second]) {
+						if(SeedDiag != nullptr)
+							++SeedDiag->Layers[SeedDiagLayer][found == index_by_id.end() ? SeedOwnerMiss :
+								SeedOwnerAlready];
 						continue;
+					}
 					mark[found->second] = 1;
 					shell.push_back(found->second);
+					if(SeedDiag != nullptr)
+						++SeedDiag->Layers[SeedDiagLayer][SeedOwnerNew];
 				}
+			}
 		};
 		// Depth one: face neighbours of the active cells.  `seeded` already
 		// marks the active cells and the previous-halo seed.
 		vector<size_t> depth_one;
 		vector<vector<size_t> > remote_requests(
 			static_cast<size_t>(rank_count));
+		if(SeedDiag != nullptr)
+			SeedDiag->HaloCells = seed.size() - context.active_indices.size();
+		SeedDiagLayer = 0;
 		expand(context.active_indices, seeded, depth_one, remote_requests);
 #ifdef RICH_MPI
 		receive(MPI_Exchange_all_to_all(remote_requests, MPI_COMM_WORLD),
 			seeded, depth_one);
 #endif
+		if(SeedDiag != nullptr)
+			SeedDiag->Layers[0][SeedShellCells] = depth_one.size();
 		seed.insert(seed.end(), depth_one.begin(), depth_one.end());
 		// Depth two: neighbours of every depth-one cell, the previous-halo
 		// seed included since the last mesh knew it as depth one.
@@ -2399,12 +4012,17 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 				depth_one_sources.push_back(global);
 		for(auto& requests : remote_requests)
 			requests.clear();
+		SeedDiagLayer = 1;
 		expand(depth_one_sources, depth_two_seeded, seed_depth_two,
 			remote_requests);
 #ifdef RICH_MPI
 		receive(MPI_Exchange_all_to_all(remote_requests, MPI_COMM_WORLD),
 			depth_two_seeded, seed_depth_two);
 #endif
+		if(SeedDiag != nullptr) {
+			SeedDiagTwoShell = seed_depth_two.size();
+			SeedDiag->Layers[1][SeedShellCells] = seed_depth_two.size();
+		}
 		// Optional third shell (RICH_INDIVIDUAL_ADJACENCY_SEED_SHELLS=3): the
 		// neighbours the cache records for the depth-two cells, seeded as
 		// depth two (supports, not expanded by the closure loop).  The cells
@@ -2434,13 +4052,24 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 			vector<size_t> const depth_two_sources = seed_depth_two;
 			for(auto& requests : remote_requests)
 				requests.clear();
+			SeedDiagLayer = 2;
 			expand(depth_two_sources, depth_two_seeded, seed_depth_two,
 				remote_requests);
 #ifdef RICH_MPI
 			receive(MPI_Exchange_all_to_all(remote_requests, MPI_COMM_WORLD),
 				depth_two_seeded, seed_depth_two);
 #endif
+			if(SeedDiag != nullptr)
+				SeedDiag->Layers[2][SeedShellCells] = seed_depth_two.size() - SeedDiagTwoShell;
 		}
+	}
+	// Seed layer of every seeded cell, for the target utility of the diagnostics.
+	if(SeedDiag != nullptr) {
+		SeedDiag->Shell.assign(canonical_count, 255);
+		for(size_t Global : seed)
+			SeedDiag->Shell.at(Global) = context.isActive(Global) ? 0 : 1;
+		for(size_t Index = 0; Index < seed_depth_two.size(); ++Index)
+			SeedDiag->Shell.at(seed_depth_two[Index]) = Index < SeedDiagTwoShell ? 2 : 3;
 	}
 	}
 
@@ -2466,6 +4095,11 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 		adaptive_threshold && individual_partial_cost_.fraction > 0 ?
 		individual_partial_cost_.fraction : configured_build_fraction;
 	IndividualMeshBuildRecord mesh_record;
+	// Partial-mesh diagnostics of the build in progress (RICH_INDIVIDUAL_MESH_TRACE >= 1); null otherwise, and every
+	// hook below tests it.
+	IndividualMeshDiagnostics* MeshDiag = nullptr;
+	// Set for the event-mesh build when RequestIndividualFullEventMesh was called (same on every rank).
+	bool full_event_mesh_requested = false;
 	auto build_event_mesh_impl = [&](vector<Vector3D> const& points,
 		vector<size_t> const& initial_seed, vector<size_t> const& depth_two_seed,
 		vector<size_t>& cached_target,
@@ -2500,6 +4134,8 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 			return full_build("event mesh reuse shadow reference");
 		if(!partial_requested)
 			return full_build("policy or source requires full geometry");
+		if(full_event_mesh_requested)
+			return full_build("requested after migration");
 
 		vector<unsigned char> included(canonical_count, 0);
 		vector<unsigned char> depth(canonical_count, 255);
@@ -2571,7 +4207,7 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 		if(exceeds_threshold(target.size()))
 			return full_build("closure threshold");
 
-		std::unordered_map<size_t, size_t> support_index_by_id;
+		std::unordered_map<size_t, size_t> const* support_index_by_id = nullptr;
 		// One collectively agreed decision whether the partial/full parity check runs (the settings are rank-local),
 		// used by both closure exits below.  Collective.
 		// The setting is parsed without throwing and validated collectively, so an invalid value on one rank
@@ -2587,6 +4223,8 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 			++mesh_record.attempts;
 			// The re-expansion check applies to this attempt's closure only.
 			size_t const reexpansions_at_attempt = mesh_record.reexpansions;
+			if(MeshDiag != nullptr)
+				MeshDiag->BeginAttempt(tess_, mesh_record.full_seconds, target.size());
 			double const partial_start = mesh_timing ? IndividualHydroWallTime() : 0;
 			try
 			{
@@ -2608,8 +4246,16 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 					for(size_t stage = 0; stage < IndividualMeshBuildRecord::madvoro_stages; ++stage)
 						mesh_record.stage_seconds[stage] += stages[stage];
 					mesh_record.ghost_rounds += static_cast<double>(voronoi->engine().GetLastGhostIterations());
+					// Per attempt as well (diagnostics; no allocation, cannot throw).
+					if(MeshDiag != nullptr)
+						MeshDiag->AddAttemptStages(stages, voronoi->engine().GetLastGhostIterations());
 				}
 #endif
+			}
+			catch(MadVoro::Exception::ClosestRanksVerifyError const&)
+			{
+				// Thrown by every rank together; never a reason for a fallback build.
+				throw;
 			}
 			catch(MadVoro::Exception::MadVoroException const& error)
 			{
@@ -2633,6 +4279,9 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 			}
 			if(mesh_timing)
 				mesh_record.partial_seconds += IndividualHydroWallTime() - partial_start;
+			// The MadVoro trace of this attempt, read after the build returned (outside the timed build).
+			if(MeshDiag != nullptr)
+				MeshDiag->FinishAttemptBuild(tess_, partial_build_failed);
 			if(any_rank(partial_build_failed))
 			{
 #ifdef RICH_MPI
@@ -2683,11 +4332,11 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 					++mesh_record.closureRound()[7];
 					return;
 				}
-				if(support_index_by_id.empty())
+				if(support_index_by_id == nullptr)
 				{
-					support_index_by_id.reserve(canonical_count);
-					for(size_t index = 0; index < canonical_count; ++index)
-						support_index_by_id.emplace(cells_[index].ID, index);
+					CanonicalIdIndex& CanonicalIds = SharedCanonicalIdIndex();
+					CanonicalIds.Refresh(cells_, canonical_count);
+					support_index_by_id = &CanonicalIds.Map();
 				}
 				int local_rank = 0;
 #ifdef RICH_MPI
@@ -2700,13 +4349,15 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 						++mesh_record.closureRound()[8];
 						continue;
 					}
-					auto const found = support_index_by_id.find(record.neighbor_ids[entry]);
-					if(found == support_index_by_id.end() || included[found->second])
+					auto const found = support_index_by_id->find(record.neighbor_ids[entry]);
+					if(found == support_index_by_id->end() || included[found->second])
 						continue;
 					included[found->second] = 1;
 					depth[found->second] = 2;
 					additions.push_back(found->second);
 					++mesh_record.closureRound()[4];
+					if(MeshDiag != nullptr)
+						MeshDiag->RecordSupportAddition(found->second);
 				}
 			};
 #ifdef RICH_MPI
@@ -2753,12 +4404,17 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 				tess_.GetPointNo(), ActiveMeshView::invalidIndex());
 			for(size_t local = 0; local < view.localSize(); ++local)
 				mesh_owner_indices[local] = view.localToGlobal(local);
+			double const SyncStart = MeshDiag != nullptr ? IndividualHydroWallTime() : 0;
 			tess_.SyncPartialBuildData(mesh_owner_indices, canonical_indices);
 			vector<unsigned char> canonical_target = included;
 			vector<unsigned char> mesh_target(tess_.GetPointNo(), 0);
 			for(size_t local = 0; local < view.localSize(); ++local)
 				mesh_target[local] = included[view.localToGlobal(local)];
 			tess_.SyncPartialBuildData(mesh_target, canonical_target);
+			if(MeshDiag != nullptr) {
+				MeshDiag->AddWait(RichWaitSync, IndividualHydroWallTime() - SyncStart);
+				MeshDiag->SyncGhostIds(tess_, view, canonical_count);
+			}
 			vector<vector<size_t> > remote_requests(
 				static_cast<size_t>(rank_count));
 #endif
@@ -2772,6 +4428,8 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 			bool const closure_reexpand = individual_closure_probe_ != nullptr &&
 				individual_closure_probe_->closure_reexpand >= 0 ? individual_closure_probe_->closure_reexpand != 0 :
 				AgreedIndividualExperimentSettings().closure_reexpand;
+			if(MeshDiag != nullptr)
+				MeshDiag->ClosureReexpand = closure_reexpand;
 #endif
 			// Expansion rounds on this mesh.  A depth decrease requested by
 			// another rank for a cell already built here needs only that cell's
@@ -2821,6 +4479,10 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 								mesh_owner_indices[neighbor]);
 							remote_requests[owner].push_back(
 								static_cast<size_t>(neighbor_depth));
+							// Source facts for a request that can be an addition at its owner.
+							if(MeshDiag != nullptr && neighbor < mesh_target.size() && mesh_target[neighbor] == 0)
+								MeshDiag->TagRemoteRequest(individual_adjacency_, owner,
+									remote_requests[owner].size() / 2 - 1, global, neighbor, ghost_owner[neighbor]);
 						}
 #endif
 						continue;
@@ -2831,6 +4493,9 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 						depth[neighbor_global] = neighbor_depth;
 						additions.push_back(neighbor_global);
 						++mesh_record.closureRound()[neighbor_depth < 2 ? 0 : 1];
+						if(MeshDiag != nullptr)
+							MeshDiag->RecordLocalAddition(individual_adjacency_, neighbor_global, neighbor_depth,
+								global);
 						if(neighbor_depth < 2)
 							add_cached_supports(neighbor_global);
 					}
@@ -2838,6 +4503,9 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 					{
 						++mesh_record.closureRound()[5];
 						depth[neighbor_global] = neighbor_depth;
+						if(MeshDiag != nullptr)
+							MeshDiag->RecordPromotion(neighbor_global, false, view.containsGlobal(neighbor_global),
+								neighbor_depth);
 						if(neighbor_depth < 2 && view.containsGlobal(neighbor_global))
 							frontier.push_back(neighbor_global);
 					}
@@ -2845,8 +4513,11 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 			}
 
 #ifdef RICH_MPI
+			double const ExchangeStart = MeshDiag != nullptr ? IndividualHydroWallTime() : 0;
 			vector<vector<size_t> > const incoming_requests =
 				MPI_Exchange_all_to_all(remote_requests, MPI_COMM_WORLD);
+			if(MeshDiag != nullptr)
+				MeshDiag->AddWait(RichWaitExchange, IndividualHydroWallTime() - ExchangeStart);
 			bool remote_request_valid =
 				incoming_requests.size() == static_cast<size_t>(rank_count);
 			for(auto const& requests : incoming_requests)
@@ -2874,12 +4545,17 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 						additions.push_back(global);
 						closure_changed = true;
 						++mesh_record.closureRound()[new_depth < 2 ? 2 : 3];
+						if(MeshDiag != nullptr)
+							MeshDiag->RecordRemoteAddition(global, new_depth,
+								static_cast<int>(&requests - incoming_requests.data()), request / 2);
 						if(new_depth < 2)
 							add_cached_supports(global);
 					}
 					else if(new_depth < depth[global])
 					{
 						++mesh_record.closureRound()[6];
+						if(MeshDiag != nullptr)
+							MeshDiag->RecordPromotion(global, true, view.containsGlobal(global), new_depth);
 						if(individual_closure_probe_ != nullptr)
 							++individual_closure_probe_->remote_promotions;
 						depth[global] = new_depth;
@@ -2888,10 +4564,21 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 					}
 				}
 			}
-			if(!all_ranks(remote_request_valid))
+			double const ValidAgreeStart = MeshDiag != nullptr ? IndividualHydroWallTime() : 0;
+			bool const RemoteRequestsValid = all_ranks(remote_request_valid);
+			if(MeshDiag != nullptr)
+				MeshDiag->AddWait(RichWaitAgree, IndividualHydroWallTime() - ValidAgreeStart);
+			if(!RemoteRequestsValid)
 				return full_build("remote closure request invariant");
-			if(closure_reexpand && !any_rank(!additions.empty()) &&
-			   any_rank(!remote_depth_frontier.empty()))
+			// The cause of every addition of this round: one tag exchange that every rank enters.
+			if(MeshDiag != nullptr)
+				MeshDiag->ExchangeTagsAndClassify(individual_adjacency_);
+			double const VetoAgreeStart = MeshDiag != nullptr ? IndividualHydroWallTime() : 0;
+			bool const ReexpandOnThisMesh = closure_reexpand && !any_rank(!additions.empty()) &&
+				any_rank(!remote_depth_frontier.empty());
+			if(MeshDiag != nullptr)
+				MeshDiag->AddWait(RichWaitAgree, IndividualHydroWallTime() - VetoAgreeStart);
+			if(ReexpandOnThisMesh)
 			{
 				++mesh_record.reexpansions;
 				if(individual_closure_probe_ != nullptr)
@@ -2905,6 +4592,125 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 				closure_changed = false;
 				continue;
 			}
+			// Shadow drain (diagnostics).  Built cells promoted by remote requests and left unexpanded by this
+			// attempt (the re-expansion veto, or no re-expansion) are marked deferred.  When some rank added a target
+			// cell and some rank holds such cells, every rank expands them read-only on this mesh (overlay maps;
+			// included, depth, additions and the requests are untouched) and enters one exchange: D_k, the cells
+			// their expansion would have added, with the cached local supports the closure batches.
+			if(MeshDiag != nullptr) {
+				double const ShadowStart = IndividualHydroWallTime();
+				vector<size_t> ShadowStack;
+				for(size_t Global : remote_depth_frontier)
+					if(depth[Global] < 2 && view.containsGlobal(Global) && expanded_depth[Global] > depth[Global])
+						ShadowStack.push_back(Global);
+				std::sort(ShadowStack.begin(), ShadowStack.end());
+				ShadowStack.erase(std::unique(ShadowStack.begin(), ShadowStack.end()), ShadowStack.end());
+				for(size_t Global : ShadowStack)
+					MeshDiag->CellFlags[Global] |= CellDeferredBuilt;
+				MeshDiag->Counts[MeshDiag->Slot()][CountPromotionDeferred] += ShadowStack.size();
+				int ShadowTrigger[2] = {additions.empty() ? 0 : 1, ShadowStack.empty() ? 0 : 1};
+				MPI_Allreduce(MPI_IN_PLACE, ShadowTrigger, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+				if(ShadowTrigger[0] != 0 && ShadowTrigger[1] != 0) {
+					std::unordered_map<size_t, unsigned char> ShadowDepth;
+					std::unordered_map<size_t, unsigned char> ShadowExpanded;
+					vector<vector<size_t> > ShadowRequests(static_cast<size_t>(rank_count));
+					vector<size_t> ShadowNeighbors;
+					std::unordered_map<size_t, unsigned char>& Shadow = MeshDiag->CurrentShadow;
+					auto InTarget = [&](size_t Cell) {
+						return included[Cell] != 0 || ShadowDepth.count(Cell) != 0;
+					};
+					auto DepthOf = [&](size_t Cell) -> unsigned char {
+						auto const Found = ShadowDepth.find(Cell);
+						return Found != ShadowDepth.end() ? Found->second : depth[Cell];
+					};
+					// A shadow addition, or a shallower depth for one.
+					auto Remember = [&](size_t Cell, unsigned char CellDepth) {
+						ShadowDepth[Cell] = CellDepth;
+						auto const Inserted = Shadow.emplace(Cell, CellDepth);
+						if(!Inserted.second && CellDepth < Inserted.first->second)
+							Inserted.first->second = CellDepth;
+					};
+					// A new shadow addition with the cached local supports add_cached_supports would batch.
+					auto ShadowAdd = [&](size_t Cell, unsigned char CellDepth) {
+						Remember(Cell, CellDepth);
+						if(CellDepth >= 2 || !batch_supports || MeshDiag->IdIndex == nullptr ||
+						   Cell >= individual_adjacency_.size())
+							return;
+						IndividualAdjacencyRecord const& Record = individual_adjacency_[Cell];
+						if(Record.cell_id != cells_[Cell].ID ||
+						   Record.neighbor_ids.size() != Record.neighbor_owners.size())
+							return;
+						for(size_t Entry = 0; Entry < Record.neighbor_ids.size(); ++Entry) {
+							if(Record.neighbor_owners[Entry] != rank)
+								continue;
+							auto const Found = MeshDiag->IdIndex->find(Record.neighbor_ids[Entry]);
+							if(Found != MeshDiag->IdIndex->end() && !InTarget(Found->second))
+								Remember(Found->second, 2);
+						}
+					};
+					while(!ShadowStack.empty()) {
+						size_t const Global = ShadowStack.back();
+						ShadowStack.pop_back();
+						unsigned char const Depth = DepthOf(Global);
+						if(Depth >= 2 || !view.containsGlobal(Global))
+							continue;
+						auto const Done = ShadowExpanded.find(Global);
+						unsigned char const Expanded = Done != ShadowExpanded.end() ?
+							std::min(Done->second, expanded_depth[Global]) : expanded_depth[Global];
+						if(Expanded <= Depth)
+							continue;
+						ShadowExpanded[Global] = Depth;
+						size_t const Local = view.globalToLocal(Global);
+						if(Local >= tess_.GetPointNo())
+							continue;
+						tess_.GetNeighbors(Local, ShadowNeighbors);
+						for(size_t Neighbor : ShadowNeighbors) {
+							size_t const NeighborGlobal = view.meshLocalToGlobal(Neighbor);
+							unsigned char const NeighborDepth = static_cast<unsigned char>(Depth + 1);
+							if(NeighborGlobal >= canonical_count) {
+								if(Neighbor < ghost_owner.size() && ghost_owner[Neighbor] >= 0 &&
+								   ghost_owner[Neighbor] != rank && Neighbor < mesh_owner_indices.size() &&
+								   mesh_owner_indices[Neighbor] != ActiveMeshView::invalidIndex()) {
+									vector<size_t>& Requests =
+										ShadowRequests[static_cast<size_t>(ghost_owner[Neighbor])];
+									Requests.push_back(mesh_owner_indices[Neighbor]);
+									Requests.push_back(NeighborDepth);
+								}
+								continue;
+							}
+							if(!InTarget(NeighborGlobal))
+								ShadowAdd(NeighborGlobal, NeighborDepth);
+							else if(NeighborDepth < DepthOf(NeighborGlobal)) {
+								if(included[NeighborGlobal] == 0)
+									Remember(NeighborGlobal, NeighborDepth);
+								else
+									ShadowDepth[NeighborGlobal] = NeighborDepth;
+								if(NeighborDepth < 2 && view.containsGlobal(NeighborGlobal))
+									ShadowStack.push_back(NeighborGlobal);
+							}
+						}
+					}
+					vector<vector<size_t> > const ShadowIncoming =
+						MPI_Exchange_all_to_all(ShadowRequests, MPI_COMM_WORLD);
+					for(vector<size_t> const& Requests : ShadowIncoming)
+						for(size_t Request = 0; Request + 1 < Requests.size(); Request += 2) {
+							size_t const Cell = Requests[Request];
+							if(Cell >= canonical_count || Requests[Request + 1] > 2)
+								continue;
+							unsigned char const CellDepth = static_cast<unsigned char>(Requests[Request + 1]);
+							if(!InTarget(Cell))
+								ShadowAdd(Cell, CellDepth);
+							else if(included[Cell] == 0 && CellDepth < DepthOf(Cell))
+								Remember(Cell, CellDepth);
+						}
+					++MeshDiag->Counts[MeshDiag->Slot()][CountShadowRan];
+					MeshDiag->Counts[MeshDiag->Slot()][CountShadowSize] = Shadow.size();
+				}
+				MeshDiag->AddDiagnostic(IndividualHydroWallTime() - ShadowStart);
+			}
+#else
+			if(MeshDiag != nullptr)
+				MeshDiag->ExchangeTagsAndClassify(individual_adjacency_);
 #endif
 			break;
 			}
@@ -2912,7 +4718,11 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 			if(!additions.empty())
 				mesh_record.closureRound()[9] = 1;
 
-			if(!any_rank(closure_changed))
+			double const ChangeAgreeStart = MeshDiag != nullptr ? IndividualHydroWallTime() : 0;
+			bool const AnyClosureChange = any_rank(closure_changed);
+			if(MeshDiag != nullptr)
+				MeshDiag->AddWait(RichWaitAgree, IndividualHydroWallTime() - ChangeAgreeStart);
+			if(!AnyClosureChange)
 			{
 				bool closed = true;
 				size_t closure_active = ActiveMeshView::invalidIndex();
@@ -2961,7 +4771,15 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 					if(!closed)
 						break;
 				}
+				double const ClosedAgreeStart = MeshDiag != nullptr ? IndividualHydroWallTime() : 0;
 				bool const globally_closed = all_ranks(closed);
+				if(MeshDiag != nullptr) {
+					MeshDiag->AddWait(RichWaitAgree, IndividualHydroWallTime() - ClosedAgreeStart);
+					// Target utility on the closed mesh (every rank: globally_closed is agreed).
+					if(globally_closed)
+						MeshDiag->TargetUtility(tess_, view, depth, SeedDiag != nullptr ? &SeedDiag->Shell : nullptr,
+							canonical_count);
+				}
 				if(globally_closed && individual_closure_probe_ != nullptr)
 				{
 					individual_closure_probe_->final_depth = depth;
@@ -2988,6 +4806,10 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 					{
 						MeshBuildTimer mesh_build_timer(last_mesh_build_timing_);
 						tess_.BuildPartiallyParallel(points, target, true, true);
+					}
+					catch(MadVoro::Exception::ClosestRanksVerifyError const&)
+					{
+						throw;
 					}
 					catch(...)
 					{
@@ -3104,6 +4926,10 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 						tess_.BuildPartially(points, target);
 #endif
 					}
+					catch(MadVoro::Exception::ClosestRanksVerifyError const&)
+					{
+						throw;
+					}
 					catch(...)
 					{
 						rebuild_failed = true;
@@ -3175,13 +5001,39 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 		char const* stage, bool force_full) -> ActiveMeshView
 	{
 		mesh_record = IndividualMeshBuildRecord();
+		std::unique_ptr<IndividualMeshDiagnostics> MeshDiagStorage;
+		if(MeshTraceLevel >= 1) {
+			int DiagRank = 0;
+			int DiagRanks = 1;
+#ifdef RICH_MPI
+			MPI_Comm_rank(MPI_COMM_WORLD, &DiagRank);
+			MPI_Comm_size(MPI_COMM_WORLD, &DiagRanks);
+#endif
+			MeshDiagStorage.reset(new IndividualMeshDiagnostics(canonical_count, MeshTraceLevel, DiagRank, DiagRanks,
+				cells_));
+			if(adjacency_cache_enabled) {
+				CanonicalIdIndex& DiagIds = SharedCanonicalIdIndex();
+				DiagIds.Refresh(cells_, canonical_count);
+				MeshDiagStorage->IdIndex = &DiagIds.Map();
+			}
+		}
+		MeshDiag = MeshDiagStorage.get();
 		double const start = mesh_trace ? IndividualHydroWallTime() : 0;
 		ActiveMeshView view = build_event_mesh_impl(points, initial_seed,
 			depth_two_seed, cached_target, stage, force_full);
+		double const BuildSeconds = mesh_trace ? IndividualHydroWallTime() - start : 0;
+		if(MeshDiag != nullptr) {
+			MeshDiag->CloseAttempt(IndividualHydroWallTime(), mesh_record.full_seconds);
+			mesh_record.DiagnosticSeconds = MeshDiag->DiagnosticSeconds;
+		}
 		if(mesh_trace)
 			ReportIndividualMeshBuild(mesh_record, stage, partial_build_fraction,
 				canonical_count, context.active_indices.size(),
-				IndividualHydroWallTime() - start);
+				BuildSeconds);
+		// Partial-mesh diagnostics: reductions after the build, entered by every rank.
+		if(MeshDiag != nullptr)
+			ReportIndividualMeshDiagnostics(*MeshDiag, mesh_record, SeedDiag, stage, BuildSeconds, context.event_tick);
+		MeshDiag = nullptr;
 		if(adaptive_threshold)
 			UpdateIndividualPartialCostModel(individual_partial_cost_, mesh_record,
 				canonical_count, partial_build_fraction, context.event_tick);
@@ -3466,7 +5318,8 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 	fluxes.assign(tess_.GetTotalFacesNumber(), Conserved3D());
 	point_vel.clear();
 	face_vel.clear();
-	face_values.clear();
+	// face_values is not cleared here: ConditionActionFlux1::CalculateIndividualPass clears it unless
+	// RICH_INDIVIDUAL_FLUX_PASSES keeps the inactive faces' entries.
 	// Each face interval is one explicit midpoint step.  The state, the
 	// generator velocity and the geometry of a cell that closes its interval
 	// at this event are all taken from the interval start: the primitive is
@@ -3479,10 +5332,9 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 	// mismatch removed mass that no face ever swept.  Here the first-half
 	// source terms see the velocities currently moving the generators.
 	first_view.gatherOwnedInto(context.point_velocities, point_vel);
-	{
-		vector<Vector3D> all_point_velocities = context.point_velocities;
-		tess_.SyncPartialBuildData(point_vel, all_point_velocities);
-	}
+	// The targets were just gathered from the canonical velocities, so a full
+	// sync would only write them back unchanged into a discarded copy.
+	tess_.SyncPartialBuildDataReadOnly(point_vel, context.point_velocities);
 	double const first_source_start = StepDiagnosticWallTime();
 	source_.ApplyIndividual(tess_, local_cells, fluxes, point_vel,
 		context.previous_event_time, first_context, IndividualSourcePhase::FirstHalf,
@@ -3515,8 +5367,11 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 	DisplayTime(prediction_start, prediction_finish, "Individual generator prediction ");
 	finish_phase(4);
 
+	full_event_mesh_requested = individual_full_event_mesh_requested_;
+	individual_full_event_mesh_requested_ = false;
 	ActiveMeshView event_view = build_event_mesh(all_points, seed, seed_depth_two, warm_target,
 		"timeAdvanceIndividual event mesh", false);
+	full_event_mesh_requested = false;
 		for(size_t local = 0; local < event_view.localSize(); ++local)
 		{
 			size_t const global = event_view.localToGlobal(local);
@@ -3536,12 +5391,15 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 		// by stable ID.  Local supports map through the view; remote ghosts
 		// carry their owner's ID in the synced primitive copy.  A full build
 		// refreshes every cell; a partial one refreshes its targets.
+		bool const AdjacencyWasEmpty = MeshTraceLevel >= 1 && individual_adjacency_.empty();
 		if(individual_adjacency_realign_pending_)
 			RealignRecordsById(individual_adjacency_, cells_, canonical_count);
 		individual_adjacency_realign_pending_ = false;
 		if(individual_adjacency_.size() != canonical_count)
 			individual_adjacency_.assign(canonical_count,
 				IndividualAdjacencyRecord());
+		if(MeshTraceLevel >= 1)
+			MarkMissingAdjacencyRecords(individual_adjacency_, AdjacencyWasEmpty);
 		size_t const mesh_size = tess_.getMeshPoints().size();
 		vector<int> ghost_owner(mesh_size, -1);
 		int rank = 0;
@@ -3589,13 +5447,13 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 		}
 	}
 	event_view.gatherOwnedInto(context.point_velocities, point_vel);
-	vector<Vector3D> all_point_velocities = context.point_velocities;
-	tess_.SyncPartialBuildData(point_vel, all_point_velocities);
-	context.point_velocities = all_point_velocities;
+	// A full sync through a copy would write the gathered targets back
+	// unchanged and copy the result over context.point_velocities.
+	tess_.SyncPartialBuildDataReadOnly(point_vel, context.point_velocities);
 	finish_phase(6);
 
 	fluxes.assign(tess_.GetTotalFacesNumber(), Conserved3D());
-	face_values.clear();
+	// face_values: cleared by CalculateIndividualPass unless RICH_INDIVIDUAL_FLUX_PASSES keeps its entries.
 	// Slopes and cell centres must come from the same primitive on every rank.
 	// Both are the frozen interval-start primitives here; recovery follows
 	// the flux update below.
@@ -3606,18 +5464,108 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 	else if(auto* cfl1d = dynamic_cast<CFL1D*>(&tsc_))
 		cfl1d->SetPointVelocities(&point_vel);
 	finish_phase(7);
+    double D2Start = D2Now();
 	GetFullStateFluxCalculator().CalculateIndividual(fluxes, tess_, face_vel,
 		local_cells, local_extensives, eos_, local_context, face_values);
+    D2Add(HydroD2FluxSlopes, D2Start);
 	finish_phase(8);
 	// Conserved-change accounting: the canonical extensives before and after
 	// this event's flux update give every touched cell's net change, active or
 	// passive, local or received.  suggestIndividualTimeSteps turns the mass
 	// lost over an interval into a timestep limit; suggestIndividualChangeWakes
 	// wakes a passive cell whose content changed by more than a set fraction.
-	vector<Conserved3D>& pre_flux = individual_pre_flux_extensives_scratch_;
-	pre_flux = extensive_;
+	// Only mass, energy and thermal energy enter it, so only they are kept.
+	// The default extensive updater logs every canonical cell it writes with
+	// these values from before the write, and validates every canonical state
+	// before writing: a cell absent from its log kept a finite pre-flux state,
+	// for which the full comparison finds no change.  With that updater the log
+	// replaces the owned-size snapshot and comparison.
+    // RICH_INDIVIDUAL_EXTENSIVE_LOG_FORWARD (B1): 0 keeps this rule; 1 uses the
+    // log of any updater that offers a complete one (IndividualCanonicalWriteLog,
+    // such as ConditionExtensiveUpdater3D without conditions); 2 takes the
+    // snapshot as 0 does and compares that log with it bit for bit.
+    // ForwardsCanonicalWrites returns the same on every rank and may be
+    // collective on its first call, so every rank calls it.
+    int const LogForwardMode = IndividualExtensiveLogForwardMode();
+    IndividualCanonicalWriteLog const* const WriteLog = LogForwardMode == 0 ? nullptr :
+        dynamic_cast<IndividualCanonicalWriteLog const*>(&eu_);
+    bool const LogForwardable = WriteLog != nullptr && WriteLog->ForwardsCanonicalWrites();
+    bool const ChangeAccountingSized = individual_conserved_change_.size() == canonical_count;
+	DefaultExtensiveUpdater const* const LoggingUpdater =
+		LogForwardMode == 0 && individual_conserved_change_.size() == canonical_count ?
+		(typeid(eu_) == typeid(DefaultExtensiveUpdater) ?
+			static_cast<DefaultExtensiveUpdater const*>(&eu_) : nullptr) : nullptr;
+    IndividualCanonicalWriteLog const* const ForwardedLog =
+        LogForwardMode == 1 && LogForwardable && ChangeAccountingSized ? WriteLog : nullptr;
+    // Collective (VerifyForwardedCanonicalWrites reduces), so it must not depend on the rank-local accounting size;
+    // mode 2 always takes the snapshot, so every rank can compare.
+    bool const VerifyForwardedLog = LogForwardMode == 2 && LogForwardable;
+	vector<IndividualPreFluxState>& pre_flux = individual_pre_flux_extensives_scratch_;
+    D2Start = D2Now();
+	if(LoggingUpdater == nullptr && ForwardedLog == nullptr)
+	{
+		pre_flux.resize(canonical_count);
+		for(size_t global = 0; global < canonical_count; ++global)
+			pre_flux[global] = IndividualPreFluxState{extensive_[global].mass,
+				extensive_[global].energy, extensive_[global].internal_energy};
+	}
+    D2Add(HydroD2Snapshot, D2Start);
+    // RICH_INDIVIDUAL_ALL_ACTIVE_IDENTITY (B9): on an event where every rank is all-active and its event mesh holds
+    // the canonical cells in order, the extensive updater may run its identity transaction.  The condition is agreed
+    // in one reduction, only when the switch is on; the guard returns the updater to the s48 transaction on every exit.
+    int const IdentityMode = IndividualAllActiveIdentityMode();
+    IndividualCanonicalWriteLog const* IdentityUpdater = nullptr;
+    if(IdentityMode != 0) {
+        std::vector<size_t> const& LocalToGlobal = event_view.localToGlobalMapping();
+        bool LocalIdentity = event_view.localSize() == canonical_count &&
+            local_context.active_indices.size() == canonical_count;
+        for(size_t Local = 0; LocalIdentity && Local < LocalToGlobal.size(); ++Local)
+            LocalIdentity = LocalToGlobal[Local] == Local;
+        if(all_ranks(LocalIdentity)) {
+            IdentityUpdater = dynamic_cast<IndividualCanonicalWriteLog const*>(&eu_);
+            if(IdentityUpdater != nullptr && !IdentityUpdater->SetAllActiveIdentity(0))
+                IdentityUpdater = nullptr;
+        }
+    }
+    struct IdentityGuard {
+        IndividualCanonicalWriteLog const* Updater;
+        ~IdentityGuard() {
+            if(Updater != nullptr)
+                Updater->SetAllActiveIdentity(0);
+        }
+    } const IdentityReset{IdentityUpdater};
+    D2Start = D2Now();
+    if(IdentityUpdater != nullptr && IdentityMode == 2) {
+        // Identity transaction with the conservation check on copies, then the s48 transaction, whose result is kept.
+        vector<Conserved3D> IdentityWork = local_extensives;
+        vector<Conserved3D> IdentityCanonical = extensive_;
+        IdentityUpdater->SetAllActiveIdentity(2);
+        eu_.UpdateIndividual(fluxes, tess_, local_context, local_cells, IdentityWork, context.event_time, face_vel,
+            point_vel, face_values, &cells_, &IdentityCanonical);
+        IdentityUpdater->SetAllActiveIdentity(0);
+        eu_.UpdateIndividual(fluxes, tess_, local_context, local_cells, local_extensives, context.event_time, face_vel,
+            point_vel, face_values, &cells_, &extensive_);
+        VerifyIdentityTransaction(IdentityWork, local_extensives, IdentityCanonical, extensive_, context.event_tick);
+    }
+    else {
+        if(IdentityUpdater != nullptr)
+            IdentityUpdater->SetAllActiveIdentity(1);
 	eu_.UpdateIndividual(fluxes, tess_, local_context, local_cells, local_extensives,
 		context.event_time, face_vel, point_vel, face_values, &cells_, &extensive_);
+        if(IdentityUpdater != nullptr)
+            IdentityUpdater->SetAllActiveIdentity(0);
+    }
+    D2Add(HydroD2Extensive, D2Start);
+    if(D2Timers)
+    {
+        auto const* const ValidationLog = dynamic_cast<IndividualCanonicalWriteLog const*>(&eu_);
+        D2Record[HydroD2Validation] = ValidationLog != nullptr ? ValidationLog->LastValidationSeconds() : 0.0;
+        D2Record[HydroD2Forwarded] = LoggingUpdater != nullptr || ForwardedLog != nullptr ? 1.0 : 0.0;
+    }
+    if(VerifyForwardedLog) {
+        VerifyForwardedCanonicalWrites(WriteLog->LastForwardedCanonicalWrites(), pre_flux, extensive_,
+            canonical_count, context.event_tick);
+    }
 	if(individual_conserved_change_.size() != canonical_count)
 	{
 		DrainIndividualChangeWakeSamples();
@@ -3626,9 +5574,9 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 		for(size_t global = 0; global < canonical_count; ++global)
 		{
 			individual_conserved_change_[global].mass_at_activation =
-				pre_flux[global].mass;
+				pre_flux[global].Mass;
 			individual_conserved_change_[global].energy_at_activation =
-				pre_flux[global].energy;
+				pre_flux[global].Energy;
 		}
 	}
 	// A woken cell that activates now is sampled before its own update is
@@ -3640,20 +5588,46 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 				individual_change_wake_accounting_.SampleAtActivation(
 					individual_conserved_change_[global], cells_[global].ID, wake_ratio_limit);
 	}
-	for(size_t global = 0; global < canonical_count; ++global)
+	auto const AccumulateChange = [this](size_t Global, double PreMass, double PreEnergy, double PreInternalEnergy)
 	{
-		double const dm = extensive_[global].mass - pre_flux[global].mass;
-		double const de = extensive_[global].energy - pre_flux[global].energy;
-		double const dth = extensive_[global].internal_energy -
-			pre_flux[global].internal_energy;
+		double const dm = extensive_[Global].mass - PreMass;
+		double const de = extensive_[Global].energy - PreEnergy;
+		double const dth = extensive_[Global].internal_energy - PreInternalEnergy;
 		if(dm == 0 && de == 0 && dth == 0)
-			continue;
-		IndividualConservedChange& change = individual_conserved_change_[global];
+			return;
+		IndividualConservedChange& change = individual_conserved_change_[Global];
 		change.mass_abs_change += std::abs(dm);
 		change.mass_loss += std::max(0.0, -dm);
 		change.thermal_loss += std::max(0.0, -dth);
 		change.energy_abs_change += std::abs(de);
+	};
+    D2Start = D2Now();
+	if(LoggingUpdater != nullptr)
+	{
+		// Each written cell appears once and the per-cell sums are independent,
+		// so the order of the log does not matter.
+		if(!LoggingUpdater->LastCanonicalWritesComplete())
+			throw std::logic_error(
+				"Individual conserved-change accounting: the extensive updater left no canonical write log");
+		for(auto const& Write : LoggingUpdater->GetLastCanonicalWrites())
+			AccumulateChange(Write.CanonicalIndex, Write.Mass, Write.Energy, Write.InternalEnergy);
 	}
+    else if(ForwardedLog != nullptr)
+    {
+        // As above: each written cell appears once (mode 2 checks it), so the
+        // order of the log does not matter.
+        std::vector<IndividualCanonicalWrite> const* const Writes = ForwardedLog->LastForwardedCanonicalWrites();
+        if(Writes == nullptr)
+            throw std::logic_error(
+                "Individual conserved-change accounting: the extensive updater left no complete canonical write log");
+        for(IndividualCanonicalWrite const& Write : *Writes)
+            AccumulateChange(Write.CanonicalIndex, Write.Mass, Write.Energy, Write.InternalEnergy);
+    }
+	else
+		for(size_t global = 0; global < canonical_count; ++global)
+			AccumulateChange(global, pre_flux[global].Mass, pre_flux[global].Energy,
+				pre_flux[global].InternalEnergy);
+    D2Add(HydroD2Accounting, D2Start);
 	if(local_context.gravity_source_masses.size() != extensive_.size())
 		throw std::logic_error(
 			"Individual gravity source mass cache has the wrong canonical size");
@@ -3665,7 +5639,9 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 	if(entropy_fix_enabled)
 		tess_.SyncPartialBuildData(local_extensives, extensive_);
 #endif
+    D2Start = D2Now();
 	cu_.UpdateIndividual(local_cells, eos_, tess_, local_extensives, local_context);
+    D2Add(HydroD2Recover, D2Start);
 	finish_phase(9);
 	// The elapsed intervals are closed.  Choose the velocities that move the
 	// generators of the cells activated here through their coming interval,
@@ -3674,9 +5650,38 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 	{
 		event_view.scatterOwned(local_cells, cells_);
 		vector<Vector3D> next_point_velocities;
+        D2Start = D2Now();
 		pm_(tess_, local_cells, context.event_time, next_point_velocities);
+        D2Add(HydroD2PointMotion, D2Start);
 		bool const event_mesh_is_partial = any_rank(
 			event_view.localSize() != canonical_count);
+        // RICH_INDIVIDUAL_ACTIVE_HILBERT_TARGET_PLAN: the final event-mesh targets, for the ownership planner (no
+        // build follows).  Only when Simulation asked for them; nothing here changes the step.
+        if(context.event_target_record != nullptr) {
+            IndividualEventTargetRecord& TargetRecord = *context.event_target_record;
+            TargetRecord.MeshPartial = event_mesh_is_partial;
+            if(event_mesh_is_partial)
+                TargetRecord.Targets = event_view.localToGlobalMapping();
+            else
+                TargetRecord.Targets.clear();
+            TargetRecord.Recorded = true;
+        }
+        // RICH_INDIVIDUAL_HYDRO_TARGET_PASSES (B10): RoundCells3D receives the active targets, whose velocities are
+        // the only ones read below; the guard clears the list on every exit.  Agreed on every rank (collective on
+        // first use), and the motion's type is the same on every rank.
+        int const TargetPassesMode = IndividualHydroTargetPassesMode();
+        RoundCells3D const* const RoundCellsMotion = TargetPassesMode != 0 ?
+            dynamic_cast<RoundCells3D const*>(&pm_) : nullptr;
+        struct ActiveTargetsGuard {
+            RoundCells3D const* Motion;
+            ~ActiveTargetsGuard() {
+                if(Motion != nullptr)
+                    Motion->SetIndividualActiveTargets(nullptr);
+            }
+        } const ActiveTargetsReset{RoundCellsMotion};
+        if(RoundCellsMotion != nullptr)
+            RoundCellsMotion->SetIndividualActiveTargets(&local_context.active_indices);
+        D2Start = D2Now();
 		if(event_mesh_is_partial)
 		{
 			vector<Vector3D> all_next_velocities = context.point_velocities;
@@ -3687,6 +5692,13 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 		else
 			pm_.ApplyFix(tess_, local_cells, context.event_time, event_dt,
 				next_point_velocities);
+        D2Add(HydroD2ApplyFix, D2Start);
+        if(D2Timers && RoundCellsMotion != nullptr) {
+            RoundCells3D::TargetPassCounts const& FixCounts = RoundCellsMotion->LastTargetPassCounts();
+            D2Record[HydroD2FixKicked] = static_cast<double>(FixCounts.Kicked);
+            D2Record[HydroD2FixSlowed] = static_cast<double>(FixCounts.Slowed);
+            D2Record[HydroD2FixSent] = static_cast<double>(FixCounts.Sent);
+        }
 		// Cell trace: the velocity that moved each traced generator through the
 		// interval closing here, captured before this event replaces it.
 		std::vector<std::size_t> const& trace_ids = IndividualTraceCellIds();
@@ -3710,9 +5722,7 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 				next_point_velocities[local];
 		}
 		event_view.gatherOwnedInto(context.point_velocities, point_vel);
-		all_point_velocities = context.point_velocities;
-		tess_.SyncPartialBuildData(point_vel, all_point_velocities);
-		context.point_velocities = all_point_velocities;
+		tess_.SyncPartialBuildDataReadOnly(point_vel, context.point_velocities);
 		// Timestep limits are evaluated from these face velocities.
 		CalcFaceVelocities(tess_, point_vel, face_vel);
 		// Cell trace, geometry half: generator, centroid, the velocity that
@@ -3831,10 +5841,13 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 	if(entropy_fix_enabled)
 		tess_.SyncPartialBuildData(local_extensives, extensive_);
 #endif
+    D2Start = D2Now();
 	cu_.UpdateIndividual(local_cells, eos_, tess_, local_extensives, local_context);
+    D2Add(HydroD2FinalUpdate, D2Start);
 	event_view.scatterOwned(local_cells, cells_);
 	event_view.scatterOwned(local_extensives, extensive_);
-	individual_points_ = all_points;
+	// all_points is not used after this point.
+	individual_points_.swap(all_points);
 	individual_event_mesh_reusable_ =
 		event_view.localSize() == canonical_count &&
 		individual_mesh_target_ids_.empty();
@@ -3867,6 +5880,13 @@ void HDSim3D::timeAdvanceIndividual(const IndividualStepContext& context)
 			mpi_wait_profiler::Enabled() ? 1.0 : 0.0;
 		ReportIndividualHydroPhaseTiming(phase_record);
 	}
+    if(D2Timers)
+    {
+        D2Record[HydroD2Targets] = static_cast<double>(event_view.localSize());
+        D2Record[HydroD2Active] = static_cast<double>(local_context.active_indices.size());
+        D2Record[HydroD2Canonical] = static_cast<double>(canonical_count);
+        ReportHydroD2(D2Record, context.event_tick, LogForwardMode);
+    }
 }
 
 namespace
@@ -4116,8 +6136,9 @@ void HDSim3D::suggestIndividualTimeSteps(const IndividualStepContext& context,
 	ActiveMeshView const view(tess_, context.active_mask.size());
 	IndividualStepContext const local_context = view.remapContext(context, false);
 	vector<ComputationalCell3D> local_cells = view.gatherOwned(cells_);
-	vector<ComputationalCell3D> all_cells = cells_;
-	tess_.SyncPartialBuildData(local_cells, all_cells);
+	// The targets were just gathered from cells_, so a full sync would only
+	// write them back unchanged into a discarded owned-size copy.
+	tess_.SyncPartialBuildDataReadOnly(local_cells, cells_);
 	vector<double> local_limits(tess_.GetPointNo(),
 		std::numeric_limits<double>::infinity());
 	tsc_.SuggestIndividualTimeSteps(tess_, local_cells, eos_, face_vel_scratch_,

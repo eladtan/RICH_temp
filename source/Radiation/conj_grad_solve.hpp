@@ -1945,6 +1945,17 @@ namespace CG
         std::size_t runtime_group_count,
         double* reduction_seconds = nullptr);
 
+    // MeasureHistoricalMG with reduction accounting.  ConcurrentReductions = false is MeasureHistoricalMG exactly
+    // (six blocking reductions).  true issues phase A (validity, maximum solution, weighted norms) and then phase B
+    // (maxima, negative rank) as two waits on nonblocking reductions, since phase B needs phase A's global maximum,
+    // and drops phase B's validity reduction, which repeats phase A's.  The weighted-norm sum then goes through
+    // MPI_Iallreduce instead of MPI_Allreduce; whether the two give the same bits depends on the MPI library.
+    HistoricalMGMetrics MeasureHistoricalMGCounted(std::vector<double> const& PhysicalSolution,
+        std::vector<double> const& PreviousPhysicalSolution, std::vector<double> const& PhysicalResidual,
+        std::vector<double> const& PhysicalRhs, std::vector<double> const& Diagonal, std::size_t RuntimeGroupCount,
+        double* ReductionSeconds, bool ConcurrentReductions, unsigned long long* CollectiveCalls,
+        unsigned long long* CausalRounds);
+
     HistoricalMGDecision ClassifyHistoricalMG(
         HistoricalMGMetrics const& metrics,
         std::size_t zero_based_iteration,

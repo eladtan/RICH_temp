@@ -3,19 +3,31 @@
 #include "../../misc/utils.hpp"
 #include <iostream>
 #include <cfloat>
+#include <chrono>
 #include <cmath>
 #include <cstdint>
 #include <exception>
 #include <iomanip>
 #include <limits>
 #include <sstream>
+#include <stdexcept>
 #include <string>
+#include <typeinfo>
 #ifdef RICH_MPI
 #include "../../mpi/mpi_commands.hpp"
 #endif
 
 namespace
 {
+double ConditionUpdaterWallTime(void)
+{
+#ifdef RICH_MPI
+    return MPI_Wtime();
+#else
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+#endif
+}
+
 std::size_t diagnostic_cell_id(const vector<ComputationalCell3D>& cells,
 	std::size_t index)
 {
@@ -180,6 +192,34 @@ ConditionExtensiveUpdater3D::~ConditionExtensiveUpdater3D() {}
 ConditionExtensiveUpdater3D::ConditionExtensiveUpdater3D(const vector<pair<const Condition3D*, const Action3D*> >& sequence) :
 	sequence_(sequence) {}
 
+bool ConditionExtensiveUpdater3D::SequenceEmptyOnEveryRank(void) const
+{
+    if(SequenceEmptyAgreed_ < 0)
+    {
+        int Empty = sequence_.empty() ? 1 : 0;
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &Empty, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+#endif
+        SequenceEmptyAgreed_ = Empty;
+    }
+    return SequenceEmptyAgreed_ == 1;
+}
+
+bool ConditionExtensiveUpdater3D::ForwardsCanonicalWrites(void) const
+{
+    // A derived class may write canonical cells after this class returns.  The type is the same on every rank, so
+    // either every rank or none reaches the agreement.
+    return IndividualExtensiveLogForwardMode() != 0 && typeid(*this) == typeid(ConditionExtensiveUpdater3D) &&
+        SequenceEmptyOnEveryRank();
+}
+
+std::vector<IndividualCanonicalWrite> const* ConditionExtensiveUpdater3D::LastForwardedCanonicalWrites(void) const
+{
+    if(!LastCallForwarded_ || typeid(*this) != typeid(ConditionExtensiveUpdater3D))
+        return nullptr;
+    return &RegularUpdate_.GetLastCanonicalWrites();
+}
+
 void ConditionExtensiveUpdater3D::UpdateIndividual(
 	const vector<Conserved3D>& fluxes,
 	const Tessellation3D& tess,
@@ -193,10 +233,40 @@ void ConditionExtensiveUpdater3D::UpdateIndividual(
 	const vector<ComputationalCell3D>* canonical_cells,
 	vector<Conserved3D>* canonical_extensives) const
 {
-	DefaultExtensiveUpdater regular_update;
-	regular_update.UpdateIndividual(fluxes, tess, context, cells, extensives,
-		time, edge_velocities, point_velocities, interp_values,
-		canonical_cells, canonical_extensives);
+    // RICH_INDIVIDUAL_EXTENSIVE_LOG_FORWARD (B1) and RICH_D2_TIMERS: agreed on every rank (collective on first use).
+    int const LogForwardMode = IndividualExtensiveLogForwardMode();
+    bool const Timers = HydroD2TimersEnabled();
+    LastCallForwarded_ = false;
+    LastValidationSeconds_ = 0;
+    bool const SequenceEmpty = LogForwardMode != 0 && SequenceEmptyOnEveryRank();
+    if(LogForwardMode == 0)
+    {
+		DefaultExtensiveUpdater regular_update;
+        regular_update.SetAllActiveIdentity(AllActiveIdentity_);
+		regular_update.UpdateIndividual(fluxes, tess, context, cells, extensives,
+			time, edge_velocities, point_velocities, interp_values,
+			canonical_cells, canonical_extensives);
+    }
+    else {
+        RegularUpdate_.SetAllActiveIdentity(AllActiveIdentity_);
+        RegularUpdate_.UpdateIndividual(fluxes, tess, context, cells, extensives, time, edge_velocities,
+            point_velocities, interp_values, canonical_cells, canonical_extensives);
+    }
+
+    if(LogForwardMode == 1 && SequenceEmpty)
+    {
+        // No action can run.  The inner updater returned normally, so it has validated, collectively, every owned
+        // work state and every canonical state the scan below would read: the owned and appended work states before
+        // and after its writes with this same mask, the canonical cells outside its transaction in place, and the
+        // canonical copies of untouched owned targets through their work copies (gathered from the canonical array).
+        // The scan and its reduction are skipped.  The range check of the action loop stays; here it is rank-local,
+        // like the inner updater's own size checks.
+        for(std::size_t index : context.active_indices)
+            if(index >= tess.GetPointNo() || index >= cells.size() || index >= extensives.size())
+                throw std::out_of_range("Condition extensive individual cell is out of range");
+        LastCallForwarded_ = RegularUpdate_.LastCanonicalWritesComplete();
+        return;
+    }
 
 	std::exception_ptr action_exception;
 	std::size_t action_index = std::numeric_limits<std::size_t>::max();
@@ -221,6 +291,7 @@ void ConditionExtensiveUpdater3D::UpdateIndividual(
 		action_exception = std::current_exception();
 	}
 
+    double const ValidationStart = Timers ? ConditionUpdaterWallTime() : 0.0;
 	const std::size_t owned_count = tess.GetPointNo();
 	std::size_t invalid_index = owned_count;
 	std::uint64_t invalid_component_mask = 0;
@@ -257,8 +328,22 @@ void ConditionExtensiveUpdater3D::UpdateIndividual(
 	MPI_Allreduce(MPI_IN_PLACE, &first_failing_rank, 1, MPI_INT, MPI_MIN,
 		MPI_COMM_WORLD);
 #endif
+    if(Timers) {
+        LastValidationSeconds_ = ConditionUpdaterWallTime() - ValidationStart;
+    }
 	if(first_failing_rank == std::numeric_limits<int>::max())
-		return;
+    {
+        LastCallForwarded_ = SequenceEmpty && RegularUpdate_.LastCanonicalWritesComplete();
+        return;
+    }
+    // Mode 2: mode 1 would have skipped this scan; finding an invalid state here that the inner updater passed is a
+    // mismatch.  Every rank throws below, as without verification; the first failing rank prints one example.
+    if(LogForwardMode == 2 && SequenceEmpty && rank == first_failing_rank && !action_exception &&
+        invalid_component_mask != 0) {
+        std::cerr << "RICH_B1_VERIFY_MISMATCH kind=skipped_validation rank=" << rank << " event_tick="
+            << context.event_tick << " canonical=" << (invalid_canonical ? 1 : 0) << " index=" << invalid_index
+            << " component_mask=" << invalid_component_mask << std::endl;
+    }
 
 	std::string failure_message = action_exception ?
 		"Individual condition action failed" :

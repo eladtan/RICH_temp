@@ -1,6 +1,10 @@
 #include "IndividualTimeStep.hpp"
 
+#include <cstdlib>
+#include <cstring>
+#include <string>
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <iomanip>
 #include <iostream>
@@ -78,6 +82,112 @@ namespace
             return parsed;
         }();
         return spread;
+    }
+
+    // A strict integer switch in [0, MaximumValue]: unset or empty is 0, anything but one digit in range is
+    // rejected, and every rank must hold the same value (all ranks throw together otherwise).  Collective: each
+    // switch below is read once, at its first use, from a function that every rank enters.
+    int AgreedIntegerSwitch(char const* Name, int MaximumValue)
+    {
+        char const* const Value = std::getenv(Name);
+        std::string const Text = Value == nullptr ? std::string() : std::string(Value);
+        int Local = -1;
+        if(Text.empty())
+            Local = 0;
+        else if(Text.size() == 1 && Text[0] >= '0' && Text[0] <= static_cast<char>('0' + MaximumValue))
+            Local = Text[0] - '0';
+        int Extrema[2] = {Local, -Local};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, Extrema, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        if(Extrema[0] < 0 || Extrema[0] != -Extrema[1])
+        {
+            std::string Allowed = "0";
+            for(int AllowedValue = 1; AllowedValue <= MaximumValue; ++AllowedValue)
+                Allowed += (AllowedValue == MaximumValue ? " or " : ", ") + std::to_string(AllowedValue);
+            throw std::invalid_argument(std::string(Name) + " must be " + Allowed + " and the same on every MPI rank");
+        }
+        return Extrema[0];
+    }
+
+    // RICH_D2_TIMERS (0/1, shared by the D2 diagnostics): here, the RICH_D2_CLOSURE split of the neighbour-bin
+    // closure.  First used in enforceNeighborBinClosure or applyAMRChangeSet.
+    bool D2TimersEnabled()
+    {
+        static bool const Enabled = AgreedIntegerSwitch("RICH_D2_TIMERS", 1) != 0;
+        return Enabled;
+    }
+
+    // RICH_INDIVIDUAL_CLOSURE_SCAN (0 off, 1 skip the full closure when a scan finds nothing for it to do on any
+    // rank, 2 shadow: scan, then run the full closure anyway and count disagreements).  First used in
+    // enforceNeighborBinClosure.
+    int ClosureScanMode()
+    {
+        static int const Mode = AgreedIntegerSwitch("RICH_INDIVIDUAL_CLOSURE_SCAN", 2);
+        return Mode;
+    }
+
+    // RICH_INDIVIDUAL_SCHEDULER_COUNTS (0 off, 1 tracked counts replace the per-event scans, 2 both, compared).
+    // First used in commitEvent.
+    int SchedulerCountsSwitch()
+    {
+        static int const Mode = AgreedIntegerSwitch("RICH_INDIVIDUAL_SCHEDULER_COUNTS", 2);
+        return Mode;
+    }
+
+    // RICH_INDIVIDUAL_CLOSURE_FAST (0 reference full closure, 1 fast full closure, 2 both on copies of the state,
+    // compared bin for bin and request for request, abort on the first difference).  Full closures only; the
+    // single-pass propagation closure of commitEvent always takes the reference path.  First used in
+    // limitNeighborBins.  MPI builds only: a serial build always runs the reference.
+    int ClosureFastMode()
+    {
+        static int const Mode = AgreedIntegerSwitch("RICH_INDIVIDUAL_CLOSURE_FAST", 2);
+        return Mode;
+    }
+
+    double D2Now()
+    {
+#ifdef RICH_MPI
+        return MPI_Wtime();
+#else
+        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+#endif
+    }
+
+    int WorldRank()
+    {
+        int Rank = 0;
+#ifdef RICH_MPI
+        MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+#endif
+        return Rank;
+    }
+
+    // Process totals of the closure scan, printed in RICH_D2_CLOSURE.  Every rank holds the same values: they count
+    // collective outcomes only.
+    struct ClosureScanTotals
+    {
+        std::uint64_t Scans = 0;
+        std::uint64_t Clean = 0;
+        std::uint64_t Skipped = 0;
+        std::uint64_t ShadowCleanChanged = 0;
+        std::uint64_t ShadowDirtyUnchanged = 0;
+    };
+    ClosureScanTotals& ClosureTotals()
+    {
+        static ClosureScanTotals Totals;
+        return Totals;
+    }
+
+    // RICH_INDIVIDUAL_SCHEDULER_COUNTS mismatch or corrupt count: this rank prints one example and aborts the job,
+    // since the other ranks cannot know.
+    [[noreturn]] void AbortScheduleCounts(std::string const& Message)
+    {
+        std::cerr << "RICH_SCHED_COUNTS_MISMATCH rank=" << WorldRank() << " " << Message << std::endl;
+#ifdef RICH_MPI
+        MPI_Abort(MPI_COMM_WORLD, 97);
+#endif
+        throw std::logic_error("RICH_INDIVIDUAL_SCHEDULER_COUNTS mismatch: " + Message);
     }
 
     // One line per scheduler mutation of a traced cell, printed by its owner:
@@ -277,8 +387,45 @@ std::vector<T> SyncCanonicalDataToMesh(
     tess.SyncPartialBuildData(local, canonical_copy);
     return local;
 }
+
+// Appends one closure iteration's outgoing requests to a log, per destination rank in send order
+// (RICH_INDIVIDUAL_CLOSURE_FAST=2 compares the two implementations' logs).
+void RecordClosureRequests(std::vector<std::vector<std::vector<std::pair<std::size_t, std::uint8_t> > > >& Log,
+                           std::vector<std::vector<NeighborBinRequest> > const& Outgoing)
+{
+    std::vector<std::vector<std::pair<std::size_t, std::uint8_t> > >& Iteration = Log.emplace_back(Outgoing.size());
+    for(std::size_t Destination = 0; Destination < Outgoing.size(); ++Destination)
+        for(NeighborBinRequest const& Request : Outgoing[Destination])
+            Iteration[Destination].emplace_back(Request.cell_id, Request.maximum_bin);
+}
+
+// One canonical cell in the first mesh sync of the fast closure: its stable ID, and its bin plus one (zero marks a
+// mesh entry the sync did not fill, the reference's valid == 0).  Later iterations sync the bin byte alone.
+struct FastClosureEntry
+{
+    std::size_t CellId;
+    std::uint8_t Bin;
+};
 #endif
 }
+
+// Filled by limitNeighborBins when a caller passes it.  Iterations and Outgoing are the same length on every rank
+// (the loop ends on a collective flag); Outgoing[k] is 1 when this rank had a request to send in iteration k.
+struct IndividualTimeStepScheduler::ClosureSplit
+{
+    unsigned Iterations = 0;
+    std::vector<double> Outgoing;
+    double TotalSeconds = 0;
+    double ExchangeSeconds = 0;
+    // First cell this rank lowered, for the shadow's mismatch example.
+    std::size_t ExampleCellId = std::numeric_limits<std::size_t>::max();
+    // RICH_INDIVIDUAL_CLOSURE_FAST=2: every request this rank sent, per iteration and destination rank, as
+    // (cell ID, maximum bin) in send order.
+    bool RecordRequests = false;
+    std::vector<std::vector<std::vector<std::pair<std::size_t, std::uint8_t> > > > Requests;
+    // The fast run of mode 2 prints no scheduler trace lines; the reference run that follows prints them.
+    bool SuppressTrace = false;
+};
 
 #ifdef RICH_MPI
 std::size_t CellTimeState::dump(Serializer* serializer) const
@@ -521,6 +668,9 @@ IndividualStepContext IndividualTimeStepScheduler::prepareEvent(
     validateCells(cells);
     if(event_tick <= current_tick_)
         throw std::logic_error("Individual timestep scheduler produced a non-advancing event");
+    // Catches writes made between events outside the scheduler that skipped rebuildIndex.
+    if(CountsMode == 2)
+        VerifyScheduleCounts("prepareEvent");
     const std::uint64_t local_next = nextEventTick();
     if(event_tick > local_next)
         throw std::logic_error("Collective individual event skipped a local cell end tick");
@@ -570,7 +720,27 @@ IndividualStepContext IndividualTimeStepScheduler::prepareEvent(
             result.active_mask[i] = 1;
         }
     }
+    if(CountsMode == 2 && !force_all_active)
+    {
+        auto const Due = EndTickOccupancy.find(event_tick);
+        std::uint64_t const Tracked = Due == EndTickOccupancy.end() ? 0 : Due->second;
+        if(Tracked != static_cast<std::uint64_t>(result.active_indices.size()))
+            AbortScheduleCounts("where=prepareEvent kind=due_count event_tick=" + std::to_string(event_tick) +
+                " tracked=" + std::to_string(Tracked) + " scanned=" + std::to_string(result.active_indices.size()));
+        ++CountsChecks;
+    }
     return result;
+}
+
+bool IndividualOverdueActivationNominal()
+{
+    static bool const Enabled = []()
+    {
+        char const* const Value = std::getenv("RICH_INDIVIDUAL_OVERDUE_ACTIVATION_NOMINAL");
+        return !(Value != nullptr && (std::string(Value) == "0" || std::string(Value) == "false" ||
+                                      std::string(Value) == "off"));
+    }();
+    return Enabled;
 }
 
 void IndividualTimeStepScheduler::commitEvent(
@@ -581,6 +751,7 @@ void IndividualTimeStepScheduler::commitEvent(
     const std::vector<double> &signal_wake_deadlines,
     const std::vector<double> &change_wake_ratios)
 {
+    bool const OverdueNominal = IndividualOverdueActivationNominal();
     validateCells(cells);
     if(context.previous_event_tick != current_tick_)
         throw std::logic_error("Individual timestep event was prepared from stale scheduler state");
@@ -592,6 +763,8 @@ void IndividualTimeStepScheduler::commitEvent(
             "Individual signal-wake deadline vector has the wrong size");
     if(!change_wake_ratios.empty() && change_wake_ratios.size() != states_.size())
         throw std::invalid_argument("Individual change-wake vector has the wrong size");
+    // Collective on its first call (the switch agreement); a no-op once tracking runs or when the switch is 0.
+    ActivateScheduleCounts();
     committed_event_spacing_ = context.event_tick - context.previous_event_tick;
     // Stored before the synchronized branch returns; finalizeChangeWakes
     // applies them once AMR and the load balance have set every endpoint.
@@ -599,6 +772,8 @@ void IndividualTimeStepScheduler::commitEvent(
         for(std::size_t index = 0; index < states_.size(); ++index)
             if(!context.isActive(index) && change_wake_ratios[index] > 0)
             {
+                if(CountsMode != 0 && states_[index].change_wake_pending == 0)
+                    ChangeWakeIndices.push_back(index);
                 states_[index].change_wake_pending = 1;
                 states_[index].change_wake_ratio = change_wake_ratios[index];
             }
@@ -657,6 +832,9 @@ void IndividualTimeStepScheduler::commitEvent(
             state.end_tick = checked_add(context.event_tick,
                 ticksForBin(shared_bin));
         }
+        // Every state changed, so the tracked counts are rebuilt.
+        if(CountsMode != 0)
+            RebuildScheduleCounts();
         // The shared bin is collective, so it is the finest bin in use.
         minimum_occupied_bin_ = shared_bin;
         needs_full_neighbor_closure_ = false;
@@ -689,8 +867,9 @@ void IndividualTimeStepScheduler::commitEvent(
         }
         bool const completed_nominal_interval =
             state.end_tick == context.event_tick &&
-            context.event_tick - state.begin_tick ==
-                ticksForBin(completed_bin);
+            (OverdueNominal ?
+                 context.event_tick - state.begin_tick >= ticksForBin(completed_bin) :
+                 context.event_tick - state.begin_tick == ticksForBin(completed_bin));
         if(state.end_tick != context.event_tick)
         {
             if(state.begin_tick >= context.event_tick ||
@@ -720,6 +899,8 @@ void IndividualTimeStepScheduler::commitEvent(
         state.last_primitive_tick = context.event_tick;
         state.time_bin = next_bin;
         state.end_tick = nextAlignedTick(context.event_tick, state.time_bin);
+        if(CountsMode != 0)
+            NoteScheduleChange(completed_bin, traced_end, state);
         TraceSchedulerMutation("activate", state.cell_id, context.event_tick, traced_begin, completed_bin,
             next_bin, traced_end, state.end_tick);
     }
@@ -744,6 +925,8 @@ void IndividualTimeStepScheduler::commitEvent(
                 noteLowering(0, states_[index].begin_tick, context.event_tick, target_bin);
             states_[index].time_bin = target_bin;
             states_[index].end_tick = limited_end;
+            if(CountsMode != 0)
+                NoteScheduleChange(old_bin, old_end, states_[index]);
             TraceSchedulerMutation("passive_limit", states_[index].cell_id, context.event_tick,
                 states_[index].begin_tick, old_bin, target_bin, old_end, limited_end);
             if(states_[index].time_bin < old_bin)
@@ -774,6 +957,8 @@ void IndividualTimeStepScheduler::commitEvent(
                 std::uint64_t const old_end = states_[index].end_tick;
                 states_[index].end_tick = checked_add(
                     context.event_tick, wake_ticks);
+                if(CountsMode != 0)
+                    NoteScheduleChange(states_[index].time_bin, old_end, states_[index]);
                 TraceSchedulerMutation("signal_wake", states_[index].cell_id, context.event_tick,
                     states_[index].begin_tick, states_[index].time_bin, states_[index].time_bin, old_end,
                     states_[index].end_tick);
@@ -809,6 +994,14 @@ void IndividualTimeStepScheduler::commitEvent(
     // the minimum), so the spread cap goes last.
     applyBinSpreadCap(context.event_tick);
     current_tick_ = context.event_tick;
+    if(CountsMode == 2)
+    {
+        VerifyScheduleCounts("commitEvent");
+        // Rank 0's own checks, every 256 commits: evidence that the verify mode ran (no reduction).
+        if(++CountsCommits % 256 == 0 && WorldRank() == 0)
+            std::cout << "RICH_SCHED_COUNTS_VERIFY tick=" << current_tick_ << " commits=" << CountsCommits
+                      << " checks_rank0=" << CountsChecks << " mismatches=0" << std::endl;
+    }
 }
 
 void IndividualTimeStepScheduler::applyBinSpreadCap(std::uint64_t const event_tick)
@@ -827,18 +1020,38 @@ void IndividualTimeStepScheduler::applyBinSpreadCap(std::uint64_t const event_ti
     refreshMinimumOccupiedBin();
     unsigned const cap = std::min<unsigned>(options_.maximum_bin,
         static_cast<unsigned>(options_.initial_bin) + static_cast<unsigned>(MaximumBinSpread()));
-    for(CellTimeState& state : states_)
+    // With tracked counts the loop below runs only when some state lies above the cap; for every other state it
+    // does nothing.
+    std::uint64_t AboveCap = 0;
+    if(CountsMode != 0)
+        for(unsigned Bin = cap + 1; Bin < BinOccupancy.size(); ++Bin)
+            AboveCap += BinOccupancy[Bin];
+    std::uint64_t Capped = 0;
+    if(CountsMode != 1 || AboveCap > 0)
+        for(CellTimeState& state : states_)
+        {
+            if(state.time_bin <= cap)
+                continue;
+            std::uint8_t const capped = static_cast<std::uint8_t>(cap);
+            noteLowering(3, state.begin_tick, event_tick, capped);
+            unsigned const old_bin = state.time_bin;
+            std::uint64_t const old_end = state.end_tick;
+            state.time_bin = capped;
+            state.end_tick = std::min(state.end_tick, binnedEndTick(state.begin_tick, event_tick, capped));
+            if(CountsMode != 0)
+            {
+                NoteScheduleChange(static_cast<std::uint8_t>(old_bin), old_end, state);
+                ++Capped;
+            }
+            TraceSchedulerMutation("spread_cap", state.cell_id, event_tick, state.begin_tick, old_bin, capped,
+                old_end, state.end_tick);
+        }
+    if(CountsMode == 2)
     {
-        if(state.time_bin <= cap)
-            continue;
-        std::uint8_t const capped = static_cast<std::uint8_t>(cap);
-        noteLowering(3, state.begin_tick, event_tick, capped);
-        unsigned const old_bin = state.time_bin;
-        std::uint64_t const old_end = state.end_tick;
-        state.time_bin = capped;
-        state.end_tick = std::min(state.end_tick, binnedEndTick(state.begin_tick, event_tick, capped));
-        TraceSchedulerMutation("spread_cap", state.cell_id, event_tick, state.begin_tick, old_bin, capped,
-            old_end, state.end_tick);
+        if(Capped != AboveCap)
+            AbortScheduleCounts("where=applyBinSpreadCap kind=above_cap cap=" + std::to_string(cap) + " tracked=" +
+                std::to_string(AboveCap) + " scanned=" + std::to_string(Capped));
+        ++CountsChecks;
     }
     // The ceiling can lower the minimum itself (every cell above it): if the
     // global minimum was above the cap, every cell was capped to it.
@@ -860,10 +1073,15 @@ std::size_t IndividualTimeStepScheduler::clampToTerminalTick(
     {
         if(state.end_tick > terminal_tick)
         {
+            std::uint64_t const OldEnd = state.end_tick;
             state.end_tick = terminal_tick;
+            if(CountsMode != 0)
+                NoteScheduleChange(state.time_bin, OldEnd, state);
             ++clamped;
         }
     }
+    if(CountsMode == 2)
+        VerifyScheduleCounts("clampToTerminalTick");
     return clamped;
 }
 
@@ -883,6 +1101,32 @@ std::uint64_t IndividualTimeStepScheduler::nextEventTick(void) const
 {
     if(!initialized_)
         return std::numeric_limits<std::uint64_t>::max();
+    if(CountsMode == 0)
+        return ScannedNextEventTick();
+    std::uint64_t const Tracked = EndTickOccupancy.empty() ? std::numeric_limits<std::uint64_t>::max() :
+        EndTickOccupancy.begin()->first;
+    if(CountsMode == 1)
+        return Tracked;
+    // Mode 2: the scan's value is returned and the tracked one must equal it.
+    std::uint64_t const next_tick = ScannedNextEventTick();
+    if(Tracked != next_tick)
+    {
+        std::size_t ExampleId = 0;
+        for(CellTimeState const& State : states_)
+            if(State.end_tick == next_tick)
+            {
+                ExampleId = State.cell_id;
+                break;
+            }
+        AbortScheduleCounts("where=nextEventTick kind=minimum_end_tick tracked=" + std::to_string(Tracked) +
+            " scanned=" + std::to_string(next_tick) + " cell_id=" + std::to_string(ExampleId));
+    }
+    ++CountsChecks;
+    return next_tick;
+}
+
+std::uint64_t IndividualTimeStepScheduler::ScannedNextEventTick(void) const
+{
     std::uint64_t next_tick = std::numeric_limits<std::uint64_t>::max();
     for(const CellTimeState &state : states_)
         next_tick = std::min(next_tick, state.end_tick);
@@ -921,6 +1165,10 @@ void IndividualTimeStepScheduler::rebuildIndex(const std::vector<ComputationalCe
             throw std::invalid_argument("Duplicate cell ID in individual timestep scheduler");
         states_[i].cell_id = cells[i].ID;
     }
+    // Every reorder of states_ (AMR remap, migration, domain growth, restore) ends here, so the tracked counts and
+    // the change-wake indices are rebuilt for the new order.
+    if(CountsMode != 0)
+        RebuildScheduleCounts();
 }
 
 void IndividualTimeStepScheduler::restore(
@@ -1133,22 +1381,72 @@ IndividualTimeStepScheduler::finalizeChangeWakes(bool const collect_statistics)
             spacing *= 2;
         next_tick = checked_add(current_tick_, spacing);
     }
-    for(CellTimeState& state : states_)
+    auto ApplyChangeWake = [&](CellTimeState& state)
     {
-        if(state.change_wake_pending == 0)
-            continue;
         ++result.applied;
         result.largest_ratio = std::max(result.largest_ratio, state.change_wake_ratio);
         if(next_tick < state.end_tick)
         {
             TraceSchedulerMutation("change_wake", state.cell_id, current_tick_, state.begin_tick, state.time_bin,
                 state.time_bin, state.end_tick, next_tick);
+            std::uint64_t const OldEnd = state.end_tick;
             state.end_tick = next_tick;
+            if(CountsMode != 0)
+                NoteScheduleChange(state.time_bin, OldEnd, state);
             ++result.shortened;
         }
         state.change_wake_pending = 0;
         state.change_wake_ratio = 0;
+    };
+    if(CountsMode == 1)
+    {
+        // The tracked indices in ascending order, the order of the scan below.
+        std::sort(ChangeWakeIndices.begin(), ChangeWakeIndices.end());
+        ChangeWakeIndices.erase(std::unique(ChangeWakeIndices.begin(), ChangeWakeIndices.end()),
+                                ChangeWakeIndices.end());
+        for(std::size_t const Index : ChangeWakeIndices)
+        {
+            if(Index >= states_.size())
+                AbortScheduleCounts("where=finalizeChangeWakes kind=wake_index index=" + std::to_string(Index) +
+                    " states=" + std::to_string(states_.size()));
+            if(states_[Index].change_wake_pending != 0)
+                ApplyChangeWake(states_[Index]);
+        }
     }
+    else
+    {
+        std::vector<std::size_t> ScannedWakes;
+        for(CellTimeState& state : states_)
+        {
+            if(state.change_wake_pending == 0)
+                continue;
+            if(CountsMode == 2)
+                ScannedWakes.push_back(static_cast<std::size_t>(&state - states_.data()));
+            ApplyChangeWake(state);
+        }
+        if(CountsMode == 2)
+        {
+            std::vector<std::size_t> TrackedWakes = ChangeWakeIndices;
+            std::sort(TrackedWakes.begin(), TrackedWakes.end());
+            TrackedWakes.erase(std::unique(TrackedWakes.begin(), TrackedWakes.end()), TrackedWakes.end());
+            if(TrackedWakes != ScannedWakes)
+            {
+                std::size_t Example = 0;
+                for(std::size_t k = 0; k < std::max(TrackedWakes.size(), ScannedWakes.size()); ++k)
+                    if(k >= TrackedWakes.size() || k >= ScannedWakes.size() || TrackedWakes[k] != ScannedWakes[k])
+                    {
+                        Example = k < ScannedWakes.size() ? ScannedWakes[k] : TrackedWakes[k];
+                        break;
+                    }
+                AbortScheduleCounts("where=finalizeChangeWakes kind=wake_set tracked=" +
+                    std::to_string(TrackedWakes.size()) + " scanned=" + std::to_string(ScannedWakes.size()) +
+                    " first_difference_index=" + std::to_string(Example));
+            }
+            ++CountsChecks;
+        }
+    }
+    if(CountsMode != 0)
+        ChangeWakeIndices.clear();
     // Every end tick is still at least next_tick and the old minimum is
     // untouched, so the next event is unchanged; the caller's own reduction
     // checks it.
@@ -1191,14 +1489,39 @@ IndividualTimeStepScheduler::finalizeChangeWakes(bool const collect_statistics)
 #else
     (void)collect_statistics;
 #endif
+    if(CountsMode == 2)
+        VerifyScheduleCounts("finalizeChangeWakes");
     return result;
 }
 
 void IndividualTimeStepScheduler::refreshMinimumOccupiedBin(void)
 {
     unsigned int smallest = options_.maximum_bin;
-    for(CellTimeState const& state : states_)
-        smallest = std::min(smallest, static_cast<unsigned int>(state.time_bin));
+    if(CountsMode == 0)
+        for(CellTimeState const& state : states_)
+            smallest = std::min(smallest, static_cast<unsigned int>(state.time_bin));
+    else
+    {
+        // The lowest occupied bin, capped at maximum_bin exactly as the scan caps it.
+        unsigned int Tracked = options_.maximum_bin;
+        for(unsigned int Bin = 0; Bin < options_.maximum_bin; ++Bin)
+            if(BinOccupancy[Bin] != 0)
+            {
+                Tracked = Bin;
+                break;
+            }
+        smallest = Tracked;
+        if(CountsMode == 2)
+        {
+            unsigned int Scanned = options_.maximum_bin;
+            for(CellTimeState const& state : states_)
+                Scanned = std::min(Scanned, static_cast<unsigned int>(state.time_bin));
+            if(Scanned != Tracked)
+                AbortScheduleCounts("where=refreshMinimumOccupiedBin kind=minimum_bin tracked=" +
+                    std::to_string(Tracked) + " scanned=" + std::to_string(Scanned));
+            ++CountsChecks;
+        }
+    }
 #ifdef RICH_MPI
     MPI_Allreduce(MPI_IN_PLACE, &smallest, 1, MPI_UNSIGNED, MPI_MIN, MPI_COMM_WORLD);
 #endif
@@ -1213,6 +1536,123 @@ void IndividualTimeStepScheduler::recordFullSourceSweep(
         throw std::logic_error(
             "Invalid individual full-source sweep completion tick");
     last_full_source_sweep_tick_ = event_tick;
+}
+
+void IndividualTimeStepScheduler::ActivateScheduleCounts(void)
+{
+    if(CountsMode != 0)
+        return;
+    int const Mode = SchedulerCountsSwitch();
+    if(Mode == 0)
+        return;
+    CountsMode = Mode;
+    RebuildScheduleCounts();
+    if(WorldRank() == 0)
+        std::cout << "RICH_SCHED_COUNTS mode=" << CountsMode << " tick=" << current_tick_
+                  << " states_rank0=" << states_.size() << std::endl;
+}
+
+void IndividualTimeStepScheduler::RebuildScheduleCounts(void)
+{
+    BinOccupancy.fill(0);
+    EndTickOccupancy.clear();
+    ChangeWakeIndices.clear();
+    auto Hint = EndTickOccupancy.end();
+    for(std::size_t Index = 0; Index < states_.size(); ++Index)
+    {
+        CellTimeState const& State = states_[Index];
+        ++BinOccupancy[State.time_bin];
+        // Neighbouring states usually share an end tick, so the last entry is the insertion hint.
+        if(Hint != EndTickOccupancy.end() && Hint->first == State.end_tick)
+            ++Hint->second;
+        else
+        {
+            Hint = EndTickOccupancy.emplace(State.end_tick, 0).first;
+            ++Hint->second;
+        }
+        if(State.change_wake_pending != 0)
+            ChangeWakeIndices.push_back(Index);
+    }
+}
+
+void IndividualTimeStepScheduler::NoteScheduleChange(std::uint8_t const OldBin, std::uint64_t const OldEnd,
+    CellTimeState const& State)
+{
+    if(OldBin != State.time_bin)
+    {
+        if(BinOccupancy[OldBin] == 0)
+            AbortScheduleCounts("where=NoteScheduleChange kind=bin_underflow bin=" + std::to_string(OldBin) +
+                " cell_id=" + std::to_string(State.cell_id));
+        --BinOccupancy[OldBin];
+        ++BinOccupancy[State.time_bin];
+    }
+    if(OldEnd != State.end_tick)
+    {
+        auto const Old = EndTickOccupancy.find(OldEnd);
+        if(Old == EndTickOccupancy.end() || Old->second == 0)
+            AbortScheduleCounts("where=NoteScheduleChange kind=end_tick_underflow end_tick=" +
+                std::to_string(OldEnd) + " cell_id=" + std::to_string(State.cell_id));
+        if(--Old->second == 0)
+            EndTickOccupancy.erase(Old);
+        ++EndTickOccupancy[State.end_tick];
+    }
+}
+
+void IndividualTimeStepScheduler::VerifyScheduleCounts(char const* const Where) const
+{
+    std::array<std::uint64_t, 256> Bins{};
+    std::map<std::uint64_t, std::uint64_t> Ends;
+    std::vector<std::size_t> Wakes;
+    for(std::size_t Index = 0; Index < states_.size(); ++Index)
+    {
+        ++Bins[states_[Index].time_bin];
+        ++Ends[states_[Index].end_tick];
+        if(states_[Index].change_wake_pending != 0)
+            Wakes.push_back(Index);
+    }
+    auto const FirstCell = [this](auto const& Matches)
+    {
+        for(CellTimeState const& State : states_)
+            if(Matches(State))
+                return std::to_string(State.cell_id);
+        return std::string("none");
+    };
+    for(std::size_t Bin = 0; Bin < Bins.size(); ++Bin)
+        if(Bins[Bin] != BinOccupancy[Bin])
+            AbortScheduleCounts(std::string("where=") + Where + " kind=bin bin=" + std::to_string(Bin) +
+                " tracked=" + std::to_string(BinOccupancy[Bin]) + " scanned=" + std::to_string(Bins[Bin]) +
+                " cell_id=" + FirstCell([Bin](CellTimeState const& State) { return State.time_bin == Bin; }));
+    if(Ends != EndTickOccupancy)
+    {
+        // The first end tick whose counts differ, from either side.
+        auto Scanned = Ends.begin();
+        auto Tracked = EndTickOccupancy.begin();
+        while(Scanned != Ends.end() && Tracked != EndTickOccupancy.end() && *Scanned == *Tracked)
+        {
+            ++Scanned;
+            ++Tracked;
+        }
+        std::uint64_t Tick = 0;
+        if(Scanned == Ends.end())
+            Tick = Tracked->first;
+        else if(Tracked == EndTickOccupancy.end())
+            Tick = Scanned->first;
+        else
+            Tick = std::min(Scanned->first, Tracked->first);
+        auto const ScannedAt = Ends.find(Tick);
+        auto const TrackedAt = EndTickOccupancy.find(Tick);
+        AbortScheduleCounts(std::string("where=") + Where + " kind=end_tick end_tick=" + std::to_string(Tick) +
+            " tracked=" + std::to_string(TrackedAt == EndTickOccupancy.end() ? 0 : TrackedAt->second) +
+            " scanned=" + std::to_string(ScannedAt == Ends.end() ? 0 : ScannedAt->second) + " cell_id=" +
+            FirstCell([Tick](CellTimeState const& State) { return State.end_tick == Tick; }));
+    }
+    std::vector<std::size_t> TrackedWakes = ChangeWakeIndices;
+    std::sort(TrackedWakes.begin(), TrackedWakes.end());
+    TrackedWakes.erase(std::unique(TrackedWakes.begin(), TrackedWakes.end()), TrackedWakes.end());
+    if(TrackedWakes != Wakes)
+        AbortScheduleCounts(std::string("where=") + Where + " kind=wake_set tracked=" +
+            std::to_string(TrackedWakes.size()) + " scanned=" + std::to_string(Wakes.size()));
+    ++CountsChecks;
 }
 
 void IndividualTimeStepScheduler::applyAMRChangeSet(
@@ -1407,12 +1847,24 @@ void IndividualTimeStepScheduler::applyAMRChangeSet(
     {
         std::vector<std::uint8_t> const no_sources(
             states_.size(), std::numeric_limits<std::uint8_t>::max());
-        limitNeighborBins(
-            *tess, cells, current_tick_, no_sources, true);
+        if(D2TimersEnabled())
+        {
+            // The AMR path always runs the full closure; only its split is reported.
+            ClosureSplit Split;
+            double const FullStart = D2Now();
+            limitNeighborBins(*tess, cells, current_tick_, no_sources, true, &Split);
+            double const FullSeconds = D2Now() - FullStart;
+            ReportClosure("amr", 0, -1, true, Split, 0, 0, FullSeconds);
+        }
+        else
+            limitNeighborBins(
+                *tess, cells, current_tick_, no_sources, true);
         needs_full_neighbor_closure_ = false;
     }
     else
         needs_full_neighbor_closure_ = true;
+    if(CountsMode == 2)
+        VerifyScheduleCounts("applyAMRChangeSet");
 }
 
 void IndividualTimeStepScheduler::enforceNeighborBinClosure(
@@ -1422,10 +1874,224 @@ void IndividualTimeStepScheduler::enforceNeighborBinClosure(
     if(!initialized_)
         throw std::logic_error(
             "Cannot close neighbors for an uninitialized scheduler");
-    std::vector<std::uint8_t> const no_sources(
-        states_.size(), std::numeric_limits<std::uint8_t>::max());
-    limitNeighborBins(tess, cells, current_tick_, no_sources, true);
+    // Both switches are collective on their first call, which is here on every rank.
+    int const ScanMode = ClosureScanMode();
+    bool const Timers = D2TimersEnabled();
+    if(ScanMode == 0 && !Timers)
+    {
+        std::vector<std::uint8_t> const no_sources(
+            states_.size(), std::numeric_limits<std::uint8_t>::max());
+        limitNeighborBins(tess, cells, current_tick_, no_sources, true);
+        needs_full_neighbor_closure_ = false;
+        if(CountsMode == 2)
+            VerifyScheduleCounts("enforceNeighborBinClosure");
+        return;
+    }
+
+    // The scan finds every pair the full closure's first iteration would act on, with the same arithmetic, and
+    // every entry it would report as an error.  A clean scan on every rank therefore means the full closure would
+    // run one iteration and change nothing, so mode 1 skips it.
+    int ScanFlag = -1;
+    double ScanSeconds = 0;
+    double ScanExchangeSeconds = 0;
+    if(ScanMode != 0)
+    {
+        double const ScanStart = D2Now();
+        ScanFlag = ScanNeighborBinClosure(tess, ScanExchangeSeconds);
+        ScanSeconds = D2Now() - ScanStart;
+    }
+    bool const RunFull = ScanMode != 1 || ScanFlag != 0;
+    bool const Report = Timers || ScanMode == 2;
+    ClosureSplit Split;
+    double FullSeconds = 0;
+    if(RunFull)
+    {
+        std::vector<std::uint8_t> const no_sources(
+            states_.size(), std::numeric_limits<std::uint8_t>::max());
+        double const FullStart = D2Now();
+        limitNeighborBins(tess, cells, current_tick_, no_sources, true, Report ? &Split : nullptr);
+        FullSeconds = D2Now() - FullStart;
+    }
     needs_full_neighbor_closure_ = false;
+
+    // Collective outcomes only, so every rank keeps the same totals.  A full closure changed a bin exactly when it
+    // ran a second iteration.
+    ClosureScanTotals& Totals = ClosureTotals();
+    if(ScanMode != 0)
+    {
+        ++Totals.Scans;
+        Totals.Clean += ScanFlag == 0 ? 1 : 0;
+        Totals.Skipped += RunFull ? 0 : 1;
+    }
+    if(ScanMode == 2)
+    {
+        bool const Changed = Split.Iterations > 1;
+        Totals.ShadowCleanChanged += ScanFlag == 0 && Changed ? 1 : 0;
+        Totals.ShadowDirtyUnchanged += ScanFlag != 0 && !Changed ? 1 : 0;
+    }
+    if(Report)
+        ReportClosure("event", ScanMode, ScanFlag, RunFull, Split, ScanSeconds, ScanExchangeSeconds, FullSeconds);
+    if(CountsMode == 2)
+        VerifyScheduleCounts("enforceNeighborBinClosure");
+}
+
+int IndividualTimeStepScheduler::ScanNeighborBinClosure(const Tessellation3D& Tess, double& ExchangeSeconds) const
+{
+    unsigned const MaximumBin = options_.maximum_bin;
+    unsigned const Difference = options_.maximum_neighbor_bin_difference;
+    Tessellation3D::AllPointsMap const& LocalToGlobal = Tess.GetIndicesInAllPoints();
+    std::vector<std::size_t> Neighbors;
+    int Violation = 0;
+#ifdef RICH_MPI
+    int RankCount = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &RankCount);
+    std::size_t const MeshSize = Tess.getMeshPoints().size();
+    // Each owned bin plus one, so that zero marks a mesh entry the sync did not fill (the full closure's
+    // valid == 0).  Bins never exceed 62; a bin of 255 would encode as zero and send the event to the full closure.
+    std::vector<std::uint8_t> Canonical(states_.size());
+    for(std::size_t i = 0; i < states_.size(); ++i)
+        Canonical[i] = static_cast<std::uint8_t>(states_[i].time_bin + 1);
+    double const SyncStart = D2Now();
+    std::vector<std::uint8_t> const Mesh = SyncCanonicalDataToMesh(Tess, LocalToGlobal, Canonical);
+    ExchangeSeconds += D2Now() - SyncStart;
+
+    // The full closure's ownership checks (its issue bits 1, 4, 8 and 16; bit 2 throws inside the sync, bits 32
+    // and 64 show up as unfilled entries below): any failure sends the event to the full closure, which reports it.
+    if(LocalToGlobal.size() < Tess.GetPointNo())
+        Violation = 1;
+    std::vector<int> const DuplicatedProcs = Tess.GetDuplicatedProcs();
+    std::vector<std::vector<std::size_t> > const& GhostIndices = Tess.GetGhostIndeces();
+    if(DuplicatedProcs.size() != GhostIndices.size())
+        Violation = 1;
+    for(std::size_t Peer = 0; Violation == 0 && Peer < DuplicatedProcs.size(); ++Peer)
+    {
+        if(DuplicatedProcs[Peer] < 0 || DuplicatedProcs[Peer] >= RankCount)
+            Violation = 1;
+        for(std::size_t const Ghost : GhostIndices[Peer])
+            if(Ghost >= MeshSize)
+                Violation = 1;
+    }
+
+    for(std::size_t LocalI = 0; Violation == 0 && LocalI < Tess.GetPointNo(); ++LocalI)
+    {
+        auto const MappedI = LocalToGlobal.find(LocalI);
+        if(MappedI == LocalToGlobal.end() || MappedI->second >= states_.size())
+        {
+            Violation = 1;
+            break;
+        }
+        unsigned const BinI = states_[MappedI->second].time_bin;
+        unsigned const LimitFromI = std::min<unsigned>(MaximumBin, BinI + Difference);
+        Neighbors.clear();
+        Tess.GetNeighbors(LocalI, Neighbors);
+        for(std::size_t const LocalNeighbor : Neighbors)
+        {
+            if(LocalNeighbor >= MeshSize || Tess.IsPointOutsideBox(LocalNeighbor))
+                continue;
+            std::uint8_t const Encoded = Mesh[LocalNeighbor];
+            if(Encoded == 0)
+            {
+                Violation = 1;
+                break;
+            }
+            unsigned const BinNeighbor = static_cast<unsigned>(Encoded) - 1;
+            // The full closure's two requests: this cell limited by the neighbour, the neighbour limited by it.
+            if(BinI > std::min<unsigned>(MaximumBin, BinNeighbor + Difference) || BinNeighbor > LimitFromI)
+            {
+                Violation = 1;
+                break;
+            }
+        }
+    }
+    double const ReduceStart = D2Now();
+    MPI_Allreduce(MPI_IN_PLACE, &Violation, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    ExchangeSeconds += D2Now() - ReduceStart;
+#else
+    // The serial closure's rule: both endpoints mapped, each limited by the other.
+    for(std::size_t LocalI = 0; Violation == 0 && LocalI < Tess.GetPointNo(); ++LocalI)
+    {
+        auto const MappedI = LocalToGlobal.find(LocalI);
+        if(MappedI == LocalToGlobal.end() || MappedI->second >= states_.size())
+            continue;
+        unsigned const BinI = states_[MappedI->second].time_bin;
+        Neighbors.clear();
+        Tess.GetNeighbors(LocalI, Neighbors);
+        for(std::size_t const LocalNeighbor : Neighbors)
+        {
+            auto const MappedNeighbor = LocalToGlobal.find(LocalNeighbor);
+            if(MappedNeighbor == LocalToGlobal.end() || MappedNeighbor->second >= states_.size())
+                continue;
+            unsigned const BinNeighbor = states_[MappedNeighbor->second].time_bin;
+            if(BinI > std::min<unsigned>(MaximumBin, BinNeighbor + Difference) ||
+               BinNeighbor > std::min<unsigned>(MaximumBin, BinI + Difference))
+            {
+                Violation = 1;
+                break;
+            }
+        }
+    }
+    (void)ExchangeSeconds;
+#endif
+    return Violation;
+}
+
+void IndividualTimeStepScheduler::ReportClosure(char const* Path, int ScanMode, int ScanFlag, bool RanFull,
+    ClosureSplit const& Split, double ScanSeconds, double ScanExchangeSeconds, double FullSeconds) const
+{
+    // Per-rank seconds: total, full closure, its local work and exchanges, scan, its local work and exchanges.
+    constexpr int TimerCount = 7;
+    char const* const Names[TimerCount] = {"total", "full", "full_local", "full_exchange", "scan", "scan_local",
+                                           "scan_exchange"};
+    double const Timers[TimerCount] = {ScanSeconds + FullSeconds, FullSeconds,
+                                       std::max(0.0, Split.TotalSeconds - Split.ExchangeSeconds),
+                                       Split.ExchangeSeconds, ScanSeconds,
+                                       std::max(0.0, ScanSeconds - ScanExchangeSeconds), ScanExchangeSeconds};
+    int const Rank = WorldRank();
+    int RankCount = 1;
+    struct
+    {
+        double Value;
+        int Rank;
+    } Maxima[TimerCount];
+    for(int k = 0; k < TimerCount; ++k)
+    {
+        Maxima[k].Value = Timers[k];
+        Maxima[k].Rank = Rank;
+    }
+    // Timer sums, then each iteration's count of ranks with a request to send.
+    std::vector<double> Sums(Timers, Timers + TimerCount);
+    Sums.insert(Sums.end(), Split.Outgoing.begin(), Split.Outgoing.end());
+    // A clean scan followed by a changed closure is the one disagreement that would make mode 1 unsafe.
+    bool const ShadowMismatch = ScanMode == 2 && ScanFlag == 0 && Split.Iterations > 1;
+    unsigned long long Example = static_cast<unsigned long long>(Split.ExampleCellId);
+#ifdef RICH_MPI
+    MPI_Comm_size(MPI_COMM_WORLD, &RankCount);
+    MPI_Allreduce(MPI_IN_PLACE, Maxima, TimerCount, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, Sums.data(), static_cast<int>(Sums.size()), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    if(ShadowMismatch)
+        MPI_Allreduce(MPI_IN_PLACE, &Example, 1, MPI_UNSIGNED_LONG_LONG, MPI_MIN, MPI_COMM_WORLD);
+#endif
+    if(Rank != 0)
+        return;
+    unsigned NoRequestIterations = 0;
+    for(std::size_t k = TimerCount; k < Sums.size(); ++k)
+        NoRequestIterations += Sums[k] == 0 ? 1 : 0;
+    ClosureScanTotals const& Totals = ClosureTotals();
+    std::ostringstream Line;
+    Line << std::setprecision(6) << "RICH_D2_CLOSURE tick=" << current_tick_ << " path=" << Path
+         << " scan_mode=" << ScanMode << " scan=" << (ScanFlag < 0 ? "off" : (ScanFlag == 0 ? "clean" : "dirty"))
+         << " full=" << (RanFull ? "ran" : "skipped") << " iterations=" << Split.Iterations
+         << " no_request_iterations=" << NoRequestIterations << " changed=" << (Split.Iterations > 1 ? 1 : 0)
+         << " scans=" << Totals.Scans << " scans_clean=" << Totals.Clean << " scans_skipped=" << Totals.Skipped
+         << " shadow_clean_changed=" << Totals.ShadowCleanChanged
+         << " shadow_dirty_unchanged=" << Totals.ShadowDirtyUnchanged;
+    for(int k = 0; k < TimerCount; ++k)
+        Line << " " << Names[k] << "_s_max=" << Maxima[k].Value << " " << Names[k] << "_s_mean="
+             << Sums[static_cast<std::size_t>(k)] / RankCount << " " << Names[k] << "_s_rank=" << Maxima[k].Rank;
+    std::cout << Line.str() << std::endl;
+    if(ShadowMismatch)
+        std::cout << "RICH_D2_CLOSURE_SHADOW_MISMATCH tick=" << current_tick_ << " lowered_cell_id=" << Example
+                  << std::endl;
 }
 
 CellTimeState IndividualTimeStepScheduler::synchronizedCellState(
@@ -1488,6 +2154,9 @@ std::size_t IndividualTimeStepScheduler::limitSynchronizedBins(
                 std::numeric_limits<std::uint8_t>::max();
             state.end_tick = checked_add(current_tick_, ticksForBin(shared_bin));
         }
+        // Every state changed, so the tracked counts are rebuilt.
+        if(CountsMode != 0)
+            RebuildScheduleCounts();
     }
     else
         for(std::size_t i = 0; i < states_.size(); ++i)
@@ -1495,15 +2164,21 @@ std::size_t IndividualTimeStepScheduler::limitSynchronizedBins(
             std::uint8_t const bin = maximum_bins[i];
             if(states_[i].time_bin <= bin)
                 continue;
+            std::uint8_t const OldBin = states_[i].time_bin;
+            std::uint64_t const OldEnd = states_[i].end_tick;
             // The interval opened at this tick, so the new bin's aligned end
             // lies within its allowance (binnedEndTick's first branch).
             states_[i].time_bin = bin;
             states_[i].end_tick = binnedEndTick(current_tick_, current_tick_, bin);
+            if(CountsMode != 0)
+                NoteScheduleChange(OldBin, OldEnd, states_[i]);
             ++shortened;
         }
     // As commitEvent: the finest bin any rank holds, and the spread cap.
     refreshMinimumOccupiedBin();
     applyBinSpreadCap(current_tick_);
+    if(CountsMode == 2)
+        VerifyScheduleCounts("limitSynchronizedBins");
     return shortened;
 }
 
@@ -1628,8 +2303,53 @@ void IndividualTimeStepScheduler::limitNeighborBins(
     const std::vector<ComputationalCell3D> &cells,
     std::uint64_t event_tick,
     const std::vector<std::uint8_t>& propagation_bins,
-    bool full_closure)
+    bool full_closure,
+    ClosureSplit* Split)
 {
+    // Collective on its first call, which every rank makes here.
+    int const FastMode = ClosureFastMode();
+#ifdef RICH_MPI
+    if(full_closure && FastMode == 1)
+    {
+        LimitNeighborBinsFast(tess, cells, event_tick, propagation_bins, Split);
+        return;
+    }
+    if(full_closure && FastMode == 2)
+    {
+        VerifyFastNeighborClosure(tess, cells, event_tick, propagation_bins, Split);
+        return;
+    }
+#else
+    (void)FastMode;
+#endif
+    LimitNeighborBinsReference(tess, cells, event_tick, propagation_bins, full_closure, Split);
+}
+
+void IndividualTimeStepScheduler::LimitNeighborBinsReference(
+    const Tessellation3D &tess,
+    const std::vector<ComputationalCell3D> &cells,
+    std::uint64_t event_tick,
+    const std::vector<std::uint8_t>& propagation_bins,
+    bool full_closure,
+    ClosureSplit* Split)
+{
+    // Diagnostics only (Split is null on the production path): wall time of the call, and of its collectives.
+    struct SplitClock
+    {
+        ClosureSplit* Target;
+        double Start;
+        ~SplitClock()
+        {
+            if(Target != nullptr)
+                Target->TotalSeconds += D2Now() - Start;
+        }
+    } const Clock{Split, Split != nullptr ? D2Now() : 0.0};
+    auto const ExchangeStart = [Split]() { return Split != nullptr ? D2Now() : 0.0; };
+    auto const ExchangeStop = [Split](double const Start)
+    {
+        if(Split != nullptr)
+            Split->ExchangeSeconds += D2Now() - Start;
+    };
     std::uint8_t const no_source =
         std::numeric_limits<std::uint8_t>::max();
     if(cells.size() != states_.size() ||
@@ -1643,8 +2363,10 @@ void IndividualTimeStepScheduler::limitNeighborBins(
 
 #ifdef RICH_MPI
     int any_rank_has_cells = states_.empty() ? 0 : 1;
+    double const CellsStart = ExchangeStart();
     MPI_Allreduce(MPI_IN_PLACE, &any_rank_has_cells, 1, MPI_INT, MPI_MAX,
                   MPI_COMM_WORLD);
+    ExchangeStop(CellsStart);
     if(any_rank_has_cells == 0)
         return;
 #else
@@ -1730,8 +2452,10 @@ void IndividualTimeStepScheduler::limitNeighborBins(
                 full_closure ? states_[i].time_bin : propagation_bins[i];
             canonical[i].valid = 1;
         }
+        double const SyncStart = ExchangeStart();
         const std::vector<NeighborBinSnapshot> mesh =
             SyncCanonicalDataToMesh(tess, local_to_global, canonical);
+        ExchangeStop(SyncStart);
 
         if(!mapping_checked)
         {
@@ -1739,8 +2463,10 @@ void IndividualTimeStepScheduler::limitNeighborBins(
                 if(required_mesh_point[local] != 0 && mesh[local].valid == 0)
                     local_mapping_issues |= 64u;
             unsigned mapping_issues = local_mapping_issues;
+            double const MappingStart = ExchangeStart();
             MPI_Allreduce(MPI_IN_PLACE, &mapping_issues, 1, MPI_UNSIGNED,
                           MPI_BOR, MPI_COMM_WORLD);
+            ExchangeStop(MappingStart);
             if(mapping_issues != 0)
                 throw std::logic_error(
                     "Individual timestep MPI neighbor ownership mapping is "
@@ -1845,20 +2571,35 @@ void IndividualTimeStepScheduler::limitNeighborBins(
                 binnedEndTick(state.begin_tick, event_tick, requested_bin));
             TraceSchedulerMutation("closure", state.cell_id, event_tick, state.begin_tick, old_bin,
                 requested_bin, old_end, state.end_tick);
+            if(CountsMode != 0)
+                NoteScheduleChange(static_cast<std::uint8_t>(old_bin), old_end, state);
+            if(Split != nullptr && Split->ExampleCellId == std::numeric_limits<std::size_t>::max())
+                Split->ExampleCellId = state.cell_id;
             if(!full_closure)
                 state.pending_neighbor_bin = std::min(
                     state.pending_neighbor_bin, requested_bin);
             return true;
         };
 
+        if(Split != nullptr)
+        {
+            ++Split->Iterations;
+            bool const HasOutgoing = std::any_of(outgoing.begin(), outgoing.end(),
+                [](std::vector<NeighborBinRequest> const& Requests) { return !Requests.empty(); });
+            Split->Outgoing.push_back(HasOutgoing ? 1.0 : 0.0);
+            if(Split->RecordRequests)
+                RecordClosureRequests(Split->Requests, outgoing);
+        }
         // Remote requests join the local ones before anything is applied:
         // only the owner knows the cell's begin tick, so only it can honour
         // the allowance and the finest-tick overrun rule in binnedEndTick, and
         // binnedEndTick is not monotonic in the bin (an overdue finer bin can
         // end later than a coarser one within its allowance), so each cell
         // applies its minimum requested bin once, whatever the arrival order.
+        double const AllToAllStart = ExchangeStart();
         const std::vector<std::vector<NeighborBinRequest> > incoming =
             MPI_Exchange_all_to_all(outgoing, MPI_COMM_WORLD);
+        ExchangeStop(AllToAllStart);
         for(auto const& rank_requests : incoming)
             for(NeighborBinRequest const& request : rank_requests)
             {
@@ -1879,8 +2620,10 @@ void IndividualTimeStepScheduler::limitNeighborBins(
                 locally_changed;
 
         int request_error = local_request_error ? 1 : 0;
+        double const ErrorStart = ExchangeStart();
         MPI_Allreduce(MPI_IN_PLACE, &request_error, 1, MPI_INT, MPI_MAX,
                       MPI_COMM_WORLD);
+        ExchangeStop(ErrorStart);
         if(request_error != 0)
             throw std::logic_error(
                 "Individual timestep MPI neighbor-bin request mapping failed");
@@ -1888,14 +2631,18 @@ void IndividualTimeStepScheduler::limitNeighborBins(
         if(full_closure)
         {
             int changed = locally_changed ? 1 : 0;
+            double const ChangedStart = ExchangeStart();
             MPI_Allreduce(MPI_IN_PLACE, &changed, 1, MPI_INT, MPI_MAX,
                           MPI_COMM_WORLD);
+            ExchangeStop(ChangedStart);
             keep_iterating = changed != 0;
         }
         else
             keep_iterating = false;
     }
 #else
+    (void)ExchangeStart;
+    (void)ExchangeStop;
     bool keep_iterating = true;
     unsigned iteration = 0;
     while(keep_iterating)
@@ -1968,17 +2715,537 @@ void IndividualTimeStepScheduler::limitNeighborBins(
             if(requested_bin == no_source ||
                states_[i].time_bin <= requested_bin)
                 continue;
+            std::uint8_t const OldBin = states_[i].time_bin;
+            std::uint64_t const OldEnd = states_[i].end_tick;
             states_[i].time_bin = requested_bin;
             states_[i].end_tick = std::min(
                 states_[i].end_tick,
                 binnedEndTick(states_[i].begin_tick, event_tick,
                               requested_bin));
+            if(CountsMode != 0)
+                NoteScheduleChange(OldBin, OldEnd, states_[i]);
+            if(Split != nullptr && Split->ExampleCellId == std::numeric_limits<std::size_t>::max())
+                Split->ExampleCellId = states_[i].cell_id;
             if(!full_closure)
                 states_[i].pending_neighbor_bin = std::min(
                     states_[i].pending_neighbor_bin, requested_bin);
             changed = true;
         }
+        if(Split != nullptr)
+        {
+            ++Split->Iterations;
+            Split->Outgoing.push_back(0.0);
+        }
         keep_iterating = full_closure && changed;
     }
 #endif
 }
+
+#ifdef RICH_MPI
+void IndividualTimeStepScheduler::LimitNeighborBinsFast(const Tessellation3D& Tess,
+    const std::vector<ComputationalCell3D>& Cells, std::uint64_t const EventTick,
+    const std::vector<std::uint8_t>& PropagationBins, ClosureSplit* Split)
+{
+    // Why it equals the reference.  The mesh is fixed during the call, so the neighbour lists, owners and mapping
+    // checks are built once, with the reference's filters and in its order.  In an iteration a target t (canonical
+    // cell i) can make a request only from a pair (i, n) where i's bin exceeds the limit set by n's mesh bin or n's
+    // exceeds the one set by i's.  Such a request always lowers its cell: the requester's snapshot equals the
+    // owner's state until the apply, and the apply lowers whenever the request is below the current bin.  So a
+    // pair whose two bins were both unchanged since the previous iteration made no request then and makes none
+    // now.  From the second iteration on, only targets whose own bin, own mesh entry or some neighbour's mesh entry
+    // changed are rescanned, in ascending order, which leaves every request, its order and the apply order as in
+    // the reference.
+    struct SplitClock
+    {
+        ClosureSplit* Target;
+        double Start;
+        ~SplitClock()
+        {
+            if(Target != nullptr)
+                Target->TotalSeconds += D2Now() - Start;
+        }
+    } const Clock{Split, Split != nullptr ? D2Now() : 0.0};
+    auto const ExchangeStart = [Split]() { return Split != nullptr ? D2Now() : 0.0; };
+    auto const ExchangeStop = [Split](double const Start)
+    {
+        if(Split != nullptr)
+            Split->ExchangeSeconds += D2Now() - Start;
+    };
+    std::uint8_t const NoSource = std::numeric_limits<std::uint8_t>::max();
+    std::size_t const NoIndex = std::numeric_limits<std::size_t>::max();
+    if(Cells.size() != states_.size() || PropagationBins.size() != states_.size())
+        throw std::logic_error("Individual timestep neighbor limiter state size mismatch");
+    for(std::uint8_t const SourceBin : PropagationBins)
+        if(SourceBin != NoSource && SourceBin > options_.maximum_bin)
+            throw std::logic_error("Individual timestep neighbor propagation bin is invalid");
+    int AnyRankHasCells = states_.empty() ? 0 : 1;
+    double const CellsStart = ExchangeStart();
+    MPI_Allreduce(MPI_IN_PLACE, &AnyRankHasCells, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+    ExchangeStop(CellsStart);
+    if(AnyRankHasCells == 0)
+        return;
+
+    int Rank = 0;
+    int RankCount = 1;
+    MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &RankCount);
+    Tessellation3D::AllPointsMap const& LocalToGlobal = Tess.GetIndicesInAllPoints();
+    std::size_t const MeshSize = Tess.getMeshPoints().size();
+    std::size_t const TargetCount = Tess.GetPointNo();
+    std::size_t const StateCount = states_.size();
+    unsigned const MaximumBin = options_.maximum_bin;
+    unsigned const Difference = options_.maximum_neighbor_bin_difference;
+
+    // Every target's neighbours, filtered as the reference filters them (inside the mesh, inside the box), in
+    // GetNeighbors order; the reference's required points come from the same lists.
+    std::vector<std::size_t> NeighborStart(TargetCount + 1, 0);
+    std::vector<std::size_t> NeighborList;
+    NeighborList.reserve(16 * TargetCount);
+    std::vector<unsigned char> Required(MeshSize, 0);
+    {
+        std::vector<std::size_t> Neighbors;
+        for(std::size_t LocalI = 0; LocalI < TargetCount; ++LocalI)
+        {
+            if(LocalI < MeshSize)
+                Required[LocalI] = 1;
+            Neighbors.clear();
+            Tess.GetNeighbors(LocalI, Neighbors);
+            for(std::size_t const Neighbor : Neighbors)
+                if(Neighbor < MeshSize && !Tess.IsPointOutsideBox(Neighbor))
+                {
+                    Required[Neighbor] = 1;
+                    NeighborList.push_back(Neighbor);
+                }
+            NeighborStart[LocalI + 1] = NeighborList.size();
+        }
+    }
+
+    // Owners and the reference's ownership checks; MeshCanonical replaces its local_to_global.find on a neighbour.
+    std::vector<int> PointOwner(MeshSize, -1);
+    std::vector<std::size_t> MeshCanonical(MeshSize, NoIndex);
+    unsigned LocalMappingIssues = LocalToGlobal.size() < TargetCount ? 1u : 0u;
+    for(auto const& Mapping : LocalToGlobal)
+    {
+        if(Mapping.first < MeshSize)
+            MeshCanonical[Mapping.first] = Mapping.second;
+        if(Mapping.first >= MeshSize || Mapping.second >= StateCount)
+        {
+            LocalMappingIssues |= 2u;
+            continue;
+        }
+        PointOwner[Mapping.first] = Rank;
+    }
+    std::vector<int> const DuplicatedProcs = Tess.GetDuplicatedProcs();
+    std::vector<std::vector<std::size_t> > const& GhostIndices = Tess.GetGhostIndeces();
+    if(DuplicatedProcs.size() != GhostIndices.size())
+        LocalMappingIssues |= 4u;
+    for(std::size_t Peer = 0; Peer < DuplicatedProcs.size() && Peer < GhostIndices.size(); ++Peer)
+    {
+        if(DuplicatedProcs[Peer] < 0 || DuplicatedProcs[Peer] >= RankCount)
+            LocalMappingIssues |= 8u;
+        for(std::size_t const Ghost : GhostIndices[Peer])
+        {
+            if(Ghost >= PointOwner.size())
+            {
+                LocalMappingIssues |= 16u;
+                continue;
+            }
+            // SyncPartialBuildData applies duplicate lists in this order.
+            PointOwner[Ghost] = DuplicatedProcs[Peer];
+        }
+    }
+    for(std::size_t Point = 0; Point < MeshSize; ++Point)
+        if(Required[Point] != 0 && PointOwner[Point] < 0)
+            LocalMappingIssues |= 32u;
+
+    // Canonical cell of every target (the reference looks it up on every iteration).  A target without one is an
+    // error on every iteration, as in the reference, and is never scanned.
+    std::vector<std::size_t> TargetCanonical(TargetCount, NoIndex);
+    bool InvalidTarget = false;
+    for(std::size_t LocalI = 0; LocalI < TargetCount; ++LocalI)
+    {
+        auto const Mapped = LocalToGlobal.find(LocalI);
+        if(Mapped == LocalToGlobal.end() || Mapped->second >= StateCount)
+            InvalidTarget = true;
+        else
+            TargetCanonical[LocalI] = Mapped->second;
+    }
+
+    // For every mesh point, the scanned targets that list it as a neighbour.
+    std::vector<std::size_t> ReverseStart(MeshSize + 1, 0);
+    for(std::size_t Target = 0; Target < TargetCount; ++Target)
+        if(TargetCanonical[Target] != NoIndex)
+            for(std::size_t k = NeighborStart[Target]; k < NeighborStart[Target + 1]; ++k)
+                ++ReverseStart[NeighborList[k] + 1];
+    for(std::size_t Point = 0; Point < MeshSize; ++Point)
+        ReverseStart[Point + 1] += ReverseStart[Point];
+    std::vector<std::size_t> ReverseList(ReverseStart[MeshSize]);
+    {
+        std::vector<std::size_t> Cursor(ReverseStart.begin(), ReverseStart.end() - 1);
+        for(std::size_t Target = 0; Target < TargetCount; ++Target)
+            if(TargetCanonical[Target] != NoIndex)
+                for(std::size_t k = NeighborStart[Target]; k < NeighborStart[Target + 1]; ++k)
+                    ReverseList[Cursor[NeighborList[k]]++] = Target;
+    }
+
+    auto const ApplyRequest = [&](CellTimeState& State, std::uint8_t const RequestedBin)
+    {
+        if(RequestedBin == NoSource || State.time_bin <= RequestedBin)
+            return false;
+        noteLowering(1, State.begin_tick, EventTick, RequestedBin);
+        unsigned const OldBin = State.time_bin;
+        std::uint64_t const OldEnd = State.end_tick;
+        State.time_bin = RequestedBin;
+        State.end_tick = std::min(State.end_tick, binnedEndTick(State.begin_tick, EventTick, RequestedBin));
+        if(Split == nullptr || !Split->SuppressTrace)
+            TraceSchedulerMutation("closure", State.cell_id, EventTick, State.begin_tick, OldBin, RequestedBin,
+                OldEnd, State.end_tick);
+        if(CountsMode != 0)
+            NoteScheduleChange(static_cast<std::uint8_t>(OldBin), OldEnd, State);
+        if(Split != nullptr && Split->ExampleCellId == NoIndex)
+            Split->ExampleCellId = State.cell_id;
+        return true;
+    };
+
+    std::vector<std::uint8_t> CanonicalBins(StateCount);
+    std::vector<std::uint8_t> MeshBins;
+    std::vector<std::uint8_t> PreviousMeshBins;
+    std::vector<std::size_t> MeshIds;
+    std::vector<std::vector<std::size_t> > DuplicatedCanonical;
+    std::vector<std::uint8_t> TargetBins(TargetCount, 0);
+    std::vector<unsigned char> RescanMark(TargetCount, 0);
+    std::vector<std::size_t> Rescan;
+    std::vector<std::uint8_t> RequestedBins(StateCount, NoSource);
+    std::vector<std::size_t> Requested;
+    auto const Request = [&](std::size_t const Index, std::uint8_t const Bin)
+    {
+        if(RequestedBins[Index] == NoSource)
+            Requested.push_back(Index);
+        RequestedBins[Index] = std::min(RequestedBins[Index], Bin);
+    };
+    bool KeepIterating = true;
+    unsigned Iteration = 0;
+    while(KeepIterating)
+    {
+        if(Iteration++ > MaximumBin + 2)
+            throw std::logic_error("Individual timestep MPI neighbor-bin closure failed to converge");
+        // Each bin plus one: bins never exceed 62, so zero still marks an unfilled mesh entry.
+        for(std::size_t i = 0; i < StateCount; ++i)
+            CanonicalBins[i] = static_cast<std::uint8_t>(states_[i].time_bin + 1);
+        Rescan.clear();
+        if(Iteration == 1)
+        {
+            // The reference's sync, with its checks, carrying the stable IDs that remote requests name.
+            std::vector<FastClosureEntry> Canonical(StateCount);
+            for(std::size_t i = 0; i < StateCount; ++i)
+            {
+                Canonical[i].CellId = states_[i].cell_id;
+                Canonical[i].Bin = CanonicalBins[i];
+            }
+            double const SyncStart = ExchangeStart();
+            std::vector<FastClosureEntry> const Mesh = SyncCanonicalDataToMesh(Tess, LocalToGlobal, Canonical);
+            ExchangeStop(SyncStart);
+            MeshBins.resize(Mesh.size());
+            MeshIds.resize(Mesh.size());
+            for(std::size_t Point = 0; Point < Mesh.size(); ++Point)
+            {
+                MeshBins[Point] = Mesh[Point].Bin;
+                MeshIds[Point] = Mesh[Point].CellId;
+            }
+            for(std::size_t Point = 0; Point < MeshSize; ++Point)
+                if(Required[Point] != 0 && (Point >= MeshBins.size() || MeshBins[Point] == 0))
+                    LocalMappingIssues |= 64u;
+            unsigned MappingIssues = LocalMappingIssues;
+            double const MappingStart = ExchangeStart();
+            MPI_Allreduce(MPI_IN_PLACE, &MappingIssues, 1, MPI_UNSIGNED, MPI_BOR, MPI_COMM_WORLD);
+            ExchangeStop(MappingStart);
+            if(MappingIssues != 0)
+                throw std::logic_error(
+                    "Individual timestep MPI neighbor ownership mapping is inconsistent (issue mask " +
+                    std::to_string(MappingIssues) + ")");
+            // The canonical entries the sync sent to each peer, for the bin exchanges of later iterations.  The
+            // sync has checked every index on every rank.
+            std::vector<std::vector<std::size_t> > const& DuplicatedAllPoints = Tess.GetDuplicatedAllPointIndices();
+            DuplicatedCanonical.resize(DuplicatedAllPoints.size());
+            for(std::size_t Peer = 0; Peer < DuplicatedAllPoints.size(); ++Peer)
+            {
+                DuplicatedCanonical[Peer].reserve(DuplicatedAllPoints[Peer].size());
+                for(std::size_t const AllPoint : DuplicatedAllPoints[Peer])
+                    DuplicatedCanonical[Peer].push_back(Tess.GetInputIndexForAllPoint(AllPoint));
+            }
+            for(std::size_t Target = 0; Target < TargetCount; ++Target)
+                if(TargetCanonical[Target] != NoIndex)
+                {
+                    TargetBins[Target] = states_[TargetCanonical[Target]].time_bin;
+                    Rescan.push_back(Target);
+                }
+        }
+        else
+        {
+            // What the sync would produce: owned entries from the canonical bins, then ghosts from their owners.
+            PreviousMeshBins = MeshBins;
+            for(auto const& Mapping : LocalToGlobal)
+                MeshBins[Mapping.first] = CanonicalBins[Mapping.second];
+            double const SyncStart = ExchangeStart();
+            std::vector<std::vector<std::uint8_t> > const Incoming =
+                MPI_exchange_data_indexed(DuplicatedProcs, CanonicalBins, DuplicatedCanonical);
+            ExchangeStop(SyncStart);
+            for(std::size_t Peer = 0; Peer < Incoming.size(); ++Peer)
+                for(std::size_t j = 0; j < Incoming[Peer].size(); ++j)
+                    MeshBins[GhostIndices.at(Peer).at(j)] = Incoming[Peer][j];
+            std::fill(RescanMark.begin(), RescanMark.end(), static_cast<unsigned char>(0));
+            for(std::size_t Point = 0; Point < MeshSize; ++Point)
+            {
+                if(MeshBins[Point] == PreviousMeshBins[Point])
+                    continue;
+                if(Point < TargetCount)
+                    RescanMark[Point] = 1;
+                for(std::size_t k = ReverseStart[Point]; k < ReverseStart[Point + 1]; ++k)
+                    RescanMark[ReverseList[k]] = 1;
+            }
+            for(std::size_t Target = 0; Target < TargetCount; ++Target)
+            {
+                if(TargetCanonical[Target] == NoIndex)
+                    continue;
+                std::uint8_t const Bin = states_[TargetCanonical[Target]].time_bin;
+                if(Bin != TargetBins[Target])
+                {
+                    TargetBins[Target] = Bin;
+                    RescanMark[Target] = 1;
+                }
+                if(RescanMark[Target] != 0)
+                    Rescan.push_back(Target);
+            }
+        }
+
+        bool LocalRequestError = InvalidTarget;
+        std::vector<std::vector<NeighborBinRequest> > Outgoing(static_cast<std::size_t>(RankCount));
+        for(std::size_t const Target : Rescan)
+        {
+            std::size_t const i = TargetCanonical[Target];
+            unsigned const BinI = states_[i].time_bin;
+            std::uint8_t const LimitFromI =
+                static_cast<std::uint8_t>(std::min<unsigned>(MaximumBin, BinI + Difference));
+            for(std::size_t k = NeighborStart[Target]; k < NeighborStart[Target + 1]; ++k)
+            {
+                std::size_t const Neighbor = NeighborList[k];
+                std::uint8_t const Encoded = MeshBins[Neighbor];
+                if(Encoded == 0)
+                {
+                    LocalRequestError = true;
+                    continue;
+                }
+                unsigned const BinNeighbor = static_cast<unsigned>(Encoded) - 1;
+                std::uint8_t const LimitFromNeighbor =
+                    static_cast<std::uint8_t>(std::min<unsigned>(MaximumBin, BinNeighbor + Difference));
+                if(BinI > LimitFromNeighbor)
+                    Request(i, LimitFromNeighbor);
+                if(BinNeighbor <= LimitFromI)
+                    continue;
+                std::size_t const Mapped = MeshCanonical[Neighbor];
+                if(Mapped != NoIndex)
+                {
+                    if(Mapped >= StateCount)
+                    {
+                        LocalRequestError = true;
+                        continue;
+                    }
+                    Request(Mapped, LimitFromI);
+                    continue;
+                }
+                int const Owner = PointOwner[Neighbor];
+                if(Owner < 0 || Owner >= RankCount)
+                {
+                    LocalRequestError = true;
+                    continue;
+                }
+                NeighborBinRequest& Sent = Outgoing[static_cast<std::size_t>(Owner)].emplace_back();
+                Sent.cell_id = MeshIds[Neighbor];
+                Sent.maximum_bin = LimitFromI;
+            }
+        }
+
+        if(Split != nullptr)
+        {
+            ++Split->Iterations;
+            bool const HasOutgoing = std::any_of(Outgoing.begin(), Outgoing.end(),
+                [](std::vector<NeighborBinRequest> const& Requests) { return !Requests.empty(); });
+            Split->Outgoing.push_back(HasOutgoing ? 1.0 : 0.0);
+            if(Split->RecordRequests)
+                RecordClosureRequests(Split->Requests, Outgoing);
+        }
+        double const AllToAllStart = ExchangeStart();
+        std::vector<std::vector<NeighborBinRequest> > const Incoming =
+            MPI_Exchange_all_to_all(Outgoing, MPI_COMM_WORLD);
+        ExchangeStop(AllToAllStart);
+        for(auto const& RankRequests : Incoming)
+            for(NeighborBinRequest const& Received : RankRequests)
+            {
+                auto const Found = id_to_index_.find(Received.cell_id);
+                if(Found == id_to_index_.end())
+                {
+                    LocalRequestError = true;
+                    continue;
+                }
+                Request(Found->second, Received.maximum_bin);
+            }
+
+        // The reference applies in ascending canonical order; only requested cells can change.
+        std::sort(Requested.begin(), Requested.end());
+        bool LocallyChanged = false;
+        for(std::size_t const Index : Requested)
+        {
+            LocallyChanged = ApplyRequest(states_[Index], RequestedBins[Index]) || LocallyChanged;
+            RequestedBins[Index] = NoSource;
+        }
+        Requested.clear();
+
+        // The reference's error and changed reductions, in one.
+        int Flags[2] = {LocalRequestError ? 1 : 0, LocallyChanged ? 1 : 0};
+        double const FlagsStart = ExchangeStart();
+        MPI_Allreduce(MPI_IN_PLACE, Flags, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+        ExchangeStop(FlagsStart);
+        if(Flags[0] != 0)
+            throw std::logic_error("Individual timestep MPI neighbor-bin request mapping failed");
+        KeepIterating = Flags[1] != 0;
+    }
+}
+
+void IndividualTimeStepScheduler::VerifyFastNeighborClosure(const Tessellation3D& Tess,
+    const std::vector<ComputationalCell3D>& Cells, std::uint64_t const EventTick,
+    const std::vector<std::uint8_t>& PropagationBins, ClosureSplit* Split)
+{
+    // Everything a full closure can change: states, lowering diagnostics, tracked counts.
+    std::vector<CellTimeState> const SavedStates = states_;
+    std::uint64_t SavedLowered[4];
+    std::uint64_t SavedOverdue[4];
+    double SavedRatio[4];
+    std::copy(lowered_, lowered_ + 4, SavedLowered);
+    std::copy(lowered_overdue_, lowered_overdue_ + 4, SavedOverdue);
+    std::copy(lowered_worst_ratio_, lowered_worst_ratio_ + 4, SavedRatio);
+    std::array<std::uint64_t, 256> const SavedBins = BinOccupancy;
+    std::map<std::uint64_t, std::uint64_t> const SavedEnds = EndTickOccupancy;
+
+    ClosureSplit FastSplit;
+    FastSplit.RecordRequests = true;
+    FastSplit.SuppressTrace = true;
+    double const FastStart = D2Now();
+    LimitNeighborBinsFast(Tess, Cells, EventTick, PropagationBins, &FastSplit);
+    double const FastSeconds = D2Now() - FastStart;
+    std::vector<CellTimeState> FastStates;
+    FastStates.swap(states_);
+    states_ = SavedStates;
+    std::uint64_t FastLowered[4];
+    std::uint64_t FastOverdue[4];
+    double FastRatio[4];
+    std::copy(lowered_, lowered_ + 4, FastLowered);
+    std::copy(lowered_overdue_, lowered_overdue_ + 4, FastOverdue);
+    std::copy(lowered_worst_ratio_, lowered_worst_ratio_ + 4, FastRatio);
+    std::copy(SavedLowered, SavedLowered + 4, lowered_);
+    std::copy(SavedOverdue, SavedOverdue + 4, lowered_overdue_);
+    std::copy(SavedRatio, SavedRatio + 4, lowered_worst_ratio_);
+    std::array<std::uint64_t, 256> const FastBins = BinOccupancy;
+    std::map<std::uint64_t, std::uint64_t> const FastEnds = EndTickOccupancy;
+    BinOccupancy = SavedBins;
+    EndTickOccupancy = SavedEnds;
+
+    // The reference result is the one kept.
+    ClosureSplit LocalSplit;
+    ClosureSplit& Reference = Split != nullptr ? *Split : LocalSplit;
+    Reference.RecordRequests = true;
+    double const ReferenceStart = D2Now();
+    LimitNeighborBinsReference(Tess, Cells, EventTick, PropagationBins, true, &Reference);
+    double const ReferenceSeconds = D2Now() - ReferenceStart;
+
+    std::ostringstream Mismatch;
+    std::uint64_t ComparedRequests = 0;
+    if(FastSplit.Iterations != Reference.Iterations || FastSplit.Requests.size() != Reference.Requests.size())
+        Mismatch << "kind=iterations fast=" << FastSplit.Iterations << " reference=" << Reference.Iterations;
+    for(std::size_t k = 0; Mismatch.tellp() == 0 && k < Reference.Requests.size(); ++k)
+    {
+        auto const& FastIteration = FastSplit.Requests[k];
+        auto const& ReferenceIteration = Reference.Requests[k];
+        for(std::size_t Destination = 0; Mismatch.tellp() == 0 && Destination < ReferenceIteration.size();
+            ++Destination)
+        {
+            auto const& FastList = FastIteration.at(Destination);
+            auto const& ReferenceList = ReferenceIteration[Destination];
+            ComparedRequests += ReferenceList.size();
+            for(std::size_t r = 0; r < std::max(FastList.size(), ReferenceList.size()); ++r)
+                if(r >= FastList.size() || r >= ReferenceList.size() || FastList[r] != ReferenceList[r])
+                {
+                    Mismatch << "kind=request iteration=" << k + 1 << " destination=" << Destination
+                             << " position=" << r << " fast_count=" << FastList.size()
+                             << " reference_count=" << ReferenceList.size();
+                    if(r < FastList.size())
+                        Mismatch << " fast_cell_id=" << FastList[r].first
+                                 << " fast_bin=" << unsigned(FastList[r].second);
+                    if(r < ReferenceList.size())
+                        Mismatch << " reference_cell_id=" << ReferenceList[r].first
+                                 << " reference_bin=" << unsigned(ReferenceList[r].second);
+                    break;
+                }
+        }
+    }
+    if(Mismatch.tellp() == 0 && FastStates.size() != states_.size())
+        Mismatch << "kind=state_count fast=" << FastStates.size() << " reference=" << states_.size();
+    for(std::size_t i = 0; Mismatch.tellp() == 0 && i < states_.size(); ++i)
+    {
+        CellTimeState const& Fast = FastStates[i];
+        CellTimeState const& Kept = states_[i];
+        if(Fast.cell_id != Kept.cell_id || Fast.time_bin != Kept.time_bin || Fast.end_tick != Kept.end_tick ||
+           Fast.begin_tick != Kept.begin_tick || Fast.pending_neighbor_bin != Kept.pending_neighbor_bin)
+            Mismatch << "kind=state cell_id=" << Kept.cell_id << " fast_bin=" << unsigned(Fast.time_bin)
+                     << " reference_bin=" << unsigned(Kept.time_bin) << " fast_end=" << Fast.end_tick
+                     << " reference_end=" << Kept.end_tick << " fast_pending=" << unsigned(Fast.pending_neighbor_bin)
+                     << " reference_pending=" << unsigned(Kept.pending_neighbor_bin);
+    }
+    for(int Cause = 0; Mismatch.tellp() == 0 && Cause < 4; ++Cause)
+        if(FastLowered[Cause] != lowered_[Cause] || FastOverdue[Cause] != lowered_overdue_[Cause] ||
+           std::memcmp(&FastRatio[Cause], &lowered_worst_ratio_[Cause], sizeof(double)) != 0)
+            Mismatch << "kind=lowering cause=" << Cause << " fast_lowered=" << FastLowered[Cause]
+                     << " reference_lowered=" << lowered_[Cause];
+    if(Mismatch.tellp() == 0 && CountsMode != 0 && (FastBins != BinOccupancy || FastEnds != EndTickOccupancy))
+        Mismatch << "kind=schedule_counts";
+    if(Mismatch.tellp() != 0)
+    {
+        std::cerr << "RICH_CLOSURE_FAST_MISMATCH rank=" << WorldRank() << " event_tick=" << EventTick << " "
+                  << Mismatch.str() << std::endl;
+        MPI_Abort(MPI_COMM_WORLD, 98);
+    }
+
+    // Rank 0: one line per verified closure, with both timings (rank maximum, mean, rank of the maximum).
+    constexpr int TimerCount = 4;
+    char const* const Names[TimerCount] = {"reference", "fast", "fast_local", "fast_exchange"};
+    double const Timers[TimerCount] = {ReferenceSeconds, FastSeconds,
+                                       std::max(0.0, FastSplit.TotalSeconds - FastSplit.ExchangeSeconds),
+                                       FastSplit.ExchangeSeconds};
+    int const Rank = WorldRank();
+    int RankCount = 1;
+    MPI_Comm_size(MPI_COMM_WORLD, &RankCount);
+    struct
+    {
+        double Value;
+        int Rank;
+    } Maxima[TimerCount];
+    for(int k = 0; k < TimerCount; ++k)
+    {
+        Maxima[k].Value = Timers[k];
+        Maxima[k].Rank = Rank;
+    }
+    double Sums[TimerCount + 2] = {Timers[0], Timers[1], Timers[2], Timers[3], static_cast<double>(ComparedRequests),
+                                   static_cast<double>(states_.size())};
+    MPI_Allreduce(MPI_IN_PLACE, Maxima, TimerCount, MPI_DOUBLE_INT, MPI_MAXLOC, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, Sums, TimerCount + 2, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    if(Rank != 0)
+        return;
+    std::ostringstream Line;
+    Line << std::setprecision(6) << "RICH_D2_CLOSURE_FAST event_tick=" << EventTick << " iterations="
+         << Reference.Iterations << " requests_compared=" << static_cast<std::uint64_t>(Sums[TimerCount])
+         << " states_compared=" << static_cast<std::uint64_t>(Sums[TimerCount + 1]) << " mismatches=0";
+    for(int k = 0; k < TimerCount; ++k)
+        Line << " " << Names[k] << "_s_max=" << Maxima[k].Value << " " << Names[k] << "_s_mean=" << Sums[k] / RankCount
+             << " " << Names[k] << "_s_rank=" << Maxima[k].Rank;
+    std::cout << Line.str() << std::endl;
+}
+#endif

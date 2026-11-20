@@ -28,6 +28,7 @@
 #ifdef RICH_MPI
 #include <MeshDecomposer3D/load_balancing/HilbertLoadBalancer.hpp>
 #include <mpi_utils/mpi_alltoall.hpp>
+#include <mpi_utils/mpi_exchange.hpp>
 #include <spatial_ds/DistributedOctTree/DistributedOctTree.hpp>
 #include <sys/resource.h>
 #include <unistd.h>
@@ -70,6 +71,219 @@ double IndividualBinAnchorMargin()
         return parsed;
     }();
     return margin;
+}
+
+// Switches of the s49 scheduler stream.  All default to 0, the s48 path; unset or empty means 0, any other value
+// than the listed ones aborts.
+//   RICH_D2_TIMERS                          0/1    rank 0 prints one RICH_D2_SCH timer line per individual event
+//   RICH_INDIVIDUAL_LAZY_GENERATORS         0/1/2  1: no generator copy before the AMR callback (AMR3D builds it when
+//                                                  it runs a pass); 2: eager copy, AMR3D recomputes and compares
+//   RICH_INDIVIDUAL_SKIP_UNREAD_REDUCTIONS  0/1    skip reductions whose results nothing reads
+//   RICH_STEP_REPORT_FUSED                  0/1/2  step-report maxima and trace gathers fused (2: both, compared)
+//   RICH_INDIVIDUAL_WAKE_SUMMARY_VECTOR     0/1/2  wake node summaries in a pre-order vector (2: both, compared)
+//   RICH_INDIVIDUAL_REANCHOR                0/2    re-anchor shadow (1 is reserved for the acting rule)
+//   RICH_INDIVIDUAL_ACTIVE_HILBERT_SEGMENT_WORK_AUTO  0/1  the segmented-ownership ledger chooses the segment work
+//                                                  weight of each new plan from measured wall time (s50)
+//   RICH_INDIVIDUAL_ACTIVE_HILBERT_TARGET_PLAN  0/1/2  1: count each owned cell's final event-mesh target memberships
+//                                                  and score a target-weighted interleave beside every segmented
+//                                                  plan (RICH_TARGET_PLAN_SHADOW); 2: the ledger installs it (s53)
+// One MPI_Allreduce on first use, which must be collective (stepIndividual calls it at every event entry).
+struct SchSwitches
+{
+    int D2Timers = 0;
+    int LazyGenerators = 0;
+    int SkipUnreadReductions = 0;
+    int StepReportFused = 0;
+    int WakeSummaryVector = 0;
+    int Reanchor = 0;
+    int SegmentWorkAuto = 0;
+    int TargetPlan = 0;
+};
+
+// -1: not an allowed value; -2: a reserved value.
+int ParseSchSwitch(char const* Name, std::vector<int> const& Allowed, int Reserved)
+{
+    char const* const Value = std::getenv(Name);
+    if(Value == nullptr || Value[0] == '\0')
+        return 0;
+    if(Reserved >= 0 && std::to_string(Reserved) == Value)
+        return -2;
+    for(int const Candidate : Allowed)
+        if(std::to_string(Candidate) == Value)
+            return Candidate;
+    return -1;
+}
+
+SchSwitches const& AgreedSchSwitches(void)
+{
+    static SchSwitches const Switches = []()
+    {
+        struct Entry
+        {
+            char const* Name;
+            std::vector<int> Allowed;
+            int Reserved;
+            char const* Values;
+        };
+        std::array<Entry, 8> const Entries{{
+            {"RICH_D2_TIMERS", {0, 1}, -1, "0 or 1"},
+            {"RICH_INDIVIDUAL_LAZY_GENERATORS", {0, 1, 2}, -1, "0, 1 or 2"},
+            {"RICH_INDIVIDUAL_SKIP_UNREAD_REDUCTIONS", {0, 1}, -1, "0 or 1"},
+            {"RICH_STEP_REPORT_FUSED", {0, 1, 2}, -1, "0, 1 or 2"},
+            {"RICH_INDIVIDUAL_WAKE_SUMMARY_VECTOR", {0, 1, 2}, -1, "0, 1 or 2"},
+            {"RICH_INDIVIDUAL_REANCHOR", {0, 2}, 1, "0 or 2 (1 is reserved)"},
+            {"RICH_INDIVIDUAL_ACTIVE_HILBERT_SEGMENT_WORK_AUTO", {0, 1}, -1, "0 or 1"},
+            {"RICH_INDIVIDUAL_ACTIVE_HILBERT_TARGET_PLAN", {0, 1, 2}, -1, "0, 1 or 2"}}};
+        std::array<int, 2 * Entries.size()> Extrema{};
+        for(std::size_t Index = 0; Index < Entries.size(); ++Index)
+        {
+            int const Local = ParseSchSwitch(Entries[Index].Name, Entries[Index].Allowed, Entries[Index].Reserved);
+            Extrema[2 * Index] = Local;
+            Extrema[2 * Index + 1] = -Local;
+        }
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, Extrema.data(), static_cast<int>(Extrema.size()), MPI_INT, MPI_MAX,
+                      MPI_COMM_WORLD);
+#endif
+        std::array<int, Entries.size()> Values{};
+        for(std::size_t Index = 0; Index < Entries.size(); ++Index)
+        {
+            if(Extrema[2 * Index] != -Extrema[2 * Index + 1])
+                throw std::invalid_argument(std::string(Entries[Index].Name) + " differs across MPI ranks");
+            if(Extrema[2 * Index] < 0)
+                throw std::invalid_argument(std::string(Entries[Index].Name) + " must be " + Entries[Index].Values);
+            Values[Index] = Extrema[2 * Index];
+        }
+        SchSwitches Result;
+        Result.D2Timers = Values[0];
+        Result.LazyGenerators = Values[1];
+        Result.SkipUnreadReductions = Values[2];
+        Result.StepReportFused = Values[3];
+        Result.WakeSummaryVector = Values[4];
+        Result.Reanchor = Values[5];
+        Result.SegmentWorkAuto = Values[6];
+        Result.TargetPlan = Values[7];
+        return Result;
+    }();
+    return Switches;
+}
+
+// Clock of the s49 diagnostics (MPI_Wtime under MPI).
+double D2Now(void)
+{
+#ifdef RICH_MPI
+    return MPI_Wtime();
+#else
+    return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+#endif
+}
+
+int D2Rank(void)
+{
+    int Rank = 0;
+#ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+#endif
+    return Rank;
+}
+
+bool SameBits(double const Left, double const Right)
+{
+    return std::memcmp(&Left, &Right, sizeof(double)) == 0;
+}
+
+// Verify mode (value 2) of an s49 switch: total mismatches and comparisons over all ranks; the lowest rank with a
+// mismatch prints its example and every rank throws.  Rank 0 prints a coverage line every 128 verified calls.
+// Collective (two reductions).
+void RequireNoS49Mismatch(char const* const Switch, unsigned long long const LocalMismatches,
+                          unsigned long long const LocalCompared, std::string const& LocalExample)
+{
+    static std::map<std::string, std::pair<unsigned long long, unsigned long long>> Coverage;
+    unsigned long long Totals[2] = {LocalMismatches, LocalCompared};
+    int FirstRank = LocalMismatches > 0 ? D2Rank() : std::numeric_limits<int>::max();
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, Totals, 2, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    MPI_Allreduce(MPI_IN_PLACE, &FirstRank, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+#endif
+    if(Totals[0] > 0)
+    {
+        if(D2Rank() == FirstRank)
+            std::cerr << "RICH_S49_VERIFY_MISMATCH switch=" << Switch << " mismatches=" << Totals[0]
+                      << " compared=" << Totals[1] << " rank=" << FirstRank << " example: " << LocalExample
+                      << std::endl;
+        throw std::runtime_error(std::string(Switch) + "=2: the new path differs from the old one");
+    }
+    std::pair<unsigned long long, unsigned long long>& Entry = Coverage[Switch];
+    ++Entry.first;
+    Entry.second += Totals[1];
+    if(D2Rank() == 0 && Entry.first % 128 == 1)
+        std::cout << "RICH_S49_VERIFY switch=" << Switch << " calls=" << Entry.first << " compared=" << Entry.second
+                  << " mismatches=0" << std::endl;
+}
+
+// Parts of an individual event timed under RICH_D2_TIMERS=1.  The AMR block (individual-amr): the generator copy,
+// the driver's AMR callback, the neighbour-bin closure or applyAMRChangeSet, the rest of the block, and the block.
+// The wake limiter: its whole call, then its sub-phases; wake_tree_insert and wake_summaries split
+// individual-wake-tree-local, and wake_tree_other is the tree phase less its timed parts (extent and count
+// reductions).  apply_change_set (s50) is applyAMRChangeSet alone, 0 when no rank changed anything (closure keeps
+// covering applyAMRChangeSet or enforceNeighborBinClosure, as in s49).
+enum D2SchPart : std::size_t
+{
+    D2GeneratorCopy, D2AmrCallback, D2Closure, D2AmrRest, D2AmrTotal, D2WakeTotal, D2WakePrepare, D2WakeSources,
+    D2WakeTreeInsert, D2WakeSummaries, D2WakeRoutingTree, D2WakeReuseCheck, D2WakeReuseReduce, D2WakeTreeOther,
+    D2WakeLocalEval, D2WakeRoute, D2WakeExchange, D2WakeRemote, D2ApplyChangeSet, D2SchPartCount
+};
+
+char const* const D2SchPartNames[D2SchPartCount] = {"gen_copy", "amr_callback", "closure", "amr_rest", "amr_total",
+    "wake_total", "wake_prepare", "wake_sources", "wake_tree_insert", "wake_summaries", "wake_routing_tree",
+    "wake_reuse_check", "wake_reuse_reduce", "wake_tree_other", "wake_local_eval", "wake_route", "wake_exchange",
+    "wake_remote", "apply_change_set"};
+
+// One RICH_D2_SCH line per event on rank 0: rank maximum, mean and the rank of the maximum of every part.
+// Collective (one MPI_Gather).
+void ReportD2SchEvent(std::size_t const Cycle, std::uint64_t const EventTick, double const Time,
+    std::uint64_t const Active, std::uint64_t const Total, bool const AmrApplied, int const LazyGenerators,
+    std::array<double, D2SchPartCount> const& Seconds)
+{
+    int const Rank = D2Rank();
+    int RankCount = 1;
+#ifdef RICH_MPI
+    MPI_Comm_size(MPI_COMM_WORLD, &RankCount);
+#endif
+    std::size_t const Parts = Seconds.size();
+    std::vector<double> Gathered(Rank == 0 ? Parts * static_cast<std::size_t>(RankCount) : 0);
+#ifdef RICH_MPI
+    MPI_Gather(Seconds.data(), static_cast<int>(Parts), MPI_DOUBLE, Rank == 0 ? Gathered.data() : nullptr,
+               static_cast<int>(Parts), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+#else
+    std::copy(Seconds.begin(), Seconds.end(), Gathered.begin());
+#endif
+    if(Rank != 0)
+        return;
+    std::ostringstream Line;
+    Line << std::setprecision(12) << "RICH_D2_SCH cycle=" << Cycle << " event_tick=" << EventTick << " time=" << Time
+         << std::setprecision(6) << " active=" << Active << " total=" << Total << " partial="
+         << (Active < Total ? 1 : 0) << " amr_applied=" << (AmrApplied ? 1 : 0) << " lazy_generators="
+         << LazyGenerators;
+    for(std::size_t Part = 0; Part < Parts; ++Part)
+    {
+        double Maximum = -std::numeric_limits<double>::infinity();
+        double Sum = 0;
+        int MaximumRank = 0;
+        for(int Source = 0; Source < RankCount; ++Source)
+        {
+            double const Value = Gathered[static_cast<std::size_t>(Source) * Parts + Part];
+            Sum += Value;
+            if(Value > Maximum)
+            {
+                Maximum = Value;
+                MaximumRank = Source;
+            }
+        }
+        Line << ' ' << D2SchPartNames[Part] << "_max=" << Maximum << ' ' << D2SchPartNames[Part] << "_mean="
+             << Sum / RankCount << ' ' << D2SchPartNames[Part] << "_rank=" << MaximumRank;
+    }
+    std::cout << Line.str() << std::endl;
 }
 
 void requireIndividualTimeStepSupport(PhysicsStep const& physics_step)
@@ -329,6 +543,8 @@ struct IndividualFullSourceSweepReport
     // and the distributed routing tree when it is rebuilt.
     double tree_local_seconds = 0;
     double tree_distributed_seconds = 0;
+    // Part of tree_local_seconds spent on the node summaries (RICH_D2_TIMERS=1 only, else 0).
+    double TreeSummarySeconds = 0;
     // The reuse test (every own source against the cached regions) and the
     // MPI_MAX of its escape, which also absorbs waiting for the slowest rank.
     double tree_reuse_check_seconds = 0;
@@ -584,6 +800,147 @@ void evaluateIndividualWakeSource(
         remaining_sleep, minimum_wake_time, signal_wake_deadlines);
 }
 
+// Wake node summaries indexed by a wake-local pre-order slot (RICH_INDIVIDUAL_WAKE_SUMMARY_VECTOR): slot k belongs
+// to the k-th non-null node of a pre-order walk over node->children, and SubtreeSlots[k] counts the slots of its
+// subtree, so a pruned subtree is skipped whole.  OctTree node IDs are left alone (GravityTree reads them).
+struct IndividualWakeSlotSummaries
+{
+    std::vector<IndividualWakeNodeSummary> Summaries;
+    std::vector<std::size_t> SubtreeSlots;
+};
+
+// The same merges in the same order as buildIndividualWakeNodeSummaries, so every summary has the same bits.
+IndividualWakeNodeSummary BuildIndividualWakeSlotSummaries(IndividualSignalTreeNode const* const Node,
+    std::vector<IndividualSignalSource> const& Sources, std::vector<double> const& RemainingSleep,
+    IndividualWakeSlotSummaries& Slots)
+{
+    IndividualWakeNodeSummary Result;
+    if(Node == nullptr)
+        return Result;
+    std::size_t const Slot = Slots.Summaries.size();
+    Slots.Summaries.emplace_back();
+    Slots.SubtreeSlots.push_back(1);
+    if(Node->isLeaf) {
+        std::size_t const TargetIndex = Node->value.source_index;
+        if(TargetIndex >= Sources.size() || TargetIndex >= RemainingSleep.size())
+            throw std::out_of_range("invalid target index in individual wake tree");
+        if(RemainingSleep[TargetIndex] > 0) {
+            Result.target_bounds = individualSignalLeafSummary(Sources[TargetIndex]);
+            Result.maximum_remaining_sleep = RemainingSleep[TargetIndex];
+        }
+    }
+    else
+        for(IndividualSignalTreeNode const* const Child : Node->children)
+            mergeIndividualWakeNodeSummary(Result, BuildIndividualWakeSlotSummaries(Child, Sources, RemainingSleep,
+                                                                                    Slots));
+    Slots.Summaries[Slot] = Result;
+    Slots.SubtreeSlots[Slot] = Slots.Summaries.size() - Slot;
+    return Result;
+}
+
+// evaluateIndividualWakeNode with the slot summaries: the same nodes are visited in the same order.
+void EvaluateIndividualWakeSlot(IndividualWakeSource const& Source, IndividualSignalSource const& SourceState,
+    IndividualSignalTreeNode const* const Node, std::size_t const Slot, IndividualWakeSlotSummaries const& Slots,
+    std::vector<IndividualSignalSource> const& Targets, std::vector<double> const& RemainingSleep,
+    double const MinimumWakeTime, std::vector<double>& SignalWakeDeadlines)
+{
+    if(Node == nullptr)
+        return;
+    if(Slot >= Slots.Summaries.size())
+        throw std::logic_error("missing node summary in individual wake tree");
+    if(!individualWakeNodeCanBeReached(Source, *Node, Slots.Summaries[Slot]))
+        return;
+
+    if(Node->isLeaf)
+    {
+        std::size_t const TargetIndex = Node->value.source_index;
+        if(TargetIndex >= Targets.size() || TargetIndex >= RemainingSleep.size() ||
+           TargetIndex >= SignalWakeDeadlines.size())
+            throw std::out_of_range("invalid target index in individual wake tree");
+        if(RemainingSleep[TargetIndex] <= 0)
+            return;
+        if(Targets[TargetIndex].cell_id == Source.cell_id)
+            return;
+
+        double TargetDeadline = RemainingSleep[TargetIndex];
+        if(std::isfinite(SignalWakeDeadlines[TargetIndex]))
+            TargetDeadline = std::min(TargetDeadline, SignalWakeDeadlines[TargetIndex]);
+        IndividualSignalQuery const Target = makeIndividualSignalQuery(Targets[TargetIndex], TargetDeadline);
+        double const ArrivalTime = individualPairSignalTimeStep(Target, SourceState, MinimumWakeTime);
+        if(ArrivalTime < TargetDeadline)
+            SignalWakeDeadlines[TargetIndex] = std::min(SignalWakeDeadlines[TargetIndex], ArrivalTime);
+        return;
+    }
+
+    std::size_t ChildSlot = Slot + 1;
+    for(IndividualSignalTreeNode const* const Child : Node->children)
+    {
+        if(Child == nullptr)
+            continue;
+        EvaluateIndividualWakeSlot(Source, SourceState, Child, ChildSlot, Slots, Targets, RemainingSleep,
+                                   MinimumWakeTime, SignalWakeDeadlines);
+        ChildSlot += Slots.SubtreeSlots[ChildSlot];
+    }
+}
+
+void EvaluateIndividualWakeSourceSlots(IndividualWakeSource const& Source, IndividualSignalTree const& Tree,
+    IndividualWakeSlotSummaries const& Slots, std::vector<IndividualSignalSource> const& Targets,
+    std::vector<double> const& RemainingSleep, double const MinimumWakeTime,
+    std::vector<double>& SignalWakeDeadlines)
+{
+    IndividualSignalSource const SourceState = individualWakeSourceState(Source);
+    EvaluateIndividualWakeSlot(Source, SourceState, Tree.getRoot(), 0, Slots, Targets, RemainingSleep,
+                               MinimumWakeTime, SignalWakeDeadlines);
+}
+
+bool SameIndividualWakeNodeSummary(IndividualWakeNodeSummary const& Left, IndividualWakeNodeSummary const& Right)
+{
+    if(Left.target_bounds.has_source != Right.target_bounds.has_source ||
+       !SameBits(Left.target_bounds.maximum_sound_speed, Right.target_bounds.maximum_sound_speed) ||
+       !SameBits(Left.maximum_remaining_sleep, Right.maximum_remaining_sleep))
+        return false;
+    for(std::size_t Dimension = 0; Dimension < 3; ++Dimension)
+        if(!SameBits(Left.target_bounds.minimum_velocity[Dimension], Right.target_bounds.minimum_velocity[Dimension]) ||
+           !SameBits(Left.target_bounds.maximum_velocity[Dimension], Right.target_bounds.maximum_velocity[Dimension]))
+            return false;
+    return true;
+}
+
+// Walks the tree in slot order and compares every slot summary with the map's, and each subtree's slot count with
+// the slots its children used.  Returns the next free slot; counts compared nodes and mismatches.
+std::size_t CompareIndividualWakeSlotSummaries(IndividualSignalTreeNode const* const Node, std::size_t const Slot,
+    IndividualWakeNodeSummaries const& Map, IndividualWakeSlotSummaries const& Slots,
+    unsigned long long& Compared, unsigned long long& Mismatches, std::string& Example)
+{
+    if(Node == nullptr)
+        return Slot;
+    ++Compared;
+    auto const Found = Map.find(Node);
+    if(Slot >= Slots.Summaries.size() || Found == Map.end())
+    {
+        if(Mismatches++ == 0)
+            Example = "node without a summary at slot " + std::to_string(Slot);
+        return Slot + 1;
+    }
+    if(!SameIndividualWakeNodeSummary(Found->second, Slots.Summaries[Slot]) && Mismatches++ == 0)
+    {
+        std::ostringstream Text;
+        Text << std::setprecision(17) << "slot " << Slot << " leaf=" << (Node->isLeaf ? 1 : 0) << " map(sleep="
+             << Found->second.maximum_remaining_sleep << ",cs=" << Found->second.target_bounds.maximum_sound_speed
+             << ") vector(sleep=" << Slots.Summaries[Slot].maximum_remaining_sleep << ",cs="
+             << Slots.Summaries[Slot].target_bounds.maximum_sound_speed << ")";
+        Example = Text.str();
+    }
+    std::size_t Next = Slot + 1;
+    if(!Node->isLeaf)
+        for(IndividualSignalTreeNode const* const Child : Node->children)
+            Next = CompareIndividualWakeSlotSummaries(Child, Next, Map, Slots, Compared, Mismatches, Example);
+    if(Next - Slot != Slots.SubtreeSlots[Slot] && Mismatches++ == 0)
+        Example = "slot " + std::to_string(Slot) + " subtree count " + std::to_string(Slots.SubtreeSlots[Slot]) +
+            " against " + std::to_string(Next - Slot) + " visited";
+    return Next;
+}
+
 #ifdef RICH_MPI
 double individualWakeQueryRadius(
     IndividualWakeSource const& source,
@@ -606,6 +963,31 @@ double individualWakeQueryRadius(
 }
 #endif
 
+// Adaptive wake routing (RICH_INDIVIDUAL_WAKE_ROUTING_REUSE=2; default 0):
+// reusing the cached routing tree with widened queries and rebuilding it give
+// the same wakes (a widened query only adds candidate ranks; the receiving
+// rank tests the true distance), so the choice is cost only.  Each mode keeps
+// a running mean of the slowest rank's wake time; the cheaper one is used and
+// the other is sampled again after 64 calls.  The previous call's time
+// travels in the escape reduction, so every rank decides identically.
+struct WakeRoutingAdaptiveState
+{
+    double PendingLocalSeconds = -1;
+    int PendingMode = -1;
+    int ModeThisCall = -1;
+    bool RoutedThisCall = false;
+    double MeanSeconds[2] = {-1, -1};
+    std::uint64_t Calls = 0;
+    std::uint64_t LastSampleCall[2] = {0, 0};
+    std::uint64_t Uses[2] = {0, 0};
+};
+
+WakeRoutingAdaptiveState& WakeRoutingAdaptive()
+{
+    static WakeRoutingAdaptiveState State;
+    return State;
+}
+
 IndividualFullSourceSweepReport limitIndividualTreeWakeTimeSteps(
     IndividualStepContext const& context,
     Tessellation3D const& tess,
@@ -619,6 +1001,20 @@ IndividualFullSourceSweepReport limitIndividualTreeWakeTimeSteps(
     std::uint64_t const full_source_sweep_interval_minimum_steps)
 {
     auto const wake_start = std::chrono::steady_clock::now();
+    bool const OverdueNominal = IndividualOverdueActivationNominal();
+#ifdef RICH_MPI
+    // Every rank enters this function at every event: check once that the
+    // overdue-activation switch is one value on every rank.
+    static bool const OverdueAgreementChecked = [OverdueNominal]()
+    {
+        int Extrema[2] = {OverdueNominal ? 1 : 0, OverdueNominal ? -1 : 0};
+        MPI_Allreduce(MPI_IN_PLACE, Extrema, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+        if(Extrema[0] != -Extrema[1])
+            throw std::invalid_argument("RICH_INDIVIDUAL_OVERDUE_ACTIVATION_NOMINAL differs between ranks");
+        return true;
+    }();
+    (void)OverdueAgreementChecked;
+#endif
     IndividualFullSourceSweepReport report;
     bool hydrodynamic_signal = false;
     std::vector<Vector3D> cell_centroids;
@@ -670,7 +1066,7 @@ IndividualFullSourceSweepReport limitIndividualTreeWakeTimeSteps(
             std::uint64_t const physical_ticks =
                 std::uint64_t(1) << source_state.time_bin;
             if(source_state.end_tick == context.event_tick &&
-               completed_ticks == physical_ticks)
+               (OverdueNominal ? completed_ticks >= physical_ticks : completed_ticks == physical_ticks))
                 signal_source_indices.push_back(source_index);
         }
 
@@ -1023,10 +1419,46 @@ IndividualFullSourceSweepReport limitIndividualTreeWakeTimeSteps(
         source_index < sources.size(); ++source_index)
         local_tree.insert(IndividualSignalTreePoint(
             sources[source_index].position, source_index));
+    // Mode 0 builds the map only, mode 1 the slot vector only, mode 2 both (the map is used, the vector compared).
+    // The switch is agreed at every event entry, so every rank takes the same branch.
+    int const SummaryVectorMode = AgreedSchSwitches().WakeSummaryVector;
+    bool const D2Timers = AgreedSchSwitches().D2Timers != 0;
+    double const SummaryStart = D2Timers ? D2Now() : 0;
     IndividualWakeNodeSummaries local_wake_node_summaries;
-    buildIndividualWakeNodeSummaries(
-        local_tree.getRoot(), sources, remaining_sleep,
-        local_wake_node_summaries);
+    if(SummaryVectorMode != 1)
+        buildIndividualWakeNodeSummaries(local_tree.getRoot(), sources, remaining_sleep, local_wake_node_summaries);
+    IndividualWakeSlotSummaries LocalWakeSlots;
+    if(SummaryVectorMode != 0)
+    {
+        // A hint only: an octree over N points usually has fewer than 2N nodes.
+        LocalWakeSlots.Summaries.reserve(2 * sources.size() + 1);
+        LocalWakeSlots.SubtreeSlots.reserve(2 * sources.size() + 1);
+        BuildIndividualWakeSlotSummaries(local_tree.getRoot(), sources, remaining_sleep, LocalWakeSlots);
+    }
+    if(D2Timers)
+        report.TreeSummarySeconds = D2Now() - SummaryStart;
+    if(SummaryVectorMode == 2)
+    {
+        unsigned long long Compared = 0;
+        unsigned long long Mismatches = 0;
+        std::string Example;
+        std::size_t const Used = CompareIndividualWakeSlotSummaries(local_tree.getRoot(), 0,
+            local_wake_node_summaries, LocalWakeSlots, Compared, Mismatches, Example);
+        if((Used != LocalWakeSlots.Summaries.size() || Used != local_wake_node_summaries.size()) &&
+           Mismatches++ == 0)
+            Example = "slot count " + std::to_string(LocalWakeSlots.Summaries.size()) + ", map size " +
+                std::to_string(local_wake_node_summaries.size()) + ", visited " + std::to_string(Used);
+        RequireNoS49Mismatch("RICH_INDIVIDUAL_WAKE_SUMMARY_VECTOR", Mismatches, Compared, Example);
+    }
+    // Mode 2 also evaluates every source with the slot summaries into a copy of the deadlines, compared at the end.
+    std::vector<double> SlotWakeDeadlines;
+    if(SummaryVectorMode == 2)
+        SlotWakeDeadlines = signal_wake_deadlines;
+    auto EvaluateWithSlots = [&](IndividualWakeSource const& WakeSource)
+    {
+        EvaluateIndividualWakeSourceSlots(WakeSource, local_tree, LocalWakeSlots, sources, remaining_sleep,
+            context.time_quantum, SummaryVectorMode == 1 ? signal_wake_deadlines : SlotWakeDeadlines);
+    };
     report.tree_local_seconds = std::chrono::duration<double>(
         std::chrono::steady_clock::now() - wake_phase_start).count();
 
@@ -1049,13 +1481,17 @@ IndividualFullSourceSweepReport limitIndividualTreeWakeTimeSteps(
     static int const routing_reuse_enabled = []()
     {
         char const* const value = std::getenv("RICH_INDIVIDUAL_WAKE_ROUTING_REUSE");
-        int enabled = 1;
+        // Default 0 (rebuild every call): result-identical to reuse and 36%
+        // cheaper in wake time on the late TDE (jobs 10522538/10522539).
+        int enabled = 0;
         if(value != nullptr && value[0] != '\0')
         {
             if(std::strcmp(value, "0") == 0)
                 enabled = 0;
             else if(std::strcmp(value, "1") == 0)
                 enabled = 1;
+            else if(std::strcmp(value, "2") == 0)
+                enabled = 2;
             else
                 enabled = -1;
         }
@@ -1063,7 +1499,7 @@ IndividualFullSourceSweepReport limitIndividualTreeWakeTimeSteps(
         MPI_Allreduce(MPI_IN_PLACE, extrema, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
         if(extrema[0] != -extrema[1] || extrema[0] < 0)
             throw std::invalid_argument(
-                "RICH_INDIVIDUAL_WAKE_ROUTING_REUSE must be 0 or 1 on every rank");
+                "RICH_INDIVIDUAL_WAKE_ROUTING_REUSE must be 0, 1 or 2 on every rank");
         return extrema[0];
     }();
     // Heap-held and never destroyed: a static tree's destructor would run
@@ -1117,7 +1553,12 @@ IndividualFullSourceSweepReport limitIndividualTreeWakeTimeSteps(
             }
             escape = std::max(escape, nearest);
             if(!(escape <= escape_limit * escape_limit))
+            {
+                // Later sources were not checked, so the rounded square root
+                // of this partial maximum must not allow reuse.
+                escape = std::numeric_limits<double>::infinity();
                 break;
+            }
         }
     }
     // Squared distances above; the margin is a distance.
@@ -1125,12 +1566,45 @@ IndividualFullSourceSweepReport limitIndividualTreeWakeTimeSteps(
     auto const reuse_reduce_start = std::chrono::steady_clock::now();
     report.tree_reuse_check_seconds = std::chrono::duration<double>(
         reuse_reduce_start - reuse_check_start).count();
-    MPI_Allreduce(MPI_IN_PLACE, &escape, 1, MPI_DOUBLE, MPI_MAX,
-                  MPI_COMM_WORLD);
-    report.tree_reuse_reduce_seconds = std::chrono::duration<double>(
-        std::chrono::steady_clock::now() - reuse_reduce_start).count();
+    WakeRoutingAdaptiveState& Adaptive = WakeRoutingAdaptive();
+    ++Adaptive.Calls;
+    // RICH_INDIVIDUAL_SKIP_UNREAD_REDUCTIONS=1 with reuse off (both agreed on every rank): escape is +infinity on
+    // every rank, so the reduced escape forbids reuse anyway, and the reduced wake time only feeds the adaptive
+    // means, which reuse 2 reads (the trace line then shows adaptive_rebuild_mean_s=-1).
+    bool const SkipReuseReduce = AgreedSchSwitches().SkipUnreadReductions != 0 && routing_reuse_enabled == 0;
+    if(!SkipReuseReduce)
+    {
+        double Packed[2] = {escape, Adaptive.PendingMode >= 0 ? Adaptive.PendingLocalSeconds : -1.0};
+        MPI_Allreduce(MPI_IN_PLACE, Packed, 2, MPI_DOUBLE, MPI_MAX,
+                      MPI_COMM_WORLD);
+        escape = Packed[0];
+        report.tree_reuse_reduce_seconds = std::chrono::duration<double>(
+            std::chrono::steady_clock::now() - reuse_reduce_start).count();
+        if(Adaptive.PendingMode >= 0 && Packed[1] >= 0)
+        {
+            double& Mean = Adaptive.MeanSeconds[Adaptive.PendingMode];
+            Mean = Mean < 0 ? Packed[1] : 0.875 * Mean + 0.125 * Packed[1];
+            Adaptive.LastSampleCall[Adaptive.PendingMode] = Adaptive.Calls;
+        }
+    }
+    Adaptive.PendingMode = -1;
+    bool UseReuse = escape <= escape_limit;
+    if(UseReuse && routing_reuse_enabled == 2)
+    {
+        if(Adaptive.MeanSeconds[0] < 0)
+            UseReuse = false;
+        else if(Adaptive.MeanSeconds[1] >= 0)
+        {
+            bool const PreferReuse = Adaptive.MeanSeconds[1] <= Adaptive.MeanSeconds[0];
+            bool const OtherStale = Adaptive.Calls - Adaptive.LastSampleCall[PreferReuse ? 0 : 1] > 64;
+            UseReuse = OtherStale ? !PreferReuse : PreferReuse;
+        }
+    }
+    Adaptive.ModeThisCall = UseReuse ? 1 : 0;
+    Adaptive.RoutedThisCall = true;
+    ++Adaptive.Uses[Adaptive.ModeThisCall];
     double routing_margin = 0;
-    if(escape <= escape_limit)
+    if(UseReuse)
     {
         routing_margin = escape;
         ++report.routing_reuses;
@@ -1196,10 +1670,13 @@ IndividualFullSourceSweepReport limitIndividualTreeWakeTimeSteps(
             IndividualWakeSource const wake_source =
                 makeIndividualWakeSource(sources[source_index]);
             auto const eval_start = std::chrono::steady_clock::now();
-            evaluateIndividualWakeSource(
-                wake_source, local_tree, local_wake_node_summaries,
-                sources, remaining_sleep, context.time_quantum,
-                signal_wake_deadlines);
+            if(SummaryVectorMode != 1)
+                evaluateIndividualWakeSource(
+                    wake_source, local_tree, local_wake_node_summaries,
+                    sources, remaining_sleep, context.time_quantum,
+                    signal_wake_deadlines);
+            if(SummaryVectorMode != 0)
+                EvaluateWithSlots(wake_source);
             auto const route_start = std::chrono::steady_clock::now();
             report.local_eval_seconds +=
                 std::chrono::duration<double>(route_start - eval_start).count();
@@ -1238,10 +1715,15 @@ IndividualFullSourceSweepReport limitIndividualTreeWakeTimeSteps(
         {
             incoming_record_count += rank_sources.size();
             for(IndividualWakeSource const& wake_source : rank_sources)
-                evaluateIndividualWakeSource(
-                    wake_source, local_tree, local_wake_node_summaries,
-                    sources, remaining_sleep, context.time_quantum,
-                    signal_wake_deadlines);
+            {
+                if(SummaryVectorMode != 1)
+                    evaluateIndividualWakeSource(
+                        wake_source, local_tree, local_wake_node_summaries,
+                        sources, remaining_sleep, context.time_quantum,
+                        signal_wake_deadlines);
+                if(SummaryVectorMode != 0)
+                    EvaluateWithSlots(wake_source);
+            }
         }
         report.remote_seconds += std::chrono::duration<double>(
             std::chrono::steady_clock::now() - round_phase_start).count();
@@ -1269,18 +1751,47 @@ IndividualFullSourceSweepReport limitIndividualTreeWakeTimeSteps(
 #else
     if(full_source_sweep)
         for(IndividualSignalSource const& source : sources)
-            evaluateIndividualWakeSource(
-                makeIndividualWakeSource(source), local_tree,
-                local_wake_node_summaries, sources, remaining_sleep,
-                context.time_quantum, signal_wake_deadlines);
+        {
+            if(SummaryVectorMode != 1)
+                evaluateIndividualWakeSource(
+                    makeIndividualWakeSource(source), local_tree,
+                    local_wake_node_summaries, sources, remaining_sleep,
+                    context.time_quantum, signal_wake_deadlines);
+            if(SummaryVectorMode != 0)
+                EvaluateWithSlots(makeIndividualWakeSource(source));
+        }
     else
         for(std::size_t const source_index : signal_source_indices)
-            evaluateIndividualWakeSource(
-                makeIndividualWakeSource(sources[source_index]),
-                local_tree, local_wake_node_summaries, sources,
-                remaining_sleep, context.time_quantum,
-                signal_wake_deadlines);
+        {
+            if(SummaryVectorMode != 1)
+                evaluateIndividualWakeSource(
+                    makeIndividualWakeSource(sources[source_index]),
+                    local_tree, local_wake_node_summaries, sources,
+                    remaining_sleep, context.time_quantum,
+                    signal_wake_deadlines);
+            if(SummaryVectorMode != 0)
+                EvaluateWithSlots(makeIndividualWakeSource(sources[source_index]));
+        }
 #endif
+
+    if(SummaryVectorMode == 2)
+    {
+        unsigned long long Mismatches = 0;
+        std::string Example;
+        std::size_t const Count = std::min(signal_wake_deadlines.size(), SlotWakeDeadlines.size());
+        for(std::size_t Index = 0; Index < Count; ++Index)
+            if(!SameBits(signal_wake_deadlines[Index], SlotWakeDeadlines[Index]) && Mismatches++ == 0)
+            {
+                std::ostringstream Text;
+                Text << std::setprecision(17) << "wake deadline of cell " << (Index < cells.size() ?
+                    cells[Index].ID : Index) << ": map " << signal_wake_deadlines[Index] << ", vector "
+                    << SlotWakeDeadlines[Index];
+                Example = Text.str();
+            }
+        if(signal_wake_deadlines.size() != SlotWakeDeadlines.size() && Mismatches++ == 0)
+            Example = "deadline vector sizes differ";
+        RequireNoS49Mismatch("RICH_INDIVIDUAL_WAKE_SUMMARY_VECTOR", Mismatches, Count, Example);
+    }
 
     if(report.performed)
     {
@@ -1512,6 +2023,12 @@ struct IndividualActiveHilbertRuntimeOptions
     // differs between otherwise identical runs; off makes ownership a function
     // of the state alone, for bitwise replay of A/B comparisons.
     bool segment_revert = true;
+    // RICH_INDIVIDUAL_ACTIVE_HILBERT_REFERENCE_AGE (default 64 events; 0 keeps
+    // nothing): a measuring revert seeds each class's positional reference
+    // with that class's most recent positional sample when it is at most this
+    // many events old.  Domain changes reset the whole decision state, so a
+    // kept sample always belongs to the current domain.
+    std::size_t ReferenceAge = 64;
 };
 
 struct IndividualForceAllActiveRuntimeOptions
@@ -1671,6 +2188,13 @@ individualActiveHilbertRuntimeOptions()
         result.segment_work = parseEnvironmentDouble(
             "RICH_INDIVIDUAL_ACTIVE_HILBERT_SEGMENT_WORK", 0.0, 0.0,
             locally_valid);
+        // Zero is valid (it switches retention off), so this is not parseEnvironmentSize.
+        double const ReferenceAge = parseEnvironmentDouble("RICH_INDIVIDUAL_ACTIVE_HILBERT_REFERENCE_AGE", 64.0, 0.0,
+                                                           locally_valid);
+        if(!(ReferenceAge <= 100000.0) || ReferenceAge != std::floor(ReferenceAge))
+            locally_valid = false;
+        else
+            result.ReferenceAge = static_cast<std::size_t>(ReferenceAge);
         // Weights stay finite: each is at most 1 + beta * cells.
         if(result.segment_work > 1e6)
             locally_valid = false;
@@ -1683,14 +2207,16 @@ individualActiveHilbertRuntimeOptions()
             (result.segment_revert ? 32 : 0);
         int minimum_mask = local_mask;
         int maximum_mask = local_mask;
-        double minimum_values[4] = {result.active_threshold,
+        double minimum_values[5] = {result.active_threshold,
                                     result.maximum_owned_cell_skew,
                                     static_cast<double>(result.segments_per_rank),
-                                    result.segment_work};
-        double maximum_values[4] = {result.active_threshold,
+                                    result.segment_work,
+                                    static_cast<double>(result.ReferenceAge)};
+        double maximum_values[5] = {result.active_threshold,
                                     result.maximum_owned_cell_skew,
                                     static_cast<double>(result.segments_per_rank),
-                                    result.segment_work};
+                                    result.segment_work,
+                                    static_cast<double>(result.ReferenceAge)};
         int collective_valid = locally_valid ? 1 : 0;
         MPI_Allreduce(MPI_IN_PLACE, &collective_valid, 1, MPI_INT, MPI_MIN,
                       MPI_COMM_WORLD);
@@ -1698,9 +2224,9 @@ individualActiveHilbertRuntimeOptions()
                       MPI_COMM_WORLD);
         MPI_Allreduce(MPI_IN_PLACE, &maximum_mask, 1, MPI_INT, MPI_MAX,
                       MPI_COMM_WORLD);
-        MPI_Allreduce(MPI_IN_PLACE, minimum_values, 4, MPI_DOUBLE, MPI_MIN,
+        MPI_Allreduce(MPI_IN_PLACE, minimum_values, 5, MPI_DOUBLE, MPI_MIN,
                       MPI_COMM_WORLD);
-        MPI_Allreduce(MPI_IN_PLACE, maximum_values, 4, MPI_DOUBLE, MPI_MAX,
+        MPI_Allreduce(MPI_IN_PLACE, maximum_values, 5, MPI_DOUBLE, MPI_MAX,
                       MPI_COMM_WORLD);
         if(collective_valid == 0 || minimum_mask != maximum_mask ||
            !std::equal(std::begin(minimum_values), std::end(minimum_values),
@@ -1892,6 +2418,114 @@ IndividualHilbertPartitionLoad measureIndividualHilbertPartition(
         load_balance, points, active_mask, ranks), ranks);
 }
 
+// RICH_INDIVIDUAL_ACTIVE_HILBERT_TARGET_PLAN needs a segmented interleaved plan to score and install beside.  Every
+// input is agreed, so every rank throws together.
+void RequireIndividualTargetPlanSupport(int const TargetPlan, int const SegmentWorkAuto, bool const ActiveHilbertOn)
+{
+    IndividualActiveHilbertRuntimeOptions const& Options = individualActiveHilbertRuntimeOptions();
+    if(!ActiveHilbertOn || Options.segments_per_rank <= 1 || Options.segment_bins)
+        throw std::invalid_argument("RICH_INDIVIDUAL_ACTIVE_HILBERT_TARGET_PLAN=" + std::to_string(TargetPlan) +
+            " needs interleaved segmented Hilbert ownership: active Hilbert balancing, "
+            "RICH_INDIVIDUAL_ACTIVE_HILBERT_SEGMENTS > 1 and RICH_INDIVIDUAL_ACTIVE_HILBERT_SEGMENT_BINS=0");
+    if(TargetPlan == 2 && SegmentWorkAuto != 0)
+        throw std::invalid_argument("RICH_INDIVIDUAL_ACTIVE_HILBERT_TARGET_PLAN=2 needs "
+            "RICH_INDIVIDUAL_ACTIVE_HILBERT_SEGMENT_WORK_AUTO=0 (one plan selector at a time)");
+}
+
+// A target-weighted interleave scored beside a segmented plan, the control.  Owned cell i weighs 1 + beta u_i / <u>,
+// u_i = Counts[i] / Events (its final event-mesh target memberships since the last migration per partial event),
+// <u> the global mean over cells; the pieces and their deal are the control's (rebalanceInterleaved).  The predicted
+// target load of a cut on a rank is the sum of u_i over the cells the cut gives to that rank.
+struct IndividualTargetPlanScore
+{
+    // Null when the candidate's weights would be the control's (nothing counted, or beta 0).
+    std::shared_ptr<HilbertLoadBalancer<Vector3D>> Candidate;
+    IndividualHilbertPartitionLoad CandidateLoad;
+    // The candidate owns every rank within the owned-cell cap: only then may it be installed.
+    bool CandidateAcceptable = false;
+    unsigned long long CountedTargets = 0;
+    double ControlTargetMax = 0;
+    double ControlTargetMean = 0;
+    double CandidateTargetMax = 0;
+    double CandidateTargetMean = 0;
+};
+
+// Collective: one reduction of the counted targets; when they are nonzero, the candidate's interleave and measurement
+// (beta > 0 only) and one reduction of both cuts' target loads.  Every branch reads reduced or agreed values.  The
+// current balancer and the control are only read.
+IndividualTargetPlanScore ScoreIndividualTargetPlan(HilbertLoadBalancer<Vector3D> const& Current,
+    HilbertLoadBalancer<Vector3D> const& Control, IndividualHilbertPartitionLoad const& ControlLoad,
+    std::vector<Vector3D> const& Points, std::vector<unsigned char> const& ActiveMask,
+    std::vector<std::uint32_t> const& Counts, std::uint64_t const Events, double const Beta, int const Segments,
+    double const OwnedCap, int const Ranks)
+{
+    IndividualTargetPlanScore Score;
+    unsigned long long Totals[2] = {0, Counts.size() == Points.size() ? 0ULL : 1ULL};
+    for(std::uint32_t const Count : Counts)
+        Totals[0] += Count;
+    MPI_Allreduce(MPI_IN_PLACE, Totals, 2, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+    if(Totals[1] != 0)
+        throw std::logic_error("Target-weighted Hilbert plan requires target counts aligned with the owned cells");
+    Score.CountedTargets = Totals[0];
+    // Nothing counted: every target load is zero and the candidate's weights are today's.
+    if(Score.CountedTargets == 0 || Events == 0)
+        return Score;
+    if(Beta > 0)
+    {
+        // u_i / <u> = Counts[i] * cells / counted targets.
+        double const Scale = Beta * static_cast<double>(ControlLoad.owned_cells) /
+            static_cast<double>(Score.CountedTargets);
+        std::vector<double> Weights(Points.size());
+        for(std::size_t i = 0; i < Points.size(); ++i)
+            Weights[i] = 1 + Scale * static_cast<double>(Counts[i]);
+        Score.Candidate = Current.clone();
+        Score.Candidate->rebalanceInterleaved(Points, Weights, Segments);
+        Score.CandidateLoad = measureIndividualHilbertPartition(*Score.Candidate, Points, ActiveMask, Ranks);
+        Score.CandidateAcceptable = Score.CandidateLoad.ownsEveryRank() &&
+            Score.CandidateLoad.ownedMaxMean() <= OwnedCap;
+    }
+    // Both cuts were measured (owners validated), so the lookups below name valid ranks.
+    std::size_t const RankCount = static_cast<std::size_t>(Ranks);
+    std::vector<double> Loads(2 * RankCount, 0.0);
+    double const PerEvent = 1.0 / static_cast<double>(Events);
+    for(std::size_t i = 0; i < Points.size(); ++i)
+    {
+        if(Counts[i] == 0)
+            continue;
+        double const Usage = PerEvent * static_cast<double>(Counts[i]);
+        int const ControlOwner = Control.getOwner(Points[i]);
+        if(ControlOwner >= 0 && ControlOwner < Ranks)
+            Loads[static_cast<std::size_t>(ControlOwner)] += Usage;
+        if(Score.Candidate)
+        {
+            int const CandidateOwner = Score.Candidate->getOwner(Points[i]);
+            if(CandidateOwner >= 0 && CandidateOwner < Ranks)
+                Loads[RankCount + static_cast<std::size_t>(CandidateOwner)] += Usage;
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, Loads.data(), static_cast<int>(Loads.size()), MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+    auto const MaxMean = [&](std::size_t const Offset, double& Max, double& Mean)
+    {
+        double Sum = 0;
+        Max = 0;
+        for(std::size_t Rank = 0; Rank < RankCount; ++Rank)
+        {
+            Sum += Loads[Offset + Rank];
+            Max = std::max(Max, Loads[Offset + Rank]);
+        }
+        Mean = Sum / static_cast<double>(RankCount);
+    };
+    MaxMean(0, Score.ControlTargetMax, Score.ControlTargetMean);
+    if(Score.Candidate)
+        MaxMean(RankCount, Score.CandidateTargetMax, Score.CandidateTargetMean);
+    else
+    {
+        Score.CandidateTargetMax = Score.ControlTargetMax;
+        Score.CandidateTargetMean = Score.ControlTargetMean;
+    }
+    return Score;
+}
+
 // Per-bin occupancy of a partition: for each time bin, the global cell count
 // and the largest count on one rank.  A bin is "constrained" when it holds
 // enough cells that ranks * ceil(count / ranks) / count <= threshold (an even
@@ -1934,6 +2568,115 @@ int IndividualSegmentEventClass(std::uint64_t const active, std::uint64_t const 
         static_cast<double>(active) / static_cast<double>(owned) : 1;
     return fraction < 1e-3 ? 0 : fraction < 1e-2 ? 1 : fraction < 1e-1 ? 2 :
         fraction < 0.5 ? 3 : 4;
+}
+
+// Candidate segment work weights of RICH_INDIVIDUAL_ACTIVE_HILBERT_SEGMENT_WORK_AUTO: 0, 1 and the configured beta,
+// ascending and distinct (two or three; RICH_INDIVIDUAL_ACTIVE_HILBERT_SEGMENT_WORK=4 gives {0, 1, 4}).
+std::vector<double> SegmentWorkCandidates(double const Configured)
+{
+    std::vector<double> Candidates{0.0, 1.0};
+    if(Configured != 0 && Configured != 1)
+        Candidates.push_back(Configured);
+    std::sort(Candidates.begin(), Candidates.end());
+    return Candidates;
+}
+
+struct SegmentWorkChoice
+{
+    int Candidate = -1;
+    char const* Basis = "configured";
+    // Cost per candidate (seconds per event, see ChooseSegmentWork); -1 where it cannot be compared.
+    std::vector<double> Cost;
+};
+
+// The work weight of a new segmented plan.  Every input is replicated (reduced ledger seconds, reduced migration
+// and planning seconds, event counters), so every rank chooses alike.  In order:
+//   explore   a candidate without a measured plan on this domain (the configured beta first, then ascending);
+//   measured  the lowest cost: per class, the candidate's mean ledger seconds, weighted by the class's share of
+//             every candidate's measured events, over the classes every candidate has measured, plus the
+//             candidate's migration and planning seconds per measured event (ties go to the configured beta);
+//   resample  instead of the cheapest, another candidate whose latest plan started more than ResampleEvents
+//             events ago (the oldest), so a stale measurement is renewed; also when no class is shared.
+template<typename DecisionState>
+SegmentWorkChoice ChooseSegmentWork(DecisionState const& Decision, std::vector<double> const& Candidates,
+    int const Configured, std::uint64_t const ResampleEvents)
+{
+    SegmentWorkChoice Choice;
+    int const Count = static_cast<int>(Candidates.size());
+    int constexpr Classes = DecisionState::classes;
+    Choice.Cost.assign(Candidates.size(), -1.0);
+    std::array<double, Classes> Weight{};
+    double TotalWeight = 0;
+    for(int Class = 0; Class < Classes; ++Class)
+    {
+        bool Shared = true;
+        double Events = 0;
+        for(int Candidate = 0; Candidate < Count; ++Candidate)
+        {
+            double const Measured =
+                Decision.WorkCount[static_cast<std::size_t>(Candidate)][static_cast<std::size_t>(Class)];
+            Shared = Shared && Measured > 0;
+            Events += Measured;
+        }
+        Weight[static_cast<std::size_t>(Class)] = Shared ? Events : 0;
+        TotalWeight += Weight[static_cast<std::size_t>(Class)];
+    }
+    for(int Candidate = 0; Candidate < Count; ++Candidate)
+    {
+        std::size_t const K = static_cast<std::size_t>(Candidate);
+        if(!(TotalWeight > 0) || !(Decision.WorkEvents[K] > 0))
+            continue;
+        double Cost = Decision.WorkCharges[K] / Decision.WorkEvents[K];
+        for(int Class = 0; Class < Classes; ++Class)
+        {
+            std::size_t const C = static_cast<std::size_t>(Class);
+            if(Weight[C] > 0)
+                Cost += Weight[C] / TotalWeight * Decision.WorkSum[K][C] / Decision.WorkCount[K][C];
+        }
+        Choice.Cost[K] = Cost;
+    }
+    std::vector<int> Order{Configured};
+    for(int Candidate = 0; Candidate < Count; ++Candidate)
+        if(Candidate != Configured)
+            Order.push_back(Candidate);
+    for(int const Candidate : Order)
+    {
+        std::size_t const K = static_cast<std::size_t>(Candidate);
+        if(Decision.WorkPlans[K] == 0 || !(Decision.WorkEvents[K] > 0))
+        {
+            Choice.Candidate = Candidate;
+            Choice.Basis = "explore";
+            return Choice;
+        }
+    }
+    int Best = -1;
+    for(int const Candidate : Order)
+    {
+        double const Cost = Choice.Cost[static_cast<std::size_t>(Candidate)];
+        if(Cost >= 0 && (Best < 0 || Cost < Choice.Cost[static_cast<std::size_t>(Best)]))
+            Best = Candidate;
+    }
+    int Oldest = -1;
+    std::uint64_t OldestAge = 0;
+    for(int const Candidate : Order)
+    {
+        std::uint64_t const Age =
+            Decision.event_counter - Decision.WorkLastPlanEvent[static_cast<std::size_t>(Candidate)];
+        if(Candidate != Best && (Best < 0 || Age > ResampleEvents) && (Oldest < 0 || Age > OldestAge))
+        {
+            Oldest = Candidate;
+            OldestAge = Age;
+        }
+    }
+    if(Oldest >= 0)
+    {
+        Choice.Candidate = Oldest;
+        Choice.Basis = "resample";
+        return Choice;
+    }
+    Choice.Candidate = Best;
+    Choice.Basis = "measured";
+    return Choice;
 }
 
 template<typename StateVector>
@@ -2150,18 +2893,62 @@ IndividualActiveCutBound individualActiveCutOwnedLowerBound(
     return best;
 }
 
+// Every rank's value on rank 0 (rank order); empty elsewhere.  Collective.
+std::vector<double> GatherIndividualRankValues(int const Rank, int const RankCount, double const LocalValue)
+{
+    std::vector<double> Values(Rank == 0 ? RankCount : 0);
+    MPI_Gather(&LocalValue, 1, MPI_DOUBLE, Rank == 0 ? Values.data() : nullptr, 1, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    return Values;
+}
+
+// RICH_STEP_REPORT_FUSED: every value of the event's RICH_STEP_DETAIL lines in one MPI_Gather (rank-major on rank
+// 0).  One reduction first checks that the entry count and names agree on every rank, as the separate gathers
+// assume.  Collective.
+std::vector<double> GatherIndividualRankValuesFused(int const Rank, int const RankCount,
+    std::vector<std::string> const& Names, std::vector<double> const& Values)
+{
+    std::uint64_t NameHash = 1469598103934665603ULL;
+    for(std::string const& Name : Names)
+    {
+        for(char const Character : Name)
+            NameHash = (NameHash ^ static_cast<unsigned char>(Character)) * 1099511628211ULL;
+        NameHash = (NameHash ^ 0xffU) * 1099511628211ULL;
+    }
+    unsigned long long Check[4] = {static_cast<unsigned long long>(Values.size()),
+        ~static_cast<unsigned long long>(Values.size()), static_cast<unsigned long long>(NameHash),
+        ~static_cast<unsigned long long>(NameHash)};
+    MPI_Allreduce(MPI_IN_PLACE, Check, 4, MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+    if(Check[0] != ~Check[1] || Check[2] != ~Check[3] || Names.size() != Values.size())
+        throw std::logic_error("RICH_STEP_REPORT_FUSED: the step-detail entries differ across MPI ranks");
+    std::vector<double> Gathered(Rank == 0 ? Values.size() * static_cast<std::size_t>(RankCount) : 0);
+    MPI_Gather(Values.data(), static_cast<int>(Values.size()), MPI_DOUBLE, Rank == 0 ? Gathered.data() : nullptr,
+               static_cast<int>(Values.size()), MPI_DOUBLE, 0, MPI_COMM_WORLD);
+    return Gathered;
+}
+
+void printIndividualRankDistribution(std::size_t const cycle,
+                                     std::string const& phase,
+                                     std::vector<double> values,
+                                     char const* const unit);
+
 void reportIndividualRankDistribution(int const rank, int const rank_count,
                                       std::size_t const cycle,
                                       std::string const& phase,
                                       double const local_value,
                                       char const* const unit)
 {
-    std::vector<double> values(rank == 0 ? rank_count : 0);
-    MPI_Gather(&local_value, 1, MPI_DOUBLE,
-               rank == 0 ? values.data() : nullptr, 1, MPI_DOUBLE, 0,
-               MPI_COMM_WORLD);
+    std::vector<double> values = GatherIndividualRankValues(rank, rank_count, local_value);
     if(rank != 0)
         return;
+    printIndividualRankDistribution(cycle, phase, std::move(values), unit);
+}
+
+// Rank 0: one RICH_STEP_DETAIL line from every rank's value (rank order).
+void printIndividualRankDistribution(std::size_t const cycle,
+                                     std::string const& phase,
+                                     std::vector<double> values,
+                                     char const* const unit)
+{
     auto const minimum_iterator =
         std::min_element(values.begin(), values.end());
     auto const maximum_iterator =
@@ -2731,6 +3518,86 @@ std::vector<Vector3D> Simulation::CommittedGeneratorPoints(void) const
     return points;
 }
 
+// RICH_INDIVIDUAL_REANCHOR=2.  At a synchronized individual boundary (every cell opens an interval at the current
+// tick: the scheduler's start, or the boundary after an all-active event, with any box growth applied), the limit
+// L_min the entry anchor was taken from -- the collective minimum of every cell's pre-drift wave-speed and source
+// limit -- comes from the driver's probe, with the committed point velocities and cached accelerations (no gravity
+// solve, no state change).  Rule (h = 0.08, n = 2): up when margin x L_min >= (1 + h) x anchor at n consecutive
+// boundaries, down when L_min < anchor at n consecutive boundaries; the new anchor is margin x the smallest L_min
+// of the streak.  Nothing acts on it.  Collective.
+void Simulation::ReportIndividualReanchorShadow(void)
+{
+    IndividualReanchorShadowState& Shadow = this->IndividualReanchorShadow;
+    IndividualTimeStepScheduler const& Scheduler = *this->individualScheduler;
+    double const Margin = IndividualBinAnchorMargin();
+    // An explicit quantum fixes the grid, and margin 0 anchors none (both agreed on every rank).
+    if(Scheduler.options().time_quantum > 0 || !(Margin > 0) || !Shadow.PreviousEventAllActive)
+        return;
+    if(!this->IndividualStateSynchronized())
+        return;
+    RequireOnAllRanks(static_cast<bool>(this->IndividualReanchorProbe),
+        "RICH_INDIVIDUAL_REANCHOR=2 needs a limit probe (Simulation::SetIndividualReanchorLimitProbe)");
+    double const Start = D2Now();
+    std::vector<CellTimeState> const& States = Scheduler.states();
+    std::vector<Vector3D> PointVelocities(States.size());
+    std::vector<Vector3D> Accelerations(States.size());
+    for(std::size_t Index = 0; Index < States.size(); ++Index)
+    {
+        PointVelocities[Index] = States[Index].point_velocity;
+        Accelerations[Index] = States[Index].cached_acceleration;
+    }
+    std::vector<double> Limits;
+    bool const Available = this->IndividualReanchorProbe(PointVelocities, Accelerations, Limits);
+    double LocalMinimum = std::numeric_limits<double>::infinity();
+    if(Available)
+        for(std::size_t Index = 0; Index < std::min(Limits.size(), States.size()); ++Index)
+            if(std::isfinite(Limits[Index]) && Limits[Index] > 0)
+                LocalMinimum = std::min(LocalMinimum, Limits[Index]);
+    // Minimum limit, maximum evaluation time (negated) and availability on every rank, in one reduction.
+    double Packed[3] = {LocalMinimum, -(D2Now() - Start), Available ? 1.0 : 0.0};
+#ifdef RICH_MPI
+    MPI_Allreduce(MPI_IN_PLACE, Packed, 3, MPI_DOUBLE, MPI_MIN, MPI_COMM_WORLD);
+#endif
+    double const LMin = Packed[0];
+    double const Anchor = std::ldexp(Scheduler.timeQuantum(), static_cast<int>(Scheduler.options().initial_bin));
+    double constexpr Hysteresis = 0.08;
+    int constexpr Consecutive = 2;
+    bool const Valid = Packed[2] > 0 && std::isfinite(LMin) && LMin > 0;
+    bool const Up = Valid && Margin * LMin >= (1 + Hysteresis) * Anchor;
+    bool const Down = Valid && LMin < Anchor;
+    Shadow.UpStreakMinimum = Up ? (Shadow.UpStreak > 0 ? std::min(Shadow.UpStreakMinimum, LMin) : LMin) : 0;
+    Shadow.DownStreakMinimum = Down ? (Shadow.DownStreak > 0 ? std::min(Shadow.DownStreakMinimum, LMin) : LMin) : 0;
+    Shadow.UpStreak = Up ? Shadow.UpStreak + 1 : 0;
+    Shadow.DownStreak = Down ? Shadow.DownStreak + 1 : 0;
+    ++Shadow.Boundaries;
+    char const* Decision = "none";
+    double NewAnchor = Anchor;
+    if(Shadow.UpStreak >= Consecutive)
+    {
+        Decision = "up";
+        NewAnchor = Margin * Shadow.UpStreakMinimum;
+    }
+    else if(Shadow.DownStreak >= Consecutive)
+    {
+        Decision = "down";
+        NewAnchor = Margin * Shadow.DownStreakMinimum;
+    }
+    if(this->rank == 0)
+    {
+        std::ostringstream Line;
+        Line << std::setprecision(12) << "RICH_D2_REANCHOR time=" << this->tracker.getTime() << " cycle="
+             << this->tracker.getCycle() << " boundary=" << Shadow.Boundaries << " anchor=" << Anchor << " lmin=";
+        if(Valid)
+            Line << LMin;
+        else
+            Line << "unavailable";
+        Line << " margin=" << Margin << " ratio=" << (Valid ? Margin * LMin / Anchor : 0.0) << " up_streak="
+             << Shadow.UpStreak << " down_streak=" << Shadow.DownStreak << " would_reanchor=" << Decision
+             << " new_anchor=" << NewAnchor << std::setprecision(6) << " eval_max_s=" << -Packed[1];
+        std::cout << Line.str() << std::endl;
+    }
+}
+
 void Simulation::NotifyDomainChanged(void)
 {
     AdaptiveModeState& a = this->adaptiveMode;
@@ -2745,6 +3612,9 @@ void Simulation::NotifyDomainChanged(void)
         a.wallTotalInMode = 0;
     // A new workload is measured afresh, not under an inherited backoff.
     a.dwellMultiplier = 1;
+    // A saved stale-baseline probe compares against the domain it was
+    // measured in only.
+    a.StaleProbeValid = false;
     if(a.enabled && this->rank == 0)
         std::cout << std::setprecision(12)
                   << "RICH_MODE_DOMAIN_CHANGE cycle=" << this->tracker.getCycle()
@@ -3099,6 +3969,7 @@ Simulation::GrowDomainAtSynchronizedIndividualState(
     // The new domain returns to positional ownership: segmented-ownership
     // references measured on the old domain do not apply.
     this->individualSegmentDecision = IndividualSegmentDecisionState();
+    this->IndividualTargetObservation = IndividualTargetObservationState();
     this->lastIndividualEventLedgerLocalSeconds = 0;
     balanceStep->afterLB();
 #endif
@@ -3162,6 +4033,26 @@ bool adaptiveStayIndividual()
 #endif
         if(agreement[2] != 0 || agreement[0] != -agreement[1])
             throw std::invalid_argument("RICH_ADAPTIVE_STAY_INDIVIDUAL must be one boolean on every rank");
+        return agreement[0] != 0;
+    }();
+    return enabled;
+}
+
+// RICH_ADAPTIVE_STALE_RECHECK (default on): an individual probe abandoned
+// because a domain change made the global baseline stale is kept, and global
+// is re-measured in two short blocks instead of a full dwell.
+bool adaptiveStaleRecheck()
+{
+    static bool const enabled = []()
+    {
+        bool valid = true;
+        int const value = parseEnvironmentToggle("RICH_ADAPTIVE_STALE_RECHECK", true, valid) ? 1 : 0;
+        int agreement[3] = {value, -value, valid ? 0 : 1};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, agreement, 3, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        if(agreement[2] != 0 || agreement[0] != -agreement[1])
+            throw std::invalid_argument("RICH_ADAPTIVE_STALE_RECHECK must be one boolean on every rank");
         return agreement[0] != 0;
     }();
     return enabled;
@@ -3453,6 +4344,7 @@ void Simulation::adaptiveEnterGlobal(std::string const& reason)
         // The next individual period measures afresh: its positional
         // reference, ledger and previous-event sample belong to it.
         this->individualSegmentDecision = IndividualSegmentDecisionState();
+        this->IndividualTargetObservation = IndividualTargetObservationState();
         this->lastIndividualEventLedgerLocalSeconds = 0;
     }
 #endif
@@ -3511,6 +4403,7 @@ void Simulation::adaptiveEnterIndividual(std::string const& reason)
     this->extensives.resize(this->tess.GetPointNo());
     this->individualActiveHilbertBoundaries.clear();
     this->individualSegmentDecision = IndividualSegmentDecisionState();
+    this->IndividualTargetObservation = IndividualTargetObservationState();
     this->lastIndividualEventLedgerLocalSeconds = 0;
 #endif
     double dt = this->tsc->GetTimeStep();
@@ -3827,6 +4720,60 @@ void Simulation::adaptiveAfterStep(TimeIntegrationMode mode)
                        a.stepsInMode % o.gate_interval_steps == 0 ||
                        a.gainRetry))
         a.gainBound = this->adaptiveGainBound();
+    // Return after a probe that a domain change made stale: re-measure global
+    // in two blocks after its ramp; if the saved post-change individual
+    // throughput still beats both by the decision margin, adopt individual
+    // without the full global dwell.  Otherwise the ordinary dwell continues
+    // with the samples already collected.
+    if(!individual && a.StaleProbeValid && a.StaleProbeEpoch == a.domainEpoch && a.stepsInMode > ramp)
+    {
+        std::size_t const BlockSteps = std::max<std::size_t>(8, o.minimum_samples);
+        if(a.StaleBlocks < 2)
+        {
+            a.StaleBlockWall += this->lastStepSecondsMax;
+            a.StaleBlockSim += this->lastStepAdvance;
+            ++a.StaleBlockSteps;
+            if(a.StaleBlockSteps >= BlockSteps)
+            {
+                double const BlockTau = a.StaleBlockWall > 0 ? a.StaleBlockSim / a.StaleBlockWall : 0;
+                a.StaleBlockTau[a.StaleBlocks] = BlockTau;
+                ++a.StaleBlocks;
+                a.StaleBlockWall = 0;
+                a.StaleBlockSim = 0;
+                a.StaleBlockSteps = 0;
+            }
+        }
+        // Ordinary dwell decisions wait for both blocks (and for a deferred
+        // decision), so a probe cannot start between them.
+        if(a.StaleBlocks < 2 || this->adaptiveDecisionsDeferred)
+            return;
+        {
+            double const BestGlobal = std::max(a.StaleBlockTau[0], a.StaleBlockTau[1]);
+            bool const Adopt = BestGlobal > 0 && a.StaleProbeTau >= o.margin * BestGlobal;
+            a.StaleProbeValid = false;
+            if(this->rank == 0)
+                std::cout << std::setprecision(12) << "RICH_MODE_STALE_RECHECK cycle=" << this->tracker.getCycle()
+                          << " time=" << this->tracker.getTime() << " epoch=" << a.domainEpoch
+                          << " individual_tau=" << a.StaleProbeTau << " global_block_tau=" << a.StaleBlockTau[0]
+                          << "," << a.StaleBlockTau[1] << " block_steps=" << BlockSteps << " ramp=" << ramp
+                          << " margin=" << o.margin << " action=" << (Adopt ? "adopt_individual" : "continue_global")
+                          << std::endl;
+            if(Adopt)
+            {
+                a.tauGlobal = BestGlobal;
+                a.tauGlobalEpoch = a.domainEpoch;
+                a.tauIndividual = a.StaleProbeTau;
+                a.tauIndividualEpoch = a.domainEpoch;
+                a.dwellMultiplier = 1;
+                a.individualAdopted = true;
+                ++a.decisions;
+                this->adaptiveLogDecision(mode, "adopt_individual_after_stale_baseline", BestGlobal);
+                this->adaptiveRequestSwitch(TimeIntegrationMode::Individual,
+                    "saved individual probe beats the re-measured global baseline");
+                return;
+            }
+        }
+    }
 
     if(individual && a.switchToGlobalRequested)
     {
@@ -3913,6 +4860,41 @@ void Simulation::adaptiveAfterStep(TimeIntegrationMode mode)
             // (a backoff of 16 held a 3x-slower individual phase for 1036
             // events on the TDE, job 10222326).
             a.dwellMultiplier = 1;
+            // An individual probe measured entirely after the change (the
+            // window restarts at a domain change) is kept for a short
+            // re-measurement of global, when it passed the sample minimum and
+            // covered the coarsest occupied interval.
+            a.StaleProbeValid = false;
+            if(individual && adaptiveStaleRecheck() && this->individualScheduler &&
+               this->individualScheduler->initialized())
+            {
+                int CoarsestBin = -1;
+                for(CellTimeState const& state : this->individualScheduler->states())
+                    CoarsestBin = std::max(CoarsestBin, static_cast<int>(state.time_bin));
+#ifdef RICH_MPI
+                MPI_Allreduce(MPI_IN_PLACE, &CoarsestBin, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+                double const CoarsestInterval = CoarsestBin < 0 ? 0 :
+                    this->individualScheduler->timeQuantum() * static_cast<double>(
+                        this->individualScheduler->binTicks(static_cast<std::uint8_t>(CoarsestBin)));
+                bool const Covered = CoarsestBin >= 0 && a.simMeasured >= CoarsestInterval;
+                if(Covered && tau > 0)
+                {
+                    a.StaleProbeValid = true;
+                    a.StaleProbeTau = tau;
+                    a.StaleProbeEpoch = a.domainEpoch;
+                    a.StaleBlocks = 0;
+                    a.StaleBlockWall = 0;
+                    a.StaleBlockSim = 0;
+                    a.StaleBlockSteps = 0;
+                }
+                if(this->rank == 0)
+                    std::cout << std::setprecision(12) << "RICH_MODE_STALE_PROBE cycle=" << this->tracker.getCycle()
+                              << " time=" << this->tracker.getTime() << " epoch=" << a.domainEpoch
+                              << " individual_tau=" << tau << " measured_sim=" << a.simMeasured
+                              << " coarsest_interval=" << CoarsestInterval << " saved=" << (a.StaleProbeValid ? 1 : 0)
+                              << std::endl;
+            }
             this->adaptiveLogDecision(mode,
                 (std::string("revert_to_") + IntegrationModeName(other) +
                  "_stale_baseline").c_str(), tau);
@@ -4441,6 +5423,328 @@ void Simulation::step(void)
 }
 
 #ifdef RICH_MPI
+namespace
+{
+// RICH_INDIVIDUAL_LB_ADJACENCY_CAPTURE (F3 of the partial-mesh plan, 2026-11-19).  An applied individual migration
+// drops the partial-build adjacency cache, and the next partial builds then start unseeded and retry.  After the
+// migration the tessellation holds the mesh MockMesh built on the new ownership from each cell's previous face
+// neighbours; with the generators unmoved, every owned cell has its full-mesh Voronoi cell there.  This records the
+// face neighbours of every owned cell on that mesh and installs them as the cache.
+//   0 / off      off (default);
+//   1 / on       capture and install;
+//   2 / capture  capture and discard (times the capture alone);
+//   3 / verify   capture, rebuild the full mesh on the new ownership, record it the same way, report the
+//                differences, and install the captured records (diagnostic).
+// Collective on first use (an applied migration, agreed on every rank); must agree on every rank.
+int AgreedLBAdjacencyCaptureMode(void)
+{
+    static int const mode = []()
+    {
+        char const* const value = std::getenv("RICH_INDIVIDUAL_LB_ADJACENCY_CAPTURE");
+        std::string const text = value == nullptr ? "" : value;
+        int local = -1;
+        if(text.empty() || text == "0" || text == "off")
+            local = 0;
+        else if(text == "1" || text == "on")
+            local = 1;
+        else if(text == "2" || text == "capture")
+            local = 2;
+        else if(text == "3" || text == "verify")
+            local = 3;
+        int extrema[2] = {local, -local};
+        MPI_Allreduce(MPI_IN_PLACE, extrema, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+        if(extrema[0] != -extrema[1])
+            throw std::invalid_argument("RICH_INDIVIDUAL_LB_ADJACENCY_CAPTURE differs across MPI ranks");
+        if(extrema[0] < 0)
+            throw std::invalid_argument(
+                "RICH_INDIVIDUAL_LB_ADJACENCY_CAPTURE must be 0, 1, 2, 3, off, on, capture or verify");
+        return extrema[0];
+    }();
+    return mode;
+}
+
+// RICH_INDIVIDUAL_FULL_MESH_AFTER_MIGRATION (strict 0/1, default 0): after an applied individual migration, build
+// the next individual event mesh in full; the simplest alternative to the capture above.  Collective on first use;
+// must agree on every rank.
+bool AgreedFullMeshAfterMigration(void)
+{
+    static bool const enabled = []()
+    {
+        char const* const value = std::getenv("RICH_INDIVIDUAL_FULL_MESH_AFTER_MIGRATION");
+        std::string const text = value == nullptr ? "" : value;
+        int local = -1;
+        if(text.empty() || text == "0")
+            local = 0;
+        else if(text == "1")
+            local = 1;
+        int extrema[2] = {local, -local};
+        MPI_Allreduce(MPI_IN_PLACE, extrema, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+        if(extrema[0] != -extrema[1])
+            throw std::invalid_argument("RICH_INDIVIDUAL_FULL_MESH_AFTER_MIGRATION differs across MPI ranks");
+        if(extrema[0] < 0)
+            throw std::invalid_argument("RICH_INDIVIDUAL_FULL_MESH_AFTER_MIGRATION must be 0 or 1");
+        return extrema[0] != 0;
+    }();
+    return enabled;
+}
+
+// Records, on the mesh the tessellation holds, the face neighbours of every owned cell by stable ID with the
+// owner's rank, by the rules of the event-mesh recorder in HDSim3D (mirrors and points outside the box skipped,
+// remote ghosts by ID).  Ghost IDs come from one exchange of owned IDs over the mesh's ghost maps, entered by every
+// rank.  Collective: unless every rank passes the checks (one mesh point per owned cell, sent indices owned, ghost
+// slots inside the ghost range and claimed by one peer, one ID per ghost slot), no rank keeps records and the
+// function returns false on every rank.
+bool RecordMeshAdjacencyById(Tessellation3D const& tess, std::vector<ComputationalCell3D> const& cells,
+    int const rank, std::vector<IndividualAMRChangeSet::AdjacencyEntry>& entries, unsigned long long& edges,
+    unsigned long long& skipped)
+{
+    entries.clear();
+    edges = 0;
+    skipped = 0;
+    std::size_t const owned = cells.size();
+    std::size_t const mesh_size = tess.getMeshPoints().size();
+    std::vector<int> const peers = tess.GetDuplicatedProcs();
+    std::vector<std::vector<std::size_t> > const& sent = tess.GetDuplicatedPoints();
+    std::vector<std::vector<std::size_t> > const& ghosts = tess.GetGhostIndeces();
+    int local_ok = (tess.GetPointNo() == owned && owned <= mesh_size && sent.size() == peers.size() &&
+                    ghosts.size() == peers.size()) ? 1 : 0;
+    std::vector<int> ghost_owner;
+    if(local_ok != 0)
+    {
+        ghost_owner.assign(mesh_size, -1);
+        for(std::size_t peer = 0; local_ok != 0 && peer < peers.size(); ++peer)
+        {
+            for(std::size_t const index : sent[peer])
+                if(index >= owned)
+                {
+                    local_ok = 0;
+                    break;
+                }
+            for(std::size_t const ghost : ghosts[peer])
+            {
+                if(ghost < owned || ghost >= mesh_size ||
+                   (ghost_owner[ghost] >= 0 && ghost_owner[ghost] != peers[peer]))
+                {
+                    local_ok = 0;
+                    break;
+                }
+                ghost_owner[ghost] = peers[peer];
+            }
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &local_ok, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    if(local_ok == 0)
+        return false;
+    std::size_t const no_id = std::numeric_limits<std::size_t>::max();
+    std::vector<std::size_t> ghost_id(mesh_size, no_id);
+    {
+        std::vector<std::size_t> owned_ids(owned);
+        for(std::size_t i = 0; i < owned; ++i)
+            owned_ids[i] = cells[i].ID;
+        std::vector<std::vector<std::size_t> > const incoming = MPI_exchange_data_indexed(peers, owned_ids, sent);
+        local_ok = incoming.size() == peers.size() ? 1 : 0;
+        for(std::size_t peer = 0; local_ok != 0 && peer < peers.size(); ++peer)
+        {
+            if(incoming[peer].size() != ghosts[peer].size())
+            {
+                local_ok = 0;
+                break;
+            }
+            for(std::size_t j = 0; j < ghosts[peer].size(); ++j)
+                ghost_id[ghosts[peer][j]] = incoming[peer][j];
+        }
+    }
+    MPI_Allreduce(MPI_IN_PLACE, &local_ok, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+    if(local_ok == 0)
+        return false;
+    entries.resize(owned);
+    std::vector<std::size_t> neighbors;
+    for(std::size_t local = 0; local < owned; ++local)
+    {
+        IndividualAMRChangeSet::AdjacencyEntry& entry = entries[local];
+        entry.cell_id = cells[local].ID;
+        tess.GetNeighbors(local, neighbors);
+        entry.neighbor_ids.reserve(neighbors.size());
+        entry.neighbor_owners.reserve(neighbors.size());
+        for(std::size_t const neighbor : neighbors)
+        {
+            if(neighbor >= mesh_size || tess.IsPointOutsideBox(neighbor))
+                continue;
+            if(neighbor < owned)
+            {
+                entry.neighbor_ids.push_back(cells[neighbor].ID);
+                entry.neighbor_owners.push_back(rank);
+                continue;
+            }
+            int const owner = ghost_owner[neighbor];
+            if(owner < 0 || owner == rank || ghost_id[neighbor] == no_id)
+            {
+                ++skipped;
+                continue;
+            }
+            entry.neighbor_ids.push_back(ghost_id[neighbor]);
+            entry.neighbor_owners.push_back(owner);
+        }
+        edges += entry.neighbor_ids.size();
+    }
+    return true;
+}
+
+// Differences between two record sets of the same cells (slot by slot), as sets of (neighbour ID, owner):
+// cells whose sets differ, pairs only in the reference, pairs only in the candidate, and IDs present in both
+// with different owners.  `example` describes the first differing cell.
+struct AdjacencyDifference
+{
+    unsigned long long cells = 0, missing = 0, extra = 0, owner = 0, reference_edges = 0;
+    std::string example;
+};
+
+AdjacencyDifference CompareAdjacency(std::vector<IndividualAMRChangeSet::AdjacencyEntry> const& candidate,
+    std::vector<IndividualAMRChangeSet::AdjacencyEntry> const& reference)
+{
+    AdjacencyDifference difference;
+    if(candidate.size() != reference.size())
+    {
+        difference.cells = std::max(candidate.size(), reference.size());
+        difference.example = "record counts differ: " + std::to_string(candidate.size()) + " against " +
+            std::to_string(reference.size());
+        return difference;
+    }
+    typedef std::pair<std::size_t, int> Pair;
+    std::vector<Pair> a, b, only_a, only_b;
+    for(std::size_t i = 0; i < candidate.size(); ++i)
+    {
+        a.clear();
+        b.clear();
+        for(std::size_t k = 0; k < candidate[i].neighbor_ids.size(); ++k)
+            a.emplace_back(candidate[i].neighbor_ids[k], candidate[i].neighbor_owners[k]);
+        for(std::size_t k = 0; k < reference[i].neighbor_ids.size(); ++k)
+            b.emplace_back(reference[i].neighbor_ids[k], reference[i].neighbor_owners[k]);
+        difference.reference_edges += b.size();
+        std::sort(a.begin(), a.end());
+        std::sort(b.begin(), b.end());
+        if(a == b && candidate[i].cell_id == reference[i].cell_id)
+            continue;
+        only_a.clear();
+        only_b.clear();
+        std::set_difference(a.begin(), a.end(), b.begin(), b.end(), std::back_inserter(only_a));
+        std::set_difference(b.begin(), b.end(), a.begin(), a.end(), std::back_inserter(only_b));
+        ++difference.cells;
+        difference.extra += only_a.size();
+        difference.missing += only_b.size();
+        for(Pair const& pair : only_a)
+            for(Pair const& other : only_b)
+                if(pair.first == other.first)
+                    ++difference.owner;
+        if(difference.example.empty())
+        {
+            std::ostringstream text;
+            text << "cell " << candidate[i].cell_id << " (reference " << reference[i].cell_id << ") only_captured=";
+            for(std::size_t k = 0; k < only_a.size() && k < 4; ++k)
+                text << (k ? "," : "") << only_a[k].first << "@" << only_a[k].second;
+            text << " only_full=";
+            for(std::size_t k = 0; k < only_b.size() && k < 4; ++k)
+                text << (k ? "," : "") << only_b[k].first << "@" << only_b[k].second;
+            difference.example = text.str();
+        }
+    }
+    return difference;
+}
+}  // namespace
+
+void Simulation::afterAppliedIndividualMigration(void)
+{
+    int const mode = AgreedLBAdjacencyCaptureMode();
+    if(mode != 0)
+    {
+        auto const start = std::chrono::steady_clock::now();
+        std::vector<IndividualAMRChangeSet::AdjacencyEntry> entries;
+        unsigned long long edges = 0;
+        unsigned long long skipped = 0;
+        bool const captured =
+            RecordMeshAdjacencyById(this->tess, this->cells, this->rank, entries, edges, skipped);
+        double const capture_seconds =
+            std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+        AdjacencyDifference difference;
+        double verify_seconds = 0;
+        int verified = 0;
+        if(captured && mode == 3)
+        {
+            // Diagnostic: the full mesh on the new ownership, recorded the same way.
+            auto const verify_start = std::chrono::steady_clock::now();
+            std::vector<Vector3D> points = this->tess.getAllPoints();
+            int local_points_valid = points.size() >= this->cells.size() ? 1 : 0;
+            MPI_Allreduce(MPI_IN_PLACE, &local_points_valid, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+            if(local_points_valid != 0)
+            {
+                points.resize(this->cells.size());
+                {
+                    MeshBuildTimer mesh_build_timer(this->individualMeshBuildTiming);
+                    ++this->individualMeshBuildTiming.full_builds;
+                    this->tess.BuildParallel(points, true /* no rebalance */, true /* no exchange */);
+                }
+                std::vector<IndividualAMRChangeSet::AdjacencyEntry> reference;
+                unsigned long long reference_edges = 0;
+                unsigned long long reference_skipped = 0;
+                if(RecordMeshAdjacencyById(this->tess, this->cells, this->rank, reference, reference_edges,
+                                           reference_skipped))
+                {
+                    verified = 1;
+                    difference = CompareAdjacency(entries, reference);
+                }
+            }
+            verify_seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - verify_start).count();
+        }
+        int installed = 0;
+        if(captured && (mode == 1 || mode == 3))
+            for(std::shared_ptr<PhysicsStep> const& physicsStep : this->physics)
+                if(physicsStep->installIndividualAMRAdjacency(entries))
+                    installed = 1;
+        std::vector<IndividualAMRChangeSet::AdjacencyEntry>().swap(entries);
+        double sums[10] = {static_cast<double>(this->cells.size()), static_cast<double>(edges),
+            static_cast<double>(skipped), capture_seconds, static_cast<double>(installed),
+            static_cast<double>(difference.cells), static_cast<double>(difference.missing),
+            static_cast<double>(difference.extra), static_cast<double>(difference.owner),
+            static_cast<double>(difference.reference_edges)};
+        double maxima[2] = {capture_seconds, verify_seconds};
+        MPI_Allreduce(MPI_IN_PLACE, sums, 10, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, maxima, 2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+        int verified_everywhere = verified;
+        MPI_Allreduce(MPI_IN_PLACE, &verified_everywhere, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+        if(this->rank == 0)
+        {
+            std::cout << std::setprecision(9) << "INDIVIDUAL_LB_ADJACENCY_CAPTURE cycle=" << this->tracker.getCycle()
+                      << " mode=" << mode << " captured=" << (captured ? 1 : 0)
+                      << " installed_ranks=" << static_cast<unsigned long long>(sums[4])
+                      << " owned_cells=" << static_cast<unsigned long long>(sums[0])
+                      << " edges=" << static_cast<unsigned long long>(sums[1])
+                      << " skipped_edges=" << static_cast<unsigned long long>(sums[2])
+                      << " lb_capture_s_max=" << maxima[0]
+                      << " lb_capture_s_mean=" << sums[3] / static_cast<double>(this->size);
+            if(mode == 3)
+                std::cout << " verified=" << verified_everywhere << " verify_full_s_max=" << maxima[1]
+                          << " verify_reference_edges=" << static_cast<unsigned long long>(sums[9])
+                          << " verify_cells_differing=" << static_cast<unsigned long long>(sums[5])
+                          << " verify_missing_edges=" << static_cast<unsigned long long>(sums[6])
+                          << " verify_extra_edges=" << static_cast<unsigned long long>(sums[7])
+                          << " verify_owner_differences=" << static_cast<unsigned long long>(sums[8]);
+            std::cout << std::endl;
+        }
+        if(mode == 3 && sums[5] > 0)
+        {
+            // One representative example, from the lowest rank that has one.
+            int example_rank = difference.cells > 0 ? this->rank : this->size;
+            MPI_Allreduce(MPI_IN_PLACE, &example_rank, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+            if(this->rank == example_rank)
+                std::cout << "INDIVIDUAL_LB_ADJACENCY_VERIFY_EXAMPLE rank=" << this->rank << " "
+                          << difference.example << std::endl;
+        }
+    }
+    if(AgreedFullMeshAfterMigration())
+        for(std::shared_ptr<PhysicsStep> const& physicsStep : this->physics)
+            physicsStep->requestIndividualFullEventMesh();
+}
+
 Simulation::IndividualRebalanceResult Simulation::rebalanceToPositionalOwnership(
     std::shared_ptr<PhysicsStep> const& balanceStep)
 {
@@ -4669,6 +5973,8 @@ Simulation::rebalanceCommittedIndividualState(
     if(!owned_count_preserved)
         throw std::logic_error(
             "Individual load balancing changed global owned-cell count");
+    if(result.applied)
+        this->afterAppliedIndividualMigration();
     MPI_Barrier(MPI_COMM_WORLD);
     result.localSeconds = std::chrono::duration<double>(
         std::chrono::high_resolution_clock::now() - balance_start).count();
@@ -4953,6 +6259,70 @@ void Simulation::reportPhaseBusyTimes(std::string const& mode,
     }
 }
 
+void Simulation::AlignIndividualTargetCounts(void)
+{
+    IndividualTargetObservationState& Observed = this->IndividualTargetObservation;
+    std::size_t const Owned = this->cells.size();
+    if(Observed.Epoch != this->individualOwnershipEpoch)
+    {
+        // A migration (or the first use): the counts and event counters restart on the new ownership.
+        Observed = IndividualTargetObservationState();
+        Observed.Epoch = this->individualOwnershipEpoch;
+        Observed.Counts.assign(Owned, 0);
+        Observed.Ids.resize(Owned);
+        for(std::size_t i = 0; i < Owned; ++i)
+            Observed.Ids[i] = this->cells[i].ID;
+        return;
+    }
+    bool Aligned = Observed.Ids.size() == Owned && Observed.Counts.size() == Owned;
+    for(std::size_t i = 0; Aligned && i < Owned; ++i)
+        Aligned = Observed.Ids[i] == this->cells[i].ID;
+    if(Aligned)
+        return;
+    // AMR changed the owned cells without a migration: surviving cells keep their counts by stable ID, as the
+    // scheduler states do (applyAMRChangeSet); new cells start at zero and removed cells drop.
+    std::unordered_map<std::size_t, std::uint32_t> ById;
+    ById.reserve(Observed.Ids.size());
+    for(std::size_t k = 0; k < Observed.Ids.size() && k < Observed.Counts.size(); ++k)
+        ById.emplace(Observed.Ids[k], Observed.Counts[k]);
+    Observed.Counts.assign(Owned, 0);
+    Observed.Ids.resize(Owned);
+    for(std::size_t i = 0; i < Owned; ++i)
+    {
+        Observed.Ids[i] = this->cells[i].ID;
+        auto const Found = ById.find(Observed.Ids[i]);
+        if(Found != ById.end())
+            Observed.Counts[i] = Found->second;
+    }
+}
+
+void Simulation::ObserveIndividualEventTargets(bool const AllActiveEvent)
+{
+    this->AlignIndividualTargetCounts();
+    IndividualTargetObservationState& Observed = this->IndividualTargetObservation;
+    IndividualEventTargetRecord& Record = this->IndividualEventTargets;
+    if(AllActiveEvent)
+        ++Observed.AllActiveEvents;
+    else if(!Record.Recorded)
+        ++Observed.UnrecordedEvents;
+    else if(!Record.MeshPartial)
+    {
+        // A full event mesh: every owned cell is a target.
+        ++Observed.FullMeshEvents;
+        for(std::uint32_t& Count : Observed.Counts)
+            ++Count;
+    }
+    else
+    {
+        ++Observed.PartialEvents;
+        for(std::size_t const Global : Record.Targets)
+            if(Global < Observed.Counts.size())
+                ++Observed.Counts[Global];
+    }
+    Record.Recorded = false;
+    Record.Targets.clear();
+}
+
 void Simulation::maybeBalanceIndividualEventByActiveBins(
     IndividualStepContext& context, std::uint64_t const eventTick)
 {
@@ -5127,6 +6497,12 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
             IndividualSegmentDecisionState& decision =
                 this->individualSegmentDecision;
             ++decision.event_counter;
+            // RICH_INDIVIDUAL_ACTIVE_HILBERT_SEGMENT_WORK_AUTO (agreed): this
+            // ledger also chooses the work weight of every interleaved plan it
+            // builds (bin-balanced plans take no work weight).
+            bool const SegmentWorkAuto = AgreedSchSwitches().SegmentWorkAuto != 0 && !options.segment_bins;
+            // RICH_INDIVIDUAL_ACTIVE_HILBERT_TARGET_PLAN (agreed; stepIndividual checked that plans are interleaved).
+            int const TargetPlan = AgreedSchSwitches().TargetPlan;
             // The previous event's ledger seconds (max over ranks); named
             // "mesh" for the debt baseline it also feeds.
             double last_event_mesh = this->lastIndividualEventLedgerLocalSeconds;
@@ -5166,6 +6542,11 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                     return decision.positional_sum[k] /
                         static_cast<double>(decision.positional_count[k]);
                 }
+                if(decision.positional_count[k] == 1 && decision.RetainedPositionalValid[k])
+                {
+                    reference_source = c;
+                    return 0.5 * (decision.positional_sum[k] + decision.RetainedPositionalSeconds[k]);
+                }
                 reference_source = -1;
                 return -1.0;
             };
@@ -5179,6 +6560,10 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                         last_event_mesh;
                     ++decision.positional_count[static_cast<std::size_t>(measured_class)];
                     ++positional_samples;
+                    decision.LastPositionalSeconds[static_cast<std::size_t>(measured_class)] = last_event_mesh;
+                    decision.LastPositionalEvent[static_cast<std::size_t>(measured_class)] =
+                        decision.event_counter;
+                    decision.HasLastPositional[static_cast<std::size_t>(measured_class)] = true;
                 }
                 // A probe is adopted only with a reference for every class
                 // that carries a quarter or more of the positional seconds,
@@ -5198,7 +6583,7 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                         decision.positional_sum[k] > 0;
                     bool const measuring = (decision.measure_mask >> c & 1u) != 0 &&
                         decision.event_counter < decision.measure_deadline_event;
-                    if((dominant || measuring) && decision.positional_count[k] < 2)
+                    if((dominant || measuring) && !decision.HasPositionalReference(k))
                         references_ready = false;
                 }
                 // The gate reads measured seconds: off with the reverts
@@ -5218,6 +6603,14 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                     decision.measured_seconds += last_event_mesh;
                     decision.class_seconds[static_cast<std::size_t>(measured_class)] +=
                         last_event_mesh;
+                    // The same sample, for the work weight of the plan it ran on.
+                    if(SegmentWorkAuto && decision.CurrentWork >= 0)
+                    {
+                        std::size_t const K = static_cast<std::size_t>(decision.CurrentWork);
+                        decision.WorkSum[K][static_cast<std::size_t>(measured_class)] += last_event_mesh;
+                        decision.WorkCount[K][static_cast<std::size_t>(measured_class)] += 1;
+                        decision.WorkEvents[K] += 1;
+                    }
                     decision.window_measured_seconds += last_event_mesh;
                     double const reference = positional_reference(measured_class);
                     if(reference >= 0)
@@ -5287,7 +6680,7 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                         if(4 * decision.class_seconds[static_cast<std::size_t>(c)] >=
                                decision.measured_seconds &&
                            decision.class_seconds[static_cast<std::size_t>(c)] > 0 &&
-                           decision.positional_count[static_cast<std::size_t>(c)] < 2)
+                           !decision.HasPositionalReference(static_cast<std::size_t>(c)))
                             dominant_classes_referenced = false;
                     // A dominant class without a reference: return to
                     // positional ownership to measure it, once per class and
@@ -5298,7 +6691,7 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                         if(4 * decision.class_seconds[static_cast<std::size_t>(c)] >=
                                decision.measured_seconds &&
                            decision.class_seconds[static_cast<std::size_t>(c)] > 0 &&
-                           decision.positional_count[static_cast<std::size_t>(c)] < 2)
+                           !decision.HasPositionalReference(static_cast<std::size_t>(c)))
                             missing_mask |= 1u << c;
                     // Only a probe showing aging is measured: in a regime where
                     // segmented ownership wins, a positional stretch costs
@@ -5388,6 +6781,29 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
             {
                 double const planning_start = MPI_Wtime();
                 ++this->individualActiveHilbertBuiltRebuilds;
+                // The work weight of this plan: the configured beta, or the
+                // ledger's choice among SegmentWorkCandidates.  A frozen ledger
+                // (no reverts: the replay setting) keeps the configured beta,
+                // so ownership stays a function of the state alone.  A changed
+                // beta rides on this re-plan's migration, charged below as
+                // every segmented migration is.
+                double PlanWork = options.segment_work;
+                std::vector<double> WorkCandidates;
+                SegmentWorkChoice WorkChoice;
+                decision.PendingWork = -1;
+                if(SegmentWorkAuto)
+                {
+                    WorkCandidates = SegmentWorkCandidates(options.segment_work);
+                    int const Configured = static_cast<int>(std::find(WorkCandidates.begin(),
+                        WorkCandidates.end(), options.segment_work) - WorkCandidates.begin());
+                    WorkChoice = ChooseSegmentWork(decision, WorkCandidates, Configured, 32 * cooldown);
+                    if(!options.segment_revert)
+                    {
+                        WorkChoice.Candidate = Configured;
+                        WorkChoice.Basis = "frozen";
+                    }
+                    PlanWork = WorkCandidates[static_cast<std::size_t>(WorkChoice.Candidate)];
+                }
                 proposed_load_balance = options.segment_bins ?
                     buildIndividualBinBalancedSegments(*current_load_balance,
                         points, this->individualScheduler->states(), occupancy,
@@ -5397,7 +6813,7 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                 if(!options.segment_bins)
                 {
                     std::vector<double> piece_weights;
-                    if(options.segment_work > 0)
+                    if(PlanWork > 0)
                     {
                         // Work weights from the replicated bin occupancy.
                         int coarsest = 0;
@@ -5419,7 +6835,7 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                         auto const& states = this->individualScheduler->states();
                         piece_weights.resize(points.size());
                         for(std::size_t i = 0; i < points.size(); ++i)
-                            piece_weights[i] = 1 + options.segment_work * scale *
+                            piece_weights[i] = 1 + PlanWork * scale *
                                 std::ldexp(1.0, coarsest - static_cast<int>(
                                     std::min<std::size_t>(states[i].time_bin, 63)));
                     }
@@ -5429,6 +6845,34 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                 proposed_load = measureIndividualHilbertPartition(
                     *proposed_load_balance, points, context.active_mask,
                     this->size);
+                // RICH_INDIVIDUAL_ACTIVE_HILBERT_TARGET_PLAN: score a target-weighted interleave beside this plan
+                // (the control), built on a clone.  1 keeps the control; 2 installs the candidate when it owns every
+                // rank within the owned-cell cap, the control otherwise.  The checks below then apply to whichever
+                // is installed.  The configured beta weighs the targets.
+                IndividualTargetPlanScore TargetScore;
+                IndividualHilbertPartitionLoad TargetControlLoad;
+                double TargetControlSeconds = 0;
+                double TargetShadowSeconds = 0;
+                bool TargetCandidateInstalled = false;
+                if(TargetPlan != 0)
+                {
+                    double const ShadowStart = MPI_Wtime();
+                    TargetControlSeconds = ShadowStart - planning_start;
+                    TargetControlLoad = proposed_load;
+                    this->AlignIndividualTargetCounts();
+                    IndividualTargetObservationState const& Observed = this->IndividualTargetObservation;
+                    TargetScore = ScoreIndividualTargetPlan(*current_load_balance, *proposed_load_balance,
+                        proposed_load, points, context.active_mask, Observed.Counts,
+                        Observed.PartialEvents + Observed.FullMeshEvents, options.segment_work,
+                        options.segments_per_rank, options.maximum_owned_cell_skew, this->size);
+                    if(TargetPlan == 2 && TargetScore.Candidate && TargetScore.CandidateAcceptable)
+                    {
+                        proposed_load_balance = TargetScore.Candidate;
+                        proposed_load = TargetScore.CandidateLoad;
+                        TargetCandidateInstalled = true;
+                    }
+                    TargetShadowSeconds = MPI_Wtime() - ShadowStart;
+                }
                 proposal_source = "segmented";
                 // Bin plans must also meet the per-bin cap (slack 2 on the
                 // active threshold, plan section 1.2) and improve the skew.
@@ -5461,6 +6905,10 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                         force_segment_migration = true;
                 }
                 double planning_seconds = MPI_Wtime() - planning_start;
+                // TARGET_PLAN=1 charges the control's planning only: the shadow is no part of the run's plan.  At 2
+                // both builds are charged, as both ran.
+                if(TargetPlan == 1)
+                    planning_seconds -= TargetShadowSeconds;
                 MPI_Allreduce(MPI_IN_PLACE, &planning_seconds, 1, MPI_DOUBLE,
                               MPI_MAX, MPI_COMM_WORLD);
                 this->individualSegmentMigrationSeconds += planning_seconds;
@@ -5480,6 +6928,129 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                         revert_to_positional = true;
                         proposal_source = "positional";
                         action = "revert-segmented-unsafe";
+                    }
+                }
+                if(SegmentWorkAuto)
+                {
+                    if(proposed_load_balance)
+                        decision.PendingWork = WorkChoice.Candidate;
+                    if(this->rank == 0)
+                    {
+                        // One line per work-weight decision: each candidate's
+                        // cost (seconds per event, -1 if not comparable), its
+                        // measured events, plans, migration and planning seconds
+                        // per event, and events since its latest plan.
+                        std::ostringstream Line;
+                        Line << std::setprecision(6) << "RICH_SEGMENT_WORK_DECISION cycle="
+                             << this->tracker.getCycle() << " event=" << decision.event_counter << " reason="
+                             << replan_reason << " previous=";
+                        if(decision.CurrentWork >= 0 && !current_positional)
+                            Line << WorkCandidates[static_cast<std::size_t>(decision.CurrentWork)];
+                        else
+                            Line << (current_positional ? "positional" : "unknown");
+                        Line << " chosen=" << PlanWork << " basis=" << WorkChoice.Basis << " outcome=" << action;
+                        for(std::size_t K = 0; K < WorkCandidates.size(); ++K)
+                        {
+                            Line << " beta" << WorkCandidates[K] << "_cost=" << WorkChoice.Cost[K]
+                                 << " beta" << WorkCandidates[K] << "_events=" << decision.WorkEvents[K]
+                                 << " beta" << WorkCandidates[K] << "_plans=" << decision.WorkPlans[K]
+                                 << " beta" << WorkCandidates[K] << "_charges_per_event="
+                                 << (decision.WorkEvents[K] > 0 ?
+                                     decision.WorkCharges[K] / decision.WorkEvents[K] : -1.0)
+                                 << " beta" << WorkCandidates[K] << "_age=";
+                            if(decision.WorkPlans[K] > 0)
+                                Line << decision.event_counter - decision.WorkLastPlanEvent[K];
+                            else
+                                Line << -1;
+                        }
+                        std::cout << Line.str() << std::endl;
+                    }
+                }
+                if(TargetPlan != 0)
+                {
+                    // Planning seconds of the control and of the shadow (candidate build, measurement, scoring):
+                    // rank maximum, mean and the rank of the maximum.  Collective (one MPI_Gather).
+                    double const LocalSeconds[2] = {TargetControlSeconds, TargetShadowSeconds};
+                    std::vector<double> RankSeconds(this->rank == 0 ? 2 * static_cast<std::size_t>(this->size) : 0);
+                    MPI_Gather(LocalSeconds, 2, MPI_DOUBLE, RankSeconds.data(), 2, MPI_DOUBLE, 0, MPI_COMM_WORLD);
+                    if(this->rank == 0)
+                    {
+                        double SecondsMax[2] = {-1, -1};
+                        double SecondsSum[2] = {0, 0};
+                        int SecondsRank[2] = {0, 0};
+                        for(int Rank = 0; Rank < this->size; ++Rank)
+                            for(int Part = 0; Part < 2; ++Part)
+                            {
+                                double const Value =
+                                    RankSeconds[2 * static_cast<std::size_t>(Rank) + static_cast<std::size_t>(Part)];
+                                SecondsSum[Part] += Value;
+                                if(Value > SecondsMax[Part])
+                                {
+                                    SecondsMax[Part] = Value;
+                                    SecondsRank[Part] = Rank;
+                                }
+                            }
+                        IndividualTargetObservationState const& Observed = this->IndividualTargetObservation;
+                        // none: the ledger rejected the plan (only the control can fail: a candidate is installed
+                        // only when it passes the same checks).
+                        char const* const Installed = !proposed_load_balance ? "none" :
+                            (TargetCandidateInstalled ? "candidate" : "control");
+                        char const* const CandidateState = !TargetScore.Candidate ? "control_weights" :
+                            (!TargetScore.CandidateLoad.ownsEveryRank() ? "empty_rank" :
+                             (TargetScore.CandidateAcceptable ? "acceptable" : "owned_skew"));
+                        IndividualHilbertPartitionLoad const& CandidateLoad = TargetScore.Candidate ?
+                            TargetScore.CandidateLoad : TargetControlLoad;
+                        double const Ranks = static_cast<double>(this->size);
+                        auto const Ratio = [](double const Max, double const Mean) {
+                            return Mean > 0 ? Max / Mean : 0.0;
+                        };
+                        std::ostringstream Line;
+                        Line << std::setprecision(6) << "RICH_TARGET_PLAN_SHADOW cycle=" << this->tracker.getCycle()
+                             << " event=" << decision.event_counter << " mode=" << TargetPlan << " reason="
+                             << replan_reason << " outcome=" << action << " installed=" << Installed
+                             << " events=" << Observed.PartialEvents + Observed.FullMeshEvents
+                             << " partial_mesh_events=" << Observed.PartialEvents
+                             << " full_mesh_events=" << Observed.FullMeshEvents
+                             << " all_active_events=" << Observed.AllActiveEvents
+                             << " unrecorded_events=" << Observed.UnrecordedEvents
+                             << " counted_targets=" << TargetScore.CountedTargets << " beta=" << options.segment_work
+                             << " control_beta=" << PlanWork << " candidate=" << CandidateState
+                             << " control_target_max=" << TargetScore.ControlTargetMax
+                             << " control_target_mean=" << TargetScore.ControlTargetMean
+                             << " control_target_max_mean="
+                             << Ratio(TargetScore.ControlTargetMax, TargetScore.ControlTargetMean)
+                             << " candidate_target_max=" << TargetScore.CandidateTargetMax
+                             << " candidate_target_mean=" << TargetScore.CandidateTargetMean
+                             << " candidate_target_max_mean="
+                             << Ratio(TargetScore.CandidateTargetMax, TargetScore.CandidateTargetMean)
+                             << " control_owned_max=" << TargetControlLoad.maximum_owned_cells
+                             << " control_owned_mean=" << static_cast<double>(TargetControlLoad.owned_cells) / Ranks
+                             << " control_owned_max_mean=" << TargetControlLoad.ownedMaxMean()
+                             << " candidate_owned_max=" << CandidateLoad.maximum_owned_cells
+                             << " candidate_owned_mean=" << static_cast<double>(CandidateLoad.owned_cells) / Ranks
+                             << " candidate_owned_max_mean=" << CandidateLoad.ownedMaxMean()
+                             << " candidate_owned_min=" << CandidateLoad.minimum_owned_cells
+                             << " control_plan_s_max=" << SecondsMax[0] << " control_plan_s_mean="
+                             << SecondsSum[0] / Ranks << " control_plan_s_rank=" << SecondsRank[0]
+                             << " shadow_s_max=" << SecondsMax[1] << " shadow_s_mean=" << SecondsSum[1] / Ranks
+                             << " shadow_s_rank=" << SecondsRank[1];
+                        std::cout << Line.str() << std::endl;
+                        if(TargetPlan == 2)
+                        {
+                            // Which map the ledger installs at this build and its predicted target load.
+                            bool const Candidate = TargetCandidateInstalled;
+                            double const InstalledMax = Candidate ? TargetScore.CandidateTargetMax :
+                                TargetScore.ControlTargetMax;
+                            double const InstalledMean = Candidate ? TargetScore.CandidateTargetMean :
+                                TargetScore.ControlTargetMean;
+                            std::cout << std::setprecision(6) << "RICH_TARGET_PLAN_INSTALL cycle="
+                                      << this->tracker.getCycle() << " event=" << decision.event_counter
+                                      << " reason=" << replan_reason << " outcome=" << action << " installed="
+                                      << Installed << " candidate=" << CandidateState << " target_max="
+                                      << InstalledMax << " target_mean=" << InstalledMean << " target_max_mean="
+                                      << Ratio(InstalledMax, InstalledMean) << " owned_max_mean="
+                                      << (proposed_load_balance ? proposed_load.ownedMaxMean() : 0.0) << std::endl;
+                        }
                     }
                 }
             }
@@ -5648,6 +7219,14 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
         fresh.event_counter = decision.event_counter;
         fresh.reverts = decision.reverts;
         fresh.pending_class = decision.pending_class;
+        // The work-weight samples belong to the domain, not to the probe: a
+        // revert keeps them (the next plan starts from positional ownership).
+        fresh.WorkSum = decision.WorkSum;
+        fresh.WorkCount = decision.WorkCount;
+        fresh.WorkEvents = decision.WorkEvents;
+        fresh.WorkCharges = decision.WorkCharges;
+        fresh.WorkPlans = decision.WorkPlans;
+        fresh.WorkLastPlanEvent = decision.WorkLastPlanEvent;
         // Only a measuring revert keeps its classes: any other revert starts
         // a reference period in which every class may be measured again.
         if(action == "revert-measure")
@@ -5655,7 +7234,34 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
             fresh.measure_mask = decision.measure_mask;
             fresh.measure_deadline_event = decision.measure_deadline_event;
         }
+        // A measuring revert keeps each class's latest genuine positional
+        // sample when it is at most ReferenceAge events old.  It completes a
+        // reference that has exactly one fresh sample and counts as no sample
+        // itself.  Ordinary reverts, domain changes and mode switches start
+        // without retained samples; the cache of genuine samples is carried
+        // only through measuring reverts and never re-stamped.
+        std::ostringstream RetainedLog;
+        if(action == "revert-measure" && options.ReferenceAge > 0 && options.segment_revert)
+        {
+            fresh.LastPositionalSeconds = decision.LastPositionalSeconds;
+            fresh.LastPositionalEvent = decision.LastPositionalEvent;
+            fresh.HasLastPositional = decision.HasLastPositional;
+            for(std::size_t k = 0; k < IndividualSegmentDecisionState::classes; ++k)
+            {
+                if(!decision.HasLastPositional[k])
+                    continue;
+                std::uint64_t const Age = decision.event_counter - decision.LastPositionalEvent[k];
+                if(Age > options.ReferenceAge)
+                    continue;
+                fresh.RetainedPositionalSeconds[k] = decision.LastPositionalSeconds[k];
+                fresh.RetainedPositionalValid[k] = true;
+                RetainedLog << " class" << k << "=" << decision.LastPositionalSeconds[k] << "s/age" << Age;
+            }
+        }
         decision = fresh;
+        if(this->rank == 0 && !RetainedLog.str().empty())
+            std::clog << "INDIVIDUAL_SEGMENT_REFERENCE_RETAINED cycle=" << this->tracker.getCycle()
+                      << " max_age=" << options.ReferenceAge << RetainedLog.str() << std::endl;
         bool const all_active_event =
             current_load.active_cells == current_load.owned_cells;
         context = this->individualScheduler->prepareEvent(
@@ -5712,6 +7318,28 @@ void Simulation::maybeBalanceIndividualEventByActiveBins(
                 // debt baseline restarts.
                 decision.net_benefit -= migration.maximumSeconds +
                     decision.pending_planning_seconds;
+                // The work-weight ledger charges the same migration and
+                // planning to the plan's candidate, after halving that
+                // candidate's older samples.
+                if(AgreedSchSwitches().SegmentWorkAuto != 0)
+                {
+                    decision.CurrentWork = decision.PendingWork;
+                    if(decision.PendingWork >= 0)
+                    {
+                        std::size_t const K = static_cast<std::size_t>(decision.PendingWork);
+                        for(std::size_t C = 0; C < IndividualSegmentDecisionState::classes; ++C)
+                        {
+                            decision.WorkSum[K][C] *= 0.5;
+                            decision.WorkCount[K][C] *= 0.5;
+                        }
+                        decision.WorkEvents[K] *= 0.5;
+                        decision.WorkCharges[K] = 0.5 * decision.WorkCharges[K] + migration.maximumSeconds +
+                            decision.pending_planning_seconds;
+                        ++decision.WorkPlans[K];
+                        decision.WorkLastPlanEvent[K] = decision.event_counter;
+                    }
+                    decision.PendingWork = -1;
+                }
                 decision.pending_planning_seconds = 0;
                 decision.last_migration_seconds = migration.maximumSeconds;
                 decision.events_since_migration = 0;
@@ -5796,6 +7424,10 @@ void Simulation::stepIndividual(void)
 {
     bool const detailed_runtime_log = RuntimeLogDetailed();
     bool const runtime_color_enabled = RuntimeColorEnabled();
+    // Every rank enters here at every event: the first call agrees the s49 switches (one reduction per run).
+    SchSwitches const& S49Switches = AgreedSchSwitches();
+    bool const D2Timers = S49Switches.D2Timers != 0;
+    std::array<double, D2SchPartCount> D2Seconds{};
     if(!this->individualScheduler)
         throw std::logic_error("Individual timestep mode has no scheduler");
     if(!this->individualScheduler->initialized())
@@ -5870,6 +7502,9 @@ void Simulation::stepIndividual(void)
                       << " first_interval=" << this->individualScheduler->nextEventTimeStep() << std::endl;
         this->individualScheduler->enforceNeighborBinClosure(
             this->tess, this->cells);
+        // A new grid: the shadow's streaks start again at this boundary.
+        if(S49Switches.Reanchor == 2)
+            this->IndividualReanchorShadow = IndividualReanchorShadowState();
     }
 
     this->lastPhysicsTimes.clear();
@@ -5900,15 +7535,21 @@ void Simulation::stepIndividual(void)
     MeshBuildTiming local_mesh_build_timing;
 #ifndef RICH_MPI
     requireSerialIndividualActiveHilbertCompatibility();
+    if(S49Switches.TargetPlan != 0)
+        throw std::invalid_argument("RICH_INDIVIDUAL_ACTIVE_HILBERT_TARGET_PLAN needs an MPI build");
 #endif
 #ifdef RICH_MPI
     this->individualMeshBuildTiming = MeshBuildTiming();
     bool const active_hilbert_balance =
         this->individualActiveHilbertBalanceEnabled();
+    if(S49Switches.TargetPlan != 0)
+        RequireIndividualTargetPlanSupport(S49Switches.TargetPlan, S49Switches.SegmentWorkAuto, active_hilbert_balance);
     // Restart state is already committed.  Any ownership migration must
     // finish before prepareEvent creates an in-flight event context.
     this->maybeRebalanceBeforeFirstIndividualEvent(active_hilbert_balance);
 #endif
+    if(S49Switches.Reanchor == 2)
+        this->ReportIndividualReanchorShadow();
 
     this->individualEventInProgress = true;
     struct EventProgressReset
@@ -6102,6 +7743,13 @@ void Simulation::stepIndividual(void)
 #ifdef RICH_MPI
     if(active_hilbert_balance)
         this->maybeBalanceIndividualEventByActiveBins(context, event_tick);
+    // RICH_INDIVIDUAL_ACTIVE_HILBERT_TARGET_PLAN: the hydro step records this event's final event-mesh targets (the
+    // context is final here; the balance above may have prepared it again).
+    if(S49Switches.TargetPlan != 0)
+    {
+        this->IndividualEventTargets.Recorded = false;
+        context.event_target_record = &this->IndividualEventTargets;
+    }
     IndividualRebalanceRuntimeOptions const& balance_options =
         individualRebalanceRuntimeOptions();
 #endif
@@ -6161,8 +7809,14 @@ void Simulation::stepIndividual(void)
         individual_sync_seconds += seconds_since(sync_start);
     }
 #endif
-    double const applied_dt_min = RuntimeMinimum(local_applied_dt_min);
-    double const applied_dt_max = RuntimeMaximum(local_applied_dt_max);
+    // Read only by the step report; RICH_STEP_REPORT_FUSED=1 reduces them there.
+    double applied_dt_min = local_applied_dt_min;
+    double applied_dt_max = local_applied_dt_max;
+    if(S49Switches.StepReportFused != 1)
+    {
+        applied_dt_min = RuntimeMinimum(local_applied_dt_min);
+        applied_dt_max = RuntimeMaximum(local_applied_dt_max);
+    }
     std::ostringstream active_bins_stream;
     active_bins_stream << '['
                        << std::setprecision(runtime_simulation_digits);
@@ -6229,6 +7883,14 @@ void Simulation::stepIndividual(void)
             std::cout << "Individual physics " << name << " time: "
                       << elapsed << std::endl;
     }
+#ifdef RICH_MPI
+    // The event's physics completed on every rank: count its targets (local; the class inputs are global).
+    if(S49Switches.TargetPlan != 0)
+    {
+        context.event_target_record = nullptr;
+        this->ObserveIndividualEventTargets(global_active_cells == global_total_cells);
+    }
+#endif
 
     if(this->individualPostPhysics)
     {
@@ -6300,9 +7962,34 @@ void Simulation::stepIndividual(void)
 
     {
         double const wake_total = seconds_since(wake_start);
+        WakeRoutingAdaptiveState& Adaptive = WakeRoutingAdaptive();
+        if(Adaptive.RoutedThisCall)
+        {
+            Adaptive.PendingLocalSeconds = wake_total;
+            Adaptive.PendingMode = Adaptive.ModeThisCall;
+            Adaptive.RoutedThisCall = false;
+        }
         individual_sweep_seconds = full_source_sweep.performed ?
             full_source_sweep.seconds_local : 0;
         individual_wake_seconds = std::max(0.0, wake_total - individual_sweep_seconds);
+        if(D2Timers)
+        {
+            IndividualFullSourceSweepReport const& Wake = full_source_sweep;
+            D2Seconds[D2WakeTotal] = wake_total;
+            D2Seconds[D2WakePrepare] = Wake.prepare_seconds;
+            D2Seconds[D2WakeSources] = Wake.sources_seconds;
+            D2Seconds[D2WakeTreeInsert] = Wake.tree_local_seconds - Wake.TreeSummarySeconds;
+            D2Seconds[D2WakeSummaries] = Wake.TreeSummarySeconds;
+            D2Seconds[D2WakeRoutingTree] = Wake.tree_distributed_seconds;
+            D2Seconds[D2WakeReuseCheck] = Wake.tree_reuse_check_seconds;
+            D2Seconds[D2WakeReuseReduce] = Wake.tree_reuse_reduce_seconds;
+            D2Seconds[D2WakeTreeOther] = Wake.tree_seconds - Wake.tree_local_seconds - Wake.tree_distributed_seconds -
+                Wake.tree_reuse_check_seconds - Wake.tree_reuse_reduce_seconds;
+            D2Seconds[D2WakeLocalEval] = Wake.local_eval_seconds;
+            D2Seconds[D2WakeRoute] = Wake.route_seconds;
+            D2Seconds[D2WakeExchange] = Wake.exchange_seconds;
+            D2Seconds[D2WakeRemote] = Wake.remote_seconds;
+        }
     }
 #ifdef RICH_MPI
     {
@@ -6316,6 +8003,8 @@ void Simulation::stepIndividual(void)
             std::cout << "INDIVIDUAL_WAKE_ROUTING cycle=" << this->tracker.getCycle()
                       << " rebuilds=" << routing_rebuilds
                       << " reuses=" << routing_reuses
+                      << " adaptive_reuse_mean_s=" << WakeRoutingAdaptive().MeanSeconds[1]
+                      << " adaptive_rebuild_mean_s=" << WakeRoutingAdaptive().MeanSeconds[0]
                       << " tree_seconds_local=" << full_source_sweep.tree_seconds
                       << std::endl;
     }
@@ -6555,15 +8244,35 @@ void Simulation::stepIndividual(void)
         static_cast<std::uint64_t>(this->cells.size());
     std::uint64_t local_amr_added_cells = 0;
     std::uint64_t local_amr_removed_cells = 0;
+    // Adjacency records captured by the AMR pass (installed after the AMR hooks below).
+    std::vector<IndividualAMRChangeSet::AdjacencyEntry> amr_adjacency;
+    int amr_adjacency_mode = 0;
     if(this->individualAMR)
     {
         const auto amr_start = std::chrono::high_resolution_clock::now();
         double const amr_mpi_start = mpi_wait_profiler::Seconds();
+        double const D2AmrStart = D2Timers ? D2Now() : 0;
+        double D2Mark = D2AmrStart;
         // AMR rebuilds its mesh from these event-time generators; the
         // context's gravity source points are cell centroids.  Collective.
-        context.generator_points = this->CommittedGeneratorPoints();
-        IndividualAMRChangeSet const changes = this->individualAMR(context);
+        // RICH_INDIVIDUAL_LAZY_GENERATORS=1 (agreed on every rank) leaves them
+        // empty: the callback runs no pass on most events, and AMR3D builds
+        // the same vector from CommittedGeneratorPoints() when it runs one
+        // (nothing before that call changes the committed generators).
+        if(S49Switches.LazyGenerators != 1)
+            context.generator_points = this->CommittedGeneratorPoints();
+        if(D2Timers)
+        {
+            double const Now = D2Now();
+            D2Seconds[D2GeneratorCopy] = Now - D2Mark;
+            D2Mark = Now;
+        }
+        IndividualAMRChangeSet changes = this->individualAMR(context);
+        if(D2Timers)
+            D2Seconds[D2AmrCallback] = D2Now() - D2Mark;
         std::vector<Vector3D>().swap(context.generator_points);
+        amr_adjacency.swap(changes.adjacency);
+        amr_adjacency_mode = changes.adjacency_capture_mode;
         local_mesh_build_timing.seconds += changes.mesh_build_timing.seconds;
         local_mesh_build_timing.builds += changes.mesh_build_timing.builds;
         local_mesh_build_timing.full_builds +=
@@ -6584,12 +8293,26 @@ void Simulation::stepIndividual(void)
                       MPI_MAX, MPI_COMM_WORLD);
 #endif
         individual_amr_applied = any_individual_amr_applied != 0;
+        if(D2Timers)
+            D2Mark = D2Now();
         if(individual_amr_applied)
+        {
             this->individualScheduler->applyAMRChangeSet(this->cells, changes,
                                                           &this->tess);
+            if(D2Timers)
+                D2Seconds[D2ApplyChangeSet] = D2Now() - D2Mark;
+        }
         else
             this->individualScheduler->enforceNeighborBinClosure(this->tess,
                                                                  this->cells);
+        if(D2Timers)
+        {
+            double const Now = D2Now();
+            D2Seconds[D2Closure] = Now - D2Mark;
+            D2Seconds[D2AmrTotal] = Now - D2AmrStart;
+            D2Seconds[D2AmrRest] = D2Seconds[D2AmrTotal] - D2Seconds[D2GeneratorCopy] - D2Seconds[D2AmrCallback] -
+                D2Seconds[D2Closure];
+        }
         const double elapsed = std::chrono::duration<double>(
             std::chrono::high_resolution_clock::now() - amr_start).count();
         this->lastPhysicsTimes["individual-amr"] = elapsed;
@@ -6628,6 +8351,11 @@ void Simulation::stepIndividual(void)
             std::chrono::high_resolution_clock::now();
         for(const std::shared_ptr<PhysicsStep>& physicsStep : this->physics)
             physicsStep->afterIndividualAMR();
+        // Mode 1 only; mode 2 captures for timing and discards. Local, no communication.
+        if(amr_adjacency_mode == 1 && !amr_adjacency.empty())
+            for(const std::shared_ptr<PhysicsStep>& physicsStep : this->physics)
+                physicsStep->installIndividualAMRAdjacency(amr_adjacency);
+        std::vector<IndividualAMRChangeSet::AdjacencyEntry>().swap(amr_adjacency);
         double const local_topology_release_seconds =
             std::chrono::duration<double>(
                 std::chrono::high_resolution_clock::now() -
@@ -6648,14 +8376,23 @@ void Simulation::stepIndividual(void)
     bool const forced_balance = this->forceRebalanceSteps > 0 &&
         this->tracker.getCycle() < this->forceRebalanceSteps &&
         this->lastRebalanceCycle != this->tracker.getCycle();
+    // RICH_INDIVIDUAL_SKIP_UNREAD_REDUCTIONS=1: with active-Hilbert balance
+    // on, request_balance and automatic_balance are false whatever these four
+    // reductions give, and only the trace line below reads them otherwise.
+    // Both flags are agreed on every rank.
+    bool const SkipBalanceReductions = S49Switches.SkipUnreadReductions != 0 &&
+        active_hilbert_balance && !balance_options.trace;
     unsigned long long local_owned_cells =
         static_cast<unsigned long long>(this->cells.size());
     unsigned long long total_owned_cells = local_owned_cells;
     unsigned long long maximum_owned_cells = local_owned_cells;
-    MPI_Allreduce(MPI_IN_PLACE, &total_owned_cells, 1,
-                  MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, &maximum_owned_cells, 1,
-                  MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+    if(!SkipBalanceReductions)
+    {
+        MPI_Allreduce(MPI_IN_PLACE, &total_owned_cells, 1,
+                      MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &maximum_owned_cells, 1,
+                      MPI_UNSIGNED_LONG_LONG, MPI_MAX, MPI_COMM_WORLD);
+    }
     double const mean_owned_cells = static_cast<double>(total_owned_cells) /
         static_cast<double>(this->size);
     double const owned_cell_skew = mean_owned_cells > 0 ?
@@ -6665,10 +8402,13 @@ void Simulation::stepIndividual(void)
         std::chrono::high_resolution_clock::now() - stepWallStart).count();
     double maximum_event_seconds = local_event_seconds;
     double total_event_seconds = local_event_seconds;
-    MPI_Allreduce(MPI_IN_PLACE, &maximum_event_seconds, 1, MPI_DOUBLE,
-                  MPI_MAX, MPI_COMM_WORLD);
-    MPI_Allreduce(MPI_IN_PLACE, &total_event_seconds, 1, MPI_DOUBLE,
-                  MPI_SUM, MPI_COMM_WORLD);
+    if(!SkipBalanceReductions)
+    {
+        MPI_Allreduce(MPI_IN_PLACE, &maximum_event_seconds, 1, MPI_DOUBLE,
+                      MPI_MAX, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &total_event_seconds, 1, MPI_DOUBLE,
+                      MPI_SUM, MPI_COMM_WORLD);
+    }
     double const mean_event_seconds = total_event_seconds /
         static_cast<double>(this->size);
     double const predicted_horizon_savings =
@@ -6833,7 +8573,58 @@ void Simulation::stepIndividual(void)
             "individual-active-hilbert-balance"));
     this->reportPhaseBusyTimes("individual", step_cycle, local_step_seconds,
         mpi_wait_profiler::Seconds() - step_mpi_start);
-    if(balance_options.trace || detailed_runtime_log) {
+    if((balance_options.trace || detailed_runtime_log) && S49Switches.StepReportFused != 0) {
+        // The same RICH_STEP_DETAIL lines from one gather (mode 2: from the
+        // separate gathers, compared with the fused one on rank 0).
+        std::vector<std::string> Names;
+        std::vector<double> Values;
+        std::vector<char const*> Units;
+        auto AddEntry = [&](std::string const& Name, double const Value, char const* const Unit)
+        {
+            Names.push_back(Name);
+            Values.push_back(Value);
+            Units.push_back(Unit);
+        };
+        for(auto const& phase : this->lastLocalPhysicsTimes)
+            AddEntry(phase.first, phase.second, "seconds");
+        AddEntry("event-wall", local_step_seconds, "seconds");
+        AddEntry("individual-wake-signal-sources", static_cast<double>(full_source_sweep.local_signal_sources),
+                 "count");
+        AddEntry("individual-wake-outgoing-records", static_cast<double>(full_source_sweep.local_outgoing_records),
+                 "count");
+        AddEntry("individual-wake-incoming-records", static_cast<double>(full_source_sweep.local_incoming_records),
+                 "count");
+        AddEntry("individual-wake-saturated-sources", static_cast<double>(full_source_sweep.local_saturated_sources),
+                 "count");
+        AddEntry("current-rss", currentResidentSetKiB(), "KiB");
+        AddEntry("peak-rss", peakResidentSetKiB(), "KiB");
+        std::vector<std::vector<double>> Separate;
+        if(S49Switches.StepReportFused == 2)
+            for(double const Value : Values)
+                Separate.push_back(GatherIndividualRankValues(this->rank, this->size, Value));
+        std::vector<double> const Fused = GatherIndividualRankValuesFused(this->rank, this->size, Names, Values);
+        unsigned long long Mismatches = 0;
+        std::string Example;
+        if(this->rank == 0)
+            for(std::size_t Entry = 0; Entry < Values.size(); ++Entry)
+            {
+                std::vector<double> Column(static_cast<std::size_t>(this->size));
+                for(int Source = 0; Source < this->size; ++Source)
+                    Column[static_cast<std::size_t>(Source)] =
+                        Fused[static_cast<std::size_t>(Source) * Values.size() + Entry];
+                if(S49Switches.StepReportFused == 2)
+                    for(int Source = 0; Source < this->size; ++Source)
+                        if(!SameBits(Column[static_cast<std::size_t>(Source)],
+                                     Separate[Entry][static_cast<std::size_t>(Source)]) && Mismatches++ == 0)
+                            Example = "step detail " + Names[Entry] + " of rank " + std::to_string(Source);
+                printIndividualRankDistribution(step_cycle, Names[Entry], S49Switches.StepReportFused == 2 ?
+                    Separate[Entry] : Column, Units[Entry]);
+            }
+        if(S49Switches.StepReportFused == 2)
+            RequireNoS49Mismatch("RICH_STEP_REPORT_FUSED", Mismatches,
+                this->rank == 0 ? static_cast<unsigned long long>(Values.size()) * this->size : 0, Example);
+    }
+    if((balance_options.trace || detailed_runtime_log) && S49Switches.StepReportFused == 0) {
         for(auto const& phase : this->lastLocalPhysicsTimes)
             reportIndividualRankDistribution(
                 this->rank, this->size, step_cycle, phase.first,
@@ -6875,8 +8666,8 @@ void Simulation::stepIndividual(void)
     output.active_cells = global_active_cells;
     output.total_cells = global_total_cells;
     output.active_bins = active_bins;
-    output.source_calls = RuntimeMaximum(static_cast<std::uint64_t>(
-        local_source_timing.calls));
+    // Local only; ahead of every report reduction so that the separate and
+    // the fused maxima below read the same values.
 #ifdef RICH_MPI
     local_mesh_build_timing.seconds +=
         this->individualMeshBuildTiming.seconds;
@@ -6885,35 +8676,107 @@ void Simulation::stepIndividual(void)
     local_mesh_build_timing.full_builds +=
         this->individualMeshBuildTiming.full_builds;
 #endif
-    output.mesh_builds = RuntimeMaximum(static_cast<std::uint64_t>(
-        local_mesh_build_timing.builds));
-    output.mesh_seconds = RuntimeMaximum(local_mesh_build_timing.seconds);
-    output.hydro_seconds = RuntimeMaximum(LocalRuntimePhase(
-        this->lastLocalPhysicsTimes, "hydro"));
-    output.gravity_seconds = RuntimeMaximum(LocalRuntimePhase(
-        this->lastLocalPhysicsTimes, "gravity"));
-    output.radiation_seconds = RuntimeMaximum(LocalRuntimePhase(
-        this->lastLocalPhysicsTimes, "radiation"));
-    output.amr_seconds = RuntimeMaximum(LocalRuntimePhase(
-        this->lastLocalPhysicsTimes, "amr") + LocalRuntimePhase(
-        this->lastLocalPhysicsTimes, "topology-release"));
-    output.source_seconds = RuntimeMaximum(
-        local_source_timing.totalSeconds());
-    output.source_first_seconds = RuntimeMaximum(
-        local_source_timing.first_seconds);
-    output.source_second_seconds = RuntimeMaximum(
-        local_source_timing.second_seconds);
-    output.step_seconds = RuntimeMaximum(local_step_seconds);
-    output.sync_seconds = RuntimeMaximum(individual_sync_seconds);
-    output.prepare_seconds = RuntimeMaximum(individual_prepare_seconds);
-    output.closure_seconds = RuntimeMaximum(individual_closure_seconds);
-    output.suggest_seconds = RuntimeMaximum(individual_suggest_seconds);
-    output.wake_seconds = RuntimeMaximum(individual_wake_seconds);
-    output.sweep_seconds = RuntimeMaximum(individual_sweep_seconds);
-    output.commit_seconds = RuntimeMaximum(individual_commit_seconds);
-    output.other_seconds = RuntimeMaximum(local_other_seconds);
-    output.full_builds = RuntimeMaximum(static_cast<std::uint64_t>(
-        local_mesh_build_timing.full_builds));
+    if(S49Switches.StepReportFused != 1)
+    {
+        output.source_calls = RuntimeMaximum(static_cast<std::uint64_t>(
+            local_source_timing.calls));
+        output.mesh_builds = RuntimeMaximum(static_cast<std::uint64_t>(
+            local_mesh_build_timing.builds));
+        output.mesh_seconds = RuntimeMaximum(local_mesh_build_timing.seconds);
+        output.hydro_seconds = RuntimeMaximum(LocalRuntimePhase(
+            this->lastLocalPhysicsTimes, "hydro"));
+        output.gravity_seconds = RuntimeMaximum(LocalRuntimePhase(
+            this->lastLocalPhysicsTimes, "gravity"));
+        output.radiation_seconds = RuntimeMaximum(LocalRuntimePhase(
+            this->lastLocalPhysicsTimes, "radiation"));
+        output.amr_seconds = RuntimeMaximum(LocalRuntimePhase(
+            this->lastLocalPhysicsTimes, "amr") + LocalRuntimePhase(
+            this->lastLocalPhysicsTimes, "topology-release"));
+        output.source_seconds = RuntimeMaximum(
+            local_source_timing.totalSeconds());
+        output.source_first_seconds = RuntimeMaximum(
+            local_source_timing.first_seconds);
+        output.source_second_seconds = RuntimeMaximum(
+            local_source_timing.second_seconds);
+        output.step_seconds = RuntimeMaximum(local_step_seconds);
+        output.sync_seconds = RuntimeMaximum(individual_sync_seconds);
+        output.prepare_seconds = RuntimeMaximum(individual_prepare_seconds);
+        output.closure_seconds = RuntimeMaximum(individual_closure_seconds);
+        output.suggest_seconds = RuntimeMaximum(individual_suggest_seconds);
+        output.wake_seconds = RuntimeMaximum(individual_wake_seconds);
+        output.sweep_seconds = RuntimeMaximum(individual_sweep_seconds);
+        output.commit_seconds = RuntimeMaximum(individual_commit_seconds);
+        output.other_seconds = RuntimeMaximum(local_other_seconds);
+        output.full_builds = RuntimeMaximum(static_cast<std::uint64_t>(
+            local_mesh_build_timing.full_builds));
+    }
+    if(S49Switches.StepReportFused != 0)
+    {
+        // RICH_STEP_REPORT_FUSED: the same rank maxima (and the applied-dt
+        // minimum as the negated maximum, exact) in one reduction per type.
+        // Mode 2 keeps the separate results and compares.
+        std::array<double, 19> Maxima{{-local_applied_dt_min, local_applied_dt_max,
+            local_mesh_build_timing.seconds,
+            LocalRuntimePhase(this->lastLocalPhysicsTimes, "hydro"),
+            LocalRuntimePhase(this->lastLocalPhysicsTimes, "gravity"),
+            LocalRuntimePhase(this->lastLocalPhysicsTimes, "radiation"),
+            LocalRuntimePhase(this->lastLocalPhysicsTimes, "amr") +
+                LocalRuntimePhase(this->lastLocalPhysicsTimes, "topology-release"),
+            local_source_timing.totalSeconds(), local_source_timing.first_seconds,
+            local_source_timing.second_seconds, local_step_seconds, individual_sync_seconds,
+            individual_prepare_seconds, individual_closure_seconds, individual_suggest_seconds,
+            individual_wake_seconds, individual_sweep_seconds, individual_commit_seconds,
+            local_other_seconds}};
+        std::array<std::uint64_t, 3> CountMaxima{{static_cast<std::uint64_t>(local_source_timing.calls),
+            static_cast<std::uint64_t>(local_mesh_build_timing.builds),
+            static_cast<std::uint64_t>(local_mesh_build_timing.full_builds)}};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, Maxima.data(), static_cast<int>(Maxima.size()), MPI_DOUBLE, MPI_MAX,
+                      MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, CountMaxima.data(), static_cast<int>(CountMaxima.size()), MPI_UINT64_T,
+                      MPI_MAX, MPI_COMM_WORLD);
+#endif
+        Maxima[0] = -Maxima[0];
+        std::array<double*, 19> const Fields{{&output.applied_dt_min, &output.applied_dt_max,
+            &output.mesh_seconds, &output.hydro_seconds, &output.gravity_seconds, &output.radiation_seconds,
+            &output.amr_seconds, &output.source_seconds, &output.source_first_seconds,
+            &output.source_second_seconds, &output.step_seconds, &output.sync_seconds, &output.prepare_seconds,
+            &output.closure_seconds, &output.suggest_seconds, &output.wake_seconds, &output.sweep_seconds,
+            &output.commit_seconds, &output.other_seconds}};
+        std::array<std::uint64_t*, 3> const CountFields{{&output.source_calls, &output.mesh_builds,
+            &output.full_builds}};
+        if(S49Switches.StepReportFused == 1)
+        {
+            for(std::size_t Index = 0; Index < Fields.size(); ++Index)
+                *Fields[Index] = Maxima[Index];
+            for(std::size_t Index = 0; Index < CountFields.size(); ++Index)
+                *CountFields[Index] = CountMaxima[Index];
+        }
+        else
+        {
+            unsigned long long Mismatches = 0;
+            std::string Example;
+            for(std::size_t Index = 0; Index < Fields.size(); ++Index)
+                if(!SameBits(*Fields[Index], Maxima[Index]) && Mismatches++ == 0)
+                {
+                    std::ostringstream Text;
+                    Text << std::setprecision(17) << "step-report maximum " << Index << ": separate "
+                         << *Fields[Index] << ", fused " << Maxima[Index];
+                    Example = Text.str();
+                }
+            for(std::size_t Index = 0; Index < CountFields.size(); ++Index)
+                if(*CountFields[Index] != CountMaxima[Index] && Mismatches++ == 0)
+                    Example = "step-report count " + std::to_string(Index) + ": separate " +
+                        std::to_string(*CountFields[Index]) + ", fused " + std::to_string(CountMaxima[Index]);
+            RequireNoS49Mismatch("RICH_STEP_REPORT_FUSED", Mismatches, Fields.size() + CountFields.size(), Example);
+        }
+    }
+    if(D2Timers)
+        ReportD2SchEvent(step_cycle, context.event_tick, context.event_time, global_active_cells,
+                         global_total_cells, individual_amr_applied, S49Switches.LazyGenerators, D2Seconds);
+    // Reduced counts, so the same on every rank.
+    if(S49Switches.Reanchor == 2)
+        this->IndividualReanchorShadow.PreviousEventAllActive = global_active_cells == global_total_cells;
     WriteRuntimeStep(this->rank, detailed_runtime_log,
                      runtime_color_enabled, output);
     if(individual_amr_applied)

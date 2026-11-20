@@ -89,6 +89,16 @@ void HydroStep::afterIndividualAMR(void)
     this->sim.ResetIndividualMeshState();
 }
 
+bool HydroStep::installIndividualAMRAdjacency(std::vector<IndividualAMRChangeSet::AdjacencyEntry>& entries)
+{
+    return this->sim.InstallIndividualAMRAdjacency(entries);
+}
+
+void HydroStep::requestIndividualFullEventMesh(void)
+{
+    this->sim.RequestIndividualFullEventMesh();
+}
+
 void HydroStep::onIndividualForceAllActiveLatch(void) noexcept
 {
     this->sim.ReleaseIndividualPartialMeshScratch();

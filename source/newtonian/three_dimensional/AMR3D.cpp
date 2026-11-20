@@ -1,7 +1,13 @@
 #include "AMR3D.hpp"
 #include <boost/array.hpp>
+#include <chrono>
+#include <cstdlib>
+#include <string>
 #include <cstdint>
+#include <cstring>
+#include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <boost/scoped_ptr.hpp>
 #include <limits>
 #include <stack>
@@ -22,6 +28,318 @@ namespace
 {
 	const size_t removal_target_order = 2;
 	const double removal_volume_growth_limit = 3.0;
+
+	// RICH_INDIVIDUAL_AMR_ADJACENCY_CAPTURE: 0 (unset, 0, off) no capture; 1 (1, on) capture the adjacency of every
+	// owned cell on the rebuilt mesh and install it as the partial-build seed cache; 2 (2, capture) capture and
+	// discard, to time the capture alone.  Agreed over MPI_COMM_WORLD at the first individual AMR pass, which every
+	// rank enters together.
+	int AgreedAMRAdjacencyCaptureMode(void)
+	{
+		static int const mode = []()
+		{
+			char const* const value = std::getenv("RICH_INDIVIDUAL_AMR_ADJACENCY_CAPTURE");
+			std::string const text = value == nullptr ? "" : value;
+			int local = -1;
+			if(text.empty() || text == "0" || text == "off")
+				local = 0;
+			else if(text == "1" || text == "on")
+				local = 1;
+			else if(text == "2" || text == "capture")
+				local = 2;
+			int extrema[2] = {local, -local};
+#ifdef RICH_MPI
+			MPI_Allreduce(MPI_IN_PLACE, extrema, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+			if(extrema[0] != -extrema[1])
+				throw UniversalError("RICH_INDIVIDUAL_AMR_ADJACENCY_CAPTURE differs across MPI ranks");
+			if(extrema[0] < 0)
+				throw UniversalError("RICH_INDIVIDUAL_AMR_ADJACENCY_CAPTURE must be 0, 1, 2, off, on or capture");
+			return extrema[0];
+		}();
+		return mode;
+	}
+
+    // Parses a strict switch whose only values are "0" to "Highest" (unset or empty = 0), agreed over
+    // MPI_COMM_WORLD: aborts on every rank when a rank holds another value or the ranks differ.  Collective.
+    int AgreedStrictSwitch(char const* Name, int Highest) {
+        char const* const Value = std::getenv(Name);
+        std::string const Text = Value == nullptr ? "" : Value;
+        int Local = -1;
+        if(Text.empty())
+            Local = 0;
+        else if(Text.size() == 1 && Text[0] >= '0' && Text[0] <= static_cast<char>('0' + Highest))
+            Local = Text[0] - '0';
+        int Extrema[2] = {Local, -Local};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, Extrema, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        if(Extrema[0] != -Extrema[1])
+            throw UniversalError(std::string(Name) + " differs across MPI ranks");
+        if(Extrema[0] < 0)
+            throw UniversalError(std::string(Name) + " must be one of 0.." + std::to_string(Highest));
+        return Extrema[0];
+    }
+
+    // RICH_INDIVIDUAL_LAZY_GENERATORS (B2; the Simulation side reads the same switch):
+    //   0  the context carries the committed generators (eager copy on every event);
+    //   1  the context arrives empty and ApplyIndividual builds the copy only for an AMR pass;
+    //   2  the context carries the eager copy and ApplyIndividual rebuilds it and compares bit for bit.
+    // Agreed at the first individual AMR pass, which every rank enters together.
+    int AgreedLazyGeneratorsMode(void) {
+        static int const Mode = AgreedStrictSwitch("RICH_INDIVIDUAL_LAZY_GENERATORS", 2);
+        return Mode;
+    }
+
+    // RICH_AMR_REMOVE_SELECT_FAST: 0 the map version of the removal selection; 1 the fast version (dense arrays in
+    // the greedy selection, direct two-hop target sets, claims grouped by counting sort, the target map built for
+    // the retained sources only); 2 both, the map version's result used, every stage compared bit for bit.  Agreed
+    // at the first AMR pass, which every rank enters together.
+    int AgreedRemoveSelectFastMode(void) {
+        static int const Mode = AgreedStrictSwitch("RICH_AMR_REMOVE_SELECT_FAST", 2);
+        return Mode;
+    }
+
+    double D2Now(void) {
+#ifdef RICH_MPI
+        return MPI_Wtime();
+#else
+        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
+#endif
+    }
+
+    // RICH_D2_TIMERS: sub-stages of the removal selection of one pass (seconds and local counts).
+    struct RemoveSelectTiming {
+        double Anchors = 0;
+        double Partners = 0;
+        double Targets = 0;
+        double Rounds = 0;
+        double FinalTargets = 0;
+        double FastTotal = 0;
+        double AnchorCount = 0;
+        double ProposedCount = 0;
+        double FirstRoundClaims = 0;
+        int RoundCount = 0;
+    };
+
+    // Intermediate results of one removal selection, kept for RICH_AMR_REMOVE_SELECT_FAST=2: the anchors, the
+    // anchors with their partners, and the two-hop target sets of the proposed sources (the map version's
+    // GetKOrderNeighbors result, or the fast version's sorted (rank, index) sets).
+    struct RemoveSelectTrace {
+        std::pair<vector<size_t>, vector<double> > Anchors;
+        std::pair<vector<size_t>, vector<double> > Proposed;
+        PointsToNeighborsMap FullTargets;
+        vector<size_t> TwoHopSources;
+        vector<size_t> TwoHopOffsets;
+        vector<std::pair<int, size_t> > TwoHopTargets;
+    };
+
+    // Stages of one AMR pass, in execution order, and their RICH_D2_AMR field names.
+    enum D2Stage {
+        D2Generators, D2Canonical, D2Remove, D2RemoveSelect, D2Refine, D2Conflict, D2Slopes, D2NewPoints, D2Clone,
+        D2Rebuild, D2RefineClip, D2RemoveRemap, D2Convert, D2Exchange, D2Capture, D2Release, D2StageCount
+    };
+    char const* const D2StageNames[D2StageCount] = {"gen", "canonical", "remove", "remove_select", "refine",
+        "conflict", "slopes", "new_points", "clone", "rebuild", "refine_clip", "remove_remap", "convert", "exchange",
+        "capture", "release"};
+
+    // Cell counts of one AMR pass (summed over ranks in RICH_D2_AMR).
+    enum D2Count {
+        D2Cells, D2Active, D2RemoveCandidates, D2RemoveActive, D2Removed, D2RefineCandidates, D2RefineActive,
+        D2Refined, D2PartialRanks, D2Anchors, D2Proposed, D2FirstRoundClaims, D2CountCount
+    };
+    char const* const D2CountNames[D2CountCount] = {"cells", "active", "rm_cand", "rm_cand_active", "removed",
+        "rf_cand", "rf_cand_active", "refined", "partial_ranks", "rs_anchors_n", "rs_proposed_n", "rs_claims1_n"};
+
+    // Sub-stages of the removal selection (inside "remove_select"; not part of the "amr3d" sum).
+    enum D2SelectStage {
+        D2SelectAnchors, D2SelectPartners, D2SelectTargets, D2SelectRounds, D2SelectFinal, D2SelectFast,
+        D2SelectStageCount
+    };
+    char const* const D2SelectStageNames[D2SelectStageCount] = {"rs_anchors", "rs_partners", "rs_targets",
+        "rs_rounds", "rs_final_targets", "rs_fast_total"};
+
+    // Charges the wall time since the previous mark to the named stage; does nothing when disabled.
+    class D2StageClock {
+    public:
+        D2StageClock(bool IsEnabled, std::vector<double>& StageSeconds) : Enabled(IsEnabled), Seconds(StageSeconds),
+            Last(IsEnabled ? D2Now() : 0) {}
+
+        void Mark(int Stage) {
+            if(!Enabled)
+                return;
+            double const Now = D2Now();
+            Seconds[static_cast<size_t>(Stage)] += Now - Last;
+            Last = Now;
+        }
+
+    private:
+        bool const Enabled;
+        std::vector<double>& Seconds;
+        double Last;
+    };
+
+    bool SameBits(double A, double B) {
+        return std::memcmp(&A, &B, sizeof(double)) == 0;
+    }
+
+    // RICH_INDIVIDUAL_LAZY_GENERATORS=2: rebuilds the committed generators and compares them bit for bit with the
+    // eager copy the context carries.  Rank 0 prints one RICH_INDIVIDUAL_LAZY_GENERATORS line; on a mismatch the
+    // lowest rank holding one prints its first example and every rank throws.  Collective.
+    void VerifyEagerGenerators(Simulation const& Sim, std::vector<Vector3D> const& Eager) {
+        double const Start = D2Now();
+        std::vector<Vector3D> const Lazy = Sim.CommittedGeneratorPoints();
+        std::vector<ComputationalCell3D> const& Cells = Sim.getCells();
+        size_t const Count = Cells.size();
+        unsigned long long Mismatches = 0;
+        size_t FirstIndex = Count;
+        if(Eager.size() < Count || Lazy.size() < Count) {
+            Mismatches = 1;
+            FirstIndex = std::min(Eager.size(), Lazy.size());
+        }
+        else {
+            for(size_t Index = 0; Index < Count; ++Index) {
+                Vector3D const& A = Eager[Index];
+                Vector3D const& B = Lazy[Index];
+                if(SameBits(A.x, B.x) && SameBits(A.y, B.y) && SameBits(A.z, B.z))
+                    continue;
+                if(Mismatches == 0)
+                    FirstIndex = Index;
+                ++Mismatches;
+            }
+        }
+        double const Seconds = D2Now() - Start;
+        int Rank = 0;
+        unsigned long long Totals[2] = {Mismatches, static_cast<unsigned long long>(Count)};
+        int FirstRank = Mismatches > 0 ? 0 : 1;
+        double MaximumSeconds = Seconds;
+#ifdef RICH_MPI
+        int Ranks = 1;
+        MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &Ranks);
+        FirstRank = Mismatches > 0 ? Rank : Ranks;
+        MPI_Allreduce(MPI_IN_PLACE, Totals, 2, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &FirstRank, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &MaximumSeconds, 1, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        if(Rank == 0)
+            std::cout << "RICH_INDIVIDUAL_LAZY_GENERATORS mode=2 cycle=" << Sim.GetCycle() << " cells=" << Totals[1]
+                << " mismatches=" << Totals[0] << " verify_s_max=" << MaximumSeconds << std::endl;
+        if(Totals[0] == 0)
+            return;
+        if(Rank == FirstRank) {
+            std::ostringstream Example;
+            Example << std::setprecision(17) << "RICH_INDIVIDUAL_LAZY_GENERATORS mismatch rank=" << Rank
+                << " local_mismatches=" << Mismatches << " index=" << FirstIndex << " eager_size=" << Eager.size()
+                << " lazy_size=" << Lazy.size() << " cells=" << Count;
+            if(FirstIndex < Count && FirstIndex < Eager.size() && FirstIndex < Lazy.size())
+                Example << " id=" << Cells[FirstIndex].ID << " eager=" << Eager[FirstIndex].x << ","
+                    << Eager[FirstIndex].y << "," << Eager[FirstIndex].z << " lazy=" << Lazy[FirstIndex].x << ","
+                    << Lazy[FirstIndex].y << "," << Lazy[FirstIndex].z;
+            std::cerr << Example.str() << std::endl;
+        }
+#ifdef RICH_MPI
+        MPI_Barrier(MPI_COMM_WORLD);
+#endif
+        throw UniversalError("RICH_INDIVIDUAL_LAZY_GENERATORS=2: the eager and rebuilt committed generators differ");
+    }
+
+#ifdef RICH_MPI
+	// Records, on the full mesh an individual AMR pass rebuilt, the face neighbours of every owned cell by stable ID
+	// with the owner's rank: the rules of the event-mesh recorder in HDSim3D (mirrors skipped, remote ghosts by the
+	// ID in their exchanged primitive copy), so the records equal those a full event mesh would write.  Requires
+	// the ghost primitives exchanged and not yet trimmed.  Collective: unless every rank passes the checks (owned
+	// count equal to `expected_owned`, ghost slots inside the ghost range and claimed by one peer), no rank keeps
+	// its records.  Rank 0 prints one aggregate line.
+	void CaptureAMRAdjacency(Tessellation3D const& tess, vector<ComputationalCell3D> const& cells,
+		size_t expected_owned, int rank, int mode, IndividualAMRChangeSet& changes)
+	{
+		auto const start = std::chrono::steady_clock::now();
+		size_t const owned = tess.GetPointNo();
+		size_t const mesh_size = tess.getMeshPoints().size();
+		int local_ok = (owned == expected_owned && owned <= cells.size() && owned <= mesh_size) ? 1 : 0;
+		vector<int> ghost_owner(mesh_size, -1);
+		if(local_ok != 0)
+		{
+			vector<int> const duplicate_ranks = tess.GetDuplicatedProcs();
+			vector<vector<size_t> > const& ghost_indices = tess.GetGhostIndeces();
+			if(ghost_indices.size() > duplicate_ranks.size())
+				local_ok = 0;
+			for(size_t peer = 0; local_ok != 0 && peer < ghost_indices.size(); ++peer)
+				for(size_t ghost : ghost_indices[peer])
+				{
+					if(ghost < owned || ghost >= mesh_size || ghost >= cells.size() ||
+					   (ghost_owner[ghost] >= 0 && ghost_owner[ghost] != duplicate_ranks[peer]))
+					{
+						local_ok = 0;
+						break;
+					}
+					ghost_owner[ghost] = duplicate_ranks[peer];
+				}
+		}
+		int global_ok = local_ok;
+		MPI_Allreduce(MPI_IN_PLACE, &global_ok, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+		unsigned long long edges = 0;
+		unsigned long long skipped = 0;
+		if(global_ok != 0)
+		{
+			changes.adjacency.resize(owned);
+			vector<size_t> neighbors;
+			for(size_t local = 0; local < owned; ++local)
+			{
+				IndividualAMRChangeSet::AdjacencyEntry& entry = changes.adjacency[local];
+				entry.cell_id = cells[local].ID;
+				tess.GetNeighbors(local, neighbors);
+				entry.neighbor_ids.reserve(neighbors.size());
+				entry.neighbor_owners.reserve(neighbors.size());
+				for(size_t neighbor : neighbors)
+				{
+					if(neighbor >= mesh_size || tess.IsPointOutsideBox(neighbor))
+						continue;
+					if(neighbor < owned)
+					{
+						entry.neighbor_ids.push_back(cells[neighbor].ID);
+						entry.neighbor_owners.push_back(rank);
+						continue;
+					}
+					int const owner = ghost_owner[neighbor];
+					if(owner < 0 || owner == rank || neighbor >= cells.size())
+					{
+						++skipped;
+						continue;
+					}
+					entry.neighbor_ids.push_back(cells[neighbor].ID);
+					entry.neighbor_owners.push_back(owner);
+				}
+				edges += entry.neighbor_ids.size();
+			}
+			changes.adjacency_capture_mode = mode;
+			if(mode == 2)
+				vector<IndividualAMRChangeSet::AdjacencyEntry>().swap(changes.adjacency);
+		}
+		double const seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - start).count();
+		changes.adjacency_capture_seconds = seconds;
+		double sums[5] = {static_cast<double>(owned), static_cast<double>(edges), static_cast<double>(skipped),
+			seconds, local_ok != 0 ? 0.0 : 1.0};
+		double maximum = seconds;
+		double total[5] = {0, 0, 0, 0, 0};
+		double total_maximum = 0;
+		MPI_Reduce(sums, total, 5, MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+		MPI_Reduce(&maximum, &total_maximum, 1, MPI_DOUBLE, MPI_MAX, 0, MPI_COMM_WORLD);
+		if(rank == 0)
+		{
+			int ranks = 1;
+			MPI_Comm_size(MPI_COMM_WORLD, &ranks);
+			std::cout << "INDIVIDUAL_AMR_ADJACENCY_CAPTURE mode=" << mode << " captured=" << global_ok
+				<< " installed=" << ((global_ok != 0 && mode == 1) ? 1 : 0)
+				<< " owned_cells=" << static_cast<unsigned long long>(total[0])
+				<< " edges=" << static_cast<unsigned long long>(total[1])
+				<< " skipped_edges=" << static_cast<unsigned long long>(total[2])
+				<< " failed_ranks=" << static_cast<unsigned long long>(total[4])
+				<< " amr_capture_s_max=" << total_maximum
+				<< " amr_capture_s_mean=" << total[3] / static_cast<double>(ranks) << std::endl;
+		}
+	}
+#endif
 
 		const std::vector<Plane> &CachedPolyPlanes(Tessellation3D const& tess, size_t cell_index,
 			std::unordered_map<size_t, std::vector<Plane> > &cache)
@@ -311,6 +629,183 @@ namespace
 		return std::pair<vector<size_t>, vector<double> >(result_names, result_merits);
 	}
 
+    // GreedyRemoveCandidates with flag vectors and a compressed adjacency in place of its hash containers.  The
+    // exchanges, the candidate order (merit, then stable ID) and the edge set are the same, and an exclusion depends
+    // only on the edge set, so the accepted cells and their order are the same.
+    std::pair<vector<size_t>, vector<double> > GreedyRemoveCandidatesFast(vector<double> const& Merits,
+        vector<size_t> const& Candidates, Tessellation3D const& tess, vector<ComputationalCell3D> const& cells) {
+#ifndef RICH_MPI
+        return GreedyRemoveCandidates(Merits, Candidates, tess, cells);
+#else
+        if(Merits.size() != Candidates.size())
+            throw UniversalError("Merits and Candidates don't have same size in GreedyRemoveCandidates");
+        size_t const N = Candidates.size();
+        vector<size_t> AllCandidates = Candidates;
+        vector<double> AllMerits = Merits;
+        vector<size_t> AllIds;
+        AllIds.reserve(N);
+        for(size_t Candidate : Candidates)
+            AllIds.push_back(cells[Candidate].ID);
+
+        // Candidate data for the neighbour ranks, built as in GreedyRemoveCandidates.
+        size_t const Norg = tess.GetPointNo();
+        vector<vector<size_t> > DuplicatedIndices = tess.GetDuplicatedPoints();
+        vector<vector<size_t> > SortIndices(DuplicatedIndices.size());
+        for(size_t Peer = 0; Peer < DuplicatedIndices.size(); ++Peer) {
+            sort_index(DuplicatedIndices[Peer], SortIndices[Peer]);
+            std::sort(DuplicatedIndices[Peer].begin(), DuplicatedIndices[Peer].end());
+        }
+        size_t const Peers = DuplicatedIndices.size();
+        vector<vector<size_t> > Indices(Peers);
+        vector<vector<double> > MeritSend(Peers);
+        vector<vector<size_t> > IdSend(Peers);
+        vector<vector<size_t> > LocalCellsSent(Peers);
+        vector<size_t> Neighbors;
+        for(size_t i = 0; i < N; ++i) {
+            tess.GetNeighbors(Candidates[i], Neighbors);
+            bool HasGhost = false;
+            for(size_t Neighbor : Neighbors) {
+                if(Neighbor >= Norg) {
+                    HasGhost = true;
+                    break;
+                }
+            }
+            if(!HasGhost)
+                continue;
+            for(size_t Peer = 0; Peer < Peers; ++Peer) {
+                vector<size_t>::const_iterator Found = binary_find(DuplicatedIndices[Peer].begin(),
+                    DuplicatedIndices[Peer].end(), Candidates[i]);
+                if(Found != DuplicatedIndices[Peer].end()) {
+                    Indices[Peer].push_back(SortIndices[Peer][static_cast<size_t>(Found -
+                        DuplicatedIndices[Peer].begin())]);
+                    MeritSend[Peer].push_back(Merits[i]);
+                    IdSend[Peer].push_back(cells[Candidates[i]].ID);
+                    LocalCellsSent[Peer].push_back(Candidates[i]);
+                }
+            }
+        }
+        // Adjacency among the candidates sent to one peer (the receiver has no neighbour lists for its ghosts).
+        vector<vector<size_t> > AdjSend(Peers);
+        vector<size_t> BatchOf;
+        for(size_t Peer = 0; Peer < Peers; ++Peer) {
+            size_t const M = LocalCellsSent[Peer].size();
+            if(M < 2)
+                continue;
+            for(size_t m = 0; m < M; ++m) {
+                size_t const Cell = LocalCellsSent[Peer][m];
+                if(Cell >= BatchOf.size())
+                    BatchOf.resize(Cell + 1, std::numeric_limits<size_t>::max());
+                BatchOf[Cell] = m;
+            }
+            for(size_t m = 0; m < M; ++m) {
+                tess.GetNeighbors(LocalCellsSent[Peer][m], Neighbors);
+                for(size_t Neighbor : Neighbors) {
+                    if(Neighbor < BatchOf.size() && BatchOf[Neighbor] != std::numeric_limits<size_t>::max() &&
+                       BatchOf[Neighbor] > m) {
+                        AdjSend[Peer].push_back(m);
+                        AdjSend[Peer].push_back(BatchOf[Neighbor]);
+                    }
+                }
+            }
+            for(size_t m = 0; m < M; ++m)
+                BatchOf[LocalCellsSent[Peer][m]] = std::numeric_limits<size_t>::max();
+        }
+        std::vector<int> const& DupProcs = tess.GetDuplicatedProcs();
+        Indices = MPI_exchange_data(DupProcs, Indices);
+        MeritSend = MPI_exchange_data(DupProcs, MeritSend);
+        IdSend = MPI_exchange_data(DupProcs, IdSend);
+        AdjSend = MPI_exchange_data(DupProcs, AdjSend);
+        for(size_t Peer = 0; Peer < Peers; ++Peer) {
+            if(!Indices[Peer].empty()) {
+                Indices[Peer] = VectorValues(tess.GetGhostIndeces()[Peer], Indices[Peer]);
+                AllCandidates.insert(AllCandidates.end(), Indices[Peer].begin(), Indices[Peer].end());
+                AllMerits.insert(AllMerits.end(), MeritSend[Peer].begin(), MeritSend[Peer].end());
+                AllIds.insert(AllIds.end(), IdSend[Peer].begin(), IdSend[Peer].end());
+            }
+        }
+
+        // Candidate flags and the candidate graph: local scans give local-local and local-ghost edges (both
+        // directions), the exchanged lists ghost-ghost edges.
+        size_t const Nall = AllCandidates.size();
+        size_t FlagSize = 0;
+        for(size_t Cell : AllCandidates)
+            FlagSize = std::max(FlagSize, Cell + 1);
+        vector<char> IsCandidate(FlagSize, 0);
+        for(size_t Cell : AllCandidates)
+            IsCandidate[Cell] = 1;
+        vector<size_t> EdgeFrom;
+        vector<size_t> EdgeTo;
+        for(size_t k = 0; k < Nall; ++k) {
+            size_t const Cell = AllCandidates[k];
+            if(Cell >= Norg)
+                continue;
+            tess.GetNeighbors(Cell, Neighbors);
+            for(size_t Neighbor : Neighbors) {
+                if(Neighbor >= FlagSize || IsCandidate[Neighbor] == 0)
+                    continue;
+                EdgeFrom.push_back(Cell);
+                EdgeTo.push_back(Neighbor);
+                if(Neighbor != Cell) {
+                    EdgeFrom.push_back(Neighbor);
+                    EdgeTo.push_back(Cell);
+                }
+            }
+        }
+        for(size_t Peer = 0; Peer < Peers; ++Peer) {
+            for(size_t p = 0; p + 1 < AdjSend[Peer].size(); p += 2) {
+                size_t const GhostA = Indices[Peer][AdjSend[Peer][p]];
+                size_t const GhostB = Indices[Peer][AdjSend[Peer][p + 1]];
+                EdgeFrom.push_back(GhostA);
+                EdgeTo.push_back(GhostB);
+                EdgeFrom.push_back(GhostB);
+                EdgeTo.push_back(GhostA);
+            }
+        }
+        vector<size_t> AdjOffsets(FlagSize + 1, 0);
+        for(size_t From : EdgeFrom)
+            ++AdjOffsets[From + 1];
+        for(size_t Cell = 0; Cell < FlagSize; ++Cell)
+            AdjOffsets[Cell + 1] += AdjOffsets[Cell];
+        vector<size_t> Adjacent(EdgeTo.size());
+        {
+            vector<size_t> Fill(AdjOffsets.begin(), AdjOffsets.end() - 1);
+            for(size_t Edge = 0; Edge < EdgeFrom.size(); ++Edge)
+                Adjacent[Fill[EdgeFrom[Edge]]++] = EdgeTo[Edge];
+        }
+
+        // Merit descending, ties by stable ID, as in GreedyRemoveCandidates.
+        vector<size_t> Order(Nall);
+        for(size_t i = 0; i < Nall; ++i)
+            Order[i] = i;
+        std::sort(Order.begin(), Order.end(), [&](size_t a, size_t b) {
+            if(AllMerits[a] != AllMerits[b])
+                return AllMerits[a] > AllMerits[b];
+            return AllIds[a] < AllIds[b];
+        });
+        vector<char> Excluded(FlagSize, 0);
+        vector<size_t> ResultNames;
+        vector<double> ResultMerits;
+        ResultNames.reserve(N);
+        ResultMerits.reserve(N);
+        for(size_t k = 0; k < Nall; ++k) {
+            size_t const Index = Order[k];
+            size_t const Cell = AllCandidates[Index];
+            if(Excluded[Cell] != 0)
+                continue;
+            if(Cell < Norg) {
+                ResultNames.push_back(Cell);
+                ResultMerits.push_back(AllMerits[Index]);
+            }
+            for(size_t Edge = AdjOffsets[Cell]; Edge < AdjOffsets[Cell + 1]; ++Edge)
+                Excluded[Adjacent[Edge]] = 1;
+        }
+        vector<size_t> SortIndex = sort_index(ResultNames);
+        ResultNames = VectorValues(ResultNames, SortIndex);
+        ResultMerits = VectorValues(ResultMerits, SortIndex);
+        return std::pair<vector<size_t>, vector<double> >(ResultNames, ResultMerits);
+#endif
+    }
+
 	bool HigherRemovalPriority(double merit_a, size_t id_a, double merit_b, size_t id_b)
 	{
 		return merit_a > merit_b || (merit_a == merit_b && id_a < id_b);
@@ -335,7 +830,7 @@ namespace
 	std::pair<vector<size_t>, vector<double> > AddNeighborRemovalPartners(
 		std::pair<vector<size_t>, vector<double> > const& anchors,
 		vector<size_t> const& candidates, vector<double> const& merits,
-		Tessellation3D const& tess, vector<ComputationalCell3D> const& cells)
+		Tessellation3D const& tess, vector<ComputationalCell3D> const& cells, bool Fast = false)
 	{
 		const size_t norg = tess.GetPointNo();
 		std::vector<char> anchor_flags(norg, 0);
@@ -449,7 +944,8 @@ namespace
 
 		// Independently thin the granted partners. Two partners that touch
 		// would otherwise connect two anchor pairs into a larger component.
-		std::pair<vector<size_t>, vector<double> > partners =
+		std::pair<vector<size_t>, vector<double> > partners = Fast ?
+			GreedyRemoveCandidatesFast(partner_merits, partner_candidates, tess, cells) :
 			GreedyRemoveCandidates(partner_merits, partner_candidates, tess, cells);
 
 		vector<size_t> result_names = anchors.first;
@@ -481,7 +977,7 @@ namespace
 	std::pair<vector<size_t>, vector<double> > EnforceRemovalVolumeGrowthLimit(
 		std::pair<vector<size_t>, vector<double> > const& proposed,
 		Tessellation3D const& tess, vector<ComputationalCell3D> const& cells,
-		PointsToNeighborsMap &target_map)
+		PointsToNeighborsMap &target_map, RemoveSelectTiming* Timing = nullptr, PointsToNeighborsMap* FullMap = nullptr)
 	{
 		target_map.clear();
 		int rank = 0;
@@ -493,14 +989,24 @@ namespace
 		MPI_Allreduce(MPI_IN_PLACE, &proposed_global, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
 		if (proposed_global == 0)
 			return proposed;
+        double D2Mark = Timing != nullptr ? D2Now() : 0;
 		target_map = GetKOrderNeighbors(
 			tess, proposed.first, removal_target_order, true, MPI_COMM_WORLD);
 #else
 		if (proposed.first.empty())
 			return proposed;
+        double D2Mark = Timing != nullptr ? D2Now() : 0;
 		target_map = GetKOrderNeighbors(
 			tess, proposed.first, removal_target_order, true);
 #endif
+        if(Timing != nullptr) {
+            double const Now = D2Now();
+            Timing->Targets += Now - D2Mark;
+            D2Mark = Now;
+        }
+        if(FullMap != nullptr) {
+            *FullMap = target_map;
+        }
 
 		std::unordered_map<size_t, double> merit_by_index;
 		for (size_t i = 0; i < proposed.first.size(); ++i)
@@ -512,6 +1018,9 @@ namespace
 
 		while (true)
 		{
+            if(Timing != nullptr) {
+                ++Timing->RoundCount;
+            }
 			std::vector<std::vector<RemovalVolumeClaim> > claims(static_cast<size_t>(world_size));
 			for (size_t source : proposed.first)
 			{
@@ -540,6 +1049,10 @@ namespace
 					claims[static_cast<size_t>(target_rank)].push_back(claim);
 				}
 			}
+            if(Timing != nullptr && Timing->RoundCount == 1) {
+                for(std::vector<RemovalVolumeClaim> const& ToRank : claims)
+                    Timing->FirstRoundClaims += static_cast<double>(ToRank.size());
+            }
 
 #ifdef RICH_MPI
 			claims = MPI_Exchange_all_to_all(claims, MPI_COMM_WORLD);
@@ -611,6 +1124,11 @@ namespace
 			if (removed_global == 0)
 				break;
 		}
+        if(Timing != nullptr) {
+            double const Now = D2Now();
+            Timing->Rounds += Now - D2Mark;
+            D2Mark = Now;
+        }
 
 		vector<size_t> result_names;
 		vector<double> result_merits;
@@ -631,8 +1149,622 @@ namespace
 			retained_targets.emplace(source, found->second);
 		}
 		target_map.swap(retained_targets);
+        if(Timing != nullptr) {
+            Timing->FinalTargets += D2Now() - D2Mark;
+        }
 		return std::make_pair(result_names, result_merits);
 	}
+
+#ifdef RICH_MPI
+    // Two-hop target set of every source, as GetKOrderNeighbors(tess, Sources, 2, true) defines it but without
+    // distances: the source and, for every face neighbour n that is not a box mirror, n and the non-mirror face
+    // neighbours of n, each named by (owning rank, index on that rank).  A ghost is named the way GetKOrderNeighbors
+    // names it: its owner resolves the ghost's position in the owner's duplicated-point list through the input index
+    // to a local index, and a ghost duplicated from this rank itself is named by its position.  Each set is sorted
+    // by (rank, index), the order of NeighborsList.  One exchange names the ghosts and one request/reply exchange
+    // brings the neighbour lists of the ghost neighbours.  Collective; throws on every rank on a non-owned source or
+    // inconsistent ghost metadata, as GetKOrderNeighbors does.
+    void TwoHopTargets(Tessellation3D const& Tess, vector<size_t> const& Sources, vector<size_t>& Offsets,
+        vector<std::pair<int, size_t> >& Targets) {
+        size_t const None = std::numeric_limits<size_t>::max();
+        int Rank = 0;
+        int Size = 1;
+        MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &Size);
+        size_t const Norg = Tess.GetPointNo();
+        int InvalidSource = 0;
+        for(size_t Source : Sources)
+            if(Source >= Norg)
+                InvalidSource = 1;
+        int Error = 0;
+        std::vector<int> const& DupProcs = Tess.GetDuplicatedProcs();
+        std::vector<std::vector<size_t> > const& GhostIndices = Tess.GetGhostIndeces();
+        std::vector<std::vector<size_t> > const& DupPoints = Tess.GetDuplicatedPoints();
+        if(DupProcs.size() != GhostIndices.size())
+            Error = 1;
+        std::unordered_map<size_t, std::pair<size_t, size_t> > GhostLookup;
+        {
+            size_t GhostCount = 0;
+            for(std::vector<size_t> const& PeerGhosts : GhostIndices)
+                GhostCount += PeerGhosts.size();
+            GhostLookup.reserve(GhostCount);
+        }
+        for(size_t Peer = 0; Peer < GhostIndices.size(); ++Peer)
+            for(size_t Position = 0; Position < GhostIndices[Peer].size(); ++Position)
+                if(!GhostLookup.emplace(GhostIndices[Peer][Position], std::make_pair(Peer, Position)).second)
+                    Error = 1;
+
+        // The local index each duplicated point resolves to on this rank (None when it does not resolve), sent to
+        // the peer it is duplicated to; the first list for a peer is used, as std::find does.
+        std::unordered_map<size_t, size_t> InputToLocal;
+        InputToLocal.reserve(Norg);
+        for(auto const& Mapping : Tess.GetIndicesInAllPoints())
+            if(Mapping.first < Norg)
+                InputToLocal.emplace(Mapping.second, Mapping.first);
+        size_t const AllPointCount = Tess.getAllPoints().size();
+        std::vector<std::vector<size_t> > OwnerLocalOut(static_cast<size_t>(Size));
+        std::vector<char> Assigned(static_cast<size_t>(Size), 0);
+        for(size_t Peer = 0; Peer < DupProcs.size() && Peer < DupPoints.size(); ++Peer) {
+            int const PeerRank = DupProcs[Peer];
+            if(PeerRank < 0 || PeerRank >= Size || PeerRank == Rank || Assigned[static_cast<size_t>(PeerRank)] != 0)
+                continue;
+            Assigned[static_cast<size_t>(PeerRank)] = 1;
+            std::vector<size_t>& Out = OwnerLocalOut[static_cast<size_t>(PeerRank)];
+            Out.reserve(DupPoints[Peer].size());
+            for(size_t Compact : DupPoints[Peer]) {
+                size_t Local = None;
+                if(Compact < AllPointCount) {
+                    auto const Found = InputToLocal.find(Tess.GetInputIndexForAllPoint(Compact));
+                    if(Found != InputToLocal.end())
+                        Local = Found->second;
+                }
+                Out.push_back(Local);
+            }
+        }
+        std::vector<std::vector<size_t> > const OwnerLocalIn = MPI_Exchange_all_to_all(OwnerLocalOut, MPI_COMM_WORLD);
+
+        // (rank, index) of a non-mirror point of the local mesh; false when the ghost metadata does not resolve it.
+        auto Name = [&](size_t Point, std::pair<int, size_t>& Result) -> bool {
+            if(Point < Norg) {
+                Result = std::make_pair(Rank, Point);
+                return true;
+            }
+            auto const Found = GhostLookup.find(Point);
+            if(Found == GhostLookup.end() || Found->second.first >= DupProcs.size())
+                return false;
+            int const Owner = DupProcs[Found->second.first];
+            size_t const Position = Found->second.second;
+            if(Owner < 0 || Owner >= Size)
+                return false;
+            if(Owner == Rank) {
+                if(Position >= Norg)
+                    return false;
+                Result = std::make_pair(Rank, Position);
+                return true;
+            }
+            std::vector<size_t> const& Resolved = OwnerLocalIn[static_cast<size_t>(Owner)];
+            if(Position >= Resolved.size() || Resolved[Position] == None)
+                return false;
+            Result = std::make_pair(Owner, Resolved[Position]);
+            return true;
+        };
+
+        // One-hop lists of local points ({point} and its named non-mirror neighbours), built on first use.
+        std::vector<size_t> HopStart(Norg, None);
+        std::vector<size_t> HopLength(Norg, 0);
+        std::vector<std::pair<int, size_t> > HopData;
+        std::vector<size_t> Neighbors;
+        auto LocalHop = [&](size_t Point) {
+            if(HopStart[Point] != None)
+                return;
+            HopStart[Point] = HopData.size();
+            HopData.push_back(std::make_pair(Rank, Point));
+            Tess.GetNeighbors(Point, Neighbors);
+            for(size_t Neighbor : Neighbors) {
+                if(Tess.IsPointOutsideBox(Neighbor))
+                    continue;
+                std::pair<int, size_t> Named;
+                if(Name(Neighbor, Named))
+                    HopData.push_back(Named);
+                else
+                    Error = 1;
+            }
+            HopLength[Point] = HopData.size() - HopStart[Point];
+        };
+
+        // Requests for the one-hop lists of the ghost neighbours of the sources, by owner.
+        std::vector<std::vector<size_t> > Requests(static_cast<size_t>(Size));
+        if(InvalidSource == 0) {
+            for(size_t Source : Sources) {
+                Tess.GetNeighbors(Source, Neighbors);
+                std::vector<size_t> const SourceNeighbors = Neighbors;
+                for(size_t Neighbor : SourceNeighbors) {
+                    if(Tess.IsPointOutsideBox(Neighbor))
+                        continue;
+                    std::pair<int, size_t> Named;
+                    if(!Name(Neighbor, Named)) {
+                        Error = 1;
+                        continue;
+                    }
+                    if(Named.first == Rank)
+                        LocalHop(Named.second);
+                    else
+                        Requests[static_cast<size_t>(Named.first)].push_back(Named.second);
+                }
+            }
+        }
+        for(std::vector<size_t>& ToRank : Requests) {
+            std::sort(ToRank.begin(), ToRank.end());
+            ToRank.erase(std::unique(ToRank.begin(), ToRank.end()), ToRank.end());
+        }
+        std::vector<std::vector<size_t> > const Incoming = MPI_Exchange_all_to_all(Requests, MPI_COMM_WORLD);
+        // Replies: per requested point, its list length and then (rank, index) pairs.
+        std::vector<std::vector<size_t> > Replies(static_cast<size_t>(Size));
+        for(size_t From = 0; From < Incoming.size(); ++From) {
+            for(size_t Point : Incoming[From]) {
+                if(Point >= Norg) {
+                    Error = 1;
+                    Replies[From].push_back(0);
+                    continue;
+                }
+                LocalHop(Point);
+                Replies[From].push_back(HopLength[Point]);
+                for(size_t Entry = HopStart[Point]; Entry < HopStart[Point] + HopLength[Point]; ++Entry) {
+                    Replies[From].push_back(static_cast<size_t>(HopData[Entry].first));
+                    Replies[From].push_back(HopData[Entry].second);
+                }
+            }
+        }
+        std::vector<std::vector<size_t> > const Answers = MPI_Exchange_all_to_all(Replies, MPI_COMM_WORLD);
+        // Start of each requested point's list in its owner's answer.
+        std::vector<std::vector<size_t> > AnswerStart(static_cast<size_t>(Size));
+        for(size_t Owner = 0; Owner < Requests.size(); ++Owner) {
+            size_t Position = 0;
+            AnswerStart[Owner].reserve(Requests[Owner].size());
+            for(size_t Request = 0; Request < Requests[Owner].size(); ++Request) {
+                if(Position >= Answers[Owner].size()) {
+                    Error = 1;
+                    AnswerStart[Owner].push_back(None);
+                    continue;
+                }
+                AnswerStart[Owner].push_back(Position);
+                Position += 1 + 2 * Answers[Owner][Position];
+            }
+            if(Position != Answers[Owner].size())
+                Error = 1;
+        }
+
+        // Assemble, sort and deduplicate each source's set.
+        Offsets.assign(1, 0);
+        Targets.clear();
+        std::vector<std::pair<int, size_t> > Gather;
+        if(InvalidSource == 0 && Error == 0) {
+            for(size_t Source : Sources) {
+                Gather.clear();
+                Gather.push_back(std::make_pair(Rank, Source));
+                Tess.GetNeighbors(Source, Neighbors);
+                std::vector<size_t> const SourceNeighbors = Neighbors;
+                for(size_t Neighbor : SourceNeighbors) {
+                    if(Tess.IsPointOutsideBox(Neighbor))
+                        continue;
+                    std::pair<int, size_t> Named;
+                    if(!Name(Neighbor, Named)) {
+                        Error = 1;
+                        continue;
+                    }
+                    if(Named.first == Rank) {
+                        LocalHop(Named.second);
+                        auto const HopBegin = HopData.begin() + static_cast<std::ptrdiff_t>(HopStart[Named.second]);
+                        Gather.insert(Gather.end(), HopBegin,
+                            HopBegin + static_cast<std::ptrdiff_t>(HopLength[Named.second]));
+                        continue;
+                    }
+                    size_t const Owner = static_cast<size_t>(Named.first);
+                    auto const Found = std::lower_bound(Requests[Owner].begin(), Requests[Owner].end(), Named.second);
+                    if(Found == Requests[Owner].end() || *Found != Named.second) {
+                        Error = 1;
+                        continue;
+                    }
+                    size_t const Start = AnswerStart[Owner][static_cast<size_t>(Found - Requests[Owner].begin())];
+                    if(Start == None || Start >= Answers[Owner].size()) {
+                        Error = 1;
+                        continue;
+                    }
+                    size_t const Length = Answers[Owner][Start];
+                    for(size_t Entry = 0; Entry < Length; ++Entry)
+                        Gather.push_back(std::make_pair(static_cast<int>(Answers[Owner][Start + 1 + 2 * Entry]),
+                            Answers[Owner][Start + 2 + 2 * Entry]));
+                }
+                std::sort(Gather.begin(), Gather.end());
+                Gather.erase(std::unique(Gather.begin(), Gather.end()), Gather.end());
+                Targets.insert(Targets.end(), Gather.begin(), Gather.end());
+                Offsets.push_back(Targets.size());
+            }
+        }
+        int Flags[2] = {InvalidSource, Error};
+        MPI_Allreduce(MPI_IN_PLACE, Flags, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+        if(Flags[0] != 0)
+            throw std::runtime_error("GetKOrderNeighbors received a non-owned local point index");
+        if(Flags[1] != 0)
+            throw std::runtime_error(
+                "RICH_AMR_REMOVE_SELECT_FAST: inconsistent MPI ghost metadata in the two-hop sets");
+    }
+#endif
+
+    // EnforceRemovalVolumeGrowthLimit with the two-hop sets of TwoHopTargets and claims grouped by a counting sort
+    // over target indices.  The claims sent, the per-target claim order (sending rank, then sending order), every sum
+    // and sort, the vetoes and the rounds are those of the map version, so the retained sources are the same; their
+    // target map comes from GetKOrderNeighbors on the retained sources alone (a point's entry does not depend on the
+    // other points of the call).  Claims and vetoes a rank addresses to itself stay local.
+    std::pair<vector<size_t>, vector<double> > EnforceRemovalVolumeGrowthLimitFast(
+        std::pair<vector<size_t>, vector<double> > const& Proposed, Tessellation3D const& tess,
+        vector<ComputationalCell3D> const& cells, PointsToNeighborsMap& TargetMap, RemoveSelectTiming* Timing,
+        RemoveSelectTrace* Trace) {
+#ifndef RICH_MPI
+        return EnforceRemovalVolumeGrowthLimit(Proposed, tess, cells, TargetMap, Timing, nullptr);
+#else
+        TargetMap.clear();
+        int Rank = 0;
+        int WorldSize = 1;
+        MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &WorldSize);
+        int ProposedGlobal = static_cast<int>(Proposed.first.size());
+        MPI_Allreduce(MPI_IN_PLACE, &ProposedGlobal, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+        if(ProposedGlobal == 0)
+            return Proposed;
+        double D2Mark = Timing != nullptr ? D2Now() : 0;
+        vector<size_t> Offsets;
+        vector<std::pair<int, size_t> > Targets;
+        TwoHopTargets(tess, Proposed.first, Offsets, Targets);
+        if(Timing != nullptr) {
+            double const Now = D2Now();
+            Timing->Targets += Now - D2Mark;
+            D2Mark = Now;
+        }
+        if(Trace != nullptr) {
+            Trace->TwoHopSources = Proposed.first;
+            Trace->TwoHopOffsets = Offsets;
+            Trace->TwoHopTargets = Targets;
+        }
+        size_t const Count = Proposed.first.size();
+        size_t const Norg = tess.GetPointNo();
+        // The map version reads a source's merit from an index map, i.e. the merit of its last occurrence.
+        vector<double> SourceMerit(Proposed.second.begin(), Proposed.second.begin() +
+            static_cast<std::ptrdiff_t>(std::min(Count, Proposed.second.size())));
+        SourceMerit.resize(Count, 0.0);
+        {
+            std::unordered_map<size_t, double> LastMerit;
+            bool Duplicates = false;
+            for(size_t i = 0; i + 1 < Count && !Duplicates; ++i)
+                Duplicates = Proposed.first[i] >= Proposed.first[i + 1];
+            if(Duplicates) {
+                for(size_t i = 0; i < Count; ++i)
+                    LastMerit[Proposed.first[i]] = Proposed.second[i];
+                for(size_t i = 0; i < Count; ++i)
+                    SourceMerit[i] = LastMerit[Proposed.first[i]];
+            }
+        }
+        std::vector<char> Selected(Norg, 0);
+        for(size_t Source : Proposed.first)
+            Selected[Source] = 1;
+        std::vector<size_t> TargetCount(Norg + 1, 0);
+        std::vector<RemovalVolumeClaim const*> ByTarget;
+        std::vector<RemovalVolumeClaim> TargetClaims;
+        while(true) {
+            if(Timing != nullptr)
+                ++Timing->RoundCount;
+            std::vector<std::vector<RemovalVolumeClaim> > Claims(static_cast<size_t>(WorldSize));
+            for(size_t i = 0; i < Count; ++i) {
+                size_t const Source = Proposed.first[i];
+                if(!Selected[Source])
+                    continue;
+                for(size_t Entry = Offsets[i]; Entry < Offsets[i + 1]; ++Entry) {
+                    RemovalVolumeClaim Claim;
+                    Claim.target_index = Targets[Entry].second;
+                    Claim.source_rank = Rank;
+                    Claim.source_index = Source;
+                    Claim.source_id = cells[Source].ID;
+                    Claim.source_volume = tess.GetVolume(Source);
+                    Claim.source_merit = SourceMerit[i];
+                    Claims[static_cast<size_t>(Targets[Entry].first)].push_back(Claim);
+                }
+            }
+            if(Timing != nullptr && Timing->RoundCount == 1) {
+                for(std::vector<RemovalVolumeClaim> const& ToRank : Claims)
+                    Timing->FirstRoundClaims += static_cast<double>(ToRank.size());
+            }
+            std::vector<RemovalVolumeClaim> OwnClaims;
+            OwnClaims.swap(Claims[static_cast<size_t>(Rank)]);
+            Claims = MPI_Exchange_all_to_all(Claims, MPI_COMM_WORLD);
+            Claims[static_cast<size_t>(Rank)].swap(OwnClaims);
+
+            // Claims by target in arrival order; targets outside the owned range are skipped, as in the map version.
+            std::fill(TargetCount.begin(), TargetCount.end(), 0);
+            for(std::vector<RemovalVolumeClaim> const& FromRank : Claims)
+                for(RemovalVolumeClaim const& Claim : FromRank)
+                    if(Claim.target_index < Norg)
+                        ++TargetCount[Claim.target_index + 1];
+            for(size_t Target = 0; Target < Norg; ++Target)
+                TargetCount[Target + 1] += TargetCount[Target];
+            ByTarget.assign(TargetCount[Norg], nullptr);
+            {
+                std::vector<size_t> Fill(TargetCount.begin(), TargetCount.end() - 1);
+                for(std::vector<RemovalVolumeClaim> const& FromRank : Claims)
+                    for(RemovalVolumeClaim const& Claim : FromRank)
+                        if(Claim.target_index < Norg)
+                            ByTarget[Fill[Claim.target_index]++] = &Claim;
+            }
+
+            std::vector<std::vector<RemovalVolumeVeto> > Vetoes(static_cast<size_t>(WorldSize));
+            for(size_t Target = 0; Target < Norg; ++Target) {
+                size_t const Begin = TargetCount[Target];
+                size_t const End = TargetCount[Target + 1];
+                if(Begin == End || Selected[Target])
+                    continue;
+                double ClaimedVolume = 0.0;
+                for(size_t Entry = Begin; Entry < End; ++Entry)
+                    ClaimedVolume += ByTarget[Entry]->source_volume;
+                double const Headroom = (removal_volume_growth_limit - 1.0) * tess.GetVolume(Target);
+                if(ClaimedVolume <= Headroom * (1.0 + 1e-12))
+                    continue;
+                TargetClaims.clear();
+                for(size_t Entry = Begin; Entry < End; ++Entry)
+                    TargetClaims.push_back(*ByTarget[Entry]);
+                std::sort(TargetClaims.begin(), TargetClaims.end(),
+                    [](const RemovalVolumeClaim &a, const RemovalVolumeClaim &b) {
+                        if(a.source_merit != b.source_merit)
+                            return a.source_merit < b.source_merit;
+                        return a.source_id > b.source_id;
+                    });
+                for(RemovalVolumeClaim const& Claim : TargetClaims) {
+                    if(ClaimedVolume <= Headroom * (1.0 + 1e-12))
+                        break;
+                    RemovalVolumeVeto Veto;
+                    Veto.source_index = Claim.source_index;
+                    Veto.source_id = Claim.source_id;
+                    Vetoes[static_cast<size_t>(Claim.source_rank)].push_back(Veto);
+                    ClaimedVolume -= Claim.source_volume;
+                }
+            }
+            std::vector<RemovalVolumeVeto> OwnVetoes;
+            OwnVetoes.swap(Vetoes[static_cast<size_t>(Rank)]);
+            Vetoes = MPI_Exchange_all_to_all(Vetoes, MPI_COMM_WORLD);
+            Vetoes[static_cast<size_t>(Rank)].swap(OwnVetoes);
+
+            int RemovedLocal = 0;
+            for(std::vector<RemovalVolumeVeto> const& FromRank : Vetoes) {
+                for(RemovalVolumeVeto const& Veto : FromRank) {
+                    if(Veto.source_index < Selected.size() && Selected[Veto.source_index] &&
+                       cells[Veto.source_index].ID == Veto.source_id) {
+                        Selected[Veto.source_index] = 0;
+                        ++RemovedLocal;
+                    }
+                }
+            }
+            int RemovedGlobal = RemovedLocal;
+            MPI_Allreduce(MPI_IN_PLACE, &RemovedGlobal, 1, MPI_INT, MPI_SUM, MPI_COMM_WORLD);
+            if(RemovedGlobal == 0)
+                break;
+        }
+        if(Timing != nullptr) {
+            double const Now = D2Now();
+            Timing->Rounds += Now - D2Mark;
+            D2Mark = Now;
+        }
+
+        vector<size_t> ResultNames;
+        vector<double> ResultMerits;
+        for(size_t i = 0; i < Count; ++i) {
+            if(Selected[Proposed.first[i]]) {
+                ResultNames.push_back(Proposed.first[i]);
+                ResultMerits.push_back(Proposed.second[i]);
+            }
+        }
+        // Collective: every rank calls it, with an empty list where nothing is retained.
+        TargetMap = GetKOrderNeighbors(tess, ResultNames, removal_target_order, true, MPI_COMM_WORLD);
+        for(size_t Source : ResultNames)
+            if(TargetMap.find(Source) == TargetMap.end())
+                throw UniversalError("Missing retained removal target map");
+        if(Timing != nullptr)
+            Timing->FinalTargets += D2Now() - D2Mark;
+        return std::make_pair(ResultNames, ResultMerits);
+#endif
+    }
+
+    // The removal selection: greedy anchors, at most one partner per anchor, then the volume-growth limit over the
+    // two-hop targets.  Fast picks the fast versions of the three steps; Trace (optional) keeps the intermediate
+    // results.  Collective.
+    std::pair<vector<size_t>, vector<double> > SelectRemovals(
+        std::pair<vector<size_t>, vector<double> > const& Candidates, Tessellation3D const& tess,
+        vector<ComputationalCell3D> const& cells, PointsToNeighborsMap& Targets, bool Fast, RemoveSelectTiming* Timing,
+        RemoveSelectTrace* Trace) {
+        double Mark = Timing != nullptr ? D2Now() : 0;
+        std::pair<vector<size_t>, vector<double> > const Anchors = Fast ?
+            GreedyRemoveCandidatesFast(Candidates.second, Candidates.first, tess, cells) :
+            GreedyRemoveCandidates(Candidates.second, Candidates.first, tess, cells);
+        if(Timing != nullptr) {
+            double const Now = D2Now();
+            Timing->Anchors += Now - Mark;
+            Timing->AnchorCount += static_cast<double>(Anchors.first.size());
+            Mark = Now;
+        }
+        std::pair<vector<size_t>, vector<double> > const Proposed = AddNeighborRemovalPartners(Anchors,
+            Candidates.first, Candidates.second, tess, cells, Fast);
+        if(Timing != nullptr) {
+            Timing->Partners += D2Now() - Mark;
+            Timing->ProposedCount += static_cast<double>(Proposed.first.size());
+        }
+        if(Trace != nullptr) {
+            Trace->Anchors = Anchors;
+            Trace->Proposed = Proposed;
+        }
+        if(Fast)
+            return EnforceRemovalVolumeGrowthLimitFast(Proposed, tess, cells, Targets, Timing, Trace);
+        return EnforceRemovalVolumeGrowthLimit(Proposed, tess, cells, Targets, Timing,
+            Trace != nullptr ? &Trace->FullTargets : nullptr);
+    }
+
+    // Number of positions at which two (index, merit) lists differ (indices exactly, merits bit for bit; a size
+    // difference counts once more), and the first such position.
+    size_t CountSelectionMismatches(std::pair<vector<size_t>, vector<double> > const& A,
+        std::pair<vector<size_t>, vector<double> > const& B, size_t& First) {
+        size_t Mismatches = 0;
+        First = std::numeric_limits<size_t>::max();
+        size_t const Common = std::min(std::min(A.first.size(), B.first.size()),
+            std::min(A.second.size(), B.second.size()));
+        for(size_t i = 0; i < Common; ++i) {
+            if(A.first[i] == B.first[i] && SameBits(A.second[i], B.second[i]))
+                continue;
+            if(Mismatches == 0)
+                First = i;
+            ++Mismatches;
+        }
+        if(A.first.size() != B.first.size() || A.second.size() != B.second.size()) {
+            if(Mismatches == 0)
+                First = Common;
+            ++Mismatches;
+        }
+        return Mismatches;
+    }
+
+    // (owning rank, index on that rank) of a remote point, the naming of TwoHopTargets; the serial build has one rank
+    // and names a point by its index.
+    std::pair<int, size_t> RemoteKey(RemotePoint const& Point) {
+#ifdef RICH_MPI
+        return std::make_pair(static_cast<int>(Point.rank), Point.indexOnRank);
+#else
+        return std::make_pair(0, Point.index);
+#endif
+    }
+
+    // RICH_AMR_REMOVE_SELECT_FAST=2: compares the fast selection with the map version stage by stage: anchors,
+    // anchors with partners, the two-hop target set of every proposed source, the retained sources with their merits,
+    // and the retained target map (rank, index and distance of every entry).  Rank 0 prints one
+    // RICH_AMR_REMOVE_SELECT_FAST line; on a mismatch the lowest rank holding one prints its first example and every
+    // rank throws.  Collective.
+    void VerifyRemoveSelection(size_t Cycle, size_t CandidateCount, RemoveSelectTrace const& Map,
+        RemoveSelectTrace const& Fast, std::pair<vector<size_t>, vector<double> > const& MapResult,
+        std::pair<vector<size_t>, vector<double> > const& FastResult, PointsToNeighborsMap const& MapTargets,
+        PointsToNeighborsMap const& FastTargets, double MapSeconds, double FastSeconds) {
+        enum { AnchorStage, ProposedStage, TwoHopStage, RetainedStage, TargetStage, StageCount };
+        char const* const StageNames[StageCount] = {"anchors", "proposed", "two_hop", "retained", "targets"};
+        unsigned long long Mismatches[StageCount + 4] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
+        std::ostringstream Example;
+        Example << std::setprecision(17);
+        size_t First = 0;
+        Mismatches[AnchorStage] = CountSelectionMismatches(Map.Anchors, Fast.Anchors, First);
+        if(Mismatches[AnchorStage] != 0 && Example.tellp() == 0)
+            Example << " stage=anchors position=" << First;
+        Mismatches[ProposedStage] = CountSelectionMismatches(Map.Proposed, Fast.Proposed, First);
+        if(Mismatches[ProposedStage] != 0 && Example.tellp() == 0)
+            Example << " stage=proposed position=" << First;
+        // Two-hop sets: every fast source against the map version's entry, compared as (rank, index) sequences.
+        size_t UniqueSources = 0;
+        for(size_t i = 0; i < Fast.TwoHopSources.size(); ++i) {
+            if(i == 0 || Fast.TwoHopSources[i] != Fast.TwoHopSources[i - 1])
+                ++UniqueSources;
+            size_t const Source = Fast.TwoHopSources[i];
+            auto const Found = Map.FullTargets.find(Source);
+            size_t const Begin = Fast.TwoHopOffsets[i];
+            size_t const End = Fast.TwoHopOffsets[i + 1];
+            bool Equal = Found != Map.FullTargets.end() && Found->second.size() == End - Begin;
+            if(Equal) {
+                size_t Entry = Begin;
+                for(RemotePoint const& Point : Found->second) {
+                    if(RemoteKey(Point) != Fast.TwoHopTargets[Entry]) {
+                        Equal = false;
+                        break;
+                    }
+                    ++Entry;
+                }
+            }
+            if(Equal)
+                continue;
+            if(Mismatches[TwoHopStage] == 0 && Example.tellp() == 0)
+                Example << " stage=two_hop source=" << Source << " map_size="
+                    << (Found == Map.FullTargets.end() ? 0 : Found->second.size()) << " fast_size=" << End - Begin;
+            ++Mismatches[TwoHopStage];
+        }
+        if(UniqueSources != Map.FullTargets.size()) {
+            if(Mismatches[TwoHopStage] == 0 && Example.tellp() == 0)
+                Example << " stage=two_hop map_sources=" << Map.FullTargets.size() << " fast_sources=" << UniqueSources;
+            ++Mismatches[TwoHopStage];
+        }
+        Mismatches[RetainedStage] = CountSelectionMismatches(MapResult, FastResult, First);
+        if(Mismatches[RetainedStage] != 0 && Example.tellp() == 0)
+            Example << " stage=retained position=" << First;
+        // Retained target maps: keys, then every entry's rank, index and distance.
+        {
+            auto MapIt = MapTargets.begin();
+            auto FastIt = FastTargets.begin();
+            for(; MapIt != MapTargets.end() && FastIt != FastTargets.end(); ++MapIt, ++FastIt) {
+                bool Equal = MapIt->first == FastIt->first && MapIt->second.size() == FastIt->second.size();
+                if(Equal) {
+                    auto A = MapIt->second.begin();
+                    auto B = FastIt->second.begin();
+                    for(; A != MapIt->second.end(); ++A, ++B) {
+                        if(RemoteKey(*A) != RemoteKey(*B) || A->distance != B->distance) {
+                            Equal = false;
+                            break;
+                        }
+                    }
+                }
+                if(Equal)
+                    continue;
+                if(Mismatches[TargetStage] == 0 && Example.tellp() == 0)
+                    Example << " stage=targets map_source=" << MapIt->first << " fast_source=" << FastIt->first
+                        << " map_size=" << MapIt->second.size() << " fast_size=" << FastIt->second.size();
+                ++Mismatches[TargetStage];
+            }
+            if(MapTargets.size() != FastTargets.size()) {
+                if(Mismatches[TargetStage] == 0 && Example.tellp() == 0)
+                    Example << " stage=targets map_entries=" << MapTargets.size() << " fast_entries="
+                        << FastTargets.size();
+                ++Mismatches[TargetStage];
+            }
+        }
+        unsigned long long LocalMismatches = 0;
+        for(int Stage = 0; Stage < StageCount; ++Stage)
+            LocalMismatches += Mismatches[Stage];
+        Mismatches[StageCount] = static_cast<unsigned long long>(CandidateCount);
+        Mismatches[StageCount + 1] = static_cast<unsigned long long>(Map.Anchors.first.size());
+        Mismatches[StageCount + 2] = static_cast<unsigned long long>(Map.Proposed.first.size());
+        Mismatches[StageCount + 3] = static_cast<unsigned long long>(MapResult.first.size());
+        int Rank = 0;
+        int FirstRank = LocalMismatches > 0 ? 0 : 1;
+        double Seconds[2] = {MapSeconds, FastSeconds};
+#ifdef RICH_MPI
+        int Ranks = 1;
+        MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &Ranks);
+        FirstRank = LocalMismatches > 0 ? Rank : Ranks;
+        MPI_Allreduce(MPI_IN_PLACE, Mismatches, StageCount + 4, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &FirstRank, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, Seconds, 2, MPI_DOUBLE, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        unsigned long long TotalMismatches = 0;
+        for(int Stage = 0; Stage < StageCount; ++Stage)
+            TotalMismatches += Mismatches[Stage];
+        if(Rank == 0) {
+            std::ostringstream Line;
+            Line << "RICH_AMR_REMOVE_SELECT_FAST mode=2 cycle=" << Cycle << " candidates=" << Mismatches[StageCount]
+                << " anchors=" << Mismatches[StageCount + 1] << " proposed=" << Mismatches[StageCount + 2]
+                << " retained=" << Mismatches[StageCount + 3];
+            for(int Stage = 0; Stage < StageCount; ++Stage)
+                Line << " " << StageNames[Stage] << "_mismatches=" << Mismatches[Stage];
+            Line << " map_s_max=" << Seconds[0] << " fast_s_max=" << Seconds[1];
+            std::cout << Line.str() << std::endl;
+        }
+        if(TotalMismatches == 0)
+            return;
+        if(Rank == FirstRank)
+            std::cerr << "RICH_AMR_REMOVE_SELECT_FAST mismatch rank=" << Rank << " local_mismatches=" << LocalMismatches
+                << Example.str() << std::endl;
+#ifdef RICH_MPI
+        MPI_Barrier(MPI_COMM_WORLD);
+#endif
+        throw UniversalError("RICH_AMR_REMOVE_SELECT_FAST=2: the fast removal selection differs from the map version");
+    }
 
 	std::vector<Vector3D> GetNewPoints(Tessellation3D const& tess, std::pair<vector<size_t>,
 		vector<Vector3D> > &ToRefine)
@@ -2633,25 +3765,58 @@ void AMR3D::operator() (Simulation &sim)
 }
 
 IndividualAMRChangeSet AMR3D::ApplyIndividual(
-	Simulation &sim,
-	IndividualStepContext const& context)
+    Simulation &sim,
+    IndividualStepContext const& context)
 {
-	// The AMR mesh is built from the committed generators the caller passes in
-	// context.generator_points.  gravity_source_points are the cells'
-	// centroids: a mesh built from them moved every generator onto its
-	// centroid once a change set reset the generator cache from that mesh, a
-	// flux-free relaxation that global AMR never applies (it rounded slow
-	// cells and let the refinement criteria's roundness guards admit bursts of
-	// refinement after each individual stretch).
-	int missing = context.generator_points.size() < sim.getCells().size() ? 1 : 0;
+    // The AMR mesh is built from the committed generators the caller passes in
+    // context.generator_points.  gravity_source_points are the cells'
+    // centroids: a mesh built from them moved every generator onto its
+    // centroid once a change set reset the generator cache from that mesh, a
+    // flux-free relaxation that global AMR never applies (it rounded slow
+    // cells and let the refinement criteria's roundness guards admit bursts of
+    // refinement after each individual stretch).
+    bool const D2On = D2TimersEnabled();
+    int const LazyMode = AgreedLazyGeneratorsMode();
+    double const D2GeneratorStart = D2On ? D2Now() : 0;
+    std::vector<Vector3D> LazyPoints;
+    std::vector<Vector3D> const* Generators = &context.generator_points;
+    if(LazyMode == 0) {
+        int missing = context.generator_points.size() < sim.getCells().size() ? 1 : 0;
 #ifdef RICH_MPI
-	MPI_Allreduce(MPI_IN_PLACE, &missing, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+        MPI_Allreduce(MPI_IN_PLACE, &missing, 1, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
 #endif
-	if(missing != 0)
-		throw UniversalError("AMR3D::ApplyIndividual: the context carries no committed generator positions");
-	last_change_set_ = Apply(sim, &context.active_indices,
-		&context.generator_points);
-	return last_change_set_;
+        if(missing != 0)
+            throw UniversalError("AMR3D::ApplyIndividual: the context carries no committed generator positions");
+    }
+    else {
+        // {some rank lacks generators, some rank holds any}: one reduction decides the branch on every rank.
+        int Flags[2] = {context.generator_points.size() < sim.getCells().size() ? 1 : 0,
+            context.generator_points.empty() ? 0 : 1};
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, Flags, 2, MPI_INT, MPI_MAX, MPI_COMM_WORLD);
+#endif
+        if(LazyMode == 1 && Flags[1] == 0) {
+            // Collective, like the eager copy it replaces.
+            LazyPoints = sim.CommittedGeneratorPoints();
+            Generators = &LazyPoints;
+        }
+        else if(Flags[0] != 0)
+            throw UniversalError("AMR3D::ApplyIndividual: the context carries no committed generator positions "
+                "(RICH_INDIVIDUAL_LAZY_GENERATORS=" + std::to_string(LazyMode) + ")");
+        else if(LazyMode == 2)
+            VerifyEagerGenerators(sim, context.generator_points);
+    }
+    if(D2On) {
+        D2PrepareAccumulators();
+        D2StageSeconds[D2Generators] += D2Now() - D2GeneratorStart;
+    }
+    IndividualAMRChangeSet result = Apply(sim, &context.active_indices, Generators);
+    // The stored copy leaves out the captured adjacency (one record per owned cell).
+    vector<IndividualAMRChangeSet::AdjacencyEntry> adjacency;
+    adjacency.swap(result.adjacency);
+    last_change_set_ = result;
+    result.adjacency.swap(adjacency);
+    return result;
 }
 
 IndividualAMRChangeSet AMR3D::Apply(
@@ -2671,10 +3836,24 @@ IndividualAMRChangeSet AMR3D::Apply(
 	std::vector<Conserved3D> &extensives = sim.getExtensives();
 	EquationOfState const& eos = eos_;
 	double time = sim.GetTime();
+    // RICH_D2_TIMERS: stage seconds go to D2StageSeconds, this pass's cell counts to D2PassCounts.
+    bool const D2On = D2TimersEnabled();
+    if(D2On)
+        D2PrepareAccumulators();
+    D2StageClock D2Clock(D2On, D2StageSeconds);
+    std::vector<double> D2PassCounts(D2On ? D2CountCount : 0, 0.0);
+    if(D2On) {
+        size_t const D2Owned = active_indices != nullptr ? cells.size() : tess.GetPointNo();
+        D2PassCounts[D2Cells] = static_cast<double>(D2Owned);
+        D2PassCounts[D2Active] = static_cast<double>(active_indices != nullptr ? active_indices->size() : D2Owned);
+        D2PassCounts[D2PartialRanks] = active_indices != nullptr && active_indices->size() != D2Owned ? 1 : 0;
+    }
 	vector<unsigned char> active_mask;
 	std::unordered_set<size_t> active_ids;
+	int adjacency_capture_mode = 0;
 	if(active_indices != nullptr)
 	{
+		adjacency_capture_mode = AgreedAMRAdjacencyCaptureMode();
 		active_mask.assign(cells.size(), 0);
 		active_ids.reserve(active_indices->size());
 		for(size_t index : *active_indices)
@@ -2731,8 +3910,13 @@ IndividualAMRChangeSet AMR3D::Apply(
 		active_mask.resize(cells.size(), 0);
 	#endif
 	}
+    D2Clock.Mark(D2Canonical);
 	// Get remove list
 	std::pair<vector<size_t>, vector<double> > ToRemove = remove_.ToRemove(tess, cells, time);
+    D2Clock.Mark(D2Remove);
+    if(D2On) {
+        D2PassCounts[D2RemoveCandidates] = static_cast<double>(ToRemove.first.size());
+    }
 	if(active_indices != nullptr)
 	{
 		vector<size_t> filtered_cells;
@@ -2755,6 +3939,9 @@ IndividualAMRChangeSet AMR3D::Apply(
 		ToRemove.first.swap(filtered_cells);
 		ToRemove.second.swap(filtered_merit);
 	}
+    if(D2On) {
+        D2PassCounts[D2RemoveActive] = static_cast<double>(ToRemove.first.size());
+    }
 	// sort
 	vector<size_t> indeces = sort_index(ToRemove.first);
 	ToRemove.second = VectorValues(ToRemove.second, indeces);
@@ -2762,16 +3949,45 @@ IndividualAMRChangeSet AMR3D::Apply(
 	// Form an MPI-consistent independent anchor set, allow one neighboring
 	// partner per anchor, then conservatively enforce V_new <= 3 V_old for
 	// every possible surviving target in the old two-hop graph.
-	std::pair<vector<size_t>, vector<double> > RemoveAnchors =
-		GreedyRemoveCandidates(ToRemove.second, ToRemove.first, tess, cells);
-	ToRemove = AddNeighborRemovalPartners(RemoveAnchors, ToRemove.first, ToRemove.second, tess, cells);
 	// The limiter retains the accepted sources' two-hop topology. Reuse it for
 	// refinement conflicts and conservative remapping instead of discovering
 	// the same MPI neighborhoods two more times.
 	PointsToNeighborsMap removal_targets;
-	ToRemove = EnforceRemovalVolumeGrowthLimit(ToRemove, tess, cells, removal_targets);
+    int const RemoveSelectMode = AgreedRemoveSelectFastMode();
+    RemoveSelectTiming SelectTiming;
+    RemoveSelectTiming* const SelectTimingUsed = D2On ? &SelectTiming : nullptr;
+    if(RemoveSelectMode == 2) {
+        // Both versions from the same candidates; the map version's result and targets are used.
+        RemoveSelectTrace MapTrace;
+        RemoveSelectTrace FastTrace;
+        PointsToNeighborsMap FastTargets;
+        double const MapStart = D2Now();
+        std::pair<vector<size_t>, vector<double> > const MapResult = SelectRemovals(ToRemove, tess, cells,
+            removal_targets, false, SelectTimingUsed, &MapTrace);
+        double const FastStart = D2Now();
+        std::pair<vector<size_t>, vector<double> > const FastResult = SelectRemovals(ToRemove, tess, cells, FastTargets,
+            true, nullptr, &FastTrace);
+        double const FastSeconds = D2Now() - FastStart;
+        SelectTiming.FastTotal += FastSeconds;
+        VerifyRemoveSelection(sim.GetCycle(), ToRemove.first.size(), MapTrace, FastTrace, MapResult, FastResult,
+            removal_targets, FastTargets, FastStart - MapStart, FastSeconds);
+        ToRemove = MapResult;
+    }
+    else {
+        ToRemove = SelectRemovals(ToRemove, tess, cells, removal_targets, RemoveSelectMode == 1, SelectTimingUsed,
+            nullptr);
+    }
+    if(D2On)
+        D2AddSelectTiming(SelectTiming.Anchors, SelectTiming.Partners, SelectTiming.Targets, SelectTiming.Rounds,
+            SelectTiming.FinalTargets, SelectTiming.FastTotal, SelectTiming.AnchorCount, SelectTiming.ProposedCount,
+            SelectTiming.FirstRoundClaims, SelectTiming.RoundCount);
+    D2Clock.Mark(D2RemoveSelect);
 	// Get points to refine
 	std::pair<vector<size_t>, std::vector<Vector3D> > ToRefine = refine_.ToRefine(tess, cells, time);
+    D2Clock.Mark(D2Refine);
+    if(D2On) {
+        D2PassCounts[D2RefineCandidates] = static_cast<double>(ToRefine.first.size());
+    }
 	if(active_indices != nullptr)
 	{
 		vector<size_t> filtered_cells;
@@ -2798,6 +4014,9 @@ IndividualAMRChangeSet AMR3D::Apply(
 		ToRefine.first.swap(filtered_cells);
 		ToRefine.second.swap(filtered_directions);
 	}
+    if(D2On) {
+        D2PassCounts[D2RefineActive] = static_cast<double>(ToRefine.first.size());
+    }
 	sort_index(ToRefine.first, indeces);
 	sort(ToRefine.first.begin(), ToRefine.first.end());
 	if (!ToRefine.second.empty())
@@ -2805,6 +4024,10 @@ IndividualAMRChangeSet AMR3D::Apply(
 	// remove neighboring refine/remove
 	RemoveRefineNeighborRemove(tess, ToRemove.first, removal_targets,
 		ToRefine.first, ToRefine.second);
+    if(D2On) {
+        D2PassCounts[D2Removed] = static_cast<double>(ToRemove.first.size());
+        D2PassCounts[D2Refined] = static_cast<double>(ToRefine.first.size());
+    }
 	IndividualAMRChangeSet changes;
 	changes.removed_cell_ids.reserve(ToRemove.first.size());
 	for(size_t index : ToRemove.first)
@@ -2830,17 +4053,25 @@ IndividualAMRChangeSet AMR3D::Apply(
 			extensives.resize(tess.GetPointNo());
 		}
 	#endif
+        D2Clock.Mark(D2Conflict);
+        if(D2On) {
+            D2FinishPass(sim, D2PassCounts, active_indices != nullptr, false);
+        }
 		changes.mesh_build_timing = mesh_build_timing;
 		return changes;
 	}
 	if(rank == 0)
 		std::cout<<"Removing "<<nAMR[0]<<" cells and refining "<<nAMR[1]<<" cells."<<std::endl;
+    D2Clock.Mark(D2Conflict);
 
 	interp_.BuildSlopes(tess, cells, time);
+    D2Clock.Mark(D2Slopes);
 	// Get new points from refine
 	std::vector<Vector3D> new_points = GetNewPoints(tess, ToRefine);
+    D2Clock.Mark(D2NewPoints);
 	// Create copy of old tess
 	boost::scoped_ptr<Tessellation3D> oldtess(tess.clone());
+    D2Clock.Mark(D2Clone);
 	// Build new tess
 	vector<Vector3D> new_mesh = tess.getMeshPoints();
 	size_t Norg = tess.GetPointNo();
@@ -2865,6 +4096,7 @@ IndividualAMRChangeSet AMR3D::Apply(
 		tess.Build(new_mesh);
 	}
 #endif
+    D2Clock.Mark(D2Rebuild);
 	// Fix extensives for refine
 	extensives.resize(oldtess->GetPointNo() + ToRefine.first.size());
 #ifdef RICH_MPI
@@ -2881,6 +4113,7 @@ IndividualAMRChangeSet AMR3D::Apply(
 #else
 	LocalRefine(*oldtess, tess, ToRefine.first, cells, eos, *eu_, extensives, interp_);
 #endif
+    D2Clock.Mark(D2RefineClip);
 	// Remove from extensive the remove cells
 	RemoveVector(extensives, ToRemove.first);
 	// Add removed extensives to every geometrically overlapping survivor from
@@ -2893,6 +4126,7 @@ IndividualAMRChangeSet AMR3D::Apply(
 	LocalRemoveWithTargets(*oldtess, tess, ToRemove.first, removal_targets,
 		*eu_, cells, eos_, extensives, interp_, changes);
 #endif
+    D2Clock.Mark(D2RemoveRemap);
 	// Recalc cells
 	RemoveVector(cells, ToRemove.first);
 	size_t NorgNew = tess.GetPointNo();
@@ -2960,12 +4194,19 @@ IndividualAMRChangeSet AMR3D::Apply(
 			extensives[i].tracers[entropy_index] = cells[i].tracers[entropy_index] * extensives[i].mass;
 		}
 	}
+    D2Clock.Mark(D2Convert);
 	size_t & MaxID = sim.GetMaxID();
 #ifdef RICH_MPI
 	// Update cells
 	MPI_exchange_data(tess, cells, true);
+    D2Clock.Mark(D2Exchange);
 	if(active_indices != nullptr)
 	{
+		// The ghost primitives (with their stable IDs) are present only until the resize below.
+		if(adjacency_capture_mode != 0)
+			CaptureAMRAdjacency(tess, cells, Norg - ToRemove.first.size() + Nrefine, rank,
+				adjacency_capture_mode, changes);
+        D2Clock.Mark(D2Capture);
 		cells.resize(tess.GetPointNo());
 		extensives.resize(tess.GetPointNo());
 	}
@@ -2976,8 +4217,121 @@ IndividualAMRChangeSet AMR3D::Apply(
 #else
 	MaxID += Nrefine;
 #endif
+    if(D2On) {
+        // Timed only here: with the timers off the clone is released on return, as before.
+        oldtess.reset();
+        D2Clock.Mark(D2Release);
+        D2FinishPass(sim, D2PassCounts, active_indices != nullptr, true);
+    }
 	changes.mesh_build_timing = mesh_build_timing;
 	return changes;
+}
+
+bool AMR3D::D2TimersEnabled(void) {
+    static bool const Enabled = AgreedStrictSwitch("RICH_D2_TIMERS", 1) == 1;
+    return Enabled;
+}
+
+void AMR3D::D2PrepareAccumulators(void) {
+    if(D2StageSeconds.size() != static_cast<size_t>(D2StageCount))
+        D2StageSeconds.assign(D2StageCount, 0.0);
+    if(D2Counts.size() != static_cast<size_t>(D2CountCount))
+        D2Counts.assign(D2CountCount, 0.0);
+    if(D2SelectSeconds.size() != static_cast<size_t>(D2SelectStageCount))
+        D2SelectSeconds.assign(D2SelectStageCount, 0.0);
+}
+
+void AMR3D::D2AddSelectTiming(double Anchors, double Partners, double Targets, double Rounds, double Final,
+    double FastTotal, double AnchorCount, double ProposedCount, double FirstRoundClaims, int RoundCount) {
+    D2PrepareAccumulators();
+    D2SelectSeconds[D2SelectAnchors] += Anchors;
+    D2SelectSeconds[D2SelectPartners] += Partners;
+    D2SelectSeconds[D2SelectTargets] += Targets;
+    D2SelectSeconds[D2SelectRounds] += Rounds;
+    D2SelectSeconds[D2SelectFinal] += Final;
+    D2SelectSeconds[D2SelectFast] += FastTotal;
+    D2Counts[D2Anchors] += AnchorCount;
+    D2Counts[D2Proposed] += ProposedCount;
+    D2Counts[D2FirstRoundClaims] += FirstRoundClaims;
+    D2SelectRounds += RoundCount;
+}
+
+void AMR3D::D2FinishPass(Simulation const& Sim, std::vector<double> const& PassCounts, bool Individual, bool Rebuilt) {
+    for(size_t Index = 0; Index < D2Counts.size() && Index < PassCounts.size(); ++Index)
+        D2Counts[Index] += PassCounts[Index];
+    ++D2Passes;
+    if(Rebuilt)
+        ++D2Rebuilds;
+    D2LastIndividual = Individual;
+    D2LastCycle = Sim.GetCycle();
+    D2LastTime = Sim.GetTime();
+}
+
+void AMR3D::ReportD2Pass(std::vector<std::pair<std::string, double> > const& ExtraStages) {
+    if(D2Passes == 0)
+        return;
+    D2PrepareAccumulators();
+    int Rank = 0;
+    int Ranks = 1;
+#ifdef RICH_MPI
+    MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+    MPI_Comm_size(MPI_COMM_WORLD, &Ranks);
+#endif
+    // Timed entries: the AMR3D stages, their per-rank sum ("amr3d"), then the caller's stages.
+    std::vector<std::string> Names(D2StageNames, D2StageNames + D2StageCount);
+    std::vector<double> Local(D2StageSeconds);
+    double AMRSeconds = 0;
+    for(double Seconds : D2StageSeconds)
+        AMRSeconds += Seconds;
+    Names.push_back("amr3d");
+    Local.push_back(AMRSeconds);
+    for(size_t Index = 0; Index < static_cast<size_t>(D2SelectStageCount); ++Index) {
+        Names.push_back(D2SelectStageNames[Index]);
+        Local.push_back(D2SelectSeconds[Index]);
+    }
+    for(std::pair<std::string, double> const& Extra : ExtraStages) {
+        Names.push_back(Extra.first);
+        Local.push_back(Extra.second);
+    }
+    size_t const Timed = Local.size();
+    std::vector<double> SumInput(Local);
+    SumInput.insert(SumInput.end(), D2Counts.begin(), D2Counts.end());
+    std::vector<double> Sums(SumInput);
+    // Layout of MPI_DOUBLE_INT for MPI_MAXLOC.
+    struct ValueRank {
+        double Value;
+        int Rank;
+    };
+    std::vector<ValueRank> MaxInput(Timed);
+    for(size_t Index = 0; Index < Timed; ++Index) {
+        MaxInput[Index].Value = Local[Index];
+        MaxInput[Index].Rank = Rank;
+    }
+    std::vector<ValueRank> Maxima(MaxInput);
+#ifdef RICH_MPI
+    MPI_Reduce(SumInput.data(), Sums.data(), static_cast<int>(SumInput.size()), MPI_DOUBLE, MPI_SUM, 0, MPI_COMM_WORLD);
+    MPI_Reduce(MaxInput.data(), Maxima.data(), static_cast<int>(Timed), MPI_DOUBLE_INT, MPI_MAXLOC, 0, MPI_COMM_WORLD);
+#endif
+    if(Rank == 0) {
+        char const* const Kind = !D2LastIndividual ? "global" : (Sums[Timed + D2PartialRanks] == 0 ? "full" :
+            "active_only");
+        std::ostringstream Line;
+        Line << std::setprecision(12) << "RICH_D2_AMR cycle=" << D2LastCycle << " time=" << D2LastTime << " kind="
+            << Kind << " passes=" << D2Passes << " rebuilt=" << D2Rebuilds << " rs_round_count=" << D2SelectRounds;
+        for(size_t Index = 0; Index < static_cast<size_t>(D2CountCount); ++Index)
+            Line << " " << D2CountNames[Index] << "=" << static_cast<unsigned long long>(Sums[Timed + Index]);
+        Line << std::setprecision(6);
+        for(size_t Index = 0; Index < Timed; ++Index)
+            Line << " " << Names[Index] << "_s_max=" << Maxima[Index].Value << " " << Names[Index] << "_s_mean="
+                << Sums[Index] / static_cast<double>(Ranks) << " " << Names[Index] << "_s_rank=" << Maxima[Index].Rank;
+        std::cout << Line.str() << std::endl;
+    }
+    D2StageSeconds.assign(D2StageCount, 0.0);
+    D2Counts.assign(D2CountCount, 0.0);
+    D2SelectSeconds.assign(D2SelectStageCount, 0.0);
+    D2SelectRounds = 0;
+    D2Passes = 0;
+    D2Rebuilds = 0;
 }
 
 AMR3D::~AMR3D(void) {}

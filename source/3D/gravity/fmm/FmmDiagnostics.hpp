@@ -25,6 +25,31 @@ struct FmmSolveStats
     double downwardSeconds = 0;
     double totalSeconds = 0;
     double gravityRedistributionSeconds = 0;
+    // gravityRedistributionSeconds split into the sources' trip to their gravity
+    // owners (keys, sorts, splitter decision, exchange) and the results' trip back.
+    double gravityRedistributionForwardSeconds = 0;
+    double gravityRedistributionReturnSeconds = 0;
+    // Results this rank received back from the gravity owners: every particle,
+    // or only the targets of a masked solve.
+    std::uint64_t gravityReturnedResultCount = 0;
+    // RICH_D2_TIMERS=1: this rank's forward redistribution of this solve split into stages (MPI_Wtime seconds): keys
+    // (particle records and Hilbert keys), sort (local key sort), decide (splitter re-sampling vote and sampling), pack
+    // (destinations and send buffer), wire (count exchange, validity votes, Alltoallv), unpack (received-key sort,
+    // ownership checksum, owned arrays). Zero when the timers are off or the solve did not redistribute; the flag is
+    // the same on every rank.
+    bool D2ForwardTimersActive = false;
+    double D2ForwardKeysSeconds = 0;
+    double D2ForwardSortSeconds = 0;
+    double D2ForwardDecideSeconds = 0;
+    double D2ForwardPackSeconds = 0;
+    double D2ForwardWireSeconds = 0;
+    double D2ForwardUnpackSeconds = 0;
+    // RICH_FMM_FORWARD_DEDUP (0, 1, 2; the same on every rank); in mode 2 the solves verified so far on this
+    // calculator, and the solves whose forward destinations were not ordered along the sorted keys (packed by a stable
+    // counting sort instead of being sent in place; expected to stay 0).
+    int ForwardDedupMode = 0;
+    std::uint64_t ForwardDedupVerifiedSolves = 0;
+    std::uint64_t ForwardDedupUnorderedSolves = 0;
     std::size_t directErrorSampleCount = 0;
     double directErrorMeanRelativeAcceleration = 0;
     double directErrorRmsRelativeAcceleration = 0;

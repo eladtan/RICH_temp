@@ -101,8 +101,19 @@ public:
 	{return interp_.GetSlopesForTimePrediction() != nullptr;}
 
 private:
+    /*! \brief One individual flux calculation.  FluxPasses (RICH_INDIVIDUAL_FLUX_PASSES = 1) and RequestSlopes
+        (RICH_INDIVIDUAL_GHOST_SLOPE_REQUEST = 1) select the new paths; both false is today's calculation.
+    */
+    void CalculateIndividualPass(vector<Conserved3D>& fluxes, const Tessellation3D& tess,
+        const vector<Vector3D>& face_velocities, const vector<ComputationalCell3D>& cells, const EquationOfState& eos,
+        const IndividualStepContext& context,
+        std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> >& face_values, bool FluxPasses,
+        bool RequestSlopes) const;
+
 	const vector<pair<const Condition3D*, const Action3D*> > sequence_;
 	SpatialReconstruction3D const& interp_;
+    //! Face states of the new paths in verify mode; they keep the previous event's entries, as face_values would
+    mutable std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > VerifyFaceValues_;
 };
 
 //! \brief Calculates flux between two regular bulk cells

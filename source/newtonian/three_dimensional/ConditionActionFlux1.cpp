@@ -1,11 +1,20 @@
 #include "ConditionActionFlux1.hpp"
+#include "LinearGauss3D.hpp"
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
+#include <iostream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#ifdef RICH_MPI
+#include "../../mpi/mpi_commands.hpp"
+#endif
 
 ConditionActionFlux1::ConditionActionFlux1(const vector<pair<const Condition3D*, const Action3D*> >& sequence,
 	SpatialReconstruction3D const& interp) :
-	sequence_(sequence),interp_(interp) {}
+	sequence_(sequence),interp_(interp), VerifyFaceValues_() {}
 
 ConditionActionFlux1::~ConditionActionFlux1(void)
 {}
@@ -151,6 +160,208 @@ namespace
 		}
 		throw UniversalError("Error in ConditionActionFlux1");
 	}
+
+    bool SameBits(double First, double Second)
+    {
+        return std::memcmp(&First, &Second, sizeof(double)) == 0;
+    }
+
+    bool SameVector(Vector3D const& First, Vector3D const& Second)
+    {
+        return SameBits(First.x, Second.x) && SameBits(First.y, Second.y) && SameBits(First.z, Second.z);
+    }
+
+    bool SameCell(ComputationalCell3D const& First, ComputationalCell3D const& Second)
+    {
+        if(!(SameBits(First.density, Second.density) && SameBits(First.pressure, Second.pressure) &&
+            SameBits(First.internal_energy, Second.internal_energy) && SameBits(First.temperature, Second.temperature) &&
+            First.ID == Second.ID && SameVector(First.velocity, Second.velocity) && SameBits(First.dt, Second.dt) &&
+            SameBits(First.Erad, Second.Erad) && SameBits(First.Erad_dt, Second.Erad_dt) &&
+            SameBits(First.Erad_dt_dt, Second.Erad_dt_dt) && SameBits(First.cs, Second.cs) &&
+            First.Eg.size() == Second.Eg.size() && First.stickers == Second.stickers))
+            return false;
+        for(std::size_t Group = 0; Group < First.Eg.size(); ++Group)
+            if(!SameBits(First.Eg[Group], Second.Eg[Group]))
+                return false;
+        for(std::size_t Tracer = 0; Tracer < First.tracers.size(); ++Tracer)
+            if(!SameBits(First.tracers[Tracer], Second.tracers[Tracer]))
+                return false;
+        return true;
+    }
+
+    bool SameSlope(Slope3D const& First, Slope3D const& Second)
+    {
+        return SameCell(First.xderivative, Second.xderivative) && SameCell(First.yderivative, Second.yderivative) &&
+            SameCell(First.zderivative, Second.zderivative);
+    }
+
+    bool SameConserved(Conserved3D const& First, Conserved3D const& Second)
+    {
+        if(!(SameBits(First.mass, Second.mass) && SameVector(First.momentum, Second.momentum) &&
+            SameBits(First.energy, Second.energy) && SameBits(First.internal_energy, Second.internal_energy) &&
+            SameBits(First.Erad, Second.Erad) && SameBits(First.Erad_dt, Second.Erad_dt) &&
+            SameBits(First.Erad_dt_dt, Second.Erad_dt_dt) && First.Eg.size() == Second.Eg.size()))
+            return false;
+        for(std::size_t Group = 0; Group < First.Eg.size(); ++Group)
+            if(!SameBits(First.Eg[Group], Second.Eg[Group]))
+                return false;
+        for(std::size_t Tracer = 0; Tracer < First.tracers.size(); ++Tracer)
+            if(!SameBits(First.tracers[Tracer], Second.tracers[Tracer]))
+                return false;
+        return true;
+    }
+
+    // The faces the individual flux loop reads: those with an active endpoint.
+    bool IndividualFaceRead(Tessellation3D const& Tess, IndividualStepContext const& Context, std::size_t Face)
+    {
+        auto const Neighbors = Tess.GetFaceNeighbors(Face);
+        std::size_t const Norg = Context.active_mask.size();
+        return (Neighbors.first < Norg && Context.isActive(Neighbors.first)) ||
+            (Neighbors.second < Norg && Context.isActive(Neighbors.second));
+    }
+
+    // The slopes the individual flux loop reads: both endpoints of a read face, except a physical boundary ghost.  They
+    // include every ghost slope exchanged from a peer.
+    std::vector<std::size_t> IndividualReadSlopes(Tessellation3D const& Tess, IndividualStepContext const& Context,
+        std::size_t SlopeCount)
+    {
+        std::vector<unsigned char> Marked(SlopeCount, 0);
+        std::vector<std::size_t> Indices;
+        std::size_t const Owned = Tess.GetPointNo();
+        for(std::size_t Face = 0; Face < Tess.GetTotalFacesNumber(); ++Face) {
+            if(!IndividualFaceRead(Tess, Context, Face))
+                continue;
+            auto const Neighbors = Tess.GetFaceNeighbors(Face);
+            bool const Boundary = Tess.BoundaryFace(Face);
+            for(std::size_t const Index : {Neighbors.first, Neighbors.second}) {
+                if(Index >= SlopeCount || (Boundary && Index >= Owned) || Marked[Index] != 0)
+                    continue;
+                Marked[Index] = 1;
+                Indices.push_back(Index);
+            }
+        }
+        return Indices;
+    }
+
+    struct IndividualFluxVerifyInput {
+        int FluxMode;
+        int SlopeMode;
+        std::vector<Conserved3D> const* NewFluxes;
+        std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > const* NewFaceValues;
+        std::vector<std::size_t> const* SlopeIndices;
+        std::vector<Slope3D> const* NewSlopes;
+        std::vector<Slope3D> const* NewNaiveSlopes;
+        IndividualInterpolationCounts NewCounts;
+        IndividualInterpolationCounts KeptCounts;
+    };
+
+    // Verify mode of RICH_INDIVIDUAL_FLUX_PASSES and RICH_INDIVIDUAL_GHOST_SLOPE_REQUEST: everything a reader of the event
+    // sees (the read face states after the temporal predictor, every flux, every slope the flux loop reads and the
+    // unlimited slopes of its owned endpoints) from the new paths against the kept paths, bit for bit.  One reduction;
+    // rank 0 prints one line per switch in verify mode; on a difference the lowest rank that found one prints an example
+    // and every rank throws.
+    void VerifyIndividualFluxes(IndividualFluxVerifyInput const& Input, Tessellation3D const& Tess,
+        IndividualStepContext const& Context, std::vector<Conserved3D> const& Fluxes,
+        std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> > const& FaceValues,
+        std::vector<Slope3D> const* Slopes, std::vector<Slope3D> const* NaiveSlopes)
+    {
+        enum { FaceChecks, FaceMismatches, FluxChecks, FluxMismatches, SlopeChecks, SlopeMismatches, GhostSources,
+            SentKept, SentNew, ReconstructedKept, ReconstructedNew, CountSize };
+        unsigned long long Counts[CountSize] = {};
+        std::ostringstream Example;
+        Example.precision(17);
+        char const* ExampleKind = "";
+        std::size_t const FaceCount = Tess.GetTotalFacesNumber();
+        for(std::size_t Face = 0; Face < FaceCount; ++Face) {
+            if(!IndividualFaceRead(Tess, Context, Face))
+                continue;
+            ++Counts[FaceChecks];
+            bool const Same = Face < FaceValues.size() && Face < Input.NewFaceValues->size() &&
+                SameCell(FaceValues[Face].first, (*Input.NewFaceValues)[Face].first) &&
+                SameCell(FaceValues[Face].second, (*Input.NewFaceValues)[Face].second);
+            if(Same || Counts[FaceMismatches]++ != 0 || Counts[FluxMismatches] + Counts[SlopeMismatches] != 0)
+                continue;
+            ExampleKind = "face";
+            Example << " face=" << Face;
+            if(Face < FaceValues.size() && Face < Input.NewFaceValues->size())
+                Example << " kept_first=" << FaceValues[Face].first << " new_first=" << (*Input.NewFaceValues)[Face].first
+                    << " kept_second=" << FaceValues[Face].second << " new_second="
+                    << (*Input.NewFaceValues)[Face].second;
+        }
+        for(std::size_t Face = 0; Face < FaceCount; ++Face) {
+            ++Counts[FluxChecks];
+            bool const Same = Face < Fluxes.size() && Face < Input.NewFluxes->size() &&
+                SameConserved(Fluxes[Face], (*Input.NewFluxes)[Face]);
+            if(Same || Counts[FluxMismatches]++ != 0 || Counts[FaceMismatches] + Counts[SlopeMismatches] != 0)
+                continue;
+            ExampleKind = "flux";
+            Example << " face=" << Face << " read=" << (IndividualFaceRead(Tess, Context, Face) ? 1 : 0);
+            if(Face < Fluxes.size() && Face < Input.NewFluxes->size())
+                Example << " kept_mass=" << Fluxes[Face].mass << " new_mass=" << (*Input.NewFluxes)[Face].mass
+                    << " kept_energy=" << Fluxes[Face].energy << " new_energy=" << (*Input.NewFluxes)[Face].energy;
+        }
+        std::size_t const Owned = Tess.GetPointNo();
+        for(std::size_t Position = 0; Position < Input.SlopeIndices->size(); ++Position) {
+            std::size_t const Index = (*Input.SlopeIndices)[Position];
+            ++Counts[SlopeChecks];
+            bool Same = Slopes != nullptr && Index < Slopes->size() && Position < Input.NewSlopes->size() &&
+                SameSlope((*Slopes)[Index], (*Input.NewSlopes)[Position]);
+            if(Same && Index < Owned && NaiveSlopes != nullptr && Input.NewNaiveSlopes != nullptr) {
+                ++Counts[SlopeChecks];
+                Same = Index < NaiveSlopes->size() && Position < Input.NewNaiveSlopes->size() &&
+                    SameSlope((*NaiveSlopes)[Index], (*Input.NewNaiveSlopes)[Position]);
+            }
+            if(Same || Counts[SlopeMismatches]++ != 0 || Counts[FaceMismatches] + Counts[FluxMismatches] != 0)
+                continue;
+            ExampleKind = "slope";
+            Example << " slope_index=" << Index << " owned=" << (Index < Owned ? 1 : 0);
+            if(Slopes != nullptr && Index < Slopes->size() && Position < Input.NewSlopes->size())
+                Example << " kept_x=" << (*Slopes)[Index].xderivative << " new_x="
+                    << (*Input.NewSlopes)[Position].xderivative;
+        }
+        Counts[GhostSources] = Input.KeptCounts.GhostSources;
+        Counts[SentKept] = Input.KeptCounts.SentGhostSources;
+        Counts[SentNew] = Input.NewCounts.SentGhostSources;
+        Counts[ReconstructedKept] = Input.KeptCounts.Reconstructed;
+        Counts[ReconstructedNew] = Input.NewCounts.Reconstructed;
+        unsigned long long const LocalMismatches = Counts[FaceMismatches] + Counts[FluxMismatches] +
+            Counts[SlopeMismatches];
+        int Rank = 0;
+        int RankCount = 1;
+#ifdef RICH_MPI
+        MPI_Comm_rank(MPI_COMM_WORLD, &Rank);
+        MPI_Comm_size(MPI_COMM_WORLD, &RankCount);
+        MPI_Allreduce(MPI_IN_PLACE, Counts, CountSize, MPI_UNSIGNED_LONG_LONG, MPI_SUM, MPI_COMM_WORLD);
+#endif
+        unsigned long long const Checks = Counts[FaceChecks] + Counts[FluxChecks] + Counts[SlopeChecks];
+        unsigned long long const Mismatches = Counts[FaceMismatches] + Counts[FluxMismatches] + Counts[SlopeMismatches];
+        if(Rank == 0 && Input.FluxMode == 2)
+            std::cout << "RICH_B10_FLUX_VERIFY event_tick=" << Context.event_tick << " checks=" << Checks
+                << " mismatches=" << Mismatches << " face_checks=" << Counts[FaceChecks] << " face_mismatches="
+                << Counts[FaceMismatches] << " flux_checks=" << Counts[FluxChecks] << " flux_mismatches="
+                << Counts[FluxMismatches] << " slope_checks=" << Counts[SlopeChecks] << " slope_mismatches="
+                << Counts[SlopeMismatches] << std::endl;
+        if(Rank == 0 && Input.SlopeMode == 2)
+            std::cout << "RICH_B10_SLOPE_VERIFY event_tick=" << Context.event_tick << " checks=" << Checks
+                << " mismatches=" << Mismatches << " slope_checks=" << Counts[SlopeChecks] << " slope_mismatches="
+                << Counts[SlopeMismatches] << " ghost_sources=" << Counts[GhostSources] << " sent_full="
+                << Counts[SentKept] << " sent_requested=" << Counts[SentNew] << " reconstructed_full="
+                << Counts[ReconstructedKept] << " reconstructed_requested=" << Counts[ReconstructedNew] << std::endl;
+        if(Mismatches == 0)
+            return;
+        int FirstRank = LocalMismatches != 0 ? Rank : RankCount;
+#ifdef RICH_MPI
+        MPI_Allreduce(MPI_IN_PLACE, &FirstRank, 1, MPI_INT, MPI_MIN, MPI_COMM_WORLD);
+#endif
+        bool const SlopeTag = Input.FluxMode != 2 || (Input.SlopeMode == 2 && std::strcmp(ExampleKind, "slope") == 0);
+        if(Rank == FirstRank)
+            std::cerr << (SlopeTag ? "RICH_B10_SLOPE_VERIFY_MISMATCH" : "RICH_B10_FLUX_VERIFY_MISMATCH") << " rank="
+                << Rank << " event_tick=" << Context.event_tick << " local=" << LocalMismatches << " kind="
+                << ExampleKind << Example.str() << std::endl;
+        throw std::runtime_error(std::string(SlopeTag ? "RICH_INDIVIDUAL_GHOST_SLOPE_REQUEST" :
+            "RICH_INDIVIDUAL_FLUX_PASSES") + "=2: the new individual flux paths differ from the kept paths (" +
+            std::to_string(Mismatches) + " mismatches)");
+    }
 }
 
 void ConditionActionFlux1::CalculateIndividual(
@@ -163,12 +374,83 @@ void ConditionActionFlux1::CalculateIndividual(
 	const IndividualStepContext& context,
 	std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> >& face_values) const
 {
+    // RICH_INDIVIDUAL_FLUX_PASSES and RICH_INDIVIDUAL_GHOST_SLOPE_REQUEST: agreed on every rank (collective on first use,
+    // which is this call, made by every rank in every individual event).
+    int const FluxMode = IndividualFluxPassesMode();
+    int const SlopeMode = IndividualGhostSlopeRequestMode();
+    if(FluxMode != 2 && SlopeMode != 2) {
+        CalculateIndividualPass(fluxes, tess, face_velocities, cells, eos, context, face_values, FluxMode == 1,
+            SlopeMode == 1);
+        return;
+    }
+    // Verify: the new paths first, on a copy of the incoming flux array and on a face-state buffer that keeps the
+    // previous event's entries; then the configured paths, whose results are kept and leave the reconstruction in the
+    // state those paths alone leave it (they recompute every slope the new paths wrote).
+    IndividualFluxVerifyInput Input = {FluxMode, SlopeMode, nullptr, nullptr, nullptr, nullptr, nullptr,
+        IndividualInterpolationCounts(), IndividualInterpolationCounts()};
+    std::vector<Conserved3D> NewFluxes(fluxes);
+    CalculateIndividualPass(NewFluxes, tess, face_velocities, cells, eos, context, VerifyFaceValues_, FluxMode >= 1,
+        SlopeMode >= 1);
+    LinearGauss3D const* const Linear = dynamic_cast<LinearGauss3D const*>(&interp_);
+    if(Linear != nullptr)
+        Input.NewCounts = Linear->GetLastIndividualCounts();
+    std::vector<Slope3D> const* const Slopes = interp_.GetSlopesForTimePrediction();
+    std::vector<std::size_t> const SlopeIndices = Slopes != nullptr ?
+        IndividualReadSlopes(tess, context, Slopes->size()) : std::vector<std::size_t>();
+    std::vector<Slope3D> NewSlopes;
+    std::vector<Slope3D> NewNaiveSlopes;
+    NewSlopes.reserve(SlopeIndices.size());
+    for(std::size_t const Index : SlopeIndices)
+        NewSlopes.push_back((*Slopes)[Index]);
+    std::vector<Slope3D> const* const NaiveSlopes = Linear != nullptr ? &Linear->GetSlopesUnlimited() : nullptr;
+    if(NaiveSlopes != nullptr) {
+        NewNaiveSlopes.resize(SlopeIndices.size());
+        for(std::size_t Position = 0; Position < SlopeIndices.size(); ++Position)
+            if(SlopeIndices[Position] < NaiveSlopes->size())
+                NewNaiveSlopes[Position] = (*NaiveSlopes)[SlopeIndices[Position]];
+    }
+    CalculateIndividualPass(fluxes, tess, face_velocities, cells, eos, context, face_values, FluxMode == 1,
+        SlopeMode == 1);
+    if(Linear != nullptr)
+        Input.KeptCounts = Linear->GetLastIndividualCounts();
+    Input.NewFluxes = &NewFluxes;
+    Input.NewFaceValues = &VerifyFaceValues_;
+    Input.SlopeIndices = &SlopeIndices;
+    Input.NewSlopes = &NewSlopes;
+    Input.NewNaiveSlopes = NaiveSlopes != nullptr ? &NewNaiveSlopes : nullptr;
+    VerifyIndividualFluxes(Input, tess, context, fluxes, face_values, interp_.GetSlopesForTimePrediction(),
+        NaiveSlopes);
+}
+
+void ConditionActionFlux1::CalculateIndividualPass(vector<Conserved3D>& fluxes, const Tessellation3D& tess,
+    const vector<Vector3D>& face_velocities, const vector<ComputationalCell3D>& cells, const EquationOfState& eos,
+    const IndividualStepContext& context,
+    std::vector<std::pair<ComputationalCell3D, ComputationalCell3D> >& face_values, bool FluxPasses,
+    bool RequestSlopes) const
+{
 	for(std::size_t i = 0; i < sequence_.size(); ++i)
 		sequence_[i].second->Reset();
-	face_values.clear();
-	interp_.InterpolateIndividual(tess, cells, context.event_time,
-		context.active_mask, face_values);
-	fluxes.assign(tess.GetTotalFacesNumber(), Conserved3D());
+    // The new paths need LinearGauss3D (the same type on every rank); another reconstruction takes today's path, which
+    // starts from a cleared face-state array.
+    LinearGauss3D const* const Linear = FluxPasses || RequestSlopes ?
+        dynamic_cast<LinearGauss3D const*>(&interp_) : nullptr;
+    if(Linear == nullptr || !FluxPasses)
+        face_values.clear();
+    if(Linear != nullptr) {
+        IndividualInterpolationOptions Options;
+        Options.KeepInactiveFaceStates = FluxPasses;
+        Options.ReadCellsInPlace = FluxPasses;
+        Options.RequestGhostSlopes = RequestSlopes;
+        Linear->InterpolateIndividualWithOptions(tess, cells, context.event_time, context.active_mask, face_values,
+            Options);
+    }
+    else
+        interp_.InterpolateIndividual(tess, cells, context.event_time, context.active_mask, face_values);
+    // RICH_INDIVIDUAL_FLUX_PASSES: the hydro step assigns this array of the event mesh with the same values just
+    // before the call (hdsim_3d.cpp, phase 7), and nothing writes it in between.
+    if(!FluxPasses || fluxes.size() != tess.GetTotalFacesNumber()) {
+        fluxes.assign(tess.GetTotalFacesNumber(), Conserved3D());
+    }
 	const std::vector<Slope3D>* slopes = interp_.GetSlopesForTimePrediction();
 	const std::size_t norg = context.active_mask.size();
 	const std::size_t owned_cell_count = tess.GetPointNo();
